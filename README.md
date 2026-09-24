@@ -8,7 +8,7 @@ HTTPS is required on devices, including for self-hosted servers. For local testi
 
 Settings can request iOS notification permission. This **does not yet deliver completion alerts**: term-llm's existing Web Push subscriptions depend on service workers, which WKWebView does not expose as native APNs subscriptions. A later milestone needs device-token registration, authentication and routing on the server, APNs credentials, and an iOS push entitlement. Until then, use the website installed to the Home Screen if background completion alerts are needed. For live voice, the app declares iOS background audio so an active WebKit microphone/WebRTC call can continue after locking the phone on supported iOS versions. Start the call before locking; this does not start voice in the background or guarantee recovery from network changes, system interruptions, or an app force-quit. Verify capture and playback on a physical phone (the simulator is not a reliable lock-screen audio test).
 
-The web UI (including the hub and its live voice controls) is shown as-is. Native hub navigation and a native voice transport are future work.
+The web UI (including the hub and its live voice controls) is shown as-is. To reveal native Back, Reload, and Settings without a permanent bar, pull down from near the top of the web page; the controls hide after a few seconds or when used. Browser back-swipe still works. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
 ## Passkeys for arbitrary servers
 

@@ -32,6 +32,19 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertTrue(modes?.contains("audio") == true)
     }
 
+    func testHTTPRecoveryDistinguishesLoginFromServerFailures() {
+        let url = URL(string: "https://example.com/ui/")!
+        func response(_ status: Int, headers: [String: String] = [:]) -> HTTPURLResponse {
+            HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers)!
+        }
+        XCTAssertNil(BrowserView.recovery(for: response(200)))
+        XCTAssertNil(BrowserView.recovery(for: response(302)))
+        XCTAssertEqual(BrowserView.recovery(for: response(401, headers: ["X-Term-Llm-Login-Url": "/ui/auth/login"])), .signIn)
+        XCTAssertEqual(BrowserView.recovery(for: response(401)), .httpError(401))
+        XCTAssertEqual(BrowserView.recovery(for: response(404)), .httpError(404))
+        XCTAssertEqual(BrowserView.recovery(for: response(503)), .httpError(503))
+    }
+
     func testInvalidAddresses() {
         for value in ["", "file:///tmp/test", "http://example.com", "http://localhost.evil.com/ui/", "http://127.0.0.1:8080/ui/", "https://", "https://user:pass@example.com", "https://example.com/?token=secret"] {
             XCTAssertNil(ServerAddress.parse(value), value)

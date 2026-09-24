@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var notificationStatus = "Not enabled"
     @State private var isSigningIn = false
     @State private var loginError: String?
+    @State private var loginRequired = false
+    @State private var showingControls = false
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
 
@@ -72,61 +74,108 @@ struct ContentView: View {
     }
 
     private func browser(_ url: URL) -> some View {
-        NavigationStack {
-            ZStack {
-                BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
-                            loadError: $loadError, reloadCount: reloadCount, backCount: backCount,
-                            authenticatedCount: authenticatedCount, onLoginRequired: { signIn(to: url) })
-                    .ignoresSafeArea(edges: .bottom)
-                if isSigningIn {
-                    ProgressView("Signing in…")
-                        .padding(24)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        ZStack(alignment: .top) {
+            BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
+                        loadError: $loadError, loginRequired: $loginRequired,
+                        reloadCount: reloadCount, backCount: backCount,
+                        authenticatedCount: authenticatedCount,
+                        onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls)
+                .ignoresSafeArea(edges: .bottom)
+                .accessibilityAction(named: "App controls", revealControls)
+
+            if let loadError {
+                recoveryScreen("Can't load server", symbol: "wifi.exclamationmark", message: loadError) {
+                    if canGoBack {
+                        Button("Back") { backCount += 1 }
+                            .buttonStyle(.bordered)
+                    }
+                    Button("Retry") { self.loadError = nil; reloadCount += 1 }
+                        .buttonStyle(.borderedProminent)
+                    Button("Settings", action: openSettings)
+                        .buttonStyle(.bordered)
                 }
-                if let loginError {
-                    ContentUnavailableView("Sign-in needed", systemImage: "person.crop.circle.badge.exclamationmark",
-                                           description: Text(loginError))
-                        .padding()
-                        .background(.regularMaterial)
-                        .overlay(alignment: .bottom) {
-                            Button("Sign in with passkey") { signIn(to: url) }
-                                .buttonStyle(.borderedProminent)
-                                .padding(.bottom, 40)
-                        }
-                }
-                if let loadError {
-                    ContentUnavailableView("Can't load server", systemImage: "wifi.exclamationmark",
-                                           description: Text(loadError))
-                        .padding()
-                        .background(.regularMaterial)
-                        .overlay(alignment: .bottom) {
-                            Button("Retry") { self.loadError = nil; reloadCount += 1 }
-                                .buttonStyle(.borderedProminent)
-                                .padding(.bottom, 40)
-                        }
+            } else if loginRequired || loginError != nil {
+                recoveryScreen("Sign-in needed", symbol: "person.crop.circle.badge.exclamationmark",
+                               message: loginError ?? "Sign in to continue to this server.") {
+                    Button("Sign in with passkey") { signIn(to: url) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Settings", action: openSettings)
+                        .buttonStyle(.bordered)
                 }
             }
-            .navigationTitle("term-llm")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { backCount += 1 } label: { Image(systemName: "chevron.left") }
-                        .disabled(!canGoBack)
-                        .accessibilityLabel("Back")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if loading { ProgressView() }
-                    Button { reloadCount += 1 } label: { Image(systemName: "arrow.clockwise") }
-                        .accessibilityLabel("Reload")
-                    Button {
-                        draftURL = serverURL
-                        showingSettings = true
-                        refreshNotificationStatus()
-                    } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("Settings")
-                }
+
+            if isSigningIn {
+                ProgressView("Signing in…")
+                    .padding(24)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black.opacity(0.25))
+            }
+
+            if showingControls && loadError == nil && !loginRequired && loginError == nil {
+                controls
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .animation(.easeOut(duration: 0.2), value: showingControls)
+        .task(id: showingControls) {
+            if showingControls {
+                try? await Task.sleep(for: .seconds(8))
+                if !Task.isCancelled { showingControls = false }
+            }
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 18) {
+            Button { backCount += 1; showingControls = false } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(!canGoBack)
+            .accessibilityLabel("Back")
+            Button { reloadCount += 1; showingControls = false } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .accessibilityLabel("Reload")
+            Button { showingControls = false; openSettings() } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
+            Button { showingControls = false } label: {
+                Image(systemName: "xmark")
+            }
+            .accessibilityLabel("Hide app controls")
+        }
+        .font(.system(size: 18, weight: .medium))
+        .padding(.horizontal, 20)
+        .frame(height: 48)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(radius: 8)
+        .accessibilityIdentifier("appControls")
+    }
+
+    private func recoveryScreen<Actions: View>(_ title: String, symbol: String, message: String,
+                                                 @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(spacing: 20) {
+            ContentUnavailableView(title, systemImage: symbol, description: Text(message))
+            VStack(spacing: 12, content: actions)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
+    }
+
+    private func revealControls() {
+        guard loadError == nil && !loginRequired && loginError == nil else { return }
+        showingControls = true
+    }
+
+    private func openSettings() {
+        showingControls = false
+        draftURL = serverURL
+        showingSettings = true
+        refreshNotificationStatus()
     }
 
     private var settings: some View {
@@ -186,6 +235,7 @@ struct ContentView: View {
     private func signIn(to url: URL) {
         guard !isSigningIn else { return }
         isSigningIn = true
+        loginRequired = false
         loginError = nil
         nativeLogin.signIn(to: url) { result in
             isSigningIn = false
@@ -203,6 +253,8 @@ struct ContentView: View {
         guard let url = ServerAddress.parse(draftURL) else { return }
         serverURL = url.absoluteString
         loadError = nil
+        loginError = nil
+        loginRequired = false
         showingSettings = false
     }
 

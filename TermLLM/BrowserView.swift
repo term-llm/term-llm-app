@@ -2,14 +2,30 @@ import SwiftUI
 import WebKit
 
 struct BrowserView: UIViewRepresentable {
+    enum Recovery: Equatable {
+        case signIn
+        case httpError(Int)
+    }
+
+    static func recovery(for response: HTTPURLResponse) -> Recovery? {
+        guard response.statusCode >= 400 else { return nil }
+        if response.statusCode == 401,
+           response.value(forHTTPHeaderField: "X-Term-Llm-Login-Url") != nil {
+            return .signIn
+        }
+        return .httpError(response.statusCode)
+    }
+
     let url: URL
     @Binding var loading: Bool
     @Binding var canGoBack: Bool
     @Binding var loadError: String?
+    @Binding var loginRequired: Bool
     let reloadCount: Int
     let backCount: Int
     let authenticatedCount: Int
     let onLoginRequired: () -> Void
+    let onRevealControls: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -25,6 +41,10 @@ struct BrowserView: UIViewRepresentable {
         }
         view.allowsBackForwardNavigationGestures = true
         view.scrollView.contentInsetAdjustmentBehavior = .never
+        let pull = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePull(_:)))
+        pull.delegate = context.coordinator
+        pull.cancelsTouchesInView = false
+        view.scrollView.addGestureRecognizer(pull)
         context.coordinator.loadedURL = url
         view.load(URLRequest(url: url))
         return view
@@ -35,10 +55,15 @@ struct BrowserView: UIViewRepresentable {
         coordinator.parent = self
         if coordinator.loadedURL != url {
             coordinator.loadedURL = url
+            coordinator.rejectedHTTPResponse = false
             view.load(URLRequest(url: url))
         } else if coordinator.reloadCount != reloadCount {
             coordinator.reloadCount = reloadCount
-            if view.url == nil { view.load(URLRequest(url: url)) } else { view.reload() }
+            if view.url == nil || coordinator.rejectedHTTPResponse {
+                view.load(URLRequest(url: url))
+            } else {
+                view.reload()
+            }
         }
         if coordinator.authenticatedCount != authenticatedCount {
             coordinator.authenticatedCount = authenticatedCount
@@ -50,9 +75,12 @@ struct BrowserView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate {
         var parent: BrowserView
         var loadedURL: URL?
+        var rejectedHTTPResponse = false
+        private var pullEligible = false
+        private var pullTriggered = false
         var reloadCount = 0
         var backCount = 0
         var authenticatedCount = 0
@@ -60,14 +88,65 @@ struct BrowserView: UIViewRepresentable {
 
         init(_ parent: BrowserView) { self.parent = parent }
 
+        // Observe the pull without stealing WebKit's own scrolling or link gestures.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        @objc func handlePull(_ gesture: UIPanGestureRecognizer) {
+            guard let scrollView = gesture.view as? UIScrollView else { return }
+            switch gesture.state {
+            case .began:
+                pullEligible = gesture.location(in: scrollView).y < 140 &&
+                    scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + 8
+                pullTriggered = false
+            case .changed:
+                let translation = gesture.translation(in: scrollView)
+                if pullEligible && !pullTriggered && translation.y > 95 &&
+                    abs(translation.x) < translation.y / 2 {
+                    pullTriggered = true
+                    parent.onRevealControls()
+                }
+            case .ended, .cancelled, .failed:
+                pullEligible = false
+            default: break
+            }
+        }
+
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            rejectedHTTPResponse = false
             parent.loading = true
             parent.loadError = nil
+            parent.loginRequired = false
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            rejectedHTTPResponse = false
             parent.loading = false
             parent.loadError = nil
+            parent.loginRequired = false
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            guard navigationResponse.isForMainFrame,
+                  let response = navigationResponse.response as? HTTPURLResponse,
+                  let recovery = BrowserView.recovery(for: response) else {
+                decisionHandler(.allow)
+                return
+            }
+            rejectedHTTPResponse = true
+            parent.loading = false
+            switch recovery {
+            case .signIn:
+                parent.loginRequired = true
+                parent.loadError = nil
+            case .httpError(let status):
+                parent.loginRequired = false
+                parent.loadError = "The server returned HTTP \(status)."
+            }
+            decisionHandler(.cancel)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -79,6 +158,8 @@ struct BrowserView: UIViewRepresentable {
         }
 
         private func fail(_ error: Error) {
+            // WebKit may report cancellation after we intentionally reject an HTTP error page.
+            if rejectedHTTPResponse { return }
             parent.loading = false
             if (error as NSError).code != NSURLErrorCancelled {
                 parent.loadError = error.localizedDescription
