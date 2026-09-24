@@ -27,6 +27,11 @@ final class ServerAddressTests: XCTestCase {
         #endif
     }
 
+    func testBackgroundAudioEnabledForLiveVoice() {
+        let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]
+        XCTAssertTrue(modes?.contains("audio") == true)
+    }
+
     func testInvalidAddresses() {
         for value in ["", "file:///tmp/test", "http://example.com", "http://localhost.evil.com/ui/", "http://127.0.0.1:8080/ui/", "https://", "https://user:pass@example.com", "https://example.com/?token=secret"] {
             XCTAssertNil(ServerAddress.parse(value), value)

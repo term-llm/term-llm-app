@@ -31,7 +31,6 @@ struct ContentView: View {
             }
         }
         .tint(.cyan)
-        .preferredColorScheme(.dark)
         .sheet(isPresented: $showingSettings) { settings }
     }
 
