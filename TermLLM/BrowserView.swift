@@ -20,6 +20,9 @@ struct BrowserView: UIViewRepresentable {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
+        context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+            coordinator?.parent.canGoBack = webView.canGoBack
+        }
         view.allowsBackForwardNavigationGestures = true
         view.scrollView.contentInsetAdjustmentBehavior = .never
         context.coordinator.loadedURL = url
@@ -53,6 +56,7 @@ struct BrowserView: UIViewRepresentable {
         var reloadCount = 0
         var backCount = 0
         var authenticatedCount = 0
+        var backObservation: NSKeyValueObservation?
 
         init(_ parent: BrowserView) { self.parent = parent }
 
@@ -63,21 +67,19 @@ struct BrowserView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.loading = false
-            parent.canGoBack = webView.canGoBack
             parent.loadError = nil
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            fail(error, in: webView)
+            fail(error)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            fail(error, in: webView)
+            fail(error)
         }
 
-        private func fail(_ error: Error, in webView: WKWebView) {
+        private func fail(_ error: Error) {
             parent.loading = false
-            parent.canGoBack = webView.canGoBack
             if (error as NSError).code != NSURLErrorCancelled {
                 parent.loadError = error.localizedDescription
             }
@@ -89,12 +91,7 @@ struct BrowserView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-            let prefix = parent.url.path.hasSuffix("/") ? String(parent.url.path.dropLast()) : parent.url.path
-            if destination.scheme == parent.url.scheme, destination.host == parent.url.host,
-               destination.port == parent.url.port,
-               ["/auth/login", "/auth/setup", "/auth/recover"].contains(where: {
-                   destination.path == prefix + $0
-               }) {
+            if isLoginRoute(destination) {
                 decisionHandler(.cancel)
                 parent.onLoginRequired()
                 return
@@ -114,13 +111,22 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let url = navigationAction.request.url {
-                if url.scheme == parent.url.scheme, url.host == parent.url.host, url.port == parent.url.port {
+                if isLoginRoute(url) {
+                    parent.onLoginRequired()
+                } else if url.scheme == parent.url.scheme, url.host == parent.url.host, url.port == parent.url.port {
                     webView.load(navigationAction.request)
                 } else {
                     UIApplication.shared.open(url)
                 }
             }
             return nil
+        }
+
+        private func isLoginRoute(_ destination: URL) -> Bool {
+            let prefix = parent.url.path.hasSuffix("/") ? String(parent.url.path.dropLast()) : parent.url.path
+            return destination.scheme == parent.url.scheme && destination.host == parent.url.host &&
+                destination.port == parent.url.port &&
+                ["/auth/login", "/auth/setup", "/auth/recover"].contains { destination.path == prefix + $0 }
         }
     }
 }
