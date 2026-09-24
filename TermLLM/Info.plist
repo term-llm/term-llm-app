@@ -15,6 +15,13 @@
         <key>CFBundleURLSchemes</key><array><string>termllm-auth</string></array>
     </dict></array>
     <key>LSRequiresIPhoneOS</key><true/>
+    <key>NSAppTransportSecurity</key><dict>
+        <key>NSExceptionDomains</key><dict>
+            <key>localhost</key><dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+        </dict>
+    </dict>
     <key>NSCameraUsageDescription</key><string>Allow camera access for web voice and attachments.</string>
     <key>NSMicrophoneUsageDescription</key><string>Allow microphone access for web voice sessions.</string>
     <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>

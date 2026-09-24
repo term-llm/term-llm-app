@@ -18,6 +18,9 @@ struct ContentView: View {
     @State private var nativeLogin = NativeLogin()
 
     private var address: URL? { ServerAddress.parse(serverURL) }
+    private var hasPendingServerEdit: Bool {
+        ServerAddress.parse(draftURL)?.absoluteString != serverURL
+    }
 
     var body: some View {
         Group {
@@ -45,7 +48,7 @@ struct ContentView: View {
             Button("Connect", action: saveAddress)
                 .buttonStyle(.borderedProminent)
                 .disabled(ServerAddress.parse(draftURL) == nil)
-            Text("Use an HTTPS URL for your server. Plain HTTP connections are not supported.")
+            Text("Use an HTTPS URL for your server. The simulator also supports HTTP on localhost for testing.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -132,14 +135,23 @@ struct ContentView: View {
             Form {
                 Section("Server") {
                     addressField
-                    Button("Save server", action: saveAddress)
-                        .disabled(ServerAddress.parse(draftURL) == nil)
+                    if ServerAddress.parse(draftURL) == nil {
+                        Text("Enter a valid server URL to continue.")
+                            .foregroundStyle(.red)
+                            .font(.footnote)
+                    } else if hasPendingServerEdit {
+                        Text("Tap Done to connect to this server.")
+                            .foregroundStyle(.secondary)
+                            .font(.footnote)
+                    }
                     if let address {
                         Button("Sign in with passkey") {
                             showingSettings = false
                             signIn(to: address)
                         }
+                        .disabled(hasPendingServerEdit)
                         ShareLink("Open in Safari", item: address)
+                            .disabled(hasPendingServerEdit)
                     }
                 }
                 Section("Notifications") {
@@ -149,7 +161,7 @@ struct ContentView: View {
                             DispatchQueue.main.async { refreshNotificationStatus() }
                         }
                     }
-                    Text("This enables iOS notification permission only. Completion alerts need native push support on the server; web push in Safari does not work inside this app.")
+                    Text("Permission only. Completion alerts need server-side push support.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -157,8 +169,16 @@ struct ContentView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        draftURL = serverURL
+                        showingSettings = false
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { showingSettings = false }
+                    Button("Done", action: saveAddress)
+                        .fontWeight(.semibold)
+                        .disabled(ServerAddress.parse(draftURL) == nil)
                 }
             }
         }

@@ -17,8 +17,18 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertEqual(NativeLogin.origin(for: URL(string: "https://chat.example.com:8443/ui/")!), "https://chat.example.com:8443")
     }
 
+    func testLocalSimulatorServer() {
+        #if targetEnvironment(simulator)
+        XCTAssertEqual(ServerAddress.parse("http://localhost:8080/ui/")?.absoluteString, "http://localhost:8080/ui/")
+        XCTAssertEqual(NativeLogin.origin(for: URL(string: "http://localhost:8080/ui/")!), "http://localhost:8080")
+        XCTAssertEqual(NativeLogin.origin(for: URL(string: "http://localhost:80/ui/")!), "http://localhost")
+        #else
+        XCTAssertNil(ServerAddress.parse("http://localhost:8080/ui/"))
+        #endif
+    }
+
     func testInvalidAddresses() {
-        for value in ["", "file:///tmp/test", "http://localhost:8080", "https://", "https://user:pass@example.com", "https://example.com/?token=secret"] {
+        for value in ["", "file:///tmp/test", "http://example.com", "http://localhost.evil.com/ui/", "http://127.0.0.1:8080/ui/", "https://", "https://user:pass@example.com", "https://example.com/?token=secret"] {
             XCTAssertNil(ServerAddress.parse(value), value)
         }
     }

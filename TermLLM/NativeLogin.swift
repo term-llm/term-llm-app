@@ -69,8 +69,9 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
     }
 
     nonisolated static func origin(for server: URL) -> String {
-        let port = server.port == 443 ? "" : server.port.map { ":\($0)" } ?? ""
-        return "https://\(server.host!)\(port)"
+        let defaultPort = server.scheme == "http" ? 80 : 443
+        let port = server.port == defaultPort ? "" : server.port.map { ":\($0)" } ?? ""
+        return "\(server.scheme!)://\(server.host!)\(port)"
     }
 
     private func endpoint(_ server: URL, _ suffix: String) -> URL {
@@ -100,7 +101,8 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
         }
         guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url).first(where: {
             ["term_llm_web_session", "term_llm_hub_session"].contains($0.name) &&
-                $0.domain == server.host && $0.isSecure && $0.isHTTPOnly
+                $0.domain == server.host && $0.isHTTPOnly &&
+                ($0.isSecure || (server.scheme == "http" && ServerAddress.allowsLocalHTTP(host: server.host!)))
         }) else {
             throw LoginError.invalidResponse
         }
