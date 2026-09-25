@@ -203,6 +203,28 @@ struct BrowserView: UIViewRepresentable {
             return nil
         }
 
+        // The configured hub already has app-level microphone permission; don't re-prompt on every live session.
+        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            guard type == .microphone, isHubOrigin(origin) else {
+                decisionHandler(.prompt)
+                return
+            }
+            decisionHandler(.grant)
+        }
+
+        private func isHubOrigin(_ origin: WKSecurityOrigin) -> Bool {
+            guard let scheme = parent.url.scheme?.lowercased(), let host = parent.url.host?.lowercased() else {
+                return false
+            }
+            let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : 0
+            let expectedPort = parent.url.port ?? defaultPort
+            let originPort = origin.port == 0 ? defaultPort : origin.port
+            return origin.protocol.lowercased() == scheme && origin.host.lowercased() == host &&
+                originPort == expectedPort
+        }
+
         private func isLoginRoute(_ destination: URL) -> Bool {
             let prefix = parent.url.path.hasSuffix("/") ? String(parent.url.path.dropLast()) : parent.url.path
             return destination.scheme == parent.url.scheme && destination.host == parent.url.host &&
