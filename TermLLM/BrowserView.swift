@@ -214,6 +214,14 @@ struct BrowserView: UIViewRepresentable {
             decisionHandler(.grant)
         }
 
+        // iOS owns the one-time location authorization; skip WebKit's per-page prompt for the hub.
+        @available(iOS 27.0, *)
+        func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            decisionHandler(isHubOrigin(origin) ? .grant : .prompt)
+        }
+
         private func isHubOrigin(_ origin: WKSecurityOrigin) -> Bool {
             guard let scheme = parent.url.scheme?.lowercased(), let host = parent.url.host?.lowercased() else {
                 return false
