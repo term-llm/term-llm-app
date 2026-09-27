@@ -10,6 +10,22 @@ Settings can request iOS notification permission. This **does not yet deliver co
 
 The web UI (including the hub and its live voice controls) is shown as-is. To reveal native Back, Reload, and Settings without a permanent bar, pull down from near the top of the web page; the controls hide after a few seconds or when used. Browser back-swipe still works. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
+## Music
+
+Pull down for the app controls and tap ♪ to open **Music**. It shows what's playing and the playlists saved on this phone. You can create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there. Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.
+
+The agent can do all of this too, through device tools (below): `music_search`, `playlist_list/get/create/add_songs/remove_songs/reorder/rename/delete`, `music_play`, `music_now_playing` and `music_control`. Playlists can be referred to by name or id, and the Music screen shows the agent's changes immediately.
+
+Before shipping, enable the **MusicKit** App Service for the bundle ID in the Apple Developer portal, then refresh the provisioning profile. Playback can't be tested in the simulator; use a device signed in to Apple Music. If playback fails although the subscription is valid, play a song once in the Music app, then retry.
+
+## Device tools (WebMCP)
+
+The app can share tools that run on the phone (`ping`, `device_info` and the music tools) with your term-llm agent. In Settings → **Device tools**, turn on **Share device tools with this server**. The choice is remembered per server URL, so you can share with a personal hub but not a development box.
+
+When sharing is on, the app injects a small script into that server's own pages (main frame, matching origin only). The script registers the tools through [WebMCP](https://github.com/webmachinelearning/webmcp) (`document.modelContext`), providing a minimal implementation because WebKit has none. The term-llm web UI lists them in its **MCP servers** dialog as one more entry (for example "iPhone · 2 tools · WebMCP from this page"), switched on or off per conversation like configured servers. When the model calls one, the web page runs it through a native message handler and returns the result to the model. Nothing listens on the network and there are no tokens to manage: the tools exist only while you chat in the app. A native handler rejects calls from any other origin or frame.
+
+This requires a term-llm web UI with WebMCP client-tool support.
+
 ## Passkeys for arbitrary servers
 
 This app signs in through `ASWebAuthenticationSession` (the system browser), **not** WebAuthn inside `WKWebView`. When term-llm requests `/auth/login` or `/auth/setup`, the app opens the system passkey flow. The operator must approve the handoff on the server's page; each handoff requires a fresh passkey assertion (the initial sign-in assertion counts if they just signed in). **Only after approval** does term-llm redirect to the app with a 60-second, single-use code bound to a PKCE verifier held by the app. The app redeems it over the configured connection (HTTPS except for simulator localhost testing) for a **separate** HttpOnly session cookie and installs that cookie in its WebKit store before loading the site. No Associated Domains entitlement or AASA file is needed for this flow, even when the server URL is entered at runtime. See the [term-llm native app sign-in protocol](https://github.com/samsaffron/term-llm/blob/main/docs-site/content/guides/web-ui-and-api.md#native-app-sign-in).

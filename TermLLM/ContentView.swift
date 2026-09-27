@@ -16,8 +16,10 @@ struct ContentView: View {
     @State private var loginError: String?
     @State private var loginRequired = false
     @State private var showingControls = false
+    @State private var showingMusic = false
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
+    @StateObject private var deviceTools = DeviceToolsSettings.shared
 
     private var address: URL? { ServerAddress.parse(serverURL) }
     private var hasPendingServerEdit: Bool {
@@ -34,6 +36,7 @@ struct ContentView: View {
         }
         .tint(.cyan)
         .sheet(isPresented: $showingSettings) { settings }
+        .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
     }
 
     private var setup: some View {
@@ -79,6 +82,7 @@ struct ContentView: View {
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
+                        deviceTools: deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
                         onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls)
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
@@ -138,6 +142,10 @@ struct ContentView: View {
                 Image(systemName: "arrow.clockwise")
             }
             .accessibilityLabel("Reload")
+            Button { showingControls = false; showingMusic = true } label: {
+                Image(systemName: "music.note")
+            }
+            .accessibilityLabel("Music")
             Button { showingControls = false; openSettings() } label: {
                 Image(systemName: "gearshape")
             }
@@ -213,6 +221,7 @@ struct ContentView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                deviceToolsSection
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -228,6 +237,34 @@ struct ContentView: View {
                         .fontWeight(.semibold)
                         .disabled(ServerAddress.parse(draftURL) == nil)
                 }
+            }
+        }
+    }
+
+    /// Per-server opt-in for sharing device tools with the web page (WebMCP).
+    @ViewBuilder private var deviceToolsSection: some View {
+        if let address {
+            Section {
+                Toggle(isOn: Binding(
+                    get: { deviceTools.isEnabled(for: address) },
+                    set: { deviceTools.setEnabled($0, for: address) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Share device tools with this server")
+                        Text(address.host() ?? address.absoluteString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(hasPendingServerEdit)
+                .accessibilityIdentifier("deviceToolsToggle")
+                if deviceTools.isEnabled(for: address) {
+                    LabeledContent("Tools", value: deviceTools.registry.tools.map(\.name).joined(separator: ", "))
+                }
+            } header: {
+                Text("Device tools")
+            } footer: {
+                Text("Lets the agent use tools on this \(UIDevice.current.model) while you chat here. They appear in term-llm's MCP servers list, where you can turn them off per conversation. Nothing listens on the network. Remembered per server.")
             }
         }
     }

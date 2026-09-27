@@ -14,6 +14,32 @@
 		000000000000000000000086 /* NativeLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000046 /* NativeLogin.swift */; };
 		000000000000000000000084 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* Assets.xcassets */; };
 		000000000000000000000085 /* ServerAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000045 /* ServerAddressTests.swift */; };
+		000000000000000000000087 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000047 /* JSONValue.swift */; };
+		000000000000000000000088 /* DeviceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000048 /* DeviceTools.swift */; };
+		00000000000000000000008C /* DeviceToolsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004C /* DeviceToolsSettings.swift */; };
+		00000000000000000000008D /* DeviceToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004D /* DeviceToolsTests.swift */; };
+		0000000000000000000000B0 /* WebMCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A0 /* WebMCPBridge.swift */; };
+		0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A1 /* WebMCPBridgeTests.swift */; };
+		0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A2 /* WebMCPLiveServerTests.swift */; };
+		0000000000000000000000D0 /* MusicModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C0 /* MusicModels.swift */; };
+		0000000000000000000000D1 /* PlaylistStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C1 /* PlaylistStore.swift */; };
+		0000000000000000000000D2 /* AppleMusic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C2 /* AppleMusic.swift */; };
+		0000000000000000000000D3 /* MusicPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C3 /* MusicPlayer.swift */; };
+		0000000000000000000000D4 /* MusicTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C4 /* MusicTools.swift */; };
+		0000000000000000000000D5 /* MusicLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C5 /* MusicLibrary.swift */; };
+		0000000000000000000000D6 /* MusicComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C6 /* MusicComponents.swift */; };
+		0000000000000000000000D7 /* MusicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C7 /* MusicView.swift */; };
+		0000000000000000000000D8 /* PlaylistDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C8 /* PlaylistDetailView.swift */; };
+		0000000000000000000000D9 /* MusicSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C9 /* MusicSearchView.swift */; };
+		0000000000000000000000DA /* MusicTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CA /* MusicTestSupport.swift */; };
+		0000000000000000000000DB /* PlaylistStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CB /* PlaylistStoreTests.swift */; };
+		0000000000000000000000DC /* MusicPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CC /* MusicPlayerTests.swift */; };
+		0000000000000000000000DD /* MusicToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CD /* MusicToolsTests.swift */; };
+		0000000000000000000000DE /* MusicViewRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CE /* MusicViewRenderingTests.swift */; };
+		0000000000000000000000DF /* CatalogParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CF /* CatalogParsing.swift */; };
+		0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E0 /* CatalogParsingTests.swift */; };
+		0000000000000000000000F1 /* PlaylistFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E1 /* PlaylistFile.swift */; };
+		0000000000000000000000F2 /* PlaylistFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E2 /* PlaylistFileTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -36,6 +62,32 @@
 		000000000000000000000044 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		000000000000000000000045 /* ServerAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressTests.swift; sourceTree = "<group>"; };
 		000000000000000000000046 /* NativeLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLogin.swift; sourceTree = "<group>"; };
+		000000000000000000000047 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
+		000000000000000000000048 /* DeviceTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTools.swift; sourceTree = "<group>"; };
+		00000000000000000000004C /* DeviceToolsSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsSettings.swift; sourceTree = "<group>"; };
+		00000000000000000000004D /* DeviceToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000A0 /* WebMCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridge.swift; sourceTree = "<group>"; };
+		0000000000000000000000A1 /* WebMCPBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridgeTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000A2 /* WebMCPLiveServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPLiveServerTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000C0 /* MusicModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicModels.swift; sourceTree = "<group>"; };
+		0000000000000000000000C1 /* PlaylistStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStore.swift; sourceTree = "<group>"; };
+		0000000000000000000000C2 /* AppleMusic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusic.swift; sourceTree = "<group>"; };
+		0000000000000000000000C3 /* MusicPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPlayer.swift; sourceTree = "<group>"; };
+		0000000000000000000000C4 /* MusicTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTools.swift; sourceTree = "<group>"; };
+		0000000000000000000000C5 /* MusicLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicLibrary.swift; sourceTree = "<group>"; };
+		0000000000000000000000C6 /* MusicComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicComponents.swift; sourceTree = "<group>"; };
+		0000000000000000000000C7 /* MusicView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicView.swift; sourceTree = "<group>"; };
+		0000000000000000000000C8 /* PlaylistDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistDetailView.swift; sourceTree = "<group>"; };
+		0000000000000000000000C9 /* MusicSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicSearchView.swift; sourceTree = "<group>"; };
+		0000000000000000000000CA /* MusicTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTestSupport.swift; sourceTree = "<group>"; };
+		0000000000000000000000CB /* PlaylistStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStoreTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000CC /* MusicPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPlayerTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000CD /* MusicToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicToolsTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000CE /* MusicViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicViewRenderingTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000CF /* CatalogParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogParsing.swift; sourceTree = "<group>"; };
+		0000000000000000000000E0 /* CatalogParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogParsingTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000E1 /* PlaylistFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFile.swift; sourceTree = "<group>"; };
+		0000000000000000000000E2 /* PlaylistFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFileTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -82,6 +134,22 @@
 				000000000000000000000042 /* BrowserView.swift */,
 				000000000000000000000043 /* ServerAddress.swift */,
 				000000000000000000000046 /* NativeLogin.swift */,
+				000000000000000000000047 /* JSONValue.swift */,
+				000000000000000000000048 /* DeviceTools.swift */,
+				00000000000000000000004C /* DeviceToolsSettings.swift */,
+				0000000000000000000000A0 /* WebMCPBridge.swift */,
+				0000000000000000000000C0 /* MusicModels.swift */,
+				0000000000000000000000C1 /* PlaylistStore.swift */,
+				0000000000000000000000E1 /* PlaylistFile.swift */,
+				0000000000000000000000C2 /* AppleMusic.swift */,
+				0000000000000000000000CF /* CatalogParsing.swift */,
+				0000000000000000000000C3 /* MusicPlayer.swift */,
+				0000000000000000000000C4 /* MusicTools.swift */,
+				0000000000000000000000C5 /* MusicLibrary.swift */,
+				0000000000000000000000C6 /* MusicComponents.swift */,
+				0000000000000000000000C7 /* MusicView.swift */,
+				0000000000000000000000C8 /* PlaylistDetailView.swift */,
+				0000000000000000000000C9 /* MusicSearchView.swift */,
 				000000000000000000000044 /* Assets.xcassets */,
 			);
 			path = TermLLM;
@@ -91,6 +159,16 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000045 /* ServerAddressTests.swift */,
+				00000000000000000000004D /* DeviceToolsTests.swift */,
+				0000000000000000000000A1 /* WebMCPBridgeTests.swift */,
+				0000000000000000000000A2 /* WebMCPLiveServerTests.swift */,
+				0000000000000000000000CA /* MusicTestSupport.swift */,
+				0000000000000000000000CB /* PlaylistStoreTests.swift */,
+				0000000000000000000000E2 /* PlaylistFileTests.swift */,
+				0000000000000000000000CC /* MusicPlayerTests.swift */,
+				0000000000000000000000CD /* MusicToolsTests.swift */,
+				0000000000000000000000CE /* MusicViewRenderingTests.swift */,
+				0000000000000000000000E0 /* CatalogParsingTests.swift */,
 			);
 			path = TermLLMTests;
 			sourceTree = "<group>";
@@ -180,6 +258,22 @@
 				000000000000000000000082 /* BrowserView.swift in Sources */,
 				000000000000000000000083 /* ServerAddress.swift in Sources */,
 				000000000000000000000086 /* NativeLogin.swift in Sources */,
+				000000000000000000000087 /* JSONValue.swift in Sources */,
+				000000000000000000000088 /* DeviceTools.swift in Sources */,
+				00000000000000000000008C /* DeviceToolsSettings.swift in Sources */,
+				0000000000000000000000B0 /* WebMCPBridge.swift in Sources */,
+				0000000000000000000000D0 /* MusicModels.swift in Sources */,
+				0000000000000000000000D1 /* PlaylistStore.swift in Sources */,
+				0000000000000000000000F1 /* PlaylistFile.swift in Sources */,
+				0000000000000000000000D2 /* AppleMusic.swift in Sources */,
+				0000000000000000000000DF /* CatalogParsing.swift in Sources */,
+				0000000000000000000000D3 /* MusicPlayer.swift in Sources */,
+				0000000000000000000000D4 /* MusicTools.swift in Sources */,
+				0000000000000000000000D5 /* MusicLibrary.swift in Sources */,
+				0000000000000000000000D6 /* MusicComponents.swift in Sources */,
+				0000000000000000000000D7 /* MusicView.swift in Sources */,
+				0000000000000000000000D8 /* PlaylistDetailView.swift in Sources */,
+				0000000000000000000000D9 /* MusicSearchView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -188,6 +282,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
+				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,
+				0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */,
+				0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */,
+				0000000000000000000000DA /* MusicTestSupport.swift in Sources */,
+				0000000000000000000000DB /* PlaylistStoreTests.swift in Sources */,
+				0000000000000000000000F2 /* PlaylistFileTests.swift in Sources */,
+				0000000000000000000000DC /* MusicPlayerTests.swift in Sources */,
+				0000000000000000000000DD /* MusicToolsTests.swift in Sources */,
+				0000000000000000000000DE /* MusicViewRenderingTests.swift in Sources */,
+				0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

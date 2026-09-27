@@ -24,6 +24,9 @@ struct BrowserView: UIViewRepresentable {
     let reloadCount: Int
     let backCount: Int
     let authenticatedCount: Int
+    /// Device tools to expose to this server's page via WebMCP, or nil when
+    /// the user has not opted this server in.
+    var deviceTools: DeviceToolRegistry? = nil
     let onLoginRequired: () -> Void
     let onRevealControls: () -> Void
 
@@ -33,6 +36,7 @@ struct BrowserView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
+        context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
@@ -53,6 +57,8 @@ struct BrowserView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        let deviceToolsChanged = coordinator.syncDeviceTools(url: url, registry: deviceTools,
+                                                             controller: view.configuration.userContentController)
         if coordinator.loadedURL != url {
             coordinator.loadedURL = url
             coordinator.rejectedHTTPResponse = false
@@ -64,6 +70,8 @@ struct BrowserView: UIViewRepresentable {
             } else {
                 view.reload()
             }
+        } else if deviceToolsChanged, view.url != nil, !coordinator.rejectedHTTPResponse {
+            view.reload() // user scripts only apply to new documents
         }
         if coordinator.authenticatedCount != authenticatedCount {
             coordinator.authenticatedCount = authenticatedCount
@@ -85,8 +93,25 @@ struct BrowserView: UIViewRepresentable {
         var backCount = 0
         var authenticatedCount = 0
         var backObservation: NSKeyValueObservation?
+        private var bridge: WebMCPBridge?
 
         init(_ parent: BrowserView) { self.parent = parent }
+
+        /// Installs, replaces, or removes the WebMCP bridge. Returns true when
+        /// the injected script changed, so the current page must reload.
+        @discardableResult
+        func syncDeviceTools(url: URL, registry: DeviceToolRegistry?, controller: WKUserContentController) -> Bool {
+            if let bridge, let registry, bridge.serverURL == url, bridge.registry === registry { return false }
+            if bridge == nil && registry == nil { return false }
+            bridge?.uninstall()
+            bridge = nil
+            if let registry {
+                let bridge = WebMCPBridge(serverURL: url, registry: registry, device: UIDevice.current.model)
+                bridge.install(into: controller)
+                self.bridge = bridge
+            }
+            return true
+        }
 
         // Observe the pull without stealing WebKit's own scrolling or link gestures.
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

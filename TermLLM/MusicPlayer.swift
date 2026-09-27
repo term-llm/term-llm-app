@@ -1,0 +1,192 @@
+import Foundation
+import Observation
+
+/// A short message for the Music screen's toast.
+struct MusicNotice: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+    let isError: Bool
+}
+
+/// What the Music screen and the agent's tools see of playback. The system
+/// player is the source of truth; this adds which playlist was loaded.
+@MainActor
+@Observable
+final class MusicPlayer {
+    enum Status: Equatable {
+        case idle, loading, playing, paused
+        case failed(String)
+    }
+
+    private(set) var status: Status = .idle
+    /// The system player's current song (possibly one started elsewhere).
+    private(set) var nowPlaying: MusicTrack?
+    /// Songs this app last queued, and the playlist they came from.
+    private(set) var queue: [MusicTrack] = []
+    private(set) var playlistID: UUID?
+    private(set) var shuffle: Bool
+    /// The row a tap is starting, for an immediate spinner.
+    private(set) var startingEntryID: UUID?
+    private(set) var notice: MusicNotice?
+
+    /// Runs before this app starts audio (e.g. to end a live voice call).
+    @ObservationIgnored var willStartPlayback: (() -> Void)?
+
+    @ObservationIgnored private let engine: MusicPlaybackEngine
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let startCheck: StartCheck
+    static let shuffleKey = "music.shuffle"
+
+    /// How long to wait for the system player to report playing after play().
+    struct StartCheck {
+        var polls = 30
+        var interval: Duration = .milliseconds(100)
+    }
+
+    init(engine: MusicPlaybackEngine, defaults: UserDefaults = .standard, startCheck: StartCheck = StartCheck()) {
+        self.engine = engine
+        self.defaults = defaults
+        self.startCheck = startCheck
+        shuffle = defaults.bool(forKey: Self.shuffleKey)
+        engine.onChange = { [weak self] in self?.sync() }
+        sync()
+    }
+
+    var isPlaying: Bool { status == .playing || status == .loading }
+
+    /// True while `playlist` is what the system player is working through.
+    func isActive(_ playlist: Playlist) -> Bool {
+        guard playlistID == playlist.id, let current = nowPlaying else { return false }
+        return playlist.entries.contains { $0.track.id == current.id }
+    }
+
+    // MARK: Starting playback
+
+    @discardableResult
+    func play(_ playlist: Playlist, startingAt entryID: UUID? = nil, shuffle: Bool? = nil) async throws -> [MusicTrack] {
+        guard !playlist.entries.isEmpty else { throw MusicError.emptyPlaylist(playlist.name) }
+        let index = entryID.flatMap { id in playlist.entries.firstIndex { $0.id == id } } ?? 0
+        startingEntryID = entryID ?? playlist.entries[index].id
+        defer { startingEntryID = nil }
+        return try await start(playlist.tracks, at: index, playlistID: playlist.id, shuffle: shuffle)
+    }
+
+    @discardableResult
+    func play(_ tracks: [MusicTrack], startingAt index: Int = 0, shuffle: Bool? = nil) async throws -> [MusicTrack] {
+        guard !tracks.isEmpty else { throw MusicError.noPlayableSongs }
+        return try await start(tracks, at: index, playlistID: nil, shuffle: shuffle)
+    }
+
+    private func start(_ tracks: [MusicTrack], at index: Int, playlistID: UUID?, shuffle: Bool?) async throws -> [MusicTrack] {
+        if let shuffle { rememberShuffle(shuffle) }
+        willStartPlayback?()
+        status = .loading
+        do {
+            let loaded = try await engine.load(tracks, startingAt: index, shuffle: self.shuffle)
+            queue = loaded
+            self.playlistID = playlistID
+            try await startPlaying()
+            let skipped = tracks.count - loaded.count
+            if skipped > 0 {
+                post("\(skipped) song\(skipped == 1 ? " isn't" : "s aren't") available on Apple Music", isError: false)
+            }
+            return loaded
+        } catch {
+            let message = error.localizedDescription
+            status = .failed(message)
+            post(message, isError: true)
+            throw error
+        }
+    }
+
+    // MARK: Transport
+
+    func pause() {
+        engine.pause()
+        status = .paused
+    }
+
+    func resume() async throws {
+        guard nowPlaying != nil || !queue.isEmpty else { throw MusicError.nothingToResume }
+        willStartPlayback?()
+        let previous = status
+        status = .loading
+        do {
+            try await startPlaying()
+        } catch {
+            status = previous == .loading ? .paused : previous
+            sync()
+            post(error.localizedDescription, isError: true)
+            throw error
+        }
+    }
+
+    /// Plays and waits until the system player actually reports playing: it
+    /// only does so a moment after play() returns, and occasionally not at
+    /// all until asked again. Callers (and tool results) then see the truth.
+    private func startPlaying() async throws {
+        for attempt in 1...2 {
+            try await engine.play()
+            for _ in 0..<startCheck.polls {
+                if engine.snapshot.state == .playing {
+                    status = .playing
+                    sync()
+                    return
+                }
+                try await Task.sleep(for: startCheck.interval)
+            }
+            musicLog.error("Apple Music didn't report playing after play() attempt \(attempt)")
+        }
+        throw MusicError.didNotStart
+    }
+
+    func togglePlayPause() async {
+        if isPlaying { pause() } else { try? await resume() }
+    }
+
+    /// Syncs as soon as the skip lands, so callers (e.g. tool results) never
+    /// report the song that was just skipped.
+    func next() async throws {
+        try await engine.skipToNext()
+        sync()
+    }
+
+    func previous() async throws {
+        try await engine.skipToPrevious()
+        sync()
+    }
+
+    func setShuffle(_ enabled: Bool) {
+        rememberShuffle(enabled)
+        engine.setShuffle(enabled)
+    }
+
+    func post(_ text: String, isError: Bool) {
+        notice = MusicNotice(text: text, isError: isError)
+    }
+
+    func dismissNotice(_ id: UUID? = nil) {
+        if id == nil || notice?.id == id { notice = nil }
+    }
+
+    // MARK: Sync
+
+    /// Mirrors the system player, which also changes from the lock screen,
+    /// Control Center, or the Music app.
+    func sync() {
+        let snapshot = engine.snapshot
+        nowPlaying = snapshot.current
+        if !queue.isEmpty, snapshot.current != nil, snapshot.shuffle != shuffle { rememberShuffle(snapshot.shuffle) }
+        guard status != .loading else { return }
+        switch snapshot.state {
+        case .playing: status = .playing
+        case .paused: status = .paused
+        case .stopped: if case .failed = status {} else { status = snapshot.current == nil ? .idle : .paused }
+        }
+    }
+
+    private func rememberShuffle(_ enabled: Bool) {
+        shuffle = enabled
+        defaults.set(enabled, forKey: Self.shuffleKey)
+    }
+}
