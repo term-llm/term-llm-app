@@ -22,11 +22,13 @@ struct PlaylistFile {
     var now: () -> Date = Date.init
 
     func load() -> Loaded {
-        let files = FileManager.default
-        guard files.fileExists(atPath: url.path()) else { return .empty }
+        // Read directly instead of checking existence by path string: a path
+        // check once reported "missing" for a file that existed.
         let data: Data
         do {
             data = try Data(contentsOf: url)
+        } catch CocoaError.fileReadNoSuchFile {
+            return .empty
         } catch {
             // Usually data protection before first unlock: the file may be
             // fine, so leave it alone and try again later.
@@ -67,7 +69,8 @@ struct PlaylistFile {
         let stem = "\(url.deletingPathExtension().lastPathComponent)-unreadable-\(formatter.string(from: now()))"
         var backup = url.deletingLastPathComponent().appending(path: "\(stem).json")
         var counter = 2
-        while FileManager.default.fileExists(atPath: backup.path()) {
+        // path(percentEncoded: false): "Application Support" must stay a space.
+        while FileManager.default.fileExists(atPath: backup.path(percentEncoded: false)) {
             backup = url.deletingLastPathComponent().appending(path: "\(stem)-\(counter).json")
             counter += 1
         }

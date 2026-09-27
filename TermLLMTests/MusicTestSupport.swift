@@ -121,9 +121,12 @@ final class FakeEngine: MusicPlaybackEngine {
     }
 }
 
+/// Mirrors the real location, including the space in "Application Support",
+/// which once broke loading (`URL.path()` percent-encodes it).
 func temporaryPlaylistFile() -> URL {
     FileManager.default.temporaryDirectory
         .appending(path: "PlaylistStoreTests-\(UUID().uuidString)")
+        .appending(path: "Application Support/Music")
         .appending(path: "playlists.json")
 }
 

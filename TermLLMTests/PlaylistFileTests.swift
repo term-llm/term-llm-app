@@ -21,7 +21,7 @@ final class PlaylistFileTests: XCTestCase {
     }
 
     private func siblings() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path()).sorted()
+        try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path(percentEncoded: false)).sorted()
     }
 
     private func playlistJSON(id: String = UUID().uuidString, name: String, entries: [String] = [],
