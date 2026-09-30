@@ -10,6 +10,12 @@ Settings can request iOS notification permission. This **does not yet deliver co
 
 The web UI (including the hub and its live voice controls) is shown as-is. To reveal native Back, Reload, and Settings without a permanent bar, pull down from near the top of the web page; the controls hide after a few seconds or when used. Browser back-swipe still works. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
+## Browser lifecycle
+
+Returning from the background keeps the existing web view and does not force a page reload, preserving the live workspace while WebKit remains alive. If iOS terminates the web content process, the app reopens the current same-server route with a fresh GET when active (or falls back to the configured server URL). Recovery waits while the app is inactive or signing in, and does not override sign-in or server/network error screens. A second termination within 30 seconds stops automatic recovery and offers the existing Retry/Settings controls; Retry, a server change, or successful native sign-in resets the retry budget.
+
+This does not persist conversation snapshots or restore JavaScript memory after process loss. Unsent text and live-session reconnection after a reload depend on the server's web UI. Physical-device memory-pressure and background voice testing are still necessary.
+
 ## Music
 
 Pull down for the app controls and tap ♪ to open **Music**. It shows what's playing and the playlists saved on this phone. You can create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there. Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.

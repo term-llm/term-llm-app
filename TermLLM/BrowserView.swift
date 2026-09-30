@@ -24,6 +24,8 @@ struct BrowserView: UIViewRepresentable {
     let reloadCount: Int
     let backCount: Int
     let authenticatedCount: Int
+    var scenePhase: ScenePhase = .active
+    var isSigningIn = false
     /// Device tools to expose to this server's page via WebMCP, or nil when
     /// the user has not opted this server in.
     var deviceTools: DeviceToolRegistry? = nil
@@ -55,32 +57,13 @@ struct BrowserView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.parent = self
-        let deviceToolsChanged = coordinator.syncDeviceTools(url: url, registry: deviceTools,
-                                                             controller: view.configuration.userContentController)
-        if coordinator.loadedURL != url {
-            coordinator.loadedURL = url
-            coordinator.rejectedHTTPResponse = false
-            view.load(URLRequest(url: url))
-        } else if coordinator.reloadCount != reloadCount {
-            coordinator.reloadCount = reloadCount
-            if view.url == nil || coordinator.rejectedHTTPResponse {
-                view.load(URLRequest(url: url))
-            } else {
-                view.reload()
-            }
-        } else if deviceToolsChanged, view.url != nil, !coordinator.rejectedHTTPResponse {
-            view.reload() // user scripts only apply to new documents
-        }
-        if coordinator.authenticatedCount != authenticatedCount {
-            coordinator.authenticatedCount = authenticatedCount
-            view.load(URLRequest(url: url))
-        }
-        if coordinator.backCount != backCount {
-            coordinator.backCount = backCount
-            if view.canGoBack { view.goBack() }
-        }
+        context.coordinator.update(view, parent: self)
+    }
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        coordinator.tearDown()
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate {
@@ -94,8 +77,100 @@ struct BrowserView: UIViewRepresentable {
         var authenticatedCount = 0
         var backObservation: NSKeyValueObservation?
         private var bridge: WebMCPBridge?
+        private var recoveryPending = false
+        private var lastAutomaticRecovery: TimeInterval?
 
-        init(_ parent: BrowserView) { self.parent = parent }
+        init(_ parent: BrowserView) {
+            self.parent = parent
+            // A recreated view already loads once in makeUIView. Do not replay
+            // old native commands on its first SwiftUI update.
+            reloadCount = parent.reloadCount
+            backCount = parent.backCount
+            authenticatedCount = parent.authenticatedCount
+        }
+
+        func tearDown() {
+            backObservation?.invalidate()
+            backObservation = nil
+            bridge?.uninstall()
+            bridge = nil
+            recoveryPending = false
+        }
+
+        func update(_ view: WKWebView, parent: BrowserView) {
+            self.parent = parent
+            let serverChanged = loadedURL != parent.url
+            let reloadRequested = reloadCount != parent.reloadCount
+            let authenticated = authenticatedCount != parent.authenticatedCount
+            let backRequested = backCount != parent.backCount
+            loadedURL = parent.url
+            reloadCount = parent.reloadCount
+            authenticatedCount = parent.authenticatedCount
+            backCount = parent.backCount
+            let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.deviceTools,
+                                               controller: view.configuration.userContentController)
+
+            // Coalesce native changes into one navigation. Server changes and
+            // fresh auth always take precedence over reload/back commands.
+            if serverChanged || authenticated {
+                resetRecovery()
+                rejectedHTTPResponse = false
+                view.load(URLRequest(url: parent.url))
+            } else if reloadRequested {
+                resetRecovery()
+                if view.url == nil || rejectedHTTPResponse {
+                    view.load(URLRequest(url: parent.url))
+                } else {
+                    view.reload()
+                }
+            } else if backRequested, view.canGoBack {
+                resetRecovery()
+                view.goBack()
+            } else if toolsChanged, view.url != nil, !rejectedHTTPResponse, !parent.isSigningIn,
+                      !parent.loginRequired, parent.loadError == nil, !recoveryPending {
+                view.reload() // user scripts only apply to new documents
+            } else if recoveryPending {
+                // A deferred termination can be handled by a scenePhase update.
+                // Leave SwiftUI's update pass before changing recovery bindings.
+                DispatchQueue.main.async { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    self.recoverIfNeeded(view)
+                }
+            }
+        }
+
+        private func resetRecovery() {
+            recoveryPending = false
+            lastAutomaticRecovery = nil
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            recoveryPending = true
+            parent.loading = false
+            recoverIfNeeded(webView)
+        }
+
+        func recoverIfNeeded(_ view: WKWebView, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+            // Ordinary foregrounding is a no-op. Do not interrupt the system
+            // passkey flow or replace an authoritative HTTP/network error.
+            guard recoveryPending, parent.scenePhase == .active, !parent.isSigningIn,
+                  !parent.loginRequired, !rejectedHTTPResponse, parent.loadError == nil else { return }
+            recoveryPending = false
+            // Bound automatic retries even when a crashing page briefly finishes
+            // loading. An explicit Retry, server change, or sign-in resets this.
+            if let lastAutomaticRecovery, now - lastAutomaticRecovery < 30 {
+                parent.loadError = "The web page stopped unexpectedly. Tap Retry to reopen it."
+                return
+            }
+            lastAutomaticRecovery = now
+            // Use a fresh GET, not reload(), to avoid replaying a submitted form.
+            // WKWebView.url includes the current SPA route after pushState.
+            let target = view.url.flatMap { candidate in
+                candidate.scheme == parent.url.scheme && candidate.host == parent.url.host &&
+                    candidate.port == parent.url.port && !isLoginRoute(candidate) ? candidate : nil
+            } ?? parent.url
+            view.load(URLRequest(url: target))
+        }
 
         /// Installs, replaces, or removes the WebMCP bridge. Returns true when
         /// the injected script changed, so the current page must reload.

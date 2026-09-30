@@ -3,6 +3,7 @@ import UserNotifications
 import WebKit
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverURL") private var serverURL = ""
     @State private var draftURL = ""
     @State private var showingSettings = false
@@ -82,6 +83,7 @@ struct ContentView: View {
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
+                        scenePhase: scenePhase, isSigningIn: isSigningIn,
                         deviceTools: deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
                         onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls)
                 .ignoresSafeArea(edges: .bottom)

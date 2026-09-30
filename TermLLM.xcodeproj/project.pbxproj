@@ -40,6 +40,7 @@
 		0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E0 /* CatalogParsingTests.swift */; };
 		0000000000000000000000F1 /* PlaylistFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E1 /* PlaylistFile.swift */; };
 		0000000000000000000000F2 /* PlaylistFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E2 /* PlaylistFileTests.swift */; };
+		0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E3 /* BrowserLifecycleTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +89,7 @@
 		0000000000000000000000E0 /* CatalogParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogParsingTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000E1 /* PlaylistFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFile.swift; sourceTree = "<group>"; };
 		0000000000000000000000E2 /* PlaylistFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFileTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000E3 /* BrowserLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserLifecycleTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -159,6 +161,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000045 /* ServerAddressTests.swift */,
+				0000000000000000000000E3 /* BrowserLifecycleTests.swift */,
 				00000000000000000000004D /* DeviceToolsTests.swift */,
 				0000000000000000000000A1 /* WebMCPBridgeTests.swift */,
 				0000000000000000000000A2 /* WebMCPLiveServerTests.swift */,
@@ -282,6 +285,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
+				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
 				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,
 				0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */,
 				0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */,
