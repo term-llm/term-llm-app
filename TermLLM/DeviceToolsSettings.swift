@@ -6,7 +6,8 @@ import Foundation
 @MainActor
 final class DeviceToolsSettings: ObservableObject {
     static let shared = DeviceToolsSettings(
-        registry: DeviceToolRegistry(tools: BuiltInDeviceTools.standard + MusicLibrary.shared.tools))
+        registry: DeviceToolRegistry(tools: BuiltInDeviceTools.standard + MusicLibrary.shared.tools + NavigationService.shared.tools
+                                    + Listen.shared.tools))
     static let serversKey = "deviceTools.webMCPServers"
 
     let registry: DeviceToolRegistry

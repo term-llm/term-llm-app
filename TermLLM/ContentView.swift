@@ -18,9 +18,12 @@ struct ContentView: View {
     @State private var loginRequired = false
     @State private var showingControls = false
     @State private var showingMusic = false
+    @State private var showingListen = false
+    @State private var showingPlayer = false
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
     @StateObject private var deviceTools = DeviceToolsSettings.shared
+    private let listen = Listen.shared
 
     private var address: URL? { ServerAddress.parse(serverURL) }
     private var hasPendingServerEdit: Bool {
@@ -38,6 +41,8 @@ struct ContentView: View {
         .tint(.cyan)
         .sheet(isPresented: $showingSettings) { settings }
         .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
+        .sheet(isPresented: $showingListen) { ListenView(listen: listen) }
+        .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen) }
     }
 
     private var setup: some View {
@@ -77,7 +82,21 @@ struct ContentView: View {
             .accessibilityIdentifier("serverAddress")
     }
 
+    /// The web page with the Listen mini player under it. The bar is native,
+    /// so it (and playback) survives page loads; hiding it leaves playback on.
     private func browser(_ url: URL) -> some View {
+        VStack(spacing: 0) {
+            page(url)
+            if listen.player.showsBar {
+                MiniPlayerBar(listen: listen) { showingPlayer = true }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .ignoresSafeArea(.keyboard)
+        .animation(.snappy(duration: 0.25), value: listen.player.showsBar)
+    }
+
+    private func page(_ url: URL) -> some View {
         ZStack(alignment: .top) {
             BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
                         loadError: $loadError, loginRequired: $loginRequired,
@@ -148,6 +167,10 @@ struct ContentView: View {
                 Image(systemName: "music.note")
             }
             .accessibilityLabel("Music")
+            Button { showingControls = false; listen.player.showBar(); showingListen = true } label: {
+                Image(systemName: "headphones")
+            }
+            .accessibilityLabel("Listen")
             Button { showingControls = false; openSettings() } label: {
                 Image(systemName: "gearshape")
             }

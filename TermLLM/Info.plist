@@ -16,6 +16,7 @@
     </dict></array>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>NSAppTransportSecurity</key><dict>
+        <key>NSAllowsArbitraryLoadsForMedia</key><true/>
         <key>NSExceptionDomains</key><dict>
             <key>localhost</key><dict>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
@@ -24,7 +25,7 @@
     </dict>
     <key>NSAppleMusicUsageDescription</key><string>Search Apple Music and play your playlists, including ones the agent makes for you.</string>
     <key>NSCameraUsageDescription</key><string>Allow camera access for web voice and attachments.</string>
-    <key>NSLocationWhenInUseUsageDescription</key><string>Allow location access so you can share your current location in conversations.</string>
+    <key>NSLocationWhenInUseUsageDescription</key><string>Allow location access so you can share your current location in conversations and get walking or driving directions.</string>
     <key>NSMicrophoneUsageDescription</key><string>Allow microphone access for live voice conversations, including while the screen is locked.</string>
     <key>UIBackgroundModes</key><array><string>audio</string></array>
     <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>

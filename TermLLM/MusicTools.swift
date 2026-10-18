@@ -310,6 +310,35 @@ struct Arguments {
         throw DeviceToolError(message: "\(key) must be a whole number.")
     }
 
+    func double(_ key: String) throws -> Double? {
+        switch values[key] {
+        case nil, .null?: return nil
+        case .int(let value)?: return Double(value)
+        case .double(let value)? where value.isFinite: return value
+        case .string(let raw)?:
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { return nil }
+            if let value = Double(trimmed), value.isFinite { return value }
+        default: break
+        }
+        throw DeviceToolError(message: "\(key) must be a number.")
+    }
+
+    /// A list of objects; a single object is accepted as a list of one.
+    func objects(_ key: String) throws -> [Arguments]? {
+        switch values[key] {
+        case nil, .null?: return nil
+        case .object(let object)?: return [Arguments(object)]
+        case .array(let array)?:
+            guard !array.isEmpty else { return nil }
+            return try array.map { item in
+                guard case .object(let object) = item else { throw DeviceToolError(message: "\(key) must be a list of objects.") }
+                return Arguments(object)
+            }
+        default: throw DeviceToolError(message: "\(key) must be a list of objects.")
+        }
+    }
+
     func bool(_ key: String) throws -> Bool? {
         switch values[key] {
         case nil, .null?: return nil

@@ -24,9 +24,29 @@ The agent can do all of this too, through device tools (below): `music_search`, 
 
 Before shipping, enable the **MusicKit** App Service for the bundle ID in the Apple Developer portal, then refresh the provisioning profile. Playback can't be tested in the simulator; use a device signed in to Apple Music. If playback fails although the subscription is valid, play a song once in the Music app, then retry.
 
+## Listen
+
+Listen plays audio and video files that aren't in Apple Music: podcast episodes, audio term-llm generated, songs, sound effects, and videos played for their sound. The player is native, so playback continues when the web page navigates or reloads, and when the phone is locked. The lock screen, Control Center, AirPods and CarPlay controls work (play/pause, back 15 s, forward 30 s, scrubbing, next/previous, speed).
+
+While something is loaded, a mini player sits under the web page. Tap it (or swipe it up) for the full player: scrubbing, speed (0.75×–3×) and a sleep timer (minutes or end of episode). Swipe it down or tap ✕ to hide it; playback carries on, and it comes back when something new starts or when you open Listen (🎧 in the pull-down controls). Listen shows **Up Next** in play order (tap to play, Edit to reorder, swipe to mark played, remove or download) and **History** (played and archived items).
+
+Each item resumes where it was left. When one finishes it is marked played and the next in Up Next starts. The library and positions are saved on this phone (Application Support); the item that was playing comes back paused after the app restarts. Starting Listen pauses Apple Music and starting Apple Music pauses Listen.
+
+Media from the connected server (`/media/…`, including hub node paths) is fetched with the web view's sign-in cookie and downloaded by default, so it plays offline and seeks instantly. Any other http(s) URL is streamed without cookies unless a download is requested; downloads are kept out of backups. Plain-http media streams through the `NSAllowsArbitraryLoadsForMedia` exception; plain-http downloads are retried over https.
+
+The agent uses the same library through six device tools: `media_add` (one or more URLs with title, artist, album, description, artwork, kind, duration and published date; `position` now/next/end; `download` auto/now/never), `media_list`, `media_play`, `media_control` (pause, resume, stop, seek, skip, next, previous, rate, sleep, sleep_at_end, cancel_sleep, hide_player, show_player), `media_now_playing` and `media_manage` (remove, mark played/unplayed, archive, move, clear history, download, cancel or delete a download). Items can be referred to by id or exact title. `term-llm-media://` references from `show_media` can't be resolved on the phone yet; the agent needs the published `/media/…` URL or another direct URL. Starting playback switches the app's audio session to playback; how that affects a live voice call in the web page hasn't been tested.
+
+Test lock-screen controls, interruptions (calls, Siri), headphone removal and background playback on a physical phone.
+
+## Navigation
+
+`location_current` gives the agent the phone's current position (latitude, longitude, accuracy, age, speed when known and an Apple Maps link) and, unless `include_address` is false, the street address or place there. A failed address lookup still returns the coordinates.
+
+The agent can give walking or driving directions through four device tools. `navigation_preview` finds a place near the phone with Apple Maps and plans a route from the current location without starting anything. `navigation_start` begins tracking a preview, `navigation_status` reports the distance and time left, the next instruction, whether the user is off route or has arrived, the upcoming maneuvers with their coordinates, and a trail of where the user was (local time, coordinates, state and distance off route, about once a minute plus whenever they went off route, came back, were rerouted or arrived; only the last 30 minutes and at most 40 points) so the agent can explain a wrong turn, and `navigation_stop` ends it. While navigating, the phone matches GPS fixes to the route, reports off route only after several accurate fixes, reroutes automatically and stops using GPS on arrival. Tracking is foreground-only (when-in-use permission) and has no on-screen controls yet; nothing is pushed into a live voice call, so the agent learns progress only by calling `navigation_status`.
+
 ## Device tools (WebMCP)
 
-The app can share tools that run on the phone (`ping`, `device_info` and the music tools) with your term-llm agent. In Settings → **Device tools**, turn on **Share device tools with this server**. The choice is remembered per server URL, so you can share with a personal hub but not a development box.
+The app can share tools that run on the phone (`ping`, `device_info` and the music, navigation and Listen tools) with your term-llm agent. In Settings → **Device tools**, turn on **Share device tools with this server**. The choice is remembered per server URL, so you can share with a personal hub but not a development box.
 
 When sharing is on, the app injects a small script into that server's own pages (main frame, matching origin only). The script registers the tools through [WebMCP](https://github.com/webmachinelearning/webmcp) (`document.modelContext`), providing a minimal implementation because WebKit has none. The term-llm web UI lists them in its **MCP servers** dialog as one more entry (for example "iPhone · 2 tools · WebMCP from this page"), switched on or off per conversation like configured servers. When the model calls one, the web page runs it through a native message handler and returns the result to the model. Nothing listens on the network and there are no tokens to manage: the tools exist only while you chat in the app. A native handler rejects calls from any other origin or frame.
 
