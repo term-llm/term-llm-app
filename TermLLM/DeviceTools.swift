@@ -99,7 +99,7 @@ struct DeviceInfoSnapshot: Equatable, Sendable {
 }
 
 enum BuiltInDeviceTools {
-    static func ping(now: @escaping @Sendable () -> Date = Date.init) -> DeviceTool {
+    static func ping(now: @escaping @Sendable () -> Date = { Date() }) -> DeviceTool {
         DeviceTool(
             name: "ping",
             title: "Ping iPhone",

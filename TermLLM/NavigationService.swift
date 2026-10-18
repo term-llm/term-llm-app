@@ -128,9 +128,9 @@ final class NavigationService {
     /// How often the trail samples the user's position.
     static let trailInterval: TimeInterval = 60
     /// The trail covers at most this much recent time…
-    static let trailWindow: TimeInterval = 30 * 60
+    nonisolated static let trailWindow: TimeInterval = 30 * 60
     /// …and at most this many points (a sample a minute plus room for events).
-    static let maxTrailPoints = 40
+    nonisolated static let maxTrailPoints = 40
 
     init(location: LocationProvider, planner: RoutePlanner, now: @escaping () -> Date = Date.init,
          makeID: @escaping () -> String = { String(UUID().uuidString.prefix(8)).lowercased() },
