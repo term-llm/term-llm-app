@@ -37,6 +37,18 @@ final class Listen {
         self.downloader = downloader
         self.player = ListenPlayer(store: store, engine: engine, sources: { await downloader.source(for: $0) },
                                    nowPlaying: nowPlaying, defaults: defaults, now: now)
+        // Save what's streaming as it plays, so seeks become instant and a
+        // dropped connection doesn't stop it; the file goes once played.
+        player.didStartStreaming = { [weak downloader] id in
+            guard let downloader, let item = store.item(id), Self.cachesWhileStreaming(item) else { return }
+            downloader.download(id, forPlayback: true)
+        }
+        player.didFinish = { [weak downloader] ids in downloader?.releasePlaybackCache(ids) }
+    }
+
+    /// Video files can be huge; everything else is cached while it streams.
+    static func cachesWhileStreaming(_ item: ListenItem) -> Bool {
+        item.kind != .video && item.download != .downloaded && item.download != .downloading && item.download != .queued
     }
 
     var tools: [DeviceTool] {
@@ -78,6 +90,7 @@ final class Listen {
         if let current = player.currentID, ids.contains(current) {
             await player.didFinishElsewhere(current)
         }
+        if status == .played || status == .archived { downloader.releasePlaybackCache(ids) }
     }
 
     func clearHistory() {

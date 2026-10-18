@@ -28,9 +28,19 @@ final class ListenPlayer {
     /// The user swiped the mini player away; playback carries on.
     private(set) var barHidden = false
     private(set) var notice: String?
+    /// The loaded item comes over the network rather than from a file.
+    private(set) var streaming = false
+    /// Playing, but waiting for the network.
+    private(set) var buffering = false
+    /// For a stream: loaded up to here (media time) from the playhead.
+    private(set) var bufferedUntil: TimeInterval?
 
     /// Runs before this player starts audio (e.g. to pause Apple Music).
     @ObservationIgnored var willStartPlayback: (() -> Void)?
+    /// An item started streaming (e.g. to cache it meanwhile).
+    @ObservationIgnored var didStartStreaming: ((UUID) -> Void)?
+    /// Items played to the end here.
+    @ObservationIgnored var didFinish: (([UUID]) -> Void)?
 
     @ObservationIgnored private let store: ListenStore
     @ObservationIgnored private let engine: ListenEngine
@@ -85,8 +95,24 @@ final class ListenPlayer {
 
     /// Plays `id` from `start` (default: where it was left).
     func play(_ id: UUID, from start: TimeInterval? = nil) async throws {
+        guard store.item(id) != nil else { throw ListenError.notFound(id.uuidString) }
+        if loadedID == id, currentID == id, status == .playing || status == .paused {
+            // Already loaded: keep the buffer instead of fetching it again.
+            barHidden = false
+            notice = nil
+            if let start { await seek(to: start) }
+            if status == .paused { try await resume() }
+            return
+        }
+        try await load(id, from: start)
+    }
+
+    /// Loads `id` (from `source`, or wherever it's best played from) and
+    /// starts it unless `autoplay` is false.
+    private func load(_ id: UUID, from start: TimeInterval?, source given: ListenSource? = nil,
+                      autoplay: Bool = true) async throws {
         guard let item = store.item(id) else { throw ListenError.notFound(id.uuidString) }
-        willStartPlayback?()
+        if autoplay { willStartPlayback?() }
         if let currentID, currentID != id, loadedID == currentID { savePosition() }
         generation += 1
         let attempt = generation
@@ -94,6 +120,7 @@ final class ListenPlayer {
         barHidden = false
         notice = nil
         status = .loading
+        resetNetworkState()
         let startAt = start ?? item.resumePosition()
         position = startAt
         duration = item.duration
@@ -102,22 +129,31 @@ final class ListenPlayer {
             $0.lastPlayedAt = self.now()
         }
         do {
-            let source = await sources(item)
-            guard attempt == generation else { return }
+            var source = given
+            if source == nil { source = await sources(item) }
+            guard let source, attempt == generation else { return }
+            streaming = !source.isLocal
             try await engine.load(source, startAt: startAt)
             guard attempt == generation else { return }
             loadedID = id
-            try engine.play(rate: rate)
-            status = .playing
+            if autoplay {
+                try engine.play(rate: rate)
+                status = .playing
+            } else {
+                status = .paused
+            }
             duration = engine.duration ?? item.duration
+            updateNetworkState()
             store.update(id) {
                 $0.status = .inProgress
                 if let duration = self.duration { $0.duration = duration }
             }
             showNowPlaying()
+            if streaming { didStartStreaming?(id) }
         } catch {
             guard attempt == generation else { return }
             loadedID = nil
+            resetNetworkState()
             let message = error.localizedDescription
             status = .failed(message)
             notice = message
@@ -128,6 +164,7 @@ final class ListenPlayer {
     /// Resumes the current item, or starts Up Next.
     func resume() async throws {
         if let current, loadedID == current.id, status == .paused {
+            if await switchToDownload(at: engine.currentTime, autoplay: true) { return }
             willStartPlayback?()
             try engine.play(rate: rate)
             status = .playing
@@ -164,6 +201,7 @@ final class ListenPlayer {
         generation += 1
         engine.stop()
         loadedID = nil
+        resetNetworkState()
         status = .idle
         setCurrent(nil)
         cancelSleepTimer()
@@ -174,7 +212,11 @@ final class ListenPlayer {
         let target = max(0, duration.map { min(seconds, $0) } ?? seconds)
         position = target
         if loadedID != nil && loadedID == currentID {
-            await engine.seek(to: target)
+            // Once the stream is saved, jumps are instant from the file.
+            if await !switchToDownload(at: target, autoplay: status == .playing) {
+                await engine.seek(to: target)
+            }
+            updateNetworkState()
         }
         if let currentID { store.update(currentID) { $0.position = target } }
         showNowPlaying()
@@ -263,6 +305,7 @@ final class ListenPlayer {
             guard loadedID != nil, loadedID == currentID else { return }
             position = engine.currentTime
             if let known = engine.duration { duration = known }
+            updateNetworkState()
             ticksSinceSave += 1
             if status == .playing, ticksSinceSave >= Self.saveInterval { savePosition() }
             if let sleepAt, now() >= sleepAt {
@@ -272,10 +315,19 @@ final class ListenPlayer {
         case .ended:
             Task { await finishCurrent() }
         case .failed(let message):
+            savePosition()
+            if streaming, let id = currentID, store.item(id)?.download == .downloaded {
+                // The stream dropped, but the file is here: carry on from it.
+                let resumeAt = position
+                Task {
+                    do { try await load(id, from: resumeAt) } catch {}
+                }
+                return
+            }
             loadedID = nil
+            resetNetworkState()
             status = .failed(message)
             notice = "Playback stopped: \(message)"
-            savePosition()
         case .interrupted:
             guard status == .playing else { return }
             status = .paused
@@ -288,6 +340,9 @@ final class ListenPlayer {
             if shouldResume { Task { try? await resume() } }
         case .outputLost:
             pause()
+        case .buffer:
+            guard loadedID != nil, loadedID == currentID else { return }
+            updateNetworkState()
         }
     }
 
@@ -296,6 +351,7 @@ final class ListenPlayer {
         let following = store.upNext(after: id)
         try? store.setStatus([id], .played)
         store.update(id) { $0.lastPlayedAt = self.now() }
+        didFinish?([id])
         if sleepAtEnd {
             cancelSleepTimer()
             stop()
@@ -313,6 +369,38 @@ final class ListenPlayer {
     private func setCurrent(_ id: UUID?) {
         currentID = id
         defaults.set(id?.uuidString, forKey: Self.currentKey)
+    }
+
+    /// When a stream has finished downloading, reloads from the file at
+    /// `time`. Done at seeks and resumes, where a reload isn't noticed.
+    private func switchToDownload(at time: TimeInterval, autoplay: Bool) async -> Bool {
+        guard streaming, let id = loadedID, id == currentID, let item = store.item(id),
+              item.download == .downloaded else { return false }
+        let source = await sources(item)
+        guard source.isLocal, loadedID == id, streaming else { return false }
+        listenLog.info("Listen switching \(id.uuidString, privacy: .public) from stream to its download")
+        do {
+            try await load(id, from: time, source: source, autoplay: autoplay)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func updateNetworkState() {
+        guard streaming else { return resetNetworkState() }
+        let stalled = status == .playing && engine.isStalled
+        if buffering != stalled { buffering = stalled }
+        let until = engine.bufferedUntil
+        // Whole seconds are plenty for the UI and spare redraws.
+        let rounded = until.map { $0.rounded(.down) }
+        if bufferedUntil != rounded { bufferedUntil = rounded }
+    }
+
+    private func resetNetworkState() {
+        if streaming { streaming = false }
+        if buffering { buffering = false }
+        if bufferedUntil != nil { bufferedUntil = nil }
     }
 
     private func savePosition() {

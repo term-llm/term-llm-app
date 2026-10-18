@@ -8,6 +8,8 @@ final class FakeListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
     var currentTime: TimeInterval = 0
     var duration: TimeInterval?
+    var bufferedUntil: TimeInterval?
+    var isStalled = false
     var loadError: Error?
     /// Durations reported per URL once loaded.
     var durations: [URL: TimeInterval] = [:]
@@ -73,7 +75,7 @@ func makeListen(engine: FakeListenEngine? = nil, cookies: FakeCookieJar? = nil,
     let cookies = cookies ?? FakeCookieJar()
     return Listen(store: ListenStore(fileURL: directory.appending(path: "library.json")), engine: engine, cookies: cookies,
            server: { testServer }, downloadDirectory: directory.appending(path: "Downloads"),
-           fetch: fetch ?? { _ in throw URLError(.notConnectedToInternet) }, defaults: isolatedDefaults())
+           fetch: fetch ?? { _, _ in throw URLError(.notConnectedToInternet) }, defaults: isolatedDefaults())
 }
 
 /// Waits for main-actor tasks spawned by the code under test.

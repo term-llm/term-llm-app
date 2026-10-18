@@ -8,7 +8,12 @@ import XCTest
 final class ListenViewRenderingTests: XCTestCase {
     private func sampleListen() async throws -> Listen {
         let engine = FakeListenEngine()
-        let listen = makeListen(engine: engine)
+        // Saving the streaming episode stays in flight at about a third.
+        let listen = makeListen(engine: engine, fetch: { _, transfer in
+            transfer.report(received: 21_000_000, expected: 62_000_000)
+            try await Task.sleep(for: .seconds(60))
+            throw CancellationError()
+        })
         let items = try await listen.add([
             ListenDraft(url: URL(string: "https://hub.example/media/brief.mp3")!, title: "Morning briefing: Sunday 18 October",
                         artist: "term-llm · af_sky", kind: .generated, duration: 412),
@@ -19,7 +24,11 @@ final class ListenViewRenderingTests: XCTestCase {
         ], placement: .now, download: .never)
         engine.duration = 412
         engine.currentTime = 95
+        engine.bufferedUntil = 260
         engine.send(.tick)
+        for _ in 0..<50 where listen.downloader.progress[items[0].id]?.fraction == nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         listen.store.update(items[2].id) { $0.status = .inProgress; $0.position = 600 }
         let old = listen.store.add([ListenDraft(url: URL(string: "https://feeds.example/ep1.mp3")!, title: "Pilot",
                                                 artist: "Systems Weekly", kind: .episode, duration: 1_500)], placement: .end)

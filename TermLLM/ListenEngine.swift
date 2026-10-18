@@ -30,6 +30,8 @@ enum ListenEngineEvent: Equatable, Sendable {
     case interruptionEnded(shouldResume: Bool)
     /// Headphones or another route went away; playback should pause.
     case outputLost
+    /// How much of a stream is loaded, or whether it's stalled, changed.
+    case buffer
 }
 
 @MainActor
@@ -37,6 +39,11 @@ protocol ListenEngine: AnyObject {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)? { get set }
     var currentTime: TimeInterval { get }
     var duration: TimeInterval? { get }
+    /// For a stream: how far (media time) is loaded contiguously from the
+    /// current position. Nil for local files or when unknown.
+    var bufferedUntil: TimeInterval? { get }
+    /// Playback was asked for but is waiting on the network.
+    var isStalled: Bool { get }
     /// Prepares `source`, positioned at `startAt`; throws when it can't play.
     func load(_ source: ListenSource, startAt: TimeInterval) async throws
     func play(rate: Float) throws
@@ -90,8 +97,10 @@ final class AVListenEngine: ListenEngine {
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var itemObservers: [NSObjectProtocol] = []
+    private var keyValueObservers: [NSKeyValueObservation] = []
     private var sessionObservers: [NSObjectProtocol] = []
     private var spoken = true
+    private var isRemote = false
 
     /// How long to wait for a stream to become playable.
     static let loadTimeout: Duration = .seconds(30)
@@ -102,6 +111,9 @@ final class AVListenEngine: ListenEngine {
                                                       queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent?(.tick) }
         }
+        keyValueObservers.append(player.observe(\.timeControlStatus) { [weak self] _, _ in
+            Task { @MainActor in self?.onEvent?(.buffer) }
+        })
         let center = NotificationCenter.default
         sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                                    queue: .main) { [weak self] note in
@@ -138,8 +150,28 @@ final class AVListenEngine: ListenEngine {
         return seconds
     }
 
+    var bufferedUntil: TimeInterval? {
+        guard isRemote, let item = player.currentItem else { return nil }
+        let now = player.currentTime().seconds
+        guard now.isFinite else { return nil }
+        // The loaded range that covers the playhead (allow a little slack
+        // right after a seek, before data for the exact spot arrives).
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            let start = range.start.seconds, end = range.end.seconds
+            guard start.isFinite, end.isFinite else { continue }
+            if start <= now + 1, end >= now { return end }
+        }
+        return now
+    }
+
+    var isStalled: Bool {
+        player.currentItem != nil && player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+    }
+
     func load(_ source: ListenSource, startAt: TimeInterval) async throws {
         spoken = source.spoken
+        isRemote = !source.isLocal
         var options: [String: Any] = [:]
         if !source.cookies.isEmpty { options[AVURLAssetHTTPCookiesKey] = source.cookies }
         let asset = AVURLAsset(url: source.url, options: options)
@@ -148,10 +180,7 @@ final class AVListenEngine: ListenEngine {
         observe(item)
         player.replaceCurrentItem(with: item)
         try await waitUntilReady(item)
-        if startAt > 0 {
-            await player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600),
-                              toleranceBefore: .zero, toleranceAfter: .zero)
-        }
+        if startAt > 0 { await seek(to: startAt) }
     }
 
     func play(rate: Float) throws {
@@ -165,9 +194,14 @@ final class AVListenEngine: ListenEngine {
         player.pause()
     }
 
+    /// Exact for files. A stream may land up to a second early, which lets
+    /// AVFoundation start from data it can fetch at once instead of hunting
+    /// for the exact frame (much quicker for long MP3 episodes).
     func seek(to seconds: TimeInterval) async {
+        let before = isRemote ? CMTime(seconds: 1, preferredTimescale: 600) : .zero
         await player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600),
-                          toleranceBefore: .zero, toleranceAfter: .zero)
+                          toleranceBefore: before, toleranceAfter: .zero)
+        onEvent?(.buffer)
     }
 
     func setRate(_ rate: Float) {
@@ -179,6 +213,7 @@ final class AVListenEngine: ListenEngine {
         player.pause()
         player.replaceCurrentItem(with: nil)
         removeItemObservers()
+        isRemote = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -224,11 +259,21 @@ final class AVListenEngine: ListenEngine {
                 self?.onEvent?(.failed(error?.localizedDescription ?? "playback stopped unexpectedly"))
             }
         })
+        itemObservers.append(center.addObserver(forName: AVPlayerItem.playbackStalledNotification, object: item,
+                                                queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onEvent?(.buffer) }
+        })
+        itemKeyValueObservers = [item.observe(\.loadedTimeRanges) { [weak self] _, _ in
+            Task { @MainActor in self?.onEvent?(.buffer) }
+        }]
     }
+
+    private var itemKeyValueObservers: [NSKeyValueObservation] = []
 
     private func removeItemObservers() {
         itemObservers.forEach(NotificationCenter.default.removeObserver)
         itemObservers = []
+        itemKeyValueObservers = []
     }
 }
 

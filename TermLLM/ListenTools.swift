@@ -192,6 +192,15 @@ final class ListenTools {
                 result["duration_s"] = .int(Int(duration.rounded()))
                 result["remaining_s"] = .int(max(0, Int((duration - player.position).rounded())))
             }
+            result["source"] = .string(player.streaming ? "stream" : "file")
+            if player.buffering { result["buffering"] = true }
+            if let until = player.bufferedUntil {
+                result["buffered_ahead_s"] = .int(max(0, Int((until - player.position).rounded())))
+            }
+            if let progress = listen.downloader.progress[item.id] {
+                result["download_received_bytes"] = .int(Int(progress.received))
+                if let fraction = progress.fraction { result["download_percent"] = .int(Int(fraction * 100)) }
+            }
             if let following = store.upNext(after: item.id) { result["next"] = Self.item(following) }
         } else if let first = store.upNext.first {
             result["next"] = Self.item(first)
@@ -222,7 +231,7 @@ final class ListenTools {
         case "move":
             guard ids.count == 1 else { throw DeviceToolError(message: "move takes one item.") }
             try store.move(ids[0], toUpNextIndex: try args.int("to_index") ?? 0)
-        case "download": ids.forEach(listen.downloader.download)
+        case "download": ids.forEach { listen.downloader.download($0) }
         case "cancel_download": ids.forEach(listen.downloader.cancel)
         case "delete_download": ids.forEach(listen.downloader.deleteFile)
         default: break

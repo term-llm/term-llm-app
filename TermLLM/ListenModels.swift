@@ -49,6 +49,9 @@ struct ListenItem: Codable, Identifiable, Equatable, Sendable {
     var localFile: String?
     var downloadedBytes: Int64?
     var downloadError: String?
+    /// Saved automatically while streaming (not asked for), so the file is
+    /// deleted again once the item is played.
+    var cachedForPlayback: Bool?
 
     init(id: UUID = UUID(), url: URL, title: String, artist: String? = nil, album: String? = nil,
          details: String? = nil, artworkURL: URL? = nil, kind: Kind = .audio, duration: TimeInterval? = nil,

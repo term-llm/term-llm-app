@@ -3,8 +3,9 @@ import SwiftUI
 // MARK: - Mini player
 
 /// The persistent mini player above the web page. It lives outside the web
-/// view, so playback and the bar survive page loads. Swipe down or tap ✕ to
-/// hide it; playback carries on and the lock screen keeps its controls.
+/// view, so playback and the bar survive page loads. Tap ✕ to stop and close
+/// it (the item keeps its place in Up Next); swipe down to hide it while
+/// playback carries on with the lock screen controls.
 struct MiniPlayerBar: View {
     let listen: Listen
     var onOpen: () -> Void
@@ -14,25 +15,29 @@ struct MiniPlayerBar: View {
 
     var body: some View {
         if let item = player.current {
-            HStack(spacing: 12) {
-                ListenArtwork(item: item, size: 42)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text(subtitle(item))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            HStack(spacing: 0) {
+                Button(action: onOpen) {
+                    HStack(spacing: 12) {
+                        ListenArtwork(item: item, size: 42)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                            subtitleView(item)
+                        }
+                        Spacer(minLength: 4)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer(minLength: 4)
+                .accessibilityLabel("Now playing: \(item.title)")
+                .accessibilityHint("Opens the player")
                 Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: {
-                    Image(systemName: "gobackward.15")
+                    Image(systemName: "gobackward.15").frame(width: 40, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Back 15 seconds")
                 Button { Task { await player.togglePlayPause() } } label: {
                     Group {
-                        if player.status == .loading {
+                        if player.status == .loading || player.buffering {
                             ProgressView()
                         } else {
                             Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
@@ -40,29 +45,42 @@ struct MiniPlayerBar: View {
                         }
                     }
                     .font(.title3)
-                    .frame(width: 30)
+                    .frame(width: 40, height: 44)
+                    .contentShape(Rectangle())
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: {
-                    Image(systemName: "goforward.30")
+                    Image(systemName: "goforward.30").frame(width: 40, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Forward 30 seconds")
-                Button { withAnimation(.snappy) { player.hideBar() } } label: {
+                Button { withAnimation(.snappy) { player.stop() } } label: {
                     Image(systemName: "xmark")
-                        .font(.footnote.weight(.semibold))
+                        .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(.secondary.opacity(0.15), in: Circle())
+                        .frame(width: 40, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .accessibilityLabel("Hide player")
+                .accessibilityLabel("Close player")
+                .accessibilityHint("Stops playback. The episode keeps its place in Up Next.")
+                .accessibilityIdentifier("miniPlayerClose")
             }
             .buttonStyle(.plain)
             .font(.system(size: 18, weight: .medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.leading, 14)
+            .padding(.trailing, 4)
+            .padding(.vertical, 4)
             .background(alignment: .bottom) {
                 GeometryReader { proxy in
-                    Rectangle().fill(.tint)
-                        .frame(width: proxy.size.width * progress, height: 2)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
+                    ZStack(alignment: .leading) {
+                        if let buffered = fraction(player.bufferedUntil) {
+                            Rectangle().fill(.tint.opacity(0.3)).frame(width: proxy.size.width * buffered)
+                        }
+                        Rectangle().fill(.tint).frame(width: proxy.size.width * (fraction(player.position) ?? 0))
+                    }
+                    .frame(height: 2)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
                 }
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -71,8 +89,6 @@ struct MiniPlayerBar: View {
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
             .offset(y: max(0, drag))
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onOpen)
             .gesture(
                 DragGesture(minimumDistance: 12)
                     .onChanged { drag = $0.translation.height }
@@ -86,19 +102,32 @@ struct MiniPlayerBar: View {
                     }
             )
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Now playing: \(item.title)")
             .accessibilityAction(named: "Open player", onOpen)
+            .accessibilityAction(named: "Hide player, keep playing") { player.hideBar() }
             .accessibilityIdentifier("miniPlayer")
         }
     }
 
-    private var progress: CGFloat {
-        guard let duration = player.duration, duration > 0 else { return 0 }
-        return CGFloat(min(1, max(0, player.position / duration)))
+    private func fraction(_ time: TimeInterval?) -> CGFloat? {
+        guard let time, let duration = player.duration, duration > 0 else { return nil }
+        return CGFloat(min(1, max(0, time / duration)))
+    }
+
+    @ViewBuilder private func subtitleView(_ item: ListenItem) -> some View {
+        let text = Text(subtitle(item)).font(.caption).lineLimit(1)
+        if case .failed = player.status {
+            text.foregroundStyle(.orange)
+        } else {
+            text.foregroundStyle(.secondary)
+        }
     }
 
     private func subtitle(_ item: ListenItem) -> String {
         if case .failed(let message) = player.status { return message }
+        if player.status == .loading {
+            return player.streaming ? "Connecting to \(item.url.host() ?? "server")…" : "Loading…"
+        }
+        if player.buffering { return "Buffering…" }
         let left = player.duration.map { ListenFormat.time(max(0, $0 - player.position)) + " left" }
         // Time left first: it's what changes, and long artists truncate.
         return [left, item.artist].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
@@ -112,7 +141,6 @@ struct ListenPlayerView: View {
     let listen: Listen
 
     @Environment(\.dismiss) private var dismiss
-    @State private var scrubbing: Double?
     private var player: ListenPlayer { listen.player }
 
     var body: some View {
@@ -134,7 +162,11 @@ struct ListenPlayerView: View {
                                 .lineLimit(2)
                         }
                     }
-                    scrubber
+                    VStack(spacing: 10) {
+                        ListenScrubber(position: player.position, duration: player.duration,
+                                       buffered: player.bufferedUntil) { await player.seek(to: $0) }
+                        ListenConnectionStatus(listen: listen, item: item)
+                    }
                     transport
                     options
                     if case .failed(let message) = player.status {
@@ -164,29 +196,6 @@ struct ListenPlayerView: View {
         }
     }
 
-    private var scrubber: some View {
-        let duration = max(player.duration ?? 0, 1)
-        let value = scrubbing ?? min(player.position, duration)
-        return VStack(spacing: 4) {
-            Slider(value: Binding(get: { value }, set: { scrubbing = $0 }), in: 0...duration) { editing in
-                if !editing, let target = scrubbing {
-                    Task {
-                        await player.seek(to: target)
-                        scrubbing = nil
-                    }
-                }
-            }
-            .disabled(player.duration == nil)
-            HStack {
-                Text(ListenFormat.time(value))
-                Spacer()
-                Text("-" + ListenFormat.time(max(0, duration - value)))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-    }
-
     private var transport: some View {
         HStack(spacing: 34) {
             Button { Task { try? await player.previous() } } label: { Image(systemName: "backward.end.fill") }
@@ -194,9 +203,16 @@ struct ListenPlayerView: View {
             Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: { Image(systemName: "gobackward.15") }
                 .accessibilityLabel("Back 15 seconds")
             Button { Task { await player.togglePlayPause() } } label: {
-                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 60))
-                    .contentTransition(.symbolEffect(.replace))
+                if player.status == .loading || player.buffering {
+                    // Still a pause button: tapping stops the wait.
+                    Circle().fill(.tint)
+                        .frame(width: 60, height: 60)
+                        .overlay { ProgressView().tint(.white).controlSize(.large) }
+                } else {
+                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 60))
+                        .contentTransition(.symbolEffect(.replace))
+                }
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: { Image(systemName: "goforward.30") }
@@ -362,7 +378,8 @@ struct ListenView: View {
     @ViewBuilder private func downloadBadge(_ item: ListenItem) -> some View {
         switch item.download {
         case .downloaded: Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary).accessibilityLabel("Downloaded")
-        case .queued, .downloading: ProgressView().controlSize(.small)
+        case .queued, .downloading:
+            ListenDownloadRing(fraction: listen.downloader.progress[item.id]?.fraction)
         case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).accessibilityLabel("Download failed")
         case .none: EmptyView()
         }
@@ -392,6 +409,20 @@ struct ListenView: View {
         }
         if item.status == .played { parts.append("Played") }
         if item.status == .archived { parts.append("Archived") }
+        switch item.download {
+        case .queued: parts.append("Waiting to download")
+        case .downloading:
+            let saving = listen.downloader.isCachingForPlayback(item.id) ? "Saving" : "Downloading"
+            if let fraction = listen.downloader.progress[item.id]?.fraction {
+                parts.append("\(saving) \(Int(fraction * 100))%")
+            } else {
+                parts.append(saving + "…")
+            }
+        case .downloaded:
+            if let bytes = item.downloadedBytes, bytes > 0 { parts.append(ListenFormat.bytes(bytes)) }
+        case .failed: parts.append("Download failed")
+        case .none: break
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -405,6 +436,180 @@ struct ListenView: View {
 }
 
 // MARK: - Shared
+
+/// A scrubber that also shows how much of a stream has loaded.
+struct ListenScrubber: View {
+    let position: TimeInterval
+    let duration: TimeInterval?
+    let buffered: TimeInterval?
+    var onSeek: (TimeInterval) async -> Void
+
+    @State private var dragging: TimeInterval?
+
+    var body: some View {
+        let total = max(duration ?? 0, 1)
+        let shown = dragging ?? min(position, total)
+        VStack(spacing: 4) {
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let height: CGFloat = dragging == nil ? 6 : 10
+                let x = width * fraction(shown, total)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.secondary.opacity(0.2))
+                    if let buffered {
+                        Capsule().fill(.secondary.opacity(0.35)).frame(width: max(height, width * fraction(buffered, total)))
+                    }
+                    Capsule().fill(.tint).frame(width: max(height, x))
+                }
+                .frame(height: height)
+                .overlay(alignment: .leading) {
+                    let knob: CGFloat = dragging == nil ? 14 : 22
+                    Circle().fill(.tint)
+                        .frame(width: knob, height: knob)
+                        .offset(x: min(max(0, x - knob / 2), width - knob))
+                        .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+                }
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            guard duration != nil else { return }
+                            dragging = min(total, max(0, value.location.x / max(width, 1) * total))
+                        }
+                        .onEnded { _ in
+                            guard let target = dragging else { return }
+                            Task {
+                                await onSeek(target)
+                                dragging = nil
+                            }
+                        }
+                )
+                .animation(.snappy(duration: 0.15), value: dragging == nil)
+            }
+            .frame(height: 30)
+            HStack {
+                Text(ListenFormat.time(shown))
+                Spacer()
+                Text("-" + ListenFormat.time(max(0, total - shown)))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .opacity(duration == nil ? 0.5 : 1)
+        .accessibilityElement()
+        .accessibilityLabel("Position")
+        .accessibilityValue(duration.map { "\(ListenFormat.time(shown)) of \(ListenFormat.time($0))" } ?? ListenFormat.time(shown))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: Task { await onSeek(position + SystemNowPlaying.skipForward) }
+            case .decrement: Task { await onSeek(position - SystemNowPlaying.skipBack) }
+            @unknown default: break
+            }
+        }
+    }
+
+    private func fraction(_ time: TimeInterval, _ total: TimeInterval) -> CGFloat {
+        CGFloat(min(1, max(0, time / total)))
+    }
+}
+
+/// Where the current item plays from: the network (connecting, buffering,
+/// how far ahead it's loaded) and whether it's being saved on the phone.
+struct ListenConnectionStatus: View {
+    let listen: Listen
+    let item: ListenItem
+
+    private var player: ListenPlayer { listen.player }
+    private var downloader: ListenDownloader { listen.downloader }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            if let line = streamLine {
+                HStack(spacing: 6) {
+                    if player.status == .loading || player.buffering {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: line.symbol)
+                    }
+                    Text(line.text)
+                }
+            }
+            fileLine
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var streamLine: (symbol: String, text: String)? {
+        guard player.streaming else { return nil }
+        let host = item.url.host() ?? "server"
+        if player.status == .loading { return ("antenna.radiowaves.left.and.right", "Connecting to \(host)…") }
+        if player.buffering { return ("antenna.radiowaves.left.and.right", "Buffering from \(host)…") }
+        if let until = player.bufferedUntil {
+            let ahead = max(0, until - player.position)
+            if let duration = player.duration, until >= duration - 1 {
+                return ("antenna.radiowaves.left.and.right", "Streaming · loaded to the end")
+            }
+            return ("antenna.radiowaves.left.and.right", "Streaming · \(ListenFormat.time(ahead)) loaded ahead")
+        }
+        return ("antenna.radiowaves.left.and.right", "Streaming from \(host)")
+    }
+
+    @ViewBuilder private var fileLine: some View {
+        switch item.download {
+        case .downloaded:
+            if player.streaming {
+                Label("Saved on iPhone · seeking uses the file now", systemImage: "checkmark.circle")
+            } else if item.cachedForPlayback == true {
+                Label("Playing from iPhone · removed after it's played", systemImage: "iphone")
+            } else {
+                Label("Downloaded · plays offline" + (item.downloadedBytes.map { " · " + ListenFormat.bytes($0) } ?? ""),
+                      systemImage: "arrow.down.circle.fill")
+            }
+        case .queued:
+            Label("Waiting to save on iPhone…", systemImage: "arrow.down.circle")
+        case .downloading:
+            HStack(spacing: 6) {
+                ListenDownloadRing(fraction: downloader.progress[item.id]?.fraction, size: 12)
+                Text(downloader.progress[item.id].map { ListenFormat.progress($0, verb: "Saving on iPhone") }
+                     ?? "Saving on iPhone…")
+                Button("Stop") { downloader.cancel(item.id) }
+                    .font(.caption.weight(.semibold))
+            }
+        case .none, .failed:
+            Button { downloader.download(item.id) } label: {
+                Label(item.download == .failed ? "Download failed · Try again" : "Download for offline",
+                      systemImage: "arrow.down.circle")
+            }
+            .font(.caption.weight(.semibold))
+        }
+    }
+}
+
+/// A small determinate ring; spins while the size is unknown.
+struct ListenDownloadRing: View {
+    let fraction: Double?
+    var size: CGFloat = 18
+
+    var body: some View {
+        if let fraction {
+            ZStack {
+                Circle().stroke(.secondary.opacity(0.25), lineWidth: 2)
+                Circle().trim(from: 0, to: max(0.02, fraction))
+                    .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: size, height: size)
+            .animation(.linear(duration: 0.4), value: fraction)
+            .accessibilityLabel("Downloading \(Int(fraction * 100)) percent")
+        } else {
+            ProgressView().controlSize(.small).frame(width: size, height: size)
+        }
+    }
+}
 
 struct ListenArtwork: View {
     let item: ListenItem
@@ -445,6 +650,18 @@ enum ListenFormat {
         let minutes = (total % 3600) / 60
         let secs = total % 60
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%d:%02d", minutes, secs)
+    }
+
+    static func bytes(_ count: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    }
+
+    /// "Saving 34% (21 of 62 MB)", or "Saving 21 MB" when the size is unknown.
+    static func progress(_ progress: ListenDownloader.Progress, verb: String) -> String {
+        guard let fraction = progress.fraction, let expected = progress.expected else {
+            return progress.received > 0 ? "\(verb) \(bytes(progress.received))…" : "\(verb)…"
+        }
+        return "\(verb) \(Int(fraction * 100))% (\(bytes(progress.received)) of \(bytes(expected)))"
     }
 
     static func rate(_ rate: Float) -> String {

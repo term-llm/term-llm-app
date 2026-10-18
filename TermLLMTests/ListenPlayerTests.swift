@@ -174,7 +174,7 @@ final class ListenPlayerTests: XCTestCase {
         let source = directory.appending(path: "payload.tmp")
         try Data("ID3fake".utf8).write(to: source)
         let cookies = FakeCookieJar()
-        let listen = makeListen(cookies: cookies, directory: directory, fetch: { request in
+        let listen = makeListen(cookies: cookies, directory: directory, fetch: { request, _ in
             XCTAssertEqual(request.url?.host(), "hub.example")
             let copy = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             try FileManager.default.copyItem(at: source, to: copy)
@@ -198,7 +198,7 @@ final class ListenPlayerTests: XCTestCase {
     }
 
     func testDownloadRejectsWebPages() async throws {
-        let listen = makeListen(fetch: { request in
+        let listen = makeListen(fetch: { request, _ in
             let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
             try Data("<html>".utf8).write(to: file)
             return (file, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
@@ -211,4 +211,111 @@ final class ListenPlayerTests: XCTestCase {
         XCTAssertEqual(listen.store.item(items[0].id)?.download, .failed)
         XCTAssertEqual(listen.store.item(items[0].id)?.downloadError?.contains("web page"), true)
     }
+
+    // MARK: - Streaming
+
+    /// A fetch that serves a small MP3 after `gate` opens, reporting progress.
+    private func audioFetch(gate: AsyncStream<Void>? = nil) -> ListenDownloader.Fetch {
+        let box = UncheckedBox(gate)
+        return { request, transfer in
+            transfer.report(received: 10, expected: 40)
+            if let gate = box.value { for await _ in gate { break } }
+            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            try Data("ID3fake".utf8).write(to: file)
+            return (file, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                          headerFields: ["Content-Type": "audio/mpeg"])!)
+        }
+    }
+
+    private func waitFor(_ condition: () -> Bool) async throws {
+        for _ in 0..<100 where !condition() { try await Task.sleep(for: .milliseconds(20)) }
+    }
+
+    func testPlayingTheLoadedItemAgainKeepsItsBuffer() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([draft("a")], placement: .now, download: .never)
+        engine.currentTime = 42
+        listen.player.pause()
+        try await listen.player.play(items[0].id)
+        XCTAssertEqual(engine.loads.count, 1, "resumes instead of fetching the stream again")
+        XCTAssertEqual(listen.player.status, .playing)
+    }
+
+    func testStreamingCachesTheItemThenSeeksFromTheFile() async throws {
+        let engine = FakeListenEngine()
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let listen = makeListen(engine: engine, fetch: audioFetch(gate: gate))
+        let items = try await listen.add([draft("ep")], placement: .now, download: .never)
+        XCTAssertTrue(listen.player.streaming)
+        XCTAssertFalse(try XCTUnwrap(engine.loads.last).source.isLocal)
+
+        try await waitFor { listen.downloader.progress[items[0].id]?.fraction != nil }
+        XCTAssertEqual(listen.downloader.progress[items[0].id]?.fraction, 0.25, "progress is visible while saving")
+        XCTAssertTrue(listen.downloader.isCachingForPlayback(items[0].id))
+
+        engine.bufferedUntil = 90
+        engine.send(.buffer)
+        XCTAssertEqual(listen.player.bufferedUntil, 90)
+
+        open.yield()
+        try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
+        XCTAssertEqual(listen.store.item(items[0].id)?.cachedForPlayback, true)
+
+        await listen.player.seek(to: 300)
+        XCTAssertEqual(engine.loads.count, 2)
+        XCTAssertTrue(try XCTUnwrap(engine.loads.last).source.isLocal, "once saved, seeks use the file")
+        XCTAssertEqual(engine.loads.last?.startAt, 300)
+        XCTAssertFalse(listen.player.streaming)
+        XCTAssertNil(listen.player.bufferedUntil)
+        XCTAssertEqual(listen.player.status, .playing)
+
+        engine.send(.ended)
+        await settle()
+        XCTAssertEqual(listen.store.item(items[0].id)?.download, ListenItem.Download.none,
+                       "a file saved only for streaming goes once played")
+    }
+
+    func testExplicitDownloadsSurvivePlaying() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let items = try await listen.add([draft("ep")], placement: .end, download: .now)
+        try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
+        try await listen.player.play(items[0].id)
+        XCTAssertFalse(listen.player.streaming)
+        engine.send(.ended)
+        await settle()
+        XCTAssertEqual(listen.store.item(items[0].id)?.download, .downloaded)
+    }
+
+    func testDroppedStreamCarriesOnFromTheSavedFile() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let items = try await listen.add([draft("ep")], placement: .now, download: .never)
+        try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
+        engine.currentTime = 120
+        engine.send(.failed("The network connection was lost."))
+        try await waitFor { engine.loads.count == 2 }
+        XCTAssertTrue(try XCTUnwrap(engine.loads.last).source.isLocal)
+        XCTAssertEqual(engine.loads.last?.startAt, 120)
+        try await waitFor { listen.player.status == .playing }
+        XCTAssertNil(listen.player.notice)
+    }
+
+    func testClosingStopsAndKeepsTheItemQueued() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([draft("a")], placement: .now, download: .never)
+        engine.currentTime = 75
+        listen.player.stop()
+        XCTAssertFalse(listen.player.showsBar)
+        XCTAssertFalse(engine.playing)
+        XCTAssertEqual(listen.store.item(items[0].id)?.position, 75)
+        XCTAssertEqual(listen.store.upNext.map(\.id), [items[0].id])
+    }
+}
+
+private final class UncheckedBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }
