@@ -26,6 +26,7 @@
 		000000000000000000000083 /* ServerAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000043 /* ServerAddress.swift */; };
 		000000000000000000000086 /* NativeLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000046 /* NativeLogin.swift */; };
 		000000000000000000000084 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* Assets.xcassets */; };
+		000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
 		000000000000000000000085 /* ServerAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000045 /* ServerAddressTests.swift */; };
 		000000000000000000000087 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000047 /* JSONValue.swift */; };
 		000000000000000000000088 /* DeviceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000048 /* DeviceTools.swift */; };
@@ -94,6 +95,7 @@
 		000000000000000000000042 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		000000000000000000000043 /* ServerAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddress.swift; sourceTree = "<group>"; };
 		000000000000000000000044 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		000000000000000000000045 /* ServerAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressTests.swift; sourceTree = "<group>"; };
 		000000000000000000000046 /* NativeLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLogin.swift; sourceTree = "<group>"; };
 		000000000000000000000047 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 				0000000000000000000000C8 /* PlaylistDetailView.swift */,
 				0000000000000000000000C9 /* MusicSearchView.swift */,
 				000000000000000000000044 /* Assets.xcassets */,
+				000000000000000000000300 /* PrivacyInfo.xcprivacy */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -306,6 +309,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000084 /* Assets.xcassets in Resources */,
+				000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
