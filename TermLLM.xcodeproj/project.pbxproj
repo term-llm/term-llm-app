@@ -62,6 +62,8 @@
 		00000000000000000000024B /* ListenToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000020B /* ListenToolsTests.swift */; };
 		000000000000000000000260 /* ListenViewRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* ListenViewRenderingTests.swift */; };
 		000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
+		000000000000000000000342 /* VoiceShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000340 /* VoiceShortcut.swift */; };
+		000000000000000000000343 /* VoiceShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000341 /* VoiceShortcutTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -132,6 +134,8 @@
 		00000000000000000000020B /* ListenToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenToolsTests.swift; sourceTree = "<group>"; };
 		000000000000000000000220 /* ListenViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViewRenderingTests.swift; sourceTree = "<group>"; };
 		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		000000000000000000000340 /* VoiceShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcut.swift; sourceTree = "<group>"; };
+		000000000000000000000341 /* VoiceShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcutTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -177,6 +181,7 @@
 				000000000000000000000041 /* ContentView.swift */,
 				000000000000000000000042 /* BrowserView.swift */,
 				000000000000000000000043 /* ServerAddress.swift */,
+				000000000000000000000340 /* VoiceShortcut.swift */,
 				000000000000000000000046 /* NativeLogin.swift */,
 				000000000000000000000047 /* JSONValue.swift */,
 				000000000000000000000048 /* DeviceTools.swift */,
@@ -217,6 +222,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000045 /* ServerAddressTests.swift */,
+				000000000000000000000341 /* VoiceShortcutTests.swift */,
 				0000000000000000000000E3 /* BrowserLifecycleTests.swift */,
 				00000000000000000000004D /* DeviceToolsTests.swift */,
 				0000000000000000000000A1 /* WebMCPBridgeTests.swift */,
@@ -324,6 +330,7 @@
 				000000000000000000000081 /* ContentView.swift in Sources */,
 				000000000000000000000082 /* BrowserView.swift in Sources */,
 				000000000000000000000083 /* ServerAddress.swift in Sources */,
+				000000000000000000000342 /* VoiceShortcut.swift in Sources */,
 				000000000000000000000086 /* NativeLogin.swift in Sources */,
 				000000000000000000000087 /* JSONValue.swift in Sources */,
 				000000000000000000000088 /* DeviceTools.swift in Sources */,
@@ -362,6 +369,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
+				000000000000000000000343 /* VoiceShortcutTests.swift in Sources */,
 				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
 				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,
 				0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */,

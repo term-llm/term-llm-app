@@ -1,6 +1,60 @@
 import SwiftUI
 import WebKit
 
+struct VoiceBrowserLaunch: Equatable {
+    let id: UUID
+    let url: URL
+
+    func allowsPath(_ candidate: URL, afterStart: Bool) -> Bool {
+        let base = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let root = base.isEmpty ? "" : "/" + base
+        let path = candidate.path.hasSuffix("/") ? String(candidate.path.dropLast()) : candidate.path
+        if path == root { return true }
+        // Starting Live materializes the draft and pushStates to /chat/<slug>.
+        // Accept that SPA transition, but never another node or arbitrary page.
+        guard afterStart, path.hasPrefix(root + "/chat/") else { return false }
+        let slug = String(path.dropFirst((root + "/chat/").count))
+        return !slug.isEmpty && slug != "." && slug != ".." && !slug.contains("/")
+    }
+}
+
+struct VoiceLaunchFailure: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// Only inspect main-frame UI affordances; never reach into frontend stores.
+/// The check is also used before navigating, to preserve an existing call.
+enum VoiceLaunchScript {
+    static let inspect = """
+    const visible = b => b.getClientRects().length > 0;
+    const buttons = [...document.querySelectorAll('button')].filter(visible);
+    if (buttons.some(b => b.getAttribute('aria-label') === 'Stop live voice' ||
+        (b.closest('section[aria-label="Live voice"]') && b.textContent.trim() === 'Stop'))) return 'active';
+    if (buttons.some(b => b.getAttribute('aria-label') === 'Retry live voice')) return 'failed';
+    return 'waiting';
+    """
+
+    static let confirm = """
+    const status = document.querySelector('section[aria-label="Live voice"]');
+    if (status?.classList.contains('live-status-failed')) return 'failed';
+    if (['listening', 'speaking', 'working'].some(phase => status?.classList.contains('live-status-' + phase))) return 'active';
+    if ([...document.querySelectorAll('button')].some(b => b.getAttribute('aria-label') === 'Retry live voice')) return 'failed';
+    return 'waiting';
+    """
+
+    static let start = """
+    const buttons = [...document.querySelectorAll('button')].filter(b => b.getClientRects().length > 0);
+    if (buttons.some(b => b.getAttribute('aria-label') === 'Stop live voice' ||
+        (b.closest('section[aria-label="Live voice"]') && b.textContent.trim() === 'Stop'))) return 'active';
+    const button = buttons.find(b => b.getAttribute('aria-label') === 'Start live voice' && !b.disabled);
+    if (buttons.some(b => b.getAttribute('aria-label') === 'Retry live voice')) return 'failed';
+    if (!button || document.visibilityState !== 'visible') return 'waiting';
+    button.click();
+    return 'clicked';
+    """
+}
+
 struct BrowserView: UIViewRepresentable {
     enum Recovery: Equatable {
         case signIn
@@ -31,6 +85,8 @@ struct BrowserView: UIViewRepresentable {
     var deviceTools: DeviceToolRegistry? = nil
     let onLoginRequired: () -> Void
     let onRevealControls: () -> Void
+    var voiceLaunch: VoiceBrowserLaunch? = nil
+    var onVoiceLaunchFinished: (UUID, String?) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -79,6 +135,10 @@ struct BrowserView: UIViewRepresentable {
         private var bridge: WebMCPBridge?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
+        private var voiceTask: Task<Void, Never>?
+        private var voiceID: UUID?
+        private var voiceNavigated = false
+        private var voiceClicked = false
 
         init(_ parent: BrowserView) {
             self.parent = parent
@@ -90,6 +150,8 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func tearDown() {
+            voiceTask?.cancel()
+            voiceTask = nil
             backObservation?.invalidate()
             backObservation = nil
             bridge?.uninstall()
@@ -103,6 +165,10 @@ struct BrowserView: UIViewRepresentable {
             let reloadRequested = reloadCount != parent.reloadCount
             let authenticated = authenticatedCount != parent.authenticatedCount
             let backRequested = backCount != parent.backCount
+            if serverChanged || backRequested || reloadRequested || parent.voiceLaunch == nil {
+                cancelVoiceLaunch(error: serverChanged || backRequested || reloadRequested
+                                  ? "Voice launch cancelled by navigation. Try the shortcut again." : nil)
+            }
             loadedURL = parent.url
             reloadCount = parent.reloadCount
             authenticatedCount = parent.authenticatedCount
@@ -115,7 +181,8 @@ struct BrowserView: UIViewRepresentable {
             if serverChanged || authenticated {
                 resetRecovery()
                 rejectedHTTPResponse = false
-                view.load(URLRequest(url: parent.url))
+                view.load(URLRequest(url: !serverChanged && authenticated && voiceNavigated && !voiceClicked
+                                     ? (parent.voiceLaunch?.url ?? parent.url) : parent.url))
             } else if reloadRequested {
                 resetRecovery()
                 if view.url == nil || rejectedHTTPResponse {
@@ -126,7 +193,7 @@ struct BrowserView: UIViewRepresentable {
             } else if backRequested, view.canGoBack {
                 resetRecovery()
                 view.goBack()
-            } else if toolsChanged, view.url != nil, !rejectedHTTPResponse, !parent.isSigningIn,
+            } else if toolsChanged, voiceTask == nil, view.url != nil, !rejectedHTTPResponse, !parent.isSigningIn,
                       !parent.loginRequired, parent.loadError == nil, !recoveryPending {
                 view.reload() // user scripts only apply to new documents
             } else if recoveryPending {
@@ -137,6 +204,98 @@ struct BrowserView: UIViewRepresentable {
                     self.recoverIfNeeded(view)
                 }
             }
+            if !serverChanged && !backRequested && !reloadRequested {
+                startVoiceLaunchIfNeeded(view)
+            }
+        }
+
+        private func finishVoiceLaunch(_ id: UUID, error: String? = nil) {
+            guard voiceID == id else { return }
+            voiceTask = nil
+            // Keep the ID until ContentView consumes the result, preventing replay.
+            let completion = parent.onVoiceLaunchFinished
+            DispatchQueue.main.async { completion(id, error) }
+        }
+
+        private func cancelVoiceLaunch(error: String?) {
+            voiceTask?.cancel()
+            voiceTask = nil
+            if let id = voiceID, let error { finishVoiceLaunch(id, error: error) }
+            if parent.voiceLaunch == nil { voiceID = nil }
+        }
+
+        private func startVoiceLaunchIfNeeded(_ view: WKWebView) {
+            guard let request = parent.voiceLaunch, voiceID != request.id,
+                  parent.scenePhase == .active, !parent.isSigningIn else { return }
+            voiceTask?.cancel()
+            voiceID = request.id
+            voiceNavigated = false
+            voiceClicked = false
+            voiceTask = Task { @MainActor [weak self, weak view] in
+                // Leave the SwiftUI update pass before issuing browser commands.
+                await Task.yield()
+                guard let self, let view, !Task.isCancelled else { return }
+                guard self.sameOrigin(request.url, self.parent.url) else {
+                    self.finishVoiceLaunch(request.id, error: "The voice destination must belong to the configured server.")
+                    return
+                }
+                // Do not navigate away from a call, even to a different agent.
+                if let current = view.url, self.sameOrigin(current, self.parent.url),
+                   let state = try? await self.voiceState(view, script: VoiceLaunchScript.inspect), state == "active" {
+                    guard !Task.isCancelled else { return }
+                    self.finishVoiceLaunch(request.id)
+                    return
+                }
+                guard !Task.isCancelled, self.parent.voiceLaunch?.id == request.id else { return }
+                self.voiceNavigated = true
+                view.load(URLRequest(url: request.url))
+                var readyTicks = 0
+                // Pause the readiness budget for sign-in and backgrounding, but
+                // never leave an invocation pending indefinitely.
+                for _ in 0..<480 {
+                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                    guard !Task.isCancelled, self.parent.voiceLaunch?.id == request.id else { return }
+                    guard self.parent.scenePhase == .active, !self.parent.isSigningIn,
+                          !self.parent.loginRequired else { continue }
+                    if self.parent.loadError != nil {
+                        self.finishVoiceLaunch(request.id, error: "Couldn't load the voice destination. Retry the page, then run the shortcut again.")
+                        return
+                    }
+                    guard !view.isLoading, !self.parent.loading else { continue }
+                    guard let current = view.url, self.sameOrigin(current, request.url),
+                          request.allowsPath(current, afterStart: self.voiceClicked) else {
+                        self.finishVoiceLaunch(request.id, error: "The page navigated away from the voice destination. Try again after signing in.")
+                        return
+                    }
+                    readyTicks += 1
+                    let script = self.voiceClicked ? VoiceLaunchScript.confirm : VoiceLaunchScript.start
+                    let state = try? await self.voiceState(view, script: script)
+                    guard !Task.isCancelled else { return }
+                    switch state {
+                    case "active":
+                        self.finishVoiceLaunch(request.id)
+                        return
+                    case "clicked":
+                        self.voiceClicked = true
+                    case "failed":
+                        self.finishVoiceLaunch(request.id, error: "Live voice couldn't start. Check the page's voice error and tap Live to retry.")
+                        return
+                    default: break
+                    }
+                    if readyTicks >= 120 { break }
+                }
+                self.finishVoiceLaunch(request.id, error: "Live voice didn't become ready. Check microphone permission and tap Live on the page. The server must have Live enabled.")
+            }
+        }
+
+        private func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+            func port(_ url: URL) -> Int { url.port ?? (url.scheme == "https" ? 443 : 80) }
+            return lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
+                lhs.host?.lowercased() == rhs.host?.lowercased() && port(lhs) == port(rhs)
+        }
+
+        private func voiceState(_ view: WKWebView, script: String) async throws -> String? {
+            try await view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) as? String
         }
 
         private func resetRecovery() {
@@ -145,6 +304,9 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            if voiceTask != nil {
+                cancelVoiceLaunch(error: "The voice page stopped unexpectedly. Run the shortcut again after recovery.")
+            }
             recoveryPending = true
             parent.loading = false
             recoverIfNeeded(webView)

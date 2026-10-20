@@ -18,7 +18,9 @@ final class BrowserLifecycleTests: XCTestCase {
 
     private func browser(_ state: State, phase: ScenePhase = .active,
                          signingIn: Bool = false, reload: Int = 0, back: Int = 0,
-                         authenticated: Int = 0, url: URL? = nil) -> BrowserView {
+                         authenticated: Int = 0, url: URL? = nil,
+                         voiceLaunch: VoiceBrowserLaunch? = nil,
+                         onVoiceFinished: @escaping (UUID, String?) -> Void = { _, _ in }) -> BrowserView {
         BrowserView(url: url ?? server,
                     loading: Binding(get: { state.loading }, set: { state.loading = $0 }),
                     canGoBack: Binding(get: { state.canGoBack }, set: { state.canGoBack = $0 }),
@@ -26,7 +28,8 @@ final class BrowserLifecycleTests: XCTestCase {
                     loginRequired: Binding(get: { state.loginRequired }, set: { state.loginRequired = $0 }),
                     reloadCount: reload, backCount: back, authenticatedCount: authenticated,
                     scenePhase: phase, isSigningIn: signingIn,
-                    onLoginRequired: {}, onRevealControls: {})
+                    onLoginRequired: {}, onRevealControls: {},
+                    voiceLaunch: voiceLaunch, onVoiceLaunchFinished: onVoiceFinished)
     }
 
     private func coordinator(_ parent: BrowserView) -> BrowserView.Coordinator {
@@ -204,6 +207,148 @@ final class BrowserLifecycleTests: XCTestCase {
         }
     }
 
+    func testVoiceLaunchAllowsOnlyItsRootAndMaterializedChatRoutes() {
+        let request = VoiceBrowserLaunch(id: UUID(), url: URL(string: "https://example.com/hub/node/jarvis/?new=1")!)
+        let root = URL(string: "https://example.com/hub/node/jarvis/")!
+        let chat = URL(string: "https://example.com/hub/node/jarvis/chat/42")!
+        XCTAssertTrue(request.allowsPath(root, afterStart: false))
+        XCTAssertFalse(request.allowsPath(chat, afterStart: false))
+        XCTAssertTrue(request.allowsPath(chat, afterStart: true))
+        for path in ["/hub/node/other/chat/42", "/hub/node/jarvis/auth/login",
+                     "/hub/node/jarvis/chat/", "/hub/node/jarvis/chat/42/other"] {
+            XCTAssertFalse(request.allowsPath(URL(string: "https://example.com" + path)!, afterStart: true))
+        }
+        let direct = VoiceBrowserLaunch(id: UUID(), url: URL(string: "https://example.com/ui/?new=1")!)
+        XCTAssertTrue(direct.allowsPath(URL(string: "https://example.com/ui/chat/session-id")!, afterStart: true))
+    }
+
+    func testVoiceCommandPreservesExistingCallAndDoesNotReplay() async throws {
+        let state = State()
+        let view = webView(server)
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("<section aria-label='Live voice'><button>Stop</button></section><textarea>unsent text</textarea>", baseURL: server)
+        try await waiter.wait()
+        let request = VoiceBrowserLaunch(id: UUID(), url: URL(string: "https://example.com/ui/?new=1")!)
+        let completed = expectation(description: "existing call preserved")
+        let parent = browser(state, voiceLaunch: request) { id, error in
+            XCTAssertEqual(id, request.id)
+            XCTAssertNil(error)
+            completed.fulfill()
+        }
+        let coordinator = coordinator(parent)
+        coordinator.update(view, parent: parent)
+        await fulfillment(of: [completed], timeout: 5)
+        coordinator.update(view, parent: parent)
+        XCTAssertTrue(view.requests.isEmpty)
+        coordinator.tearDown()
+    }
+
+    func testVoiceDestinationSurvivesPasskeyCompletionAndCoalescesUpdates() async throws {
+        let state = State()
+        let view = webView(server)
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("<p>No call</p>", baseURL: server)
+        try await waiter.wait()
+        let request = VoiceBrowserLaunch(id: UUID(), url: URL(string: "https://example.com/ui/?new=1")!)
+        let parent = browser(state, voiceLaunch: request)
+        let coordinator = coordinator(parent)
+        coordinator.update(view, parent: parent)
+        for _ in 0..<100 where view.requests.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(view.requests.map(\.url), [request.url])
+        coordinator.update(view, parent: browser(state, authenticated: 1, voiceLaunch: request))
+        XCTAssertEqual(view.requests.map(\.url), [request.url, request.url])
+        // Ordinary updates after authentication must not navigate again.
+        coordinator.update(view, parent: browser(state, authenticated: 1, voiceLaunch: request))
+        XCTAssertEqual(view.requests.count, 2)
+        coordinator.tearDown()
+    }
+
+    func testVoiceCommandRejectsForeignDestination() async {
+        let state = State()
+        let request = VoiceBrowserLaunch(id: UUID(), url: URL(string: "https://foreign.example/?new=1")!)
+        let completed = expectation(description: "foreign destination rejected")
+        let parent = browser(state, voiceLaunch: request) { id, error in
+            XCTAssertEqual(id, request.id)
+            XCTAssertNotNil(error)
+            completed.fulfill()
+        }
+        let coordinator = coordinator(parent)
+        let view = webView(server)
+        coordinator.update(view, parent: parent)
+        await fulfillment(of: [completed], timeout: 5)
+        XCTAssertTrue(view.requests.isEmpty)
+        coordinator.tearDown()
+    }
+
+    func testVoiceScriptStartsOnlyEnabledVisibleLiveButtonAndNeverStopsCall() async throws {
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("""
+        <html><body>
+        <button aria-label="Start live voice" disabled>Live</button>
+        <script>
+        window.clicks = 0;
+        document.querySelector('button').onclick = function() {
+            window.clicks++;
+            this.setAttribute('aria-label', 'Stop live voice');
+        };
+        </script>
+        </body></html>
+        """, baseURL: server)
+        try await waiter.wait()
+        // The test web view is not presented by the test host. Model foreground.
+        _ = try await view.callAsyncJavaScript("Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});", contentWorld: .page)
+        let disabled = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(disabled, "waiting")
+        _ = try await view.callAsyncJavaScript("document.querySelector('button').disabled = false;", contentWorld: .page)
+        let clicked = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(clicked, "clicked")
+        let active = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(active, "active")
+        let clicks = try await view.callAsyncJavaScript("return window.clicks;", contentWorld: .page) as? Int
+        XCTAssertEqual(clicks, 1)
+        _ = try await view.callAsyncJavaScript("document.querySelector('button').setAttribute('aria-label', 'Retry live voice');", contentWorld: .page)
+        let failure = try await view.callAsyncJavaScript(VoiceLaunchScript.inspect, contentWorld: .page) as? String
+        XCTAssertEqual(failure, "failed")
+        let retry = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(retry, "failed", "Never automatically retry a failed voice session")
+    }
+
+    func testVoiceConfirmationWaitsForConnectionAndDetectsFailure() async throws {
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("<section aria-label='Live voice' class='live-status-connecting'><button>Stop</button></section>", baseURL: server)
+        try await waiter.wait()
+        let connecting = try await view.callAsyncJavaScript(VoiceLaunchScript.confirm, contentWorld: .page) as? String
+        XCTAssertEqual(connecting, "waiting")
+        for phase in ["requesting-permission", "listening", "speaking", "working", "failed"] {
+            _ = try await view.callAsyncJavaScript("document.querySelector('section').className = 'live-status-' + phase;",
+                                                  arguments: ["phase": phase], in: nil, contentWorld: .page)
+            let result = try await view.callAsyncJavaScript(VoiceLaunchScript.confirm, contentWorld: .page) as? String
+            XCTAssertEqual(result, phase == "failed" ? "failed" : phase == "requesting-permission" ? "waiting" : "active")
+        }
+    }
+
+    func testVoiceScriptDoesNotClickHiddenButtonOrBackgroundPage() async throws {
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("<button aria-label='Start live voice' style='display:none'>Live</button>", baseURL: server)
+        try await waiter.wait()
+        _ = try await view.callAsyncJavaScript("Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});", contentWorld: .page)
+        let hidden = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(hidden, "waiting")
+        _ = try await view.callAsyncJavaScript("document.querySelector('button').style.display = ''; Object.defineProperty(document, 'visibilityState', {get: () => 'hidden'});", contentWorld: .page)
+        let background = try await view.callAsyncJavaScript(VoiceLaunchScript.start, contentWorld: .page) as? String
+        XCTAssertEqual(background, "waiting")
+    }
+
     func testTearDownDiscardsPendingRecovery() {
         let state = State()
         let coordinator = coordinator(browser(state, phase: .background))
@@ -215,5 +360,29 @@ final class BrowserLifecycleTests: XCTestCase {
         XCTAssertTrue(view.requests.isEmpty)
         XCTAssertNil(view.navigationDelegate)
         XCTAssertNil(view.uiDelegate)
+    }
+}
+
+@MainActor
+private final class VoiceNavigationWaiter: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var result: Result<Void, Error>?
+
+    func wait() async throws {
+        if let result { return try result.get() }
+        try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(with: result)
+        } else { self.result = result }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(.success(())) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finish(.failure(error)) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        finish(.failure(error))
     }
 }

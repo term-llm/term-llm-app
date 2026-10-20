@@ -10,6 +10,16 @@ Settings can request iOS notification permission. This **does not yet deliver co
 
 The web UI (including the hub and its live voice controls) is shown as-is. To reveal native Back, Reload, and Settings without a permanent bar, pull down from near the top of the web page; the controls hide after a few seconds or when used. Browser back-swipe still works. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
+## Voice shortcut and Action button
+
+Open the app's **Settings → Voice Shortcut**. Discovery uses the existing server sign-in. For a hub, choose the **Agent** to call; for a direct server, no extra selection is needed. The destination is remembered per server. **Test Live Conversation** runs the same launch flow as the shortcut.
+
+On an iPhone with an Action button, open **iOS Settings → Action Button → Shortcut** and choose **term-llm → Start Live Conversation**. The action is also available in Shortcuts and Siri. The app cannot assign the physical button itself.
+
+This first version opens the app in the foreground, navigates to a fresh conversation (`?new=1`), waits for the web composer, and activates **Start live voice** once. It leaves an existing active call alone, including when a different agent is selected for the shortcut. Live must be enabled on the destination server. If sign-in is required, complete the passkey flow; if discovery initially failed, sign in and refresh the agents in Settings. Failed or unavailable Live startup shows a native explanation rather than repeatedly clicking or toggling voice.
+
+The integration uses the web UI's accessible Live controls, not a native voice transport or background call. Automatic microphone/audio activation, first-time permission prompts, and Action-button launch from a locked phone still require physical-iPhone verification; iOS may require unlocking or tapping Live on the page. Simulator tests cover routing, discovery/authentication boundaries, and one-shot button activation, not a real microphone call.
+
 ## Browser lifecycle
 
 Returning from the background keeps the existing web view and does not force a page reload, preserving the live workspace while WebKit remains alive. If iOS terminates the web content process, the app reopens the current same-server route with a fresh GET when active (or falls back to the configured server URL). Recovery waits while the app is inactive or signing in, and does not override sign-in or server/network error screens. A second termination within 30 seconds stops automatic recovery and offers the existing Retry/Settings controls; Retry, a server change, or successful native sign-in resets the retry budget.

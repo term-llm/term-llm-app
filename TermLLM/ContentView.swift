@@ -23,6 +23,9 @@ struct ContentView: View {
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
     @StateObject private var deviceTools = DeviceToolsSettings.shared
+    @StateObject private var voiceLaunches = VoiceLaunchCenter.shared
+    @State private var voiceRequest: VoiceBrowserLaunch?
+    @State private var voiceLaunchError: String?
     private let listen = Listen.shared
 
     private var address: URL? { ServerAddress.parse(serverURL) }
@@ -43,6 +46,19 @@ struct ContentView: View {
         .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
         .sheet(isPresented: $showingListen) { ListenView(listen: listen) }
         .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen) }
+        .onChange(of: voiceLaunches.request, initial: true) { _, request in
+            guard let request else { return }
+            beginVoiceLaunch(request)
+        }
+        .alert("Voice shortcut", isPresented: Binding(
+            get: { voiceLaunchError != nil },
+            set: { if !$0 { voiceLaunchError = nil } }
+        )) {
+            Button("OK", role: .cancel) { voiceLaunchError = nil }
+            Button("Settings", action: openSettings)
+        } message: {
+            Text(voiceLaunchError ?? "")
+        }
     }
 
     private var setup: some View {
@@ -104,7 +120,8 @@ struct ContentView: View {
                         authenticatedCount: authenticatedCount,
                         scenePhase: scenePhase, isSigningIn: isSigningIn,
                         deviceTools: deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
-                        onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls)
+                        onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls,
+                        voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch)
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
 
@@ -235,6 +252,13 @@ struct ContentView: View {
                             .disabled(hasPendingServerEdit)
                     }
                 }
+                if let address {
+                    VoiceShortcutSection(server: address) {
+                        showingSettings = false
+                        voiceLaunches.requestLaunch()
+                    }
+                    .disabled(hasPendingServerEdit)
+                }
                 Section("Notifications") {
                     LabeledContent("Permission", value: notificationStatus)
                     Button("Enable notifications") {
@@ -294,6 +318,32 @@ struct ContentView: View {
         }
     }
 
+    private func beginVoiceLaunch(_ id: UUID) {
+        guard voiceRequest == nil else { return }
+        do {
+            guard let address else {
+                throw VoiceLaunchFailure(message: "Connect to a server in Settings first.")
+            }
+            let destination = try VoiceShortcutSettings.shared.destination(for: address)
+            showingSettings = false
+            showingMusic = false
+            showingListen = false
+            showingPlayer = false
+            voiceLaunchError = nil
+            voiceRequest = VoiceBrowserLaunch(id: id, url: destination)
+        } catch {
+            voiceLaunchError = error.localizedDescription
+            voiceLaunches.finish()
+        }
+    }
+
+    private func finishVoiceLaunch(_ id: UUID, _ error: String?) {
+        guard voiceRequest?.id == id else { return }
+        voiceRequest = nil
+        voiceLaunches.finish()
+        voiceLaunchError = error
+    }
+
     private func signIn(to url: URL) {
         guard !isSigningIn else { return }
         isSigningIn = true
@@ -313,6 +363,10 @@ struct ContentView: View {
 
     private func saveAddress() {
         guard let url = ServerAddress.parse(draftURL) else { return }
+        let changed = serverURL != url.absoluteString
+        if changed, let request = voiceRequest {
+            finishVoiceLaunch(request.id, nil)
+        }
         serverURL = url.absoluteString
         loadError = nil
         loginError = nil
