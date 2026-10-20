@@ -90,11 +90,22 @@ struct WebKitCookieJar: ListenCookieJar {
 
 // MARK: - AVFoundation
 
+/// Injectable so session activation failures can be tested without real audio.
+@MainActor
+protocol ListenAudioSession: AnyObject {
+    func setCategory(_ category: AVAudioSession.Category, mode: AVAudioSession.Mode,
+                     policy: AVAudioSession.RouteSharingPolicy, options: AVAudioSession.CategoryOptions) throws
+    func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws
+}
+
+extension AVAudioSession: ListenAudioSession {}
+
 @MainActor
 final class AVListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
 
     private let player = AVPlayer()
+    private let audioSession: any ListenAudioSession
     private var timeObserver: Any?
     private var itemObservers: [NSObjectProtocol] = []
     private var keyValueObservers: [NSKeyValueObservation] = []
@@ -105,7 +116,8 @@ final class AVListenEngine: ListenEngine {
     /// How long to wait for a stream to become playable.
     static let loadTimeout: Duration = .seconds(30)
 
-    init() {
+    init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance()) {
+        self.audioSession = audioSession
         player.automaticallyWaitsToMinimizeStalling = true
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
                                                       queue: .main) { [weak self] _ in
@@ -184,9 +196,20 @@ final class AVListenEngine: ListenEngine {
     }
 
     func play(rate: Float) throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: spoken ? .spokenAudio : .default, policy: .longFormAudio)
-        try session.setActive(true)
+        let mode: AVAudioSession.Mode = spoken ? .spokenAudio : .default
+        try audioSession.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [])
+        do {
+            try audioSession.setActive(true, options: [])
+        } catch {
+            let error = error as NSError
+            guard error.domain == NSOSStatusErrorDomain,
+                  error.code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue else { throw error }
+            // A request arriving from a locked-screen voice conversation runs
+            // in the background. iOS won't let it interrupt another audio
+            // session there; retry cooperatively rather than refusing to play.
+            try audioSession.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [.mixWithOthers])
+            try audioSession.setActive(true, options: [])
+        }
         player.playImmediately(atRate: rate)
     }
 
@@ -214,7 +237,7 @@ final class AVListenEngine: ListenEngine {
         player.replaceCurrentItem(with: nil)
         removeItemObservers()
         isRemote = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func waitUntilReady(_ item: AVPlayerItem) async throws {

@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import TermLLM
 
@@ -318,4 +319,74 @@ final class ListenPlayerTests: XCTestCase {
 private final class UncheckedBox<Value>: @unchecked Sendable {
     let value: Value
     init(_ value: Value) { self.value = value }
+}
+
+@MainActor
+final class ListenAudioSessionTests: XCTestCase {
+    func testNormalPlaybackDoesNotMix() throws {
+        let session = FakeListenAudioSession()
+        let engine = AVListenEngine(audioSession: session)
+        try engine.play(rate: 1)
+        XCTAssertEqual(session.categoryOptions, [[]])
+        XCTAssertEqual(session.activationCount, 1)
+    }
+
+    func testBackgroundInterruptionDenialRetriesWithMixing() throws {
+        let session = FakeListenAudioSession()
+        session.activationErrors = [NSError(domain: NSOSStatusErrorDomain,
+                                            code: AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue)]
+        let engine = AVListenEngine(audioSession: session)
+        try engine.play(rate: 1)
+        XCTAssertEqual(session.categoryOptions, [[], [.mixWithOthers]])
+        XCTAssertEqual(session.activationCount, 2)
+
+        // The fallback is not sticky: the next request tries exclusive playback.
+        try engine.play(rate: 1)
+        XCTAssertEqual(session.categoryOptions.last, [])
+    }
+
+    func testUnrelatedActivationErrorsAreNotRetried() {
+        let session = FakeListenAudioSession()
+        session.activationErrors = [NSError(domain: NSOSStatusErrorDomain, code: -50)]
+        let engine = AVListenEngine(audioSession: session)
+        XCTAssertThrowsError(try engine.play(rate: 1)) { error in
+            XCTAssertEqual((error as NSError).code, -50)
+        }
+        XCTAssertEqual(session.activationCount, 1)
+        XCTAssertEqual(session.categoryOptions, [[]])
+    }
+
+    func testFailedFallbackIsReported() {
+        let session = FakeListenAudioSession()
+        session.activationErrors = [
+            NSError(domain: NSOSStatusErrorDomain, code: AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue),
+            NSError(domain: NSOSStatusErrorDomain, code: -50),
+        ]
+        let engine = AVListenEngine(audioSession: session)
+        XCTAssertThrowsError(try engine.play(rate: 1)) { error in
+            XCTAssertEqual((error as NSError).code, -50)
+        }
+        XCTAssertEqual(session.activationCount, 2)
+    }
+}
+
+@MainActor
+private final class FakeListenAudioSession: ListenAudioSession {
+    var categoryOptions: [AVAudioSession.CategoryOptions] = []
+    var activationErrors: [NSError] = []
+    var activationCount = 0
+
+    func setCategory(_ category: AVAudioSession.Category, mode: AVAudioSession.Mode,
+                     policy: AVAudioSession.RouteSharingPolicy, options: AVAudioSession.CategoryOptions) throws {
+        XCTAssertEqual(category, .playback)
+        XCTAssertEqual(mode, .spokenAudio)
+        XCTAssertEqual(policy, .longFormAudio)
+        categoryOptions.append(options)
+    }
+
+    func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {
+        guard active else { return }
+        activationCount += 1
+        if !activationErrors.isEmpty { throw activationErrors.removeFirst() }
+    }
 }

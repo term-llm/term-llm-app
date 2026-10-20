@@ -7,27 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		000000000000000000000260 /* ListenViewRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* ListenViewRenderingTests.swift */; };
-		000000000000000000000240 /* ListenModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000200 /* ListenModels.swift */; };
-		000000000000000000000241 /* ListenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000201 /* ListenStore.swift */; };
-		000000000000000000000242 /* ListenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000202 /* ListenEngine.swift */; };
-		000000000000000000000243 /* ListenDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000203 /* ListenDownloader.swift */; };
-		000000000000000000000244 /* ListenPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000204 /* ListenPlayer.swift */; };
-		000000000000000000000245 /* Listen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000205 /* Listen.swift */; };
-		000000000000000000000246 /* ListenTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000206 /* ListenTools.swift */; };
-		000000000000000000000247 /* ListenViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000207 /* ListenViews.swift */; };
-		000000000000000000000248 /* ListenTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000208 /* ListenTestSupport.swift */; };
-		000000000000000000000249 /* ListenStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000209 /* ListenStoreTests.swift */; };
-		00000000000000000000024A /* ListenPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000020A /* ListenPlayerTests.swift */; };
-		00000000000000000000024B /* ListenToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000020B /* ListenToolsTests.swift */; };
 		000000000000000000000080 /* TermLLMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000040 /* TermLLMApp.swift */; };
 		000000000000000000000081 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000041 /* ContentView.swift */; };
 		000000000000000000000082 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000042 /* BrowserView.swift */; };
 		000000000000000000000083 /* ServerAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000043 /* ServerAddress.swift */; };
-		000000000000000000000086 /* NativeLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000046 /* NativeLogin.swift */; };
 		000000000000000000000084 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* Assets.xcassets */; };
-		000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
 		000000000000000000000085 /* ServerAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000045 /* ServerAddressTests.swift */; };
+		000000000000000000000086 /* NativeLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000046 /* NativeLogin.swift */; };
 		000000000000000000000087 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000047 /* JSONValue.swift */; };
 		000000000000000000000088 /* DeviceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000048 /* DeviceTools.swift */; };
 		00000000000000000000008C /* DeviceToolsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004C /* DeviceToolsSettings.swift */; };
@@ -40,11 +26,6 @@
 		0000000000000000000000D2 /* AppleMusic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C2 /* AppleMusic.swift */; };
 		0000000000000000000000D3 /* MusicPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C3 /* MusicPlayer.swift */; };
 		0000000000000000000000D4 /* MusicTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C4 /* MusicTools.swift */; };
-		000000000000000000000144 /* NavigationTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000104 /* NavigationTools.swift */; };
-		000000000000000000000143 /* AppleNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* AppleNavigation.swift */; };
-		000000000000000000000142 /* NavigationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000102 /* NavigationService.swift */; };
-		000000000000000000000141 /* RouteTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000101 /* RouteTracker.swift */; };
-		000000000000000000000140 /* NavigationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000100 /* NavigationModels.swift */; };
 		0000000000000000000000D5 /* MusicLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C5 /* MusicLibrary.swift */; };
 		0000000000000000000000D6 /* MusicComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C6 /* MusicComponents.swift */; };
 		0000000000000000000000D7 /* MusicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C7 /* MusicView.swift */; };
@@ -54,14 +35,33 @@
 		0000000000000000000000DB /* PlaylistStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CB /* PlaylistStoreTests.swift */; };
 		0000000000000000000000DC /* MusicPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CC /* MusicPlayerTests.swift */; };
 		0000000000000000000000DD /* MusicToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CD /* MusicToolsTests.swift */; };
-		000000000000000000000146 /* RouteTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000106 /* RouteTrackerTests.swift */; };
-		000000000000000000000145 /* NavigationToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000105 /* NavigationToolsTests.swift */; };
 		0000000000000000000000DE /* MusicViewRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CE /* MusicViewRenderingTests.swift */; };
 		0000000000000000000000DF /* CatalogParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000CF /* CatalogParsing.swift */; };
 		0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E0 /* CatalogParsingTests.swift */; };
 		0000000000000000000000F1 /* PlaylistFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E1 /* PlaylistFile.swift */; };
 		0000000000000000000000F2 /* PlaylistFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E2 /* PlaylistFileTests.swift */; };
 		0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000E3 /* BrowserLifecycleTests.swift */; };
+		000000000000000000000140 /* NavigationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000100 /* NavigationModels.swift */; };
+		000000000000000000000141 /* RouteTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000101 /* RouteTracker.swift */; };
+		000000000000000000000142 /* NavigationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000102 /* NavigationService.swift */; };
+		000000000000000000000143 /* AppleNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* AppleNavigation.swift */; };
+		000000000000000000000144 /* NavigationTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000104 /* NavigationTools.swift */; };
+		000000000000000000000145 /* NavigationToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000105 /* NavigationToolsTests.swift */; };
+		000000000000000000000146 /* RouteTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000106 /* RouteTrackerTests.swift */; };
+		000000000000000000000240 /* ListenModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000200 /* ListenModels.swift */; };
+		000000000000000000000241 /* ListenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000201 /* ListenStore.swift */; };
+		000000000000000000000242 /* ListenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000202 /* ListenEngine.swift */; };
+		000000000000000000000243 /* ListenDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000203 /* ListenDownloader.swift */; };
+		000000000000000000000244 /* ListenPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000204 /* ListenPlayer.swift */; };
+		000000000000000000000245 /* Listen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000205 /* Listen.swift */; };
+		000000000000000000000246 /* ListenTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000206 /* ListenTools.swift */; };
+		000000000000000000000247 /* ListenViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000207 /* ListenViews.swift */; };
+		000000000000000000000248 /* ListenTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000208 /* ListenTestSupport.swift */; };
+		000000000000000000000249 /* ListenStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000209 /* ListenStoreTests.swift */; };
+		00000000000000000000024A /* ListenPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000020A /* ListenPlayerTests.swift */; };
+		00000000000000000000024B /* ListenToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000020B /* ListenToolsTests.swift */; };
+		000000000000000000000260 /* ListenViewRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* ListenViewRenderingTests.swift */; };
+		000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,19 +75,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000220 /* ListenViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViewRenderingTests.swift; sourceTree = "<group>"; };
-		000000000000000000000200 /* ListenModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenModels.swift; sourceTree = "<group>"; };
-		000000000000000000000201 /* ListenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenStore.swift; sourceTree = "<group>"; };
-		000000000000000000000202 /* ListenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenEngine.swift; sourceTree = "<group>"; };
-		000000000000000000000203 /* ListenDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenDownloader.swift; sourceTree = "<group>"; };
-		000000000000000000000204 /* ListenPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPlayer.swift; sourceTree = "<group>"; };
-		000000000000000000000205 /* Listen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Listen.swift; sourceTree = "<group>"; };
-		000000000000000000000206 /* ListenTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenTools.swift; sourceTree = "<group>"; };
-		000000000000000000000207 /* ListenViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViews.swift; sourceTree = "<group>"; };
-		000000000000000000000208 /* ListenTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenTestSupport.swift; sourceTree = "<group>"; };
-		000000000000000000000209 /* ListenStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenStoreTests.swift; sourceTree = "<group>"; };
-		00000000000000000000020A /* ListenPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPlayerTests.swift; sourceTree = "<group>"; };
-		00000000000000000000020B /* ListenToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenToolsTests.swift; sourceTree = "<group>"; };
 		000000000000000000000030 /* TermLLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TermLLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000031 /* TermLLMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermLLMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000040 /* TermLLMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermLLMApp.swift; sourceTree = "<group>"; };
@@ -95,7 +82,6 @@
 		000000000000000000000042 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		000000000000000000000043 /* ServerAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddress.swift; sourceTree = "<group>"; };
 		000000000000000000000044 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		000000000000000000000045 /* ServerAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressTests.swift; sourceTree = "<group>"; };
 		000000000000000000000046 /* NativeLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLogin.swift; sourceTree = "<group>"; };
 		000000000000000000000047 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
@@ -110,11 +96,6 @@
 		0000000000000000000000C2 /* AppleMusic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusic.swift; sourceTree = "<group>"; };
 		0000000000000000000000C3 /* MusicPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPlayer.swift; sourceTree = "<group>"; };
 		0000000000000000000000C4 /* MusicTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTools.swift; sourceTree = "<group>"; };
-		000000000000000000000104 /* NavigationTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTools.swift; sourceTree = "<group>"; };
-		000000000000000000000103 /* AppleNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleNavigation.swift; sourceTree = "<group>"; };
-		000000000000000000000102 /* NavigationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationService.swift; sourceTree = "<group>"; };
-		000000000000000000000101 /* RouteTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTracker.swift; sourceTree = "<group>"; };
-		000000000000000000000100 /* NavigationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationModels.swift; sourceTree = "<group>"; };
 		0000000000000000000000C5 /* MusicLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicLibrary.swift; sourceTree = "<group>"; };
 		0000000000000000000000C6 /* MusicComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicComponents.swift; sourceTree = "<group>"; };
 		0000000000000000000000C7 /* MusicView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicView.swift; sourceTree = "<group>"; };
@@ -124,14 +105,33 @@
 		0000000000000000000000CB /* PlaylistStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStoreTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000CC /* MusicPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPlayerTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000CD /* MusicToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicToolsTests.swift; sourceTree = "<group>"; };
-		000000000000000000000106 /* RouteTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTrackerTests.swift; sourceTree = "<group>"; };
-		000000000000000000000105 /* NavigationToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationToolsTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000CE /* MusicViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicViewRenderingTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000CF /* CatalogParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogParsing.swift; sourceTree = "<group>"; };
 		0000000000000000000000E0 /* CatalogParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogParsingTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000E1 /* PlaylistFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFile.swift; sourceTree = "<group>"; };
 		0000000000000000000000E2 /* PlaylistFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFileTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000E3 /* BrowserLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserLifecycleTests.swift; sourceTree = "<group>"; };
+		000000000000000000000100 /* NavigationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationModels.swift; sourceTree = "<group>"; };
+		000000000000000000000101 /* RouteTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTracker.swift; sourceTree = "<group>"; };
+		000000000000000000000102 /* NavigationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationService.swift; sourceTree = "<group>"; };
+		000000000000000000000103 /* AppleNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleNavigation.swift; sourceTree = "<group>"; };
+		000000000000000000000104 /* NavigationTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTools.swift; sourceTree = "<group>"; };
+		000000000000000000000105 /* NavigationToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationToolsTests.swift; sourceTree = "<group>"; };
+		000000000000000000000106 /* RouteTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTrackerTests.swift; sourceTree = "<group>"; };
+		000000000000000000000200 /* ListenModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenModels.swift; sourceTree = "<group>"; };
+		000000000000000000000201 /* ListenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenStore.swift; sourceTree = "<group>"; };
+		000000000000000000000202 /* ListenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenEngine.swift; sourceTree = "<group>"; };
+		000000000000000000000203 /* ListenDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenDownloader.swift; sourceTree = "<group>"; };
+		000000000000000000000204 /* ListenPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPlayer.swift; sourceTree = "<group>"; };
+		000000000000000000000205 /* Listen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Listen.swift; sourceTree = "<group>"; };
+		000000000000000000000206 /* ListenTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenTools.swift; sourceTree = "<group>"; };
+		000000000000000000000207 /* ListenViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViews.swift; sourceTree = "<group>"; };
+		000000000000000000000208 /* ListenTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenTestSupport.swift; sourceTree = "<group>"; };
+		000000000000000000000209 /* ListenStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenStoreTests.swift; sourceTree = "<group>"; };
+		00000000000000000000020A /* ListenPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPlayerTests.swift; sourceTree = "<group>"; };
+		00000000000000000000020B /* ListenToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenToolsTests.swift; sourceTree = "<group>"; };
+		000000000000000000000220 /* ListenViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViewRenderingTests.swift; sourceTree = "<group>"; };
+		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
