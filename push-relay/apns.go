@@ -10,10 +10,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -60,19 +63,87 @@ type APNsClient struct {
 
 func NewAPNsClient(cfg APNsConfig, httpClient *http.Client) *APNsClient {
 	if httpClient == nil {
+		protocols := new(http.Protocols)
+		protocols.SetHTTP2(true)
+		// APNs only speaks HTTP/2. The sole exception is an explicit local
+		// HTTP override, which exists for end-to-end fakes; in that case
+		// HTTP/1.1 is the only usable protocol on a plain TCP connection.
+		protocols.SetHTTP1(apnsAllowsPlainHTTP(cfg))
 		httpClient = &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
+				// APNs requests carry a device token in the URL and a bearer
+				// credential in a header. Ignore ambient proxy settings so
+				// neither can be forwarded to an unexpected proxy.
+				Proxy:               nil,
+				Protocols:           protocols,
 				ForceAttemptHTTP2:   true,
 				TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 				TLSHandshakeTimeout: 10 * time.Second,
 				IdleConnTimeout:     10 * time.Minute,
 				MaxIdleConnsPerHost: 4,
 			},
+			// Never follow redirects with a credential-bearing request.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		}
 	}
 	return &APNsClient{cfg: cfg, http: httpClient, now: time.Now}
+}
+
+// apnsAllowsPlainHTTP reports whether an operator explicitly pointed either
+// APNs URL at a plain-HTTP endpoint. loadConfig restricts such endpoints to
+// loopback hosts; the transport itself only uses this to permit HTTP/1.1.
+func apnsAllowsPlainHTTP(cfg APNsConfig) bool {
+	return strings.HasPrefix(strings.ToLower(cfg.ProductionURL), "http://") ||
+		strings.HasPrefix(strings.ToLower(cfg.DevelopmentURL), "http://")
+}
+
+// transportError is a sanitized account of a failed APNs HTTP exchange.
+// net/http errors embed the full request URL, which contains the device token,
+// and may embed request headers. Neither is retained. Timeout reports whether
+// the original failure was a timeout so callers can classify it.
+type transportError struct {
+	kind    string
+	timeout bool
+}
+
+func (e *transportError) Error() string { return "APNs transport error: " + e.kind }
+
+func (e *transportError) Timeout() bool { return e.timeout }
+
+// sanitizeTransportError removes request URLs, headers and other values that
+// would expose the device token or provider credential in logs or responses.
+func sanitizeTransportError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var sanitized *transportError
+	if errors.As(err, &sanitized) {
+		return sanitized
+	}
+	timeout := false
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		timeout = true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		timeout = true
+	}
+	kind := "request failed"
+	switch {
+	case errors.Is(err, context.Canceled):
+		kind = "request canceled"
+	case timeout:
+		kind = "request timed out"
+	default:
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			kind = opErr.Op + " failed"
+		}
+	}
+	return &transportError{kind: kind, timeout: timeout}
 }
 
 func (c *APNsClient) providerToken(forceRefresh bool) (string, error) {
@@ -127,7 +198,7 @@ func (c *APNsClient) Send(ctx context.Context, req APNsRequest) (APNsResult, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/3/device/"+hex.EncodeToString(req.DeviceToken), bytes.NewReader(req.Payload))
 	if err != nil {
-		return APNsResult{}, err
+		return APNsResult{}, sanitizeTransportError(err)
 	}
 	httpReq.Header.Set("Authorization", "bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -148,9 +219,14 @@ func (c *APNsClient) Send(ctx context.Context, req APNsRequest) (APNsResult, err
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return APNsResult{}, err
+		return APNsResult{}, sanitizeTransportError(err)
 	}
 	defer resp.Body.Close()
+	if resp.ProtoMajor != 2 && httpReq.URL.Scheme == "https" {
+		return APNsResult{}, &transportError{
+			kind: fmt.Sprintf("unexpected HTTP/%d.%d response from APNs", resp.ProtoMajor, resp.ProtoMinor),
+		}
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	result := APNsResult{Status: resp.StatusCode, APNsID: resp.Header.Get("apns-id")}
 	if resp.StatusCode != http.StatusOK {

@@ -18,6 +18,9 @@ type rateLimiter struct {
 	lastSweep time.Time
 }
 
+// maxRetryAfter caps the advertised wait for extremely small configured rates.
+const maxRetryAfter = 24 * time.Hour
+
 type bucket struct {
 	tokens float64
 	last   time.Time
@@ -53,8 +56,11 @@ func (l *rateLimiter) allow(key string) (bool, time.Duration) {
 		b.tokens--
 		return true, 0
 	}
-	wait := time.Duration((1 - b.tokens) / l.perSecond * float64(time.Second))
-	return false, wait
+	seconds := (1 - b.tokens) / l.perSecond
+	if math.IsNaN(seconds) || math.IsInf(seconds, 1) || seconds > maxRetryAfter.Seconds() {
+		return false, maxRetryAfter
+	}
+	return false, time.Duration(seconds * float64(time.Second))
 }
 
 // sweep drops buckets that have refilled completely; they are equivalent to new ones.

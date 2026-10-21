@@ -1,3 +1,7 @@
 *_test.go
 README.md
 Dockerfile
+*.p8
+*.env
+relay-token
+endpoint-token-keys

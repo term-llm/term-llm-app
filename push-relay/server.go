@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -32,31 +33,65 @@ const (
 
 // Server implements the relay's HTTP API.
 type Server struct {
-	audience   string // public origin, also the expected VAPID aud claim
-	sealer     *TokenSealer
-	apns       apnsSender
-	pushLimit  *rateLimiter
-	regLimit   *rateLimiter
-	alertTitle string
-	alertBody  string
-	ipHeader   string
-	log        *slog.Logger
-	now        func() time.Time
+	audience              string // public origin, also the expected VAPID aud claim
+	sealer                *TokenSealer
+	apns                  apnsSender
+	pushLimit             *rateLimiter
+	regLimit              *rateLimiter
+	globalLimit           *rateLimiter
+	slots                 chan struct{}
+	environments          map[Environment]bool
+	supportedEnvironments string
+	alertTitle            string
+	alertBody             string
+	ipHeader              string
+	log                   *slog.Logger
+	now                   func() time.Time
 }
 
 func NewServer(cfg Config, sealer *TokenSealer, apns apnsSender, logger *slog.Logger) *Server {
 	now := time.Now
+
+	// NewServer is also used directly by tests. Apply the documented defaults
+	// when a zero Config would otherwise make every push impossible.
+	if cfg.GlobalPushBurst < 1 {
+		cfg.GlobalPushBurst = defaultGlobalPushBurst
+	}
+	if !(cfg.GlobalPushPerMinute > 0) {
+		cfg.GlobalPushPerMinute = defaultGlobalPushPerMinute
+	}
+	if cfg.MaxConcurrency < 1 {
+		cfg.MaxConcurrency = defaultMaxConcurrency
+	}
+	envs := cfg.APNsEnvironments
+	if len(envs) == 0 {
+		envs = []Environment{EnvProduction}
+	}
+	environmentSet := make(map[Environment]bool, len(envs))
+	environmentNames := make([]string, 0, len(envs))
+	for _, env := range envs {
+		if environmentSet[env] {
+			continue
+		}
+		environmentSet[env] = true
+		environmentNames = append(environmentNames, env.String())
+	}
+
 	return &Server{
-		audience:   cfg.PublicURL,
-		sealer:     sealer,
-		apns:       apns,
-		pushLimit:  newRateLimiter(cfg.PushBurst, cfg.PushPerMinute, now),
-		regLimit:   newRateLimiter(cfg.RegisterBurst, cfg.RegisterPerMinute, now),
-		alertTitle: cfg.AlertTitle,
-		alertBody:  cfg.AlertBody,
-		ipHeader:   cfg.ClientIPHeader,
-		log:        logger,
-		now:        now,
+		audience:              cfg.PublicURL,
+		sealer:                sealer,
+		apns:                  apns,
+		pushLimit:             newRateLimiter(cfg.PushBurst, cfg.PushPerMinute, now),
+		regLimit:              newRateLimiter(cfg.RegisterBurst, cfg.RegisterPerMinute, now),
+		globalLimit:           newRateLimiter(cfg.GlobalPushBurst, cfg.GlobalPushPerMinute, now),
+		slots:                 make(chan struct{}, cfg.MaxConcurrency),
+		environments:          environmentSet,
+		supportedEnvironments: strings.Join(environmentNames, ", "),
+		alertTitle:            cfg.AlertTitle,
+		alertBody:             cfg.AlertBody,
+		ipHeader:              cfg.ClientIPHeader,
+		log:                   logger,
+		now:                   now,
 	}
 }
 
@@ -99,6 +134,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !s.environments[env] {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"code": "unsupported_environment",
+			"error": fmt.Sprintf("environment %q is not enabled on this relay (supported: %s)",
+				env.String(), s.supportedEnvironments),
+		})
+		return
+	}
 	rawKey, _, err := parseApplicationServerKey(strings.TrimSpace(req.ApplicationServerKey))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "application_server_key: "+err.Error())
@@ -133,6 +176,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	if subtle.ConstantTimeCompare(keyHash[:], sub.VAPIDKeyHash[:]) != 1 {
 		writeError(w, http.StatusForbidden, "VAPID key does not match this subscription")
+		return
+	}
+	if !s.environments[sub.Env] {
+		// The endpoint was minted while its environment was enabled. Refuse
+		// before touching APNs and tell the sender to drop the subscription.
+		writeError(w, http.StatusGone, "subscription uses an APNs environment this relay does not support")
 		return
 	}
 
@@ -183,6 +232,21 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many notifications for this device, retry later")
 		return
 	}
+	// Bound outbound work before APNs: take a send slot without waiting, then
+	// the process-wide token bucket. A request that cannot get a slot must not
+	// consume the global budget. The deferred release also covers send errors
+	// and cancelled requests.
+	if !s.acquireSendSlot() {
+		writeRetryAfter(w, time.Second)
+		writeError(w, http.StatusServiceUnavailable, "relay is at its send concurrency limit, retry later")
+		return
+	}
+	defer s.releaseSendSlot()
+	if ok, wait := s.globalLimit.allow("global"); !ok {
+		writeRetryAfter(w, wait)
+		writeError(w, http.StatusTooManyRequests, "relay-wide notification budget is exhausted, retry later")
+		return
+	}
 
 	req := APNsRequest{
 		Env: sub.Env, DeviceToken: sub.DeviceToken, Payload: payload,
@@ -201,7 +265,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		attrs = append(attrs, "apns_reason", result.Reason)
 	}
 	if sendErr != nil {
-		attrs = append(attrs, "error", sendErr.Error())
+		attrs = append(attrs, "error", sanitizeTransportError(sendErr).Error())
 	}
 	if status >= 500 {
 		s.log.Error("push", attrs...)
@@ -322,6 +386,19 @@ func validateAES128GCM(body []byte) error {
 		return errors.New("payload must be a single aes128gcm record")
 	}
 	return nil
+}
+
+func (s *Server) acquireSendSlot() bool {
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseSendSlot() {
+	<-s.slots
 }
 
 func (s *Server) clientIP(r *http.Request) string {
