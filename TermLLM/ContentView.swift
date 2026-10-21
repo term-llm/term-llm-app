@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 import UserNotifications
 import WebKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverURL") private var serverURL = ""
+    @AppStorage(AppControlsBar.hintAcknowledgedKey) private var appControlsHintAcknowledged = false
     @State private var draftURL = ""
     @State private var showingSettings = false
     @State private var loading = false
@@ -62,26 +64,41 @@ struct ContentView: View {
     }
 
     private var setup: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "terminal.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(.cyan)
-            Text("term-llm")
-                .font(.largeTitle.bold())
-            Text("Connect to your term-llm web server")
-                .foregroundStyle(.secondary)
-            addressField
-            Button("Connect", action: saveAddress)
-                .buttonStyle(.borderedProminent)
-                .disabled(ServerAddress.parse(draftURL) == nil)
-            Text("Use an HTTPS URL for your server. The simulator also supports HTTP on localhost for testing.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 20) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.cyan)
+                    Text("term-llm")
+                        .font(.largeTitle.bold())
+                    Text("Connect to your term-llm web server")
+                        .foregroundStyle(.secondary)
+                    addressField
+                    Button("Connect", action: saveAddress)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(ServerAddress.parse(draftURL) == nil)
+                    Button("Try demo") {
+                        draftURL = ServerAddress.demo
+                        saveAddress()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("tryDemo")
+                    Text("Explore with scripted replies—no server or sign-in needed. Demo chats reset on reload. Device tools stay off until you enable them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Text("Use an HTTPS URL to connect to your own server.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(28)
+                .frame(maxWidth: 480)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: geometry.size.height)
+            }
         }
-        .padding(28)
-        .frame(maxWidth: 480)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { draftURL = serverURL }
     }
 
@@ -153,56 +170,32 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.black.opacity(0.25))
             }
-
-            if showingControls && loadError == nil && !loginRequired && loginError == nil {
-                controls
-                    .padding(.top, 10)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
         }
-        .animation(.easeOut(duration: 0.2), value: showingControls)
-        .task(id: showingControls) {
-            if showingControls {
-                try? await Task.sleep(for: .seconds(8))
-                if !Task.isCancelled { showingControls = false }
+        .overlay(alignment: .top) {
+            if appControlsAvailable {
+                AppControlsBar(isExpanded: $showingControls,
+                               hintAcknowledged: $appControlsHintAcknowledged,
+                               canGoBack: canGoBack, onAction: handleAppControl)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
             }
         }
     }
 
-    private var controls: some View {
-        HStack(spacing: 18) {
-            Button { backCount += 1; showingControls = false } label: {
-                Image(systemName: "chevron.left")
-            }
-            .disabled(!canGoBack)
-            .accessibilityLabel("Back")
-            Button { reloadCount += 1; showingControls = false } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .accessibilityLabel("Reload")
-            Button { showingControls = false; showingMusic = true } label: {
-                Image(systemName: "music.note")
-            }
-            .accessibilityLabel("Music")
-            Button { showingControls = false; listen.player.showBar(); showingListen = true } label: {
-                Image(systemName: "headphones")
-            }
-            .accessibilityLabel("Listen")
-            Button { showingControls = false; openSettings() } label: {
-                Image(systemName: "gearshape")
-            }
-            .accessibilityLabel("Settings")
-            Button { showingControls = false } label: {
-                Image(systemName: "xmark")
-            }
-            .accessibilityLabel("Hide app controls")
+    private var appControlsAvailable: Bool {
+        loadError == nil && !loginRequired && loginError == nil && !isSigningIn
+    }
+
+    private func handleAppControl(_ action: AppControlAction) {
+        switch action {
+        case .back: backCount += 1
+        case .reload: reloadCount += 1
+        case .music: showingMusic = true
+        case .listen:
+            listen.player.showBar()
+            showingListen = true
+        case .settings: openSettings()
         }
-        .font(.system(size: 18, weight: .medium))
-        .padding(.horizontal, 20)
-        .frame(height: 48)
-        .background(.regularMaterial, in: Capsule())
-        .shadow(radius: 8)
-        .accessibilityIdentifier("appControls")
     }
 
     private func recoveryScreen<Actions: View>(_ title: String, symbol: String, message: String,
@@ -217,7 +210,9 @@ struct ContentView: View {
     }
 
     private func revealControls() {
-        guard loadError == nil && !loginRequired && loginError == nil else { return }
+        guard appControlsAvailable, !showingControls else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        appControlsHintAcknowledged = true
         showingControls = true
     }
 

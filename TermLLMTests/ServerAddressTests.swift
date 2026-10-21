@@ -7,6 +7,14 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertEqual(ServerAddress.parse("https://example.com/hub/")?.absoluteString, "https://example.com/hub/")
     }
 
+    @MainActor
+    func testPublicDemoAddress() {
+        XCTAssertEqual(ServerAddress.parse(ServerAddress.demo)?.absoluteString, ServerAddress.demo)
+        XCTAssertEqual(ServerAddress.parse("demo.term-llm.com")?.absoluteString, ServerAddress.demo)
+        let settings = DeviceToolsSettings(defaults: isolatedDefaults())
+        XCTAssertFalse(settings.isEnabled(for: URL(string: ServerAddress.demo)!))
+    }
+
     func testPKCEChallengeMatchesRFC7636() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
         XCTAssertEqual(NativeLogin.challenge(for: verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")

@@ -55,6 +55,78 @@ final class MusicPlayerTests: XCTestCase {
         XCTAssertEqual(player.notice?.isError, true)
     }
 
+    func testSampleDetectionUsesReservedIDsNotDisplayMetadata() {
+        XCTAssertTrue(track("term-llm:sample:future").isSample)
+        XCTAssertFalse(track("123", "Fictional Sample Song").isSample)
+        XCTAssertFalse(track("sample").isSample)
+    }
+
+    func testSampleAndMixedQueuesNeverReachEngineOrPlaybackCallback() async {
+        let engine = FakeEngine()
+        let defaults = isolatedDefaults()
+        let player = MusicPlayer(engine: engine, defaults: defaults)
+        var starts = 0
+        player.willStartPlayback = { starts += 1 }
+        for tracks in [MusicTrack.demoTracks, [track("1"), track("term-llm:sample:future")]] {
+            do {
+                try await player.play(tracks, shuffle: true)
+                XCTFail("sample tracks must not play")
+            } catch {
+                XCTAssertEqual(error as? MusicError, .sampleSongsNotPlayable)
+            }
+        }
+        XCTAssertEqual(starts, 0)
+        XCTAssertTrue(engine.loads.isEmpty)
+        XCTAssertEqual(engine.playCount, 0)
+        XCTAssertFalse(player.shuffle, "a rejected play must not change shuffle preferences")
+        XCTAssertFalse(defaults.bool(forKey: MusicPlayer.shuffleKey))
+        XCTAssertTrue(player.queue.isEmpty)
+        XCTAssertEqual(player.status, .idle)
+        XCTAssertEqual(player.notice?.text, MusicTrack.sampleExplanation)
+        XCTAssertEqual(player.notice?.isError, true)
+    }
+
+    func testMixedPlaylistCannotPlayEvenStartingFromARealSong() async {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        var starts = 0
+        player.willStartPlayback = { starts += 1 }
+        let mixed = playlist(["1", "term-llm:sample:paper-moon"])
+        do {
+            try await player.play(mixed, startingAt: mixed.entries[0].id)
+            XCTFail("the queue still includes a nonplayable sample")
+        } catch {
+            XCTAssertEqual(error as? MusicError, .sampleSongsNotPlayable)
+        }
+        XCTAssertEqual(starts, 0)
+        XCTAssertTrue(engine.loads.isEmpty)
+        XCTAssertEqual(engine.playCount, 0)
+        XCTAssertNil(player.startingEntryID)
+        XCTAssertNil(player.playlistID)
+        XCTAssertEqual(player.notice?.text, MusicTrack.sampleExplanation)
+    }
+
+    func testRejectedSampleQueueDoesNotInterruptExistingPlayback() async throws {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        try await player.play([track("1")])
+        var starts = 0
+        player.willStartPlayback = { starts += 1 }
+        do {
+            try await player.play(MusicTrack.demoTracks)
+            XCTFail("sample tracks must not play")
+        } catch {
+            XCTAssertEqual(error as? MusicError, .sampleSongsNotPlayable)
+        }
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(engine.loads.count, 1)
+        XCTAssertEqual(engine.playCount, 1)
+        XCTAssertEqual(engine.pauseCount, 0)
+        XCTAssertEqual(player.queue.map(\.id), ["1"])
+        XCTAssertEqual(player.nowPlaying?.id, "1")
+        XCTAssertEqual(player.status, .playing)
+    }
+
     func testRefusesEmptyPlaylists() async {
         let player = MusicPlayer(engine: FakeEngine(), defaults: isolatedDefaults())
         do {

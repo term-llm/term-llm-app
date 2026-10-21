@@ -6,14 +6,16 @@ final class MusicToolsTests: XCTestCase {
     private var library: MusicLibrary!
     private var catalog: FakeCatalog!
     private var engine: FakeEngine!
+    private var fileURL: URL!
 
     override func setUp() async throws {
         catalog = FakeCatalog(tracks: [track("100", "Teardrop", artist: "Massive Attack"),
                                        track("200", "Glory Box", artist: "Portishead"),
                                        track("300", "Roads", artist: "Portishead")])
         engine = FakeEngine()
+        fileURL = temporaryPlaylistFile()
         library = MusicLibrary(catalog: catalog, engine: engine,
-                               store: PlaylistStore(fileURL: temporaryPlaylistFile()), defaults: isolatedDefaults(),
+                               store: PlaylistStore(fileURL: fileURL), defaults: isolatedDefaults(),
                                startCheck: MusicPlayer.StartCheck(polls: 5, interval: .milliseconds(1)))
     }
 
@@ -44,7 +46,7 @@ final class MusicToolsTests: XCTestCase {
     func testToolCatalogue() {
         let tools = library.tools
         XCTAssertEqual(tools.map(\.name), [
-            "music_search", "playlist_list", "playlist_get", "playlist_create", "playlist_add_songs",
+            "music_search", "playlist_list", "playlist_get", "playlist_create", "playlist_create_demo", "playlist_add_songs",
             "playlist_remove_songs", "playlist_reorder", "playlist_rename", "playlist_delete",
             "music_play", "music_now_playing", "music_control",
         ])
@@ -55,6 +57,115 @@ final class MusicToolsTests: XCTestCase {
         XCTAssertEqual(tools.first?.inputSchema["required"], ["query"])
         // Unique names so the registry accepts them alongside the built-ins.
         _ = DeviceToolRegistry(tools: BuiltInDeviceTools.standard + tools)
+    }
+
+    func testDemoHasFiveFixedFictionalSongsAndNeedsNoCatalogAccess() async throws {
+        // Bypass MusicLibrary's initial access snapshot so ANY access, request,
+        // search, or metadata lookup made by the tool fails this test.
+        let tools = MusicTools(store: library.store, catalog: DemoForbiddenCatalog(), player: library.player)
+        let demoTool = try XCTUnwrap(tools.tools.first { $0.name == "playlist_create_demo" })
+        XCTAssertEqual(demoTool.inputSchema["properties"], .object([:]))
+        XCTAssertEqual(demoTool.inputSchema["required"], .array([]))
+        XCTAssertEqual(demoTool.inputSchema["additionalProperties"], false)
+        let response = try await demoTool.call([:])
+        let result = try JSONValue.decode(Data(response.text.utf8))
+        let demo = try XCTUnwrap(library.store.playlist(id: Playlist.demoID))
+        XCTAssertEqual(demo.tracks.map(\.id), [
+            "term-llm:sample:paper-moon", "term-llm:sample:lantern", "term-llm:sample:clockwork",
+            "term-llm:sample:teacup", "term-llm:sample:velvet",
+        ])
+        XCTAssertEqual(demo.tracks.map(\.title), [
+            "Paper Moon Postcards (Fictional Sample)", "Lanterns on Jupiter (Fictional Sample)",
+            "Clockwork Cloud Parade (Fictional Sample)", "Teacup Spaceship (Fictional Sample)",
+            "Velvet Comet Homecoming (Fictional Sample)",
+        ])
+        XCTAssertTrue(demo.tracks.allSatisfy { $0.isSample && $0.artworkURL == nil })
+        XCTAssertEqual(result["songs"], 5)
+        XCTAssertEqual(entryIDs(result).count, 5)
+        XCTAssertEqual(result["sample_notice"], .string(MusicTrack.sampleExplanation))
+        XCTAssertTrue(engine.loads.isEmpty)
+        XCTAssertEqual(engine.playCount, 0)
+        let fetched = try await call("playlist_get", ["playlist": .string(demo.id.uuidString)])
+        XCTAssertEqual(fetched, result)
+    }
+
+    func testDemoIsIdempotentAcrossReloadsWithoutWritingAgain() async throws {
+        let first = try await call("playlist_create_demo")
+        let saved = try Data(contentsOf: fileURL)
+        let second = try await call("playlist_create_demo")
+        XCTAssertEqual(second, first)
+        XCTAssertEqual(try Data(contentsOf: fileURL), saved)
+        library = MusicLibrary(catalog: catalog, engine: engine, store: PlaylistStore(fileURL: fileURL),
+                               defaults: isolatedDefaults())
+        let reloaded = try await call("playlist_create_demo")
+        XCTAssertEqual(reloaded, first)
+        XCTAssertEqual(try Data(contentsOf: fileURL), saved)
+        XCTAssertEqual(library.store.playlists.count, 1)
+    }
+
+    func testDemoDoesNotAdoptNameCollisionsOrResetUserEdits() async throws {
+        let unrelated = try library.store.create(name: Playlist.demoName.uppercased(), tracks: [track("100")])
+        let another = try library.store.create(name: "\(Playlist.demoName) (2)")
+        let created = try await call("playlist_create_demo")
+        XCTAssertEqual(created["name"], .string("\(Playlist.demoName) (3)"))
+        let demo = try XCTUnwrap(library.store.playlist(id: Playlist.demoID))
+        XCTAssertNotEqual(demo.id, unrelated.id)
+        try library.store.rename(demo.id, to: "My Edited Demo")
+        try library.store.add([track("200")], to: demo.id, at: 0)
+        let withAddition = try XCTUnwrap(library.store.playlist(id: demo.id))
+        try library.store.reorder(demo.id, entryIDs: withAddition.entries.reversed().map(\.id))
+        try library.store.remove(entries: [demo.entries[0].id], from: demo.id)
+        let edited = try XCTUnwrap(library.store.playlist(id: demo.id))
+        let repeated = try await call("playlist_create_demo")
+        XCTAssertEqual(repeated["name"], "My Edited Demo")
+        XCTAssertEqual(library.store.playlist(id: demo.id), edited)
+        XCTAssertEqual(library.store.playlist(id: unrelated.id), unrelated)
+        XCTAssertEqual(library.store.playlist(id: another.id), another)
+
+        // Removing every song must not remove the persistent identity marker.
+        try library.store.remove(entries: Set(edited.entries.map(\.id)), from: demo.id)
+        let empty = try XCTUnwrap(library.store.playlist(id: demo.id))
+        library = MusicLibrary(catalog: catalog, engine: engine, store: PlaylistStore(fileURL: fileURL),
+                               defaults: isolatedDefaults())
+        let stillEmpty = try await call("playlist_create_demo")
+        XCTAssertEqual(stillEmpty["songs"], 0)
+        let reloadedEmpty = try XCTUnwrap(library.store.playlist(id: demo.id))
+        XCTAssertEqual(reloadedEmpty.id, empty.id)
+        XCTAssertEqual(reloadedEmpty.name, empty.name)
+        XCTAssertEqual(reloadedEmpty.entries, empty.entries)
+        XCTAssertEqual(library.store.playlists.count, 3)
+    }
+
+    func testDeletedDemoCanBeCreatedAgain() async throws {
+        try await call("playlist_create_demo")
+        try library.store.delete(Playlist.demoID)
+        let recreated = try await call("playlist_create_demo")
+        XCTAssertEqual(recreated["id"], .string(Playlist.demoID.uuidString))
+        XCTAssertEqual(recreated["songs"], 5)
+        XCTAssertEqual(library.store.playlists.count, 1)
+    }
+
+    func testSamplePlaybackAndCatalogIDPathsFailWithoutCatalogOrEngineCalls() async throws {
+        let tools = MusicTools(store: library.store, catalog: DemoForbiddenCatalog(), player: library.player)
+        let demo = try library.store.create(name: Playlist.demoName, tracks: MusicTrack.demoTracks, id: Playlist.demoID)
+        let cases: [(String, [String: JSONValue])] = [
+            ("music_play", ["playlist": .string(demo.id.uuidString)]),
+            ("music_play", ["song_ids": [.string(MusicTrack.demoTracks[0].id)]]),
+            ("playlist_create", ["name": "Not a new sample", "song_ids": ["term-llm:sample:future"]]),
+            ("playlist_add_songs", ["playlist": .string(demo.id.uuidString), "song_ids": ["term-llm:sample:future"]]),
+        ]
+        for (name, args) in cases {
+            let tool = try XCTUnwrap(tools.tools.first { $0.name == name })
+            do {
+                _ = try await tool.call(args)
+                XCTFail("\(name) should reject sample ids")
+            } catch {
+                XCTAssertEqual(error as? MusicError, .sampleSongsNotPlayable)
+            }
+        }
+        XCTAssertTrue(engine.loads.isEmpty)
+        XCTAssertEqual(engine.playCount, 0)
+        XCTAssertEqual(library.store.playlists, [demo])
     }
 
     func testSearch() async throws {
@@ -228,5 +339,28 @@ final class MusicToolsTests: XCTestCase {
         // The screen and the tools share one store.
         try await call("playlist_create", ["name": "Shared"])
         XCTAssertEqual(library.store.playlists.map(\.name), ["Shared"])
+    }
+}
+
+/// Any Apple Music interaction during a local demo is a regression.
+private final class DemoForbiddenCatalog: MusicCatalog {
+    func access() -> MusicAccess {
+        XCTFail("Demo must not check Apple Music access")
+        return .notDetermined
+    }
+
+    func requestAccess() async -> MusicAccess {
+        XCTFail("Demo must not request Apple Music access")
+        return .notDetermined
+    }
+
+    func search(_ term: String, limit: Int) async throws -> [MusicTrack] {
+        XCTFail("Demo must not search Apple Music")
+        throw MusicError.notAuthorized
+    }
+
+    func tracks(ids: [String]) async throws -> [MusicTrack] {
+        XCTFail("Demo must not look up Apple Music songs")
+        throw MusicError.notAuthorized
     }
 }

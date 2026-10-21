@@ -1,14 +1,30 @@
 import Foundation
 
-/// An Apple Music catalog song. Only songs are supported: queueing catalog
-/// albums and playlists proved unreliable with MusicKit.
+/// An Apple Music catalog song, or an explicitly nonplayable fictional demo song.
+/// Only songs are supported: queueing catalog albums and playlists proved unreliable with MusicKit.
 struct MusicTrack: Codable, Hashable, Identifiable, Sendable {
-    /// Apple Music catalog song id.
+    /// Apple Music catalog song id, or an id in the reserved sample namespace.
     let id: String
     var title: String
     var artist: String?
     var album: String?
     var artworkURL: URL?
+
+    static func isSampleID(_ id: String) -> Bool { id.hasPrefix("term-llm:sample:") }
+    var isSample: Bool { Self.isSampleID(id) }
+
+    static let sampleExplanation = "Sample songs are fictional placeholders for editing playlists. They can't play and don't use Apple Music. Remove sample songs before playing a playlist that also contains Apple Music songs."
+
+    static let demoTracks: [MusicTrack] = [
+        ("paper-moon", "Paper Moon Postcards"),
+        ("lantern", "Lanterns on Jupiter"),
+        ("clockwork", "Clockwork Cloud Parade"),
+        ("teacup", "Teacup Spaceship"),
+        ("velvet", "Velvet Comet Homecoming"),
+    ].map { id, title in
+        MusicTrack(id: "term-llm:sample:\(id)", title: "\(title) (Fictional Sample)",
+                   artist: "The Imaginary Demo Band", album: "Fictional Sample Songs")
+    }
 
     var subtitle: String {
         [artist, album].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
@@ -30,6 +46,10 @@ struct Playlist: Codable, Hashable, Identifiable, Sendable {
     var createdAt: Date
     var updatedAt: Date
 
+    static let demoID = UUID(uuidString: "A47D9158-4178-4D40-9C05-DA153A24D3E0")!
+    static let demoName = "Demo Playlist"
+
+    var containsSampleTracks: Bool { entries.contains { $0.track.isSample } }
     var tracks: [MusicTrack] { entries.map(\.track) }
     var artworkURL: URL? { entries.lazy.compactMap(\.track.artworkURL).first }
     var songCountText: String { "\(entries.count) song\(entries.count == 1 ? "" : "s")" }
@@ -40,6 +60,7 @@ enum MusicError: LocalizedError, Equatable {
     case cannotPlayCatalog
     /// None of the requested songs could be found on Apple Music.
     case noPlayableSongs
+    case sampleSongsNotPlayable
     case emptyPlaylist(String)
     case nothingToResume
     case playbackFailed(String)
@@ -48,6 +69,7 @@ enum MusicError: LocalizedError, Equatable {
     case playlistNotFound(String, available: [String])
     case nameRequired
     case nameTaken(String)
+    case playlistIDTaken(String)
     case invalidOrder(playlist: String, expected: Int)
     case unknownEntries([String], playlist: String)
     case unknownSongs([String])
@@ -63,6 +85,8 @@ enum MusicError: LocalizedError, Equatable {
             return "This Apple ID can't play Apple Music songs. Check the iPhone is signed in with an active Apple Music subscription."
         case .noPlayableSongs:
             return "None of those songs are available on Apple Music right now."
+        case .sampleSongsNotPlayable:
+            return MusicTrack.sampleExplanation
         case .emptyPlaylist(let name):
             return "\"\(name)\" has no songs yet. Add some with playlist_add_songs first."
         case .nothingToResume:
@@ -80,6 +104,8 @@ enum MusicError: LocalizedError, Equatable {
             return "Playlists need a name."
         case .nameTaken(let name):
             return "A playlist named \"\(name)\" already exists. Pick another name, or add songs to the existing one."
+        case .playlistIDTaken(let id):
+            return "A playlist with id \"\(id)\" already exists. Use that playlist or create one with a new id."
         case .invalidOrder(let playlist, let expected):
             return "entry_ids must list each of the \(expected) entries in \"\(playlist)\" exactly once. Use playlist_get for the current entry ids."
         case .unknownEntries(let ids, let playlist):

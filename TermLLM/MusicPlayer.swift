@@ -78,6 +78,13 @@ final class MusicPlayer {
     }
 
     private func start(_ tracks: [MusicTrack], at index: Int, playlistID: UUID?, shuffle: Bool?) async throws -> [MusicTrack] {
+        // Reject the entire queue, including mixed playlists, before touching
+        // audio, permissions, shuffle preferences, or willStartPlayback.
+        guard !tracks.contains(where: \.isSample) else {
+            let error = MusicError.sampleSongsNotPlayable
+            post(error.localizedDescription, isError: true)
+            throw error
+        }
         if let shuffle { rememberShuffle(shuffle) }
         willStartPlayback?()
         status = .loading

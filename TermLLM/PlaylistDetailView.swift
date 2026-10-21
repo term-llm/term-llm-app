@@ -29,6 +29,7 @@ struct PlaylistDetailView: View {
             if !playlist.entries.isEmpty {
                 Section {
                     actions(playlist)
+                        .disabled(playlist.containsSampleTracks)
                         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                         .listRowBackground(Color.clear)
                 }
@@ -51,6 +52,7 @@ struct PlaylistDetailView: View {
                                  isPlaying: player.isPlaying)
                     }
                     .buttonStyle(.plain)
+                    .disabled(playlist.containsSampleTracks)
                 }
                 .onDelete { offsets in
                     attempt { try store.remove(entries: Set(offsets.map { playlist.entries[$0].id }), from: playlist.id) }
@@ -61,7 +63,11 @@ struct PlaylistDetailView: View {
             } header: {
                 if !playlist.entries.isEmpty { Text(playlist.songCountText) }
             } footer: {
-                if !playlist.entries.isEmpty { Text("Tap a song to play from there.") }
+                if playlist.containsSampleTracks {
+                    Text(MusicTrack.sampleExplanation)
+                } else if !playlist.entries.isEmpty {
+                    Text("Tap a song to play from there.")
+                }
             }
         }
         .navigationTitle(playlist.name)

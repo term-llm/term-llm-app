@@ -55,6 +55,42 @@ enum VoiceLaunchScript {
     """
 }
 
+/// Observes a pull without depending on which (possibly nested) web scroller moves.
+struct BrowserControlsPullGesture {
+    private var eligible = false
+    private var triggered = false
+
+    mutating func reset() {
+        eligible = false
+        triggered = false
+    }
+
+    /// `location` is in scroll-view coordinates, whose origin moves with its bounds.
+    /// Translation is a distance, so it needs no content-offset adjustment.
+    mutating func update(state: UIGestureRecognizer.State, location: CGPoint,
+                         translation: CGPoint, boundsMinY: CGFloat) -> Bool {
+        switch state {
+        case .began:
+            reset()
+            // A pan has already travelled through recognition slop at .began.
+            let startY = location.y - boundsMinY - translation.y
+            eligible = startY >= 0 && startY < 140
+        case .changed:
+            break
+        case .ended, .cancelled, .failed:
+            reset()
+            return false
+        default:
+            return false
+        }
+
+        guard eligible, !triggered, translation.y >= 68,
+              abs(translation.x) < translation.y / 2 else { return false }
+        triggered = true
+        return true
+    }
+}
+
 struct BrowserView: UIViewRepresentable {
     enum Recovery: Equatable {
         case signIn
@@ -106,6 +142,10 @@ struct BrowserView: UIViewRepresentable {
         let pull = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePull(_:)))
         pull.delegate = context.coordinator
         pull.cancelsTouchesInView = false
+        pull.delaysTouchesBegan = false
+        pull.delaysTouchesEnded = false
+        pull.minimumNumberOfTouches = 1
+        pull.maximumNumberOfTouches = 1
         view.scrollView.addGestureRecognizer(pull)
         context.coordinator.loadedURL = url
         view.load(URLRequest(url: url))
@@ -126,8 +166,7 @@ struct BrowserView: UIViewRepresentable {
         var parent: BrowserView
         var loadedURL: URL?
         var rejectedHTTPResponse = false
-        private var pullEligible = false
-        private var pullTriggered = false
+        private var controlsPull = BrowserControlsPullGesture()
         var reloadCount = 0
         var backCount = 0
         var authenticatedCount = 0
@@ -150,6 +189,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func tearDown() {
+            controlsPull.reset()
             voiceTask?.cancel()
             voiceTask = nil
             backObservation?.invalidate()
@@ -358,21 +398,10 @@ struct BrowserView: UIViewRepresentable {
 
         @objc func handlePull(_ gesture: UIPanGestureRecognizer) {
             guard let scrollView = gesture.view as? UIScrollView else { return }
-            switch gesture.state {
-            case .began:
-                pullEligible = gesture.location(in: scrollView).y < 140 &&
-                    scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + 8
-                pullTriggered = false
-            case .changed:
-                let translation = gesture.translation(in: scrollView)
-                if pullEligible && !pullTriggered && translation.y > 95 &&
-                    abs(translation.x) < translation.y / 2 {
-                    pullTriggered = true
-                    parent.onRevealControls()
-                }
-            case .ended, .cancelled, .failed:
-                pullEligible = false
-            default: break
+            if controlsPull.update(state: gesture.state, location: gesture.location(in: scrollView),
+                                   translation: gesture.translation(in: scrollView),
+                                   boundsMinY: scrollView.bounds.minY) {
+                parent.onRevealControls()
             }
         }
 

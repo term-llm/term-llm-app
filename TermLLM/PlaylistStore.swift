@@ -51,10 +51,11 @@ final class PlaylistStore {
     }
 
     @discardableResult
-    func create(name: String, tracks: [MusicTrack] = []) throws -> Playlist {
+    func create(name: String, tracks: [MusicTrack] = [], id: UUID = UUID()) throws -> Playlist {
+        guard playlist(id: id) == nil else { throw MusicError.playlistIDTaken(id.uuidString) }
         let name = try validName(name, excluding: nil)
         let created = now()
-        let playlist = Playlist(id: UUID(), name: name, entries: entries(for: tracks, at: created),
+        let playlist = Playlist(id: id, name: name, entries: entries(for: tracks, at: created),
                                 createdAt: created, updatedAt: created)
         try commit([playlist] + playlists)
         return playlist

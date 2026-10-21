@@ -29,6 +29,8 @@ final class MusicTools {
             tool("playlist_create", "Create a playlist on the user's iPhone, optionally with songs from music_search.",
                  schema(["name": .string("Playlist name; must be unique."), "song_ids": Self.songIDs],
                         required: ["name"])) { try await $0.create($1) },
+            tool("playlist_create_demo", "Create a persistent local playlist with five fictional, nonplayable sample songs. No Apple Music access is needed. Repeated calls return the same playlist without resetting edits.",
+                 schema([:])) { tools, _ in try tools.createDemo() },
             tool("playlist_add_songs", "Add songs (ids from music_search) to a playlist.",
                  schema(["playlist": Self.playlistParameter, "song_ids": Self.songIDs,
                          "position": .integer("Zero-based insert position. Default: the end.")],
@@ -77,6 +79,23 @@ final class MusicTools {
         let name = try args.string("name", "the new playlist's name")
         let tracks = try await lookUp(try args.strings("song_ids") ?? [])
         return Self.detail(try store.create(name: name, tracks: tracks))
+    }
+
+    private func createDemo() throws -> JSONValue {
+        let playlist: Playlist
+        if let existing = store.playlist(id: Playlist.demoID) {
+            playlist = existing
+        } else {
+            // A user may already own the display name. Never adopt or replace it.
+            var name = Playlist.demoName
+            var suffix = 2
+            while store.playlists.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                name = "\(Playlist.demoName) (\(suffix))"
+                suffix += 1
+            }
+            playlist = try store.create(name: name, tracks: MusicTrack.demoTracks, id: Playlist.demoID)
+        }
+        return Self.merging(Self.detail(playlist), ["sample_notice": .string(MusicTrack.sampleExplanation)])
     }
 
     private func add(_ args: Arguments) async throws -> JSONValue {
@@ -176,6 +195,7 @@ final class MusicTools {
     /// Resolves song ids to metadata, rejecting ids Apple Music doesn't know.
     private func lookUp(_ ids: [String]) async throws -> [MusicTrack] {
         guard !ids.isEmpty else { return [] }
+        guard !ids.contains(where: MusicTrack.isSampleID) else { throw MusicError.sampleSongsNotPlayable }
         let tracks = try await catalog.tracks(ids: ids)
         let known = Set(tracks.map(\.id))
         let unknown = ids.filter { !known.contains($0) }
@@ -207,6 +227,7 @@ final class MusicTools {
         var object: [String: JSONValue] = ["id": .string(track.id), "title": .string(track.title)]
         if let artist = track.artist { object["artist"] = .string(artist) }
         if let album = track.album { object["album"] = .string(album) }
+        if track.isSample { object["sample"] = true }
         return .object(object)
     }
 
@@ -217,9 +238,13 @@ final class MusicTools {
     }
 
     private static func detail(_ playlist: Playlist) -> JSONValue {
-        merging(summary(playlist), ["entries": .array(playlist.entries.map { entry in
+        var result = merging(summary(playlist), ["entries": .array(playlist.entries.map { entry in
             merging(song(entry.track), ["entry_id": .string(entry.id.uuidString)])
         })])
+        if playlist.containsSampleTracks {
+            result = merging(result, ["sample_notice": .string(MusicTrack.sampleExplanation)])
+        }
+        return result
     }
 
     private static func merging(_ value: JSONValue, _ extra: [String: JSONValue]) -> JSONValue {

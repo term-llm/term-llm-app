@@ -1,6 +1,32 @@
 # term-llm for iOS
 
-A minimal SwiftUI shell for a self-hosted [term-llm](../term-llm) web server. Open `TermLLM.xcodeproj` in Xcode, choose an iPhone simulator or signing team/device, then run. Enter your server URL (including any path prefix, e.g. `https://example.com/term-llm/`). The URL is saved on device; browser cookies and site storage persist in WKWebView. Change servers from Settings.
+A minimal SwiftUI shell for a self-hosted [term-llm](../term-llm) web server. Open `TermLLM.xcodeproj` in Xcode, choose an iPhone simulator or signing team/device, then run. On first launch, tap **Try demo** to connect to `https://demo.term-llm.com/` without a server or sign-in, or enter your own server URL (including any path prefix, e.g. `https://example.com/term-llm/`). The URL is saved on device; browser cookies and site storage persist in WKWebView. Change servers from Settings.
+
+## Guided demo
+
+The public demo uses scripted replies, not AI. Its chats reset on reload. Native device actions are real and their saved data is **not** cleared by reloading the demo.
+
+To try the native playlist integration:
+
+1. Pull down from the top of the visible page, then tap **Settings**. On first use, **Try it** in the coachmark also reveals these floating controls.
+2. Under **Device tools**, enable **Share device tools with this server** and tap **Done**. Sharing is per server and is never enabled automatically by **Try demo**.
+3. In the chat, tap **+ → MCP servers**, enable the **iPhone/iPad** entry labelled **WebMCP from this page**, and close the dialog.
+4. Send **create playlist**. The scripted demo calls `playlist_create_demo` through the ordinary WebMCP flow. It creates a real local playlist with five fictional sample songs, without Apple Music authorization or playback. Repeating the command reuses the sample playlist without overwriting edits.
+5. Pull down for app controls and tap **♪ Music** to inspect, rename, reorder, or delete the playlist. Sample songs are explicitly non-playable; use Apple Music search to add real songs.
+
+The demo also supports **list playlists**, **ping**, and **device info** when their tools are enabled. It does not automatically request location, microphone, or Music permissions, and it does not simulate voice or Apple Music playback. An older app without `playlist_create_demo` needs updating for the sample-playlist walkthrough.
+
+For the opt-in simulator integration check, build/serve the sibling repository's demo and run:
+
+```sh
+# In ../term-llm: node demo/build.mjs && python3 -m http.server 8765 --directory demo/dist
+TEST_RUNNER_TERMLLM_DEMO_E2E_URL=http://localhost:8765/ xcodebuild test \
+  -project TermLLM.xcodeproj -scheme TermLLM \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -only-testing:TermLLMTests/WebMCPLiveServerTests/testDemoCreatesNativeSamplePlaylistOnlyAfterMCPOptIn
+```
+
+This exercises the real frontend MCP switch and native playlist store with Apple Music denied, using an isolated test library rather than modifying the user's playlists.
 
 HTTPS is required on devices, including for self-hosted servers. For local testing in the **iOS simulator only**, enter `http://localhost:8080/ui/` while term-llm is running on your Mac; the simulator shares the Mac's localhost. HTTP is restricted to `localhost` in simulator builds, not remote hosts or physical devices. Configure a trusted certificate or an HTTPS reverse proxy for device testing; microphone/WebRTC and other browser features may require a secure context. External links open outside the app. The camera and microphone permissions are requested by WebKit when the site needs them.
 
@@ -8,7 +34,7 @@ HTTPS is required on devices, including for self-hosted servers. For local testi
 
 Settings can request iOS notification permission. This **does not yet deliver completion alerts**: term-llm's existing Web Push subscriptions depend on service workers, which WKWebView does not expose as native APNs subscriptions. A later milestone needs device-token registration, authentication and routing on the server, APNs credentials, and an iOS push entitlement. Until then, use the website installed to the Home Screen if background completion alerts are needed. For live voice, the app declares iOS background audio so an active WebKit microphone/WebRTC call can continue after locking the phone on supported iOS versions. Start the call before locking; this does not start voice in the background or guarantee recovery from network changes, system interruptions, or an app force-quit. Verify capture and playback on a physical phone (the simulator is not a reliable lock-screen audio test).
 
-The web UI (including the hub and its live voice controls) is shown as-is. To reveal native Back, Reload, and Settings without a permanent bar, pull down from near the top of the web page; the controls hide after a few seconds or when used. Browser back-swipe still works. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
+The web UI (including the hub and its live voice controls) is shown as-is, with no permanent native bar or button. Pull down from within the top of the visible web page to reveal floating Back, Reload, Music, Listen, and Settings controls, even when the page is scrolled. A compact first-use coachmark explains the gesture: **Try it** reveals the controls and **Got it** dismisses the hint. Learning/dismissing it is remembered across launches. The controls stay open until used or explicitly closed; each target is at least 44 points. A successful pull gives a light haptic. The overlay does not resize/reload the web page; when hidden it intercepts no page touches. VoiceOver's **App controls** action and browser back-swipe remain available. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
 ## Voice shortcut and Action button
 
@@ -28,7 +54,7 @@ This does not persist conversation snapshots or restore JavaScript memory after 
 
 ## Music
 
-Pull down for the app controls and tap ♪ to open **Music**. It shows what's playing and the playlists saved on this phone. You can create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there. Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.
+Pull down for app controls and tap ♪ to open **Music**. It shows what's playing and the playlists saved on this phone. You can create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there. Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.
 
 The agent can do all of this too, through device tools (below): `music_search`, `playlist_list/get/create/add_songs/remove_songs/reorder/rename/delete`, `music_play`, `music_now_playing` and `music_control`. Playlists can be referred to by name or id, and the Music screen shows the agent's changes immediately.
 
@@ -38,7 +64,7 @@ Before shipping, enable the **MusicKit** App Service for the bundle ID in the Ap
 
 Listen plays audio and video files that aren't in Apple Music: podcast episodes, audio term-llm generated, songs, sound effects, and videos played for their sound. The player is native, so playback continues when the web page navigates or reloads, and when the phone is locked. The lock screen, Control Center, AirPods and CarPlay controls work (play/pause, back 15 s, forward 30 s, scrubbing, next/previous, speed).
 
-While something is loaded, a mini player sits under the web page. Tap it (or swipe it up) for the full player: scrubbing, speed (0.75×–3×) and a sleep timer (minutes or end of episode). Tap ✕ to stop and close it (the item keeps its place and position in Up Next). Swipe it down to hide it while playback carries on; it comes back when something new starts or when you open Listen (🎧 in the pull-down controls). Listen shows **Up Next** in play order (tap to play, Edit to reorder, swipe to mark played, remove or download) and **History** (played and archived items).
+While something is loaded, a mini player sits under the web page. Tap it (or swipe it up) for the full player: scrubbing, speed (0.75×–3×) and a sleep timer (minutes or end of episode). Tap ✕ to stop and close it (the item keeps its place and position in Up Next). Swipe it down to hide it while playback carries on; it comes back when something new starts or when you open Listen (🎧 in App controls). Listen shows **Up Next** in play order (tap to play, Edit to reorder, swipe to mark played, remove or download) and **History** (played and archived items).
 
 Each item resumes where it was left. When one finishes it is marked played and the next in Up Next starts. The library and positions are saved on this phone (Application Support); the item that was playing comes back paused after the app restarts. Starting Listen pauses Apple Music and starting Apple Music pauses Listen.
 

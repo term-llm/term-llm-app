@@ -64,6 +64,8 @@
 		000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
 		000000000000000000000342 /* VoiceShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000340 /* VoiceShortcut.swift */; };
 		000000000000000000000343 /* VoiceShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000341 /* VoiceShortcutTests.swift */; };
+		000000000000000000000352 /* AppControlsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000350 /* AppControlsBar.swift */; };
+		000000000000000000000353 /* AppControlsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000351 /* AppControlsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -136,6 +138,8 @@
 		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		000000000000000000000340 /* VoiceShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcut.swift; sourceTree = "<group>"; };
 		000000000000000000000341 /* VoiceShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcutTests.swift; sourceTree = "<group>"; };
+		000000000000000000000350 /* AppControlsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsBar.swift; sourceTree = "<group>"; };
+		000000000000000000000351 /* AppControlsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -179,6 +183,7 @@
 			children = (
 				000000000000000000000040 /* TermLLMApp.swift */,
 				000000000000000000000041 /* ContentView.swift */,
+				000000000000000000000350 /* AppControlsBar.swift */,
 				000000000000000000000042 /* BrowserView.swift */,
 				000000000000000000000043 /* ServerAddress.swift */,
 				000000000000000000000340 /* VoiceShortcut.swift */,
@@ -222,6 +227,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000045 /* ServerAddressTests.swift */,
+				000000000000000000000351 /* AppControlsTests.swift */,
 				000000000000000000000341 /* VoiceShortcutTests.swift */,
 				0000000000000000000000E3 /* BrowserLifecycleTests.swift */,
 				00000000000000000000004D /* DeviceToolsTests.swift */,
@@ -328,6 +334,7 @@
 			files = (
 				000000000000000000000080 /* TermLLMApp.swift in Sources */,
 				000000000000000000000081 /* ContentView.swift in Sources */,
+				000000000000000000000352 /* AppControlsBar.swift in Sources */,
 				000000000000000000000082 /* BrowserView.swift in Sources */,
 				000000000000000000000083 /* ServerAddress.swift in Sources */,
 				000000000000000000000342 /* VoiceShortcut.swift in Sources */,
@@ -369,6 +376,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
+				000000000000000000000353 /* AppControlsTests.swift in Sources */,
 				000000000000000000000343 /* VoiceShortcutTests.swift in Sources */,
 				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
 				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,

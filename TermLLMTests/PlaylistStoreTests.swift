@@ -31,6 +31,34 @@ final class PlaylistStoreTests: XCTestCase {
         XCTAssertNil(reloaded.notice)
     }
 
+    func testExplicitIdentityPersistsAndDuplicateIDsCannotOverwrite() throws {
+        let store = makeStore()
+        let id = UUID()
+        let original = try store.create(name: "Explicit ID", tracks: [track("1")], id: id)
+        XCTAssertEqual(original.id, id)
+        XCTAssertEqual(makeStore().playlist(id: id), original)
+        let saved = try Data(contentsOf: file)
+        XCTAssertThrowsError(try store.create(name: "Different name", tracks: [track("2")], id: id)) {
+            XCTAssertEqual($0 as? MusicError, .playlistIDTaken(id.uuidString))
+        }
+        XCTAssertEqual(store.playlists, [original])
+        XCTAssertEqual(try Data(contentsOf: file), saved)
+    }
+
+    func testOrdinaryCreationNeverInfersIdentityFromSampleContents() throws {
+        let store = makeStore()
+        let first = try store.create(name: "First", tracks: MusicTrack.demoTracks)
+        let second = try store.create(name: "Second", tracks: MusicTrack.demoTracks)
+        XCTAssertNotEqual(first.id, Playlist.demoID)
+        XCTAssertNotEqual(second.id, Playlist.demoID)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(makeStore().playlists.count, 2)
+        let id = UUID()
+        let model = Playlist(id: id, name: "Model", entries: first.entries,
+                             createdAt: first.createdAt, updatedAt: first.updatedAt)
+        XCTAssertEqual(model.id, id)
+    }
+
     func testNamesAreRequiredAndUnique() throws {
         let store = makeStore()
         XCTAssertThrowsError(try store.create(name: "   ")) { XCTAssertEqual($0 as? MusicError, .nameRequired) }

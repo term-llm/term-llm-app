@@ -1,6 +1,8 @@
 import Foundation
 
 enum ServerAddress {
+    static let demo = "https://demo.term-llm.com/"
+
     static func parse(_ input: String) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

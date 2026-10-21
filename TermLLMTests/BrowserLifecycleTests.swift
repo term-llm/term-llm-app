@@ -14,6 +14,7 @@ final class BrowserLifecycleTests: XCTestCase {
         var canGoBack = false
         var error: String?
         var loginRequired = false
+        var reveals = 0
     }
 
     private func browser(_ state: State, phase: ScenePhase = .active,
@@ -28,7 +29,7 @@ final class BrowserLifecycleTests: XCTestCase {
                     loginRequired: Binding(get: { state.loginRequired }, set: { state.loginRequired = $0 }),
                     reloadCount: reload, backCount: back, authenticatedCount: authenticated,
                     scenePhase: phase, isSigningIn: signingIn,
-                    onLoginRequired: {}, onRevealControls: {},
+                    onLoginRequired: {}, onRevealControls: { state.reveals += 1 },
                     voiceLaunch: voiceLaunch, onVoiceLaunchFinished: onVoiceFinished)
     }
 
@@ -66,6 +67,150 @@ final class BrowserLifecycleTests: XCTestCase {
         let view = RecordingWebView(frame: .zero, configuration: config)
         view.currentURL = url
         return view
+    }
+
+    func testControlsPullUsesViewportAtTopScrolledAndBouncingOffsets() {
+        for offset: CGFloat in [0, 420, -90] {
+            var pull = BrowserControlsPullGesture()
+            XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 20, y: offset + 60),
+                                       translation: .zero, boundsMinY: offset))
+            XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: 20, y: offset + 127),
+                                       translation: CGPoint(x: 0, y: 67), boundsMinY: offset))
+            // The outer scroll view may move too; eligibility must remain latched.
+            let movedOffset = offset - 30
+            XCTAssertTrue(pull.update(state: .changed, location: CGPoint(x: 20, y: movedOffset + 128),
+                                      translation: CGPoint(x: 0, y: 68), boundsMinY: movedOffset))
+        }
+    }
+
+    func testControlsPullRecoversStartBeforeBeganRecognitionSlop() {
+        for offset: CGFloat in [0, 420, -90] {
+            var pull = BrowserControlsPullGesture()
+            // Started at 135, but is already outside the zone when UIKit recognizes it.
+            XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: offset + 147),
+                                       translation: CGPoint(x: 0, y: 12), boundsMinY: offset))
+            XCTAssertTrue(pull.update(state: .changed, location: CGPoint(x: 0, y: offset + 205),
+                                      translation: CGPoint(x: 0, y: 70), boundsMinY: offset))
+        }
+        var pull = BrowserControlsPullGesture()
+        // A delayed first callback can already meet the deliberate pull threshold.
+        XCTAssertTrue(pull.update(state: .began, location: CGPoint(x: 0, y: 200),
+                                  translation: CGPoint(x: 0, y: 70), boundsMinY: 0))
+        XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: 0, y: 210),
+                                   translation: CGPoint(x: 0, y: 80), boundsMinY: 0))
+    }
+
+    func testControlsPullRejectsStartsOutsideTopZone() {
+        for offset: CGFloat in [0, 420, -90] {
+            for start: CGFloat in [-1, 140, 260] {
+                var pull = BrowserControlsPullGesture()
+                // Include upward recognition slop: a touch starting below the zone
+                // must not become eligible just because it moves into the zone.
+                XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: offset + start - 12),
+                                           translation: CGPoint(x: 0, y: -12), boundsMinY: offset))
+                XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: 0, y: offset + start + 100),
+                                           translation: CGPoint(x: 0, y: 100), boundsMinY: offset))
+            }
+        }
+    }
+
+    func testControlsPullRequiresDeliberateDownwardVerticalMovement() {
+        for translation in [CGPoint.zero, CGPoint(x: 0, y: 67), CGPoint(x: 0, y: -100),
+                            CGPoint(x: 100, y: 10), CGPoint(x: -100, y: 70),
+                            CGPoint(x: 35, y: 70), CGPoint(x: -35, y: 70)] {
+            var pull = BrowserControlsPullGesture()
+            XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: 60),
+                                       translation: .zero, boundsMinY: 0))
+            XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: translation.x, y: 60 + translation.y),
+                                       translation: translation, boundsMinY: 0))
+        }
+        for x: CGFloat in [-30, 30] {
+            var pull = BrowserControlsPullGesture()
+            XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: 60),
+                                       translation: .zero, boundsMinY: 0))
+            XCTAssertTrue(pull.update(state: .changed, location: CGPoint(x: x, y: 130),
+                                      translation: CGPoint(x: x, y: 70), boundsMinY: 0))
+        }
+    }
+
+    func testControlsPullFiresOnceAndTerminalStatesResetEligibility() {
+        for terminal: UIGestureRecognizer.State in [.ended, .cancelled, .failed] {
+            for triggerBeforeReset in [false, true] {
+                var pull = BrowserControlsPullGesture()
+                XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: 60),
+                                           translation: .zero, boundsMinY: 0))
+                if triggerBeforeReset {
+                    XCTAssertTrue(pull.update(state: .changed, location: CGPoint(x: 0, y: 130),
+                                              translation: CGPoint(x: 0, y: 70), boundsMinY: 0))
+                    XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: 0, y: 160),
+                                               translation: CGPoint(x: 0, y: 100), boundsMinY: 0))
+                }
+                XCTAssertFalse(pull.update(state: terminal, location: CGPoint(x: 0, y: 160),
+                                           translation: CGPoint(x: 0, y: 100), boundsMinY: 0))
+                XCTAssertFalse(pull.update(state: .changed, location: CGPoint(x: 0, y: 160),
+                                           translation: CGPoint(x: 0, y: 100), boundsMinY: 0))
+                XCTAssertFalse(pull.update(state: .began, location: CGPoint(x: 0, y: 60),
+                                           translation: .zero, boundsMinY: 0))
+                XCTAssertTrue(pull.update(state: .changed, location: CGPoint(x: 0, y: 130),
+                                          translation: CGPoint(x: 0, y: 70), boundsMinY: 0))
+            }
+        }
+    }
+
+    private final class RecordingPanGesture: UIPanGestureRecognizer {
+        var recordedState: UIGestureRecognizer.State = .possible
+        var recordedLocation = CGPoint.zero
+        var recordedTranslation = CGPoint.zero
+        override var state: UIGestureRecognizer.State {
+            get { recordedState }
+            set { recordedState = newValue }
+        }
+        override func location(in view: UIView?) -> CGPoint { recordedLocation }
+        override func translation(in view: UIView?) -> CGPoint { recordedTranslation }
+    }
+
+    func testControlsPullCoordinatorRevealsOnceWhileScrolledAndResetsOnTeardown() {
+        let state = State()
+        let coordinator = coordinator(browser(state))
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        scrollView.contentSize = CGSize(width: 320, height: 1500)
+        scrollView.contentOffset.y = 420
+        let pan = RecordingPanGesture()
+        scrollView.addGestureRecognizer(pan)
+        pan.recordedState = .began
+        pan.recordedLocation = CGPoint(x: 20, y: 420 + 147)
+        pan.recordedTranslation = CGPoint(x: 0, y: 12)
+        coordinator.handlePull(pan)
+        XCTAssertEqual(state.reveals, 0)
+        pan.recordedState = .changed
+        pan.recordedLocation.y = 420 + 205
+        pan.recordedTranslation.y = 70
+        coordinator.handlePull(pan)
+        coordinator.handlePull(pan)
+        XCTAssertEqual(state.reveals, 1)
+        XCTAssertTrue(coordinator.gestureRecognizer(pan,
+                      shouldRecognizeSimultaneouslyWith: scrollView.panGestureRecognizer))
+        coordinator.tearDown()
+        coordinator.handlePull(pan)
+        XCTAssertEqual(state.reveals, 1)
+        pan.recordedState = .began
+        pan.recordedLocation.y = 420 + 60
+        pan.recordedTranslation = .zero
+        coordinator.handlePull(pan)
+        pan.recordedState = .cancelled
+        coordinator.handlePull(pan)
+        pan.recordedState = .changed
+        pan.recordedTranslation.y = 70
+        coordinator.handlePull(pan)
+        XCTAssertEqual(state.reveals, 1)
+        pan.recordedState = .began
+        pan.recordedLocation.y = 420 + 60
+        pan.recordedTranslation = .zero
+        coordinator.handlePull(pan)
+        pan.recordedState = .changed
+        pan.recordedTranslation.y = 70
+        coordinator.handlePull(pan)
+        XCTAssertEqual(state.reveals, 2)
     }
 
     func testHealthyForegroundAndOrdinaryUpdatesDoNotReload() {
