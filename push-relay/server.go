@@ -171,7 +171,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	payload, err := s.apnsPayload(body)
+	payload, err := s.apnsPayload(body, sub.VAPIDKeyHash)
 	if err != nil {
 		s.log.Warn("push rejected", "device", device, "reason", "apns_payload_too_large", "body_bytes", len(body))
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
@@ -227,7 +227,8 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 
 // apnsPayload wraps the still-encrypted Web Push body for the Notification
 // Service Extension. The alert is a placeholder shown if decryption fails.
-func (s *Server) apnsPayload(body []byte) ([]byte, error) {
+// "k" identifies the sending server (see sourceTag) so the app can route taps.
+func (s *Server) apnsPayload(body []byte, vapidKeyHash [32]byte) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
 		"aps": map[string]any{
 			"alert":           map[string]string{"title": s.alertTitle, "body": s.alertBody},
@@ -237,6 +238,7 @@ func (s *Server) apnsPayload(body []byte) ([]byte, error) {
 		"webpush": map[string]any{
 			"v":    1,
 			"ce":   "aes128gcm",
+			"k":    sourceTag(vapidKeyHash),
 			"body": base64.StdEncoding.EncodeToString(body),
 		},
 	})
@@ -247,6 +249,13 @@ func (s *Server) apnsPayload(body []byte) ([]byte, error) {
 		return nil, errors.New("encrypted payload is too large for APNs; send with a Web Push record size of 2048 bytes or less")
 	}
 	return payload, nil
+}
+
+// sourceTag is base64url(SHA-256(VAPID public key)[:8]). The app computes the
+// same value when it registers, mapping pushes back to the server that sent
+// them without the relay revealing anything the server did not already sign.
+func sourceTag(vapidKeyHash [32]byte) string {
+	return base64.RawURLEncoding.EncodeToString(vapidKeyHash[:8])
 }
 
 // mapAPNsResult translates an APNs outcome into a Web Push (RFC 8030) status.

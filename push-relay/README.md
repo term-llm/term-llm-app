@@ -74,9 +74,11 @@ Returns `ok`.
     "mutable-content": 1,
     "sound": "default"
   },
-  "webpush": { "v": 1, "ce": "aes128gcm", "body": "<standard base64 of the Web Push body>" }
+  "webpush": { "v": 1, "ce": "aes128gcm", "k": "<source tag>", "body": "<standard base64 of the Web Push body>" }
 }
 ```
+
+`k` identifies the sending server: `base64url(SHA-256(VAPID public key)[:8])`, unpadded. The app computes the same tag when it registers, so it can map a push back to the server (and hub node) that sent it.
 
 The alert is a placeholder shown only if the extension fails or times out. To build the real notification, the extension:
 

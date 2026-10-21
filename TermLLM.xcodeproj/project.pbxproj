@@ -66,6 +66,19 @@
 		000000000000000000000343 /* VoiceShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000341 /* VoiceShortcutTests.swift */; };
 		000000000000000000000352 /* AppControlsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000350 /* AppControlsBar.swift */; };
 		000000000000000000000353 /* AppControlsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000351 /* AppControlsTests.swift */; };
+		000000000000000000000450 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000400 /* AppDelegate.swift */; };
+		000000000000000000000451 /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000401 /* PushCenter.swift */; };
+		000000000000000000000452 /* NativePushBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000402 /* NativePushBridge.swift */; };
+		000000000000000000000453 /* WebPushCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000410 /* WebPushCrypto.swift */; };
+		000000000000000000000454 /* PushIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000411 /* PushIdentityStore.swift */; };
+		000000000000000000000455 /* PushMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000412 /* PushMessage.swift */; };
+		000000000000000000000456 /* WebPushCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000410 /* WebPushCrypto.swift */; };
+		000000000000000000000457 /* PushIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000411 /* PushIdentityStore.swift */; };
+		000000000000000000000458 /* PushMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000412 /* PushMessage.swift */; };
+		000000000000000000000459 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000420 /* NotificationService.swift */; };
+		00000000000000000000045A /* PushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000430 /* PushTests.swift */; };
+		00000000000000000000045B /* TermLLMNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000440 /* TermLLMNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		00000000000000000000045C /* PushLiveE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000431 /* PushLiveE2ETests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -76,7 +89,28 @@
 			remoteGlobalIDString = 000000000000000000000010;
 			remoteInfo = TermLLM;
 		};
+		000000000000000000000479 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000470;
+			remoteInfo = TermLLMNotificationService;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		000000000000000000000474 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				00000000000000000000045B /* TermLLMNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000030 /* TermLLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TermLLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -140,6 +174,19 @@
 		000000000000000000000341 /* VoiceShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcutTests.swift; sourceTree = "<group>"; };
 		000000000000000000000350 /* AppControlsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsBar.swift; sourceTree = "<group>"; };
 		000000000000000000000351 /* AppControlsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsTests.swift; sourceTree = "<group>"; };
+		000000000000000000000400 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		000000000000000000000401 /* PushCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushCenter.swift; sourceTree = "<group>"; };
+		000000000000000000000402 /* NativePushBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushBridge.swift; sourceTree = "<group>"; };
+		000000000000000000000403 /* TermLLM.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TermLLM.entitlements; sourceTree = "<group>"; };
+		000000000000000000000410 /* WebPushCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebPushCrypto.swift; sourceTree = "<group>"; };
+		000000000000000000000411 /* PushIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushIdentityStore.swift; sourceTree = "<group>"; };
+		000000000000000000000412 /* PushMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushMessage.swift; sourceTree = "<group>"; };
+		000000000000000000000420 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		000000000000000000000421 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		000000000000000000000422 /* TermLLMNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TermLLMNotificationService.entitlements; sourceTree = "<group>"; };
+		000000000000000000000430 /* PushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTests.swift; sourceTree = "<group>"; };
+		000000000000000000000440 /* TermLLMNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TermLLMNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000431 /* PushLiveE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLiveE2ETests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -157,6 +204,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000472 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -164,6 +218,8 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000004 /* TermLLM */,
+				000000000000000000000460 /* Shared */,
+				000000000000000000000461 /* TermLLMNotificationService */,
 				000000000000000000000005 /* TermLLMTests */,
 				000000000000000000000003 /* Products */,
 			);
@@ -174,6 +230,7 @@
 			children = (
 				000000000000000000000030 /* TermLLM.app */,
 				000000000000000000000031 /* TermLLMTests.xctest */,
+				000000000000000000000440 /* TermLLMNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -182,7 +239,10 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000040 /* TermLLMApp.swift */,
+				000000000000000000000400 /* AppDelegate.swift */,
 				000000000000000000000041 /* ContentView.swift */,
+				000000000000000000000401 /* PushCenter.swift */,
+				000000000000000000000402 /* NativePushBridge.swift */,
 				000000000000000000000350 /* AppControlsBar.swift */,
 				000000000000000000000042 /* BrowserView.swift */,
 				000000000000000000000043 /* ServerAddress.swift */,
@@ -219,6 +279,7 @@
 				0000000000000000000000C9 /* MusicSearchView.swift */,
 				000000000000000000000044 /* Assets.xcassets */,
 				000000000000000000000300 /* PrivacyInfo.xcprivacy */,
+				000000000000000000000403 /* TermLLM.entitlements */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -247,8 +308,30 @@
 				00000000000000000000020B /* ListenToolsTests.swift */,
 				0000000000000000000000CE /* MusicViewRenderingTests.swift */,
 				0000000000000000000000E0 /* CatalogParsingTests.swift */,
+				000000000000000000000430 /* PushTests.swift */,
+				000000000000000000000431 /* PushLiveE2ETests.swift */,
 			);
 			path = TermLLMTests;
+			sourceTree = "<group>";
+		};
+		000000000000000000000460 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000410 /* WebPushCrypto.swift */,
+				000000000000000000000411 /* PushIdentityStore.swift */,
+				000000000000000000000412 /* PushMessage.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		000000000000000000000461 /* TermLLMNotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000420 /* NotificationService.swift */,
+				000000000000000000000421 /* Info.plist */,
+				000000000000000000000422 /* TermLLMNotificationService.entitlements */,
+			);
+			path = TermLLMNotificationService;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -261,10 +344,12 @@
 				000000000000000000000050 /* Sources */,
 				000000000000000000000051 /* Resources */,
 				000000000000000000000052 /* Frameworks */,
+				000000000000000000000474 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				000000000000000000000478 /* PBXTargetDependency */,
 			);
 			name = TermLLM;
 			productName = TermLLM;
@@ -287,6 +372,23 @@
 			productName = TermLLMTests;
 			productReference = 000000000000000000000031 /* TermLLMTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		000000000000000000000470 /* TermLLMNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000475 /* Build configuration list for PBXNativeTarget "TermLLMNotificationService" */;
+			buildPhases = (
+				000000000000000000000471 /* Sources */,
+				000000000000000000000472 /* Frameworks */,
+				000000000000000000000473 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TermLLMNotificationService;
+			productName = TermLLMNotificationService;
+			productReference = 000000000000000000000440 /* TermLLMNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -311,6 +413,7 @@
 			targets = (
 				000000000000000000000010 /* TermLLM */,
 				000000000000000000000011 /* TermLLMTests */,
+				000000000000000000000470 /* TermLLMNotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -325,6 +428,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000473 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -333,7 +443,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000080 /* TermLLMApp.swift in Sources */,
+				000000000000000000000450 /* AppDelegate.swift in Sources */,
 				000000000000000000000081 /* ContentView.swift in Sources */,
+				000000000000000000000451 /* PushCenter.swift in Sources */,
+				000000000000000000000452 /* NativePushBridge.swift in Sources */,
+				000000000000000000000453 /* WebPushCrypto.swift in Sources */,
+				000000000000000000000454 /* PushIdentityStore.swift in Sources */,
+				000000000000000000000455 /* PushMessage.swift in Sources */,
 				000000000000000000000352 /* AppControlsBar.swift in Sources */,
 				000000000000000000000082 /* BrowserView.swift in Sources */,
 				000000000000000000000083 /* ServerAddress.swift in Sources */,
@@ -396,6 +512,19 @@
 				00000000000000000000024B /* ListenToolsTests.swift in Sources */,
 				0000000000000000000000DE /* MusicViewRenderingTests.swift in Sources */,
 				0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */,
+				00000000000000000000045A /* PushTests.swift in Sources */,
+				00000000000000000000045C /* PushLiveE2ETests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000471 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000459 /* NotificationService.swift in Sources */,
+				000000000000000000000456 /* WebPushCrypto.swift in Sources */,
+				000000000000000000000457 /* PushIdentityStore.swift in Sources */,
+				000000000000000000000458 /* PushMessage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -407,6 +536,11 @@
 			target = 000000000000000000000010 /* TermLLM */;
 			targetProxy = 000000000000000000000061 /* PBXContainerItemProxy */;
 		};
+		000000000000000000000478 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000470 /* TermLLMNotificationService */;
+			targetProxy = 000000000000000000000479 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -414,8 +548,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
+				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_TESTABILITY = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 			};
@@ -425,7 +561,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
+				CURRENT_PROJECT_VERSION = 1;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 			};
@@ -435,21 +573,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TermLLM/TermLLM.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "term-llm";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access for web voice and attachments.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access for web voice sessions.";
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TERMLLM_PUSH_RELAY_URL = "https://push.term-llm.com";
 			};
 			name = Debug;
 		};
@@ -457,21 +595,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TermLLM/TermLLM.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLM/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "term-llm";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access for web voice and attachments.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access for web voice sessions.";
-				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TERMLLM_PUSH_RELAY_URL = "https://push.term-llm.com";
 			};
 			name = Release;
 		};
@@ -496,6 +634,52 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TermLLM.app/TermLLM";
+			};
+			name = Release;
+		};
+		000000000000000000000476 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TermLLMNotificationService/TermLLMNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = B6BAJ46A72;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		000000000000000000000477 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TermLLMNotificationService/TermLLMNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = B6BAJ46A72;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -525,6 +709,15 @@
 			buildConfigurations = (
 				000000000000000000000074 /* Debug */,
 				000000000000000000000075 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000475 /* Build configuration list for PBXNativeTarget "TermLLMNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000476 /* Debug */,
+				000000000000000000000477 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

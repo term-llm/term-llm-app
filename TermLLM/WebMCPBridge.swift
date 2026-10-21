@@ -15,6 +15,7 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     let device: String
     /// Weak: the controller retains its message handlers (this bridge).
     private weak var installedController: WKUserContentController?
+    private var installedScript: WKUserScript?
 
     init(serverURL: URL, registry: DeviceToolRegistry, device: String) {
         self.serverURL = serverURL
@@ -28,17 +29,20 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     func install(into controller: WKUserContentController) {
         guard installedController !== controller else { return }
         controller.removeScriptMessageHandler(forName: Self.handlerName, contentWorld: .page)
-        controller.addUserScript(WKUserScript(source: Self.script(origin: expectedOrigin, tools: registry.tools, device: device),
-                                              injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        let script = WKUserScript(source: Self.script(origin: expectedOrigin, tools: registry.tools, device: device),
+                                  injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)
+        controller.addUserScript(script)
+        installedScript = script
         controller.addScriptMessageHandler(self, contentWorld: .page, name: Self.handlerName)
         installedController = controller
     }
 
-    /// Removes the handler and all user scripts (this app injects no others).
+    /// Removes the handler and this bridge's script, keeping other bridges' scripts.
     func uninstall() {
         guard let controller = installedController else { return }
         controller.removeScriptMessageHandler(forName: Self.handlerName, contentWorld: .page)
-        controller.removeAllUserScripts()
+        if let installedScript { controller.removeUserScript(installedScript) }
+        installedScript = nil
         installedController = nil
     }
 

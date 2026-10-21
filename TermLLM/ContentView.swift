@@ -14,7 +14,6 @@ struct ContentView: View {
     @State private var loadError: String?
     @State private var reloadCount = 0
     @State private var backCount = 0
-    @State private var notificationStatus = "Not enabled"
     @State private var isSigningIn = false
     @State private var loginError: String?
     @State private var loginRequired = false
@@ -26,6 +25,7 @@ struct ContentView: View {
     @State private var nativeLogin = NativeLogin()
     @StateObject private var deviceTools = DeviceToolsSettings.shared
     @StateObject private var voiceLaunches = VoiceLaunchCenter.shared
+    @StateObject private var push = PushCenter.shared
     @State private var voiceRequest: VoiceBrowserLaunch?
     @State private var voiceLaunchError: String?
     private let listen = Listen.shared
@@ -51,6 +51,9 @@ struct ContentView: View {
         .onChange(of: voiceLaunches.request, initial: true) { _, request in
             guard let request else { return }
             beginVoiceLaunch(request)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await push.refreshAuthorization() } }
         }
         .alert("Voice shortcut", isPresented: Binding(
             get: { voiceLaunchError != nil },
@@ -138,7 +141,9 @@ struct ContentView: View {
                         scenePhase: scenePhase, isSigningIn: isSigningIn,
                         deviceTools: deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
                         onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls,
-                        voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch)
+                        voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
+                        push: push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
+                        onPushNavigationHandled: push.navigationHandled)
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
 
@@ -220,7 +225,7 @@ struct ContentView: View {
         showingControls = false
         draftURL = serverURL
         showingSettings = true
-        refreshNotificationStatus()
+        Task { await push.refreshAuthorization() }
     }
 
     private var settings: some View {
@@ -254,17 +259,7 @@ struct ContentView: View {
                     }
                     .disabled(hasPendingServerEdit)
                 }
-                Section("Notifications") {
-                    LabeledContent("Permission", value: notificationStatus)
-                    Button("Enable notifications") {
-                        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
-                            DispatchQueue.main.async { refreshNotificationStatus() }
-                        }
-                    }
-                    Text("Permission only. Completion alerts need server-side push support.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                notificationsSection
                 deviceToolsSection
             }
             .navigationTitle("Settings")
@@ -369,15 +364,29 @@ struct ContentView: View {
         showingSettings = false
     }
 
-    private func refreshNotificationStatus() {
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            DispatchQueue.main.async {
-                switch settings.authorizationStatus {
-                case .authorized, .provisional, .ephemeral: notificationStatus = "Allowed"
-                case .denied: notificationStatus = "Blocked in Settings"
-                default: notificationStatus = "Not enabled"
+    /// One app-wide switch. Each server or hub agent enrolls itself when its
+    /// page loads; its own settings can turn notifications off for it alone.
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Notifications", isOn: Binding(
+                get: { push.enabled && push.authorization != .denied },
+                set: { on in Task { await push.setEnabled(on) } }
+            ))
+            .disabled(push.authorization == .denied)
+            .accessibilityIdentifier("notificationsToggle")
+            if push.authorization == .denied {
+                Button("Allow in iOS Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
                 }
             }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text(push.authorization == .denied
+                 ? "Notifications are blocked for term-llm in iOS Settings."
+                 : "Alerts when a response finishes or an agent sends you a message. Sites and hub agents you open here sign up automatically; turn one off from its own settings.")
         }
     }
 }

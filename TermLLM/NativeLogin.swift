@@ -135,16 +135,3 @@ private enum LoginError: LocalizedError {
         }
     }
 }
-
-private extension Data {
-    func base64URLEncodedString() -> String {
-        base64EncodedString().replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-    }
-
-    init?(base64URLEncoded input: String) {
-        let padded = input.replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/") + String(repeating: "=", count: (4 - input.count % 4) % 4)
-        self.init(base64Encoded: padded)
-    }
-}

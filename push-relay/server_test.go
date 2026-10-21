@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -157,11 +158,15 @@ func TestPushForwardsToAPNs(t *testing.T) {
 		WebPush struct {
 			V    int    `json:"v"`
 			CE   string `json:"ce"`
+			K    string `json:"k"`
 			Body string `json:"body"`
 		} `json:"webpush"`
 	}
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
 		t.Fatal(err)
+	}
+	if payload.WebPush.K != sourceTag(sha256.Sum256(key.raw)) {
+		t.Fatalf("source tag %q does not identify the server key", payload.WebPush.K)
 	}
 	if payload.APS.MutableContent != 1 || payload.APS.Alert["title"] != "term-llm" || payload.WebPush.V != 1 || payload.WebPush.CE != "aes128gcm" {
 		t.Fatalf("payload: %s", req.Payload)
@@ -293,6 +298,14 @@ func TestPushMapsAPNsFailures(t *testing.T) {
 		if resp.StatusCode != tc.want || (resp.Header.Get("Retry-After") != "") != tc.retryAfter {
 			t.Errorf("%+v %v: got %d Retry-After=%q, want %d", tc.result, tc.err, resp.StatusCode, resp.Header.Get("Retry-After"), tc.want)
 		}
+	}
+}
+
+// The iOS app computes the same tag (PushSourceTag in Swift); keep in sync.
+func TestSourceTagVector(t *testing.T) {
+	key, _ := decodeBase64Any("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4")
+	if got := sourceTag(sha256.Sum256(key)); got != "Kn8g3g7yY94" {
+		t.Fatalf("source tag vector changed: %s", got)
 	}
 }
 

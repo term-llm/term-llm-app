@@ -123,6 +123,13 @@ struct BrowserView: UIViewRepresentable {
     let onRevealControls: () -> Void
     var voiceLaunch: VoiceBrowserLaunch? = nil
     var onVoiceLaunchFinished: (UUID, String?) -> Void = { _, _ in }
+    /// Native push: the bridge is always offered to the configured server so
+    /// its web UI can enroll; nil disables it (tests).
+    var push: PushCenter? = nil
+    /// A tapped notification's page on the configured server.
+    var pushNavigation: PushNavigation? = nil
+    var pushChangeCount = 0
+    var onPushNavigationHandled: (UUID) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -130,12 +137,16 @@ struct BrowserView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
+        context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
             coordinator?.parent.canGoBack = webView.canGoBack
+        }
+        context.coordinator.urlObservation = view.observe(\.url, options: [.initial, .new]) { [weak coordinator = context.coordinator] webView, _ in
+            MainActor.assumeIsolated { coordinator?.parent.push?.visibleURL = webView.url }
         }
         view.allowsBackForwardNavigationGestures = true
         view.scrollView.contentInsetAdjustmentBehavior = .never
@@ -148,7 +159,13 @@ struct BrowserView: UIViewRepresentable {
         pull.maximumNumberOfTouches = 1
         view.scrollView.addGestureRecognizer(pull)
         context.coordinator.loadedURL = url
-        view.load(URLRequest(url: url))
+        context.coordinator.pushChangeCount = pushChangeCount
+        if let navigation = pushNavigation, context.coordinator.sameOrigin(navigation.url, url) {
+            context.coordinator.handlePushNavigation(navigation)
+            view.load(URLRequest(url: navigation.url))
+        } else {
+            view.load(URLRequest(url: url))
+        }
         return view
     }
 
@@ -171,7 +188,11 @@ struct BrowserView: UIViewRepresentable {
         var backCount = 0
         var authenticatedCount = 0
         var backObservation: NSKeyValueObservation?
+        var urlObservation: NSKeyValueObservation?
+        var pushChangeCount = 0
+        private var handledPushNavigation: UUID?
         private var bridge: WebMCPBridge?
+        private var pushBridge: NativePushBridge?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
         private var voiceTask: Task<Void, Never>?
@@ -194,8 +215,12 @@ struct BrowserView: UIViewRepresentable {
             voiceTask = nil
             backObservation?.invalidate()
             backObservation = nil
+            urlObservation?.invalidate()
+            urlObservation = nil
             bridge?.uninstall()
             bridge = nil
+            pushBridge?.uninstall()
+            pushBridge = nil
             recoveryPending = false
         }
 
@@ -213,8 +238,10 @@ struct BrowserView: UIViewRepresentable {
             reloadCount = parent.reloadCount
             authenticatedCount = parent.authenticatedCount
             backCount = parent.backCount
+            let pushBridgeChanged = syncPushBridge(url: parent.url, center: parent.push,
+                                                   controller: view.configuration.userContentController)
             let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.deviceTools,
-                                               controller: view.configuration.userContentController)
+                                               controller: view.configuration.userContentController) || pushBridgeChanged
 
             // Coalesce native changes into one navigation. Server changes and
             // fresh auth always take precedence over reload/back commands.
@@ -247,6 +274,43 @@ struct BrowserView: UIViewRepresentable {
             if !serverChanged && !backRequested && !reloadRequested {
                 startVoiceLaunchIfNeeded(view)
             }
+            if let navigation = parent.pushNavigation, navigation.id != handledPushNavigation {
+                handlePushNavigation(navigation)
+                if voiceTask == nil, sameOrigin(navigation.url, parent.url) {
+                    resetRecovery()
+                    rejectedHTTPResponse = false
+                    view.load(URLRequest(url: navigation.url))
+                }
+            }
+            if pushChangeCount != parent.pushChangeCount {
+                pushChangeCount = parent.pushChangeCount
+                if let current = view.url, sameOrigin(current, parent.url), !view.isLoading {
+                    view.evaluateJavaScript(NativePushBridge.changeScript, completionHandler: nil)
+                }
+            }
+        }
+
+        /// Marks a notification tap consumed (whether or not it was allowed to navigate).
+        func handlePushNavigation(_ navigation: PushNavigation) {
+            handledPushNavigation = navigation.id
+            let done = parent.onPushNavigationHandled
+            DispatchQueue.main.async { done(navigation.id) }
+        }
+
+        /// Installs the push bridge for the configured server's origin.
+        /// Returns true when the injected script changed.
+        @discardableResult
+        func syncPushBridge(url: URL, center: PushCenter?, controller: WKUserContentController) -> Bool {
+            if let pushBridge, let center, pushBridge.serverURL == url, pushBridge.center === center { return false }
+            if pushBridge == nil && center == nil { return false }
+            pushBridge?.uninstall()
+            pushBridge = nil
+            if let center {
+                let bridge = MainActor.assumeIsolated { NativePushBridge(serverURL: url, center: center) }
+                bridge.install(into: controller)
+                pushBridge = bridge
+            }
+            return true
         }
 
         private func finishVoiceLaunch(_ id: UUID, error: String? = nil) {
@@ -328,7 +392,7 @@ struct BrowserView: UIViewRepresentable {
             }
         }
 
-        private func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+        func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
             func port(_ url: URL) -> Int { url.port ?? (url.scheme == "https" ? 443 : 80) }
             return lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
                 lhs.host?.lowercased() == rhs.host?.lowercased() && port(lhs) == port(rhs)
