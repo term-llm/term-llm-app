@@ -2,6 +2,8 @@
 
 Initial rollout: 2026-10-21. This is an **operator-only relay**, not completed iOS notification integration. Do not distribute its shared bearer token with the app or to other server operators.
 
+Build this service from the module directory with `go build -o term-llm-push ./cmd/term-llm-push`. The module-root command is now the separate encrypted Web Push relay and is not a drop-in replacement for this deployment. See [operator configuration and API](OPERATOR-RELAY.md).
+
 ## Host and layout
 
 - Host: existing wasnotwas DigitalOcean droplet (`root@143.198.76.107`). Use the IP for SSH; the public hostname is Cloudflare-proxied.

@@ -1,185 +1,142 @@
-# term-llm native APNs push relay
+# term-llm push relay
 
-A small, independent Go service that accepts authenticated notification requests and delivers them directly to Apple Push Notification service (APNs). It is intentionally narrower than a general push platform: one operator-managed APNs key, one fixed topic, one shared bearer credential, and two fixed Apple endpoints.
+This module provides two separate commands: the encrypted Web Push relay described below (`go build .`), and the existing operator-only bearer-authenticated relay (`go build -o term-llm-push ./cmd/term-llm-push`). The latter retains its original configuration and API; see [operator relay documentation](ops/OPERATOR-RELAY.md) and [existing deployment notes](ops/DEPLOYMENT.md). The `ops/` systemd and nginx templates target that operator command, not the encrypted relay. Do not replace the deployed operator binary with the module-root command without migrating its configuration and proxy routes.
 
-This directory is its own Go module and uses only the standard library. It does **not** modify or integrate with the iOS app. Native app registration and per-user provisioning are a later milestone.
+A small Go service that lets self-hosted term-llm servers send native iOS notifications to the term-llm app.
 
-## Deployment boundary
+Only the holder of the app's APNs key can push to it, and that key cannot be shipped to self-hosted servers. The app therefore registers a Web Push subscription whose endpoint is this relay. term-llm sends ordinary encrypted Web Push (RFC 8030/8291/8292) to that endpoint, exactly as it does for browsers. The relay forwards the still-encrypted body to APNs. The app's Notification Service Extension decrypts it on the device.
 
-This first version is **operator-only infrastructure**.
-
-- The bearer credential in `RELAY_TOKEN_FILE` is a single global secret. Any holder can ask the relay to send to any device token for the fixed topic, in either sandbox or production.
-- Never embed that credential in the iOS app, TestFlight configuration, a public repository, or a distributed self-hosted build. Do not give it to arbitrary users of other term-llm instances.
-- Future app integration must use per-user/per-device provisioning, scoped credentials, revocation, and registration storage. That work is intentionally out of scope here.
-- An APNs `.p8` key can be scoped by Apple to sandbox, production, or both, and that scope is not encoded in the file. The caller must explicitly choose the matching environment.
-- APNs accepting a request is not proof that a phone received or displayed it. A physical-device test is still required for the intended release; simulator APNs support varies by host/Xcode combination and does not replace device verification.
-
-The supplied `ops/` templates are the expected host layout: systemd runs the binary on loopback and nginx terminates TLS. They are deployment examples, not a substitute for reviewing the host's firewall, certificate, and secret permissions. See [deployment notes](ops/DEPLOYMENT.md) for the current `push.term-llm.com` installation, production-only key, verification, and Cloudflare caveats.
-
-## Build and test
-
-Requires Go 1.24 or newer (the APNs transport uses the standard library's HTTP/2-only `http.Protocols` API).
-
-```sh
-cd push-relay
-gofmt -l .
-go vet ./...
-go test -race ./...
-CGO_ENABLED=0 go build -trimpath -o term-llm-push .
+```
+term-llm server ──Web Push (aes128gcm, VAPID)──▶ relay /v1/push/<token> ──APNs (HTTP/2)──▶ iPhone ─▶ NSE decrypts
 ```
 
-The binary is the module root, so the build output name above matches the systemd `ExecStart` path. `term-llm-push` loads and validates all configuration before listening; any configuration error is fatal. It logs only startup/shutdown and the listen address, never request headers, bodies, device tokens, or credentials.
+The relay cannot read notification content and stores no per-device state. The device token, APNs environment and the server's VAPID key are sealed (AES-256-GCM) into the endpoint token. The binary uses only the Go standard library. `webpush-go` is a test-only dependency.
 
-## Configuration
+## API
 
-All configuration is read from the environment at startup.
+### `POST /v1/register`
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `APNS_KEY_FILE` | yes | Path to the APNs provider auth key. Must be a PKCS#8 `PRIVATE KEY` PEM containing an ECDSA P-256 key. |
-| `APNS_KEY_ID` | yes | Apple key identifier, 1–64 ASCII letters/digits. |
-| `APNS_TEAM_ID` | yes | Apple team identifier, 1–64 ASCII letters/digits. |
-| `APNS_TOPIC` | yes | Fixed APNs topic (normally the app bundle ID). Every request uses it; callers cannot override it. |
-| `RELAY_TOKEN_FILE` | yes | Path to the shared bearer secret. 32–512 printable ASCII bytes, at least 8 distinct byte values. |
-| `RELAY_ADDR` | no | Listen address. Default `127.0.0.1:8768`. An explicit host is required; use `0.0.0.0` only when remote exposure is intentional and protected. |
-| `APNS_TIMEOUT` | no | Per-request APNs timeout, default `10s`, range `1s`–`60s`. |
-| `RELAY_SHUTDOWN_TIMEOUT` | no | Graceful shutdown budget, default `10s`, range `1s`–`60s`. |
-| `RELAY_MAX_CONCURRENCY` | no | Maximum simultaneous APNs calls, default `16`, range `1`–`128`. |
+Called by the app.
 
-`APNS_KEY_FILE` and `RELAY_TOKEN_FILE` must be regular files with no group or other permission bits (`chmod 600` or `400`). The process refuses to start otherwise. Never commit either file.
-
-The supplied systemd unit uses `LoadCredential=` to read root-only source files, then stages owner-readable `0400` copies in a private `0700` `RuntimeDirectory` under `/run/term-llm-push/`. This accommodates hosts that expose credential mounts as root-owned `0440` without weakening the relay's owner-only file validation. Runtime copies are removed when the service stops. The loader also accepts literal `%d/<single-file-name>` values resolved against `CREDENTIALS_DIRECTORY`, or already-resolved paths, for hosts where credential copies are owner-only.
-
-Generate the shared secret with a cryptographic source:
-
-```sh
-umask 077
-openssl rand -base64 48 > /etc/term-llm-push/relay-token
-chmod 400 /etc/term-llm-push/relay-token
-```
-
-Put the Apple-provided `.p8` key at the path selected by `APNS_KEY_FILE` and make it owner-readable only. Rotating either the key or the relay token requires restarting the process; neither is hot-reloaded.
-
-## HTTP API
-
-The service exposes exactly two routes. Every other path returns `404`.
-
-### `GET /healthz`
-
-Returns `200` with `{"status":"ok"}` after configuration has loaded and the listener is running. It does not contact Apple, prove APNs credentials work, or prove that a notification can be delivered. It is intentionally unauthenticated; keep the listener on loopback or protect it at the proxy.
-
-### `POST /v1/push`
-
-```http
-POST /v1/push HTTP/1.1
-Authorization: Bearer <RELAY_TOKEN_FILE contents>
-Content-Type: application/json
-
+```json
 {
-  "environment": "sandbox",
-  "device_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "title": "Build finished",
-  "body": "Your task is ready.",
-  "data": {
-    "conversation_id": "abc123"
-  }
+  "device_token": "<hex APNs device token>",
+  "environment": "production | development",
+  "application_server_key": "<term-llm VAPID public key, base64url>"
 }
 ```
 
-Fields:
+Returns `200 {"endpoint": "https://push.example.com/v1/push/<token>", "environment": "..."}`.
 
-- `environment` — required, exactly `"sandbox"` or `"production"`. There is no implicit production fallback.
-- `device_token` — required, hexadecimal, even length, between 32 and 512 characters. Apple documents device tokens as variable length and says not to assume a size, so the relay does not require 64 characters. The bound only prevents an unbounded URL path segment.
-- `title`, `body` — required non-empty UTF-8 strings. They become `aps.alert.title` and `aps.alert.body`.
-- `data` — optional JSON object. Its keys are merged into the top-level payload. The reserved key `aps` is rejected so callers cannot override alert/sound or other APNs controls.
+- **environment:** `development` is only for builds signed with a development profile (run from Xcode). TestFlight, App Store and Ad Hoc builds are `production`. Read it from the `aps-environment` entitlement.
+- **application_server_key:** the same key the web UI passes to `pushManager.subscribe`. The endpoint only accepts pushes signed by that key, so one endpoint belongs to one term-llm server.
+- **Deterministic endpoint:** the same inputs always return the same endpoint. term-llm upserts subscriptions by endpoint, so the app can re-register on every launch without creating duplicates.
+- **Subscribing:** the app then subscribes to term-llm with the existing API. It sends this `endpoint` plus its own `p256dh` key and `auth` secret, both generated and kept on the device.
 
-The relay constructs:
+### `POST /v1/push/{token}`
+
+Called by term-llm, using any Web Push library. The request must have:
+
+- `Authorization: vapid t=<jwt>, k=<key>`, with `aud` equal to the relay origin, `exp` no more than 24 hours ahead, and `k` matching the registered key.
+- `Content-Encoding: aes128gcm`.
+- A `TTL` header.
+- A single-record body of at most 4096 bytes. In practice it must be smaller to fit in an APNs payload; see [Required term-llm change](#required-term-llm-change).
+
+Optional headers:
+
+- **`Urgency`:** `very-low` and `low` map to `apns-priority: 5`; everything else to `10`.
+- **`Topic`:** becomes `apns-collapse-id`.
+- **`TTL`:** becomes `apns-expiration` (0 means deliver now or drop), capped at 28 days.
+
+| Status | Meaning for the sender |
+| --- | --- |
+| 201 | Accepted by APNs. `Location` holds the message URL. |
+| 400 / 415 | Malformed request (bad headers, not aes128gcm). |
+| 401 / 403 | VAPID missing or invalid / signed by a key other than the registered one. |
+| 404 | Unknown or undecryptable token. Delete the subscription. |
+| 410 | APNs says the device token is gone (`Unregistered`, `BadDeviceToken`, `DeviceTokenNotForTopic`). Delete the subscription. |
+| 413 | Payload too large for APNs. |
+| 429 | Rate limited, per device or by APNs. Honour `Retry-After`. |
+| 502 / 503 | APNs unreachable or relay misconfigured. Retry after `Retry-After`. |
+
+term-llm already marks subscriptions stale on 404/410 and retries everything else with backoff.
+
+### `GET /healthz`
+
+Returns `ok`.
+
+## APNs payload (contract for the Notification Service Extension)
 
 ```json
 {
   "aps": {
-    "alert": {"title": "...", "body": "..."},
+    "alert": { "title": "term-llm", "body": "New notification" },
+    "mutable-content": 1,
     "sound": "default"
   },
-  "...caller data keys..."
+  "webpush": { "v": 1, "ce": "aes128gcm", "body": "<standard base64 of the Web Push body>" }
 }
 ```
 
-Request limits: 16 KiB total JSON body, 4096-byte final APNs payload, one JSON object with no unknown fields and no trailing JSON. `Content-Type` must be `application/json` (an optional `charset=utf-8` parameter is accepted).
+The alert is a placeholder shown only if the extension fails or times out. To build the real notification, the extension:
 
-Successful acceptance:
+1. Base64-decodes `webpush.body`. It is laid out as `salt(16) | rs(4) | idlen(1)=65 | as_public(65) | ciphertext`.
+2. Computes `ecdh = ECDH(ua_private, as_public)`.
+3. Derives the keys:
+   - `IKM = HKDF-SHA256(salt=auth_secret, ikm=ecdh, info="WebPush: info\0" || ua_public || as_public, 32)`
+   - `CEK = HKDF(salt=salt, ikm=IKM, info="Content-Encoding: aes128gcm\0", 16)`
+   - `NONCE = HKDF(salt=salt, ikm=IKM, info="Content-Encoding: nonce\0", 12)`
+4. Decrypts with AES-128-GCM (CEK, NONCE). It strips trailing `0x00` bytes, then the `0x02` delimiter.
+5. Parses the resulting term-llm JSON. Completion pushes carry `title`, `body`, `url`, `session_id`, `outcome` and `event_id`. `term-llm notify` sends `title` and `body`. The extension sets the notification's title and body, a `threadIdentifier` (the session), and stores `url` so a tap opens that chat.
 
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
+`decryptWebPush` in `helpers_test.go` is a working reference, and `TestWebPushGoEndToEnd` checks it against `webpush-go`.
 
-{"status":"accepted","apns_status":200}
-```
+## Required term-llm change
 
-`accepted` means APNs returned a 2xx status. It is not a delivery receipt.
+`webpush-go` pads every message to its record size, which defaults to 4096 bytes. In base64 that is 5462 characters, more than the 4096-byte APNs limit. The relay returns 413 for such messages rather than truncating them. term-llm must send with `webpush.Options{RecordSize: 2048}` (in `serve_completion_push.go` and `notify/webpush.go`). That still leaves about 1.9 KB for the JSON message and works for browser push services too.
 
-APNs rejections retain the upstream status and reason without exposing Apple URLs or authorization material:
+## Configuration
 
-```json
-{
-  "error": {
-    "code": "apns_rejected",
-    "message": "Apple Push Notification service rejected the request",
-    "apns_status": 400,
-    "reason": "BadDeviceToken",
-    "device_invalid": true
-  }
-}
-```
+| Variable | Required | Description |
+| --- | --- | --- |
+| `RELAY_PUBLIC_URL` | yes | Public origin, e.g. `https://push.term-llm.com`. Used in endpoints and as the VAPID `aud`. HTTPS only (HTTP is allowed for loopback). No path. |
+| `RELAY_TOKEN_KEYS` | yes | `id:base64(32 bytes)[,id:base64...]`. The first key seals new endpoints; all listed keys open existing ones. Generate with `push-relay genkey`. |
+| `APNS_KEY_ID` | yes | Key ID of the APNs auth key. |
+| `APNS_TEAM_ID` | yes | Apple Developer Team ID (`B6BAJ46A72`). |
+| `APNS_PRIVATE_KEY` / `APNS_PRIVATE_KEY_FILE` | yes | Contents of the `.p8` file (PEM, or base64 of the PEM), or a path to it. |
+| `APNS_TOPIC` | no | App bundle ID. Default `com.termllm.app`. |
+| `PORT` / `RELAY_LISTEN_ADDR` | no | Listen on `:$PORT`, or an explicit address. Default `:8080`. |
+| `RELAY_CLIENT_IP_HEADER` | no | Trusted proxy header for the client IP (`Fly-Client-IP`, `CF-Connecting-IP`). Only set it behind such a proxy. |
+| `RELAY_PUSH_BURST` / `RELAY_PUSH_PER_MINUTE` | no | Per-device token bucket. Default 30 / 20. |
+| `RELAY_REGISTER_BURST` / `RELAY_REGISTER_PER_MINUTE` | no | Per-IP registration bucket. Default 20 / 10. |
+| `RELAY_ALERT_TITLE` / `RELAY_ALERT_BODY` | no | Placeholder alert text. |
 
-`device_invalid` is true for reasons such as `BadDeviceToken`, `DeviceTokenNotForTopic`, `Unregistered`, and `ExpiredToken`. Before removing any stored registration, verify that the request used the intended environment, topic, and APNs key: `BadDeviceToken` and `DeviceTokenNotForTopic` can indicate an environment/topic mismatch rather than a dead device token. Do not blindly retry the same request. Device-invalid rejections use `400`, except `Unregistered`, which uses `410`. Other APNs rejections use `502`, except Apple's `PayloadTooLarge`, which maps to `422`.
+Missing or invalid settings are all reported at startup and the process exits.
 
-Other status codes:
+## Deploying
 
-| Status | Code | Meaning |
-|---|---|---|
-| `400` | `invalid_request`, `invalid_json`, `invalid_environment`, `invalid_device_token`, `invalid_data`, `reserved_data_key`, `invalid_payload` | Request validation failed; APNs was not called. |
-| `401` | `unauthorized` | Missing or invalid bearer credential. |
-| `404` | `not_found` | Route closed. |
-| `405` | `method_not_allowed` | Wrong method; see `Allow`. |
-| `413` | `request_too_large` | JSON body exceeded 16 KiB. |
-| `415` | `unsupported_media_type` | Content type was not JSON. |
-| `422` | `payload_too_large` | Final notification exceeded 4096 bytes. |
-| `502` | `apns_rejected`, `apns_unavailable`, `upstream_failure` | APNs rejected the request or transport failed. |
-| `503` | `relay_busy` | The configured concurrent APNs call limit is full. |
-| `504` | `apns_timeout` | The APNs request exceeded `APNS_TIMEOUT`. |
+1. **APNs key:** in the Apple Developer portal go to Certificates, IDs & Profiles → Keys. Create a key with *Apple Push Notifications service (APNs)* enabled and download the `.p8` (it can only be downloaded once). One key covers both sandbox and production. Also enable the Push Notifications capability on the `com.termllm.app` App ID.
+2. **Token key:** run `go run . genkey` (or `docker run --rm <image> genkey`). Store `RELAY_TOKEN_KEYS` as a secret and keep a backup. Losing it invalidates every endpoint; devices recover when the app re-registers, and servers drop the old subscriptions on 404.
+3. **Run the image:**
 
-Example:
+   ```sh
+   docker build -t term-llm-push-relay push-relay
+   docker run -p 8080:8080 \
+     -e RELAY_PUBLIC_URL=https://push.term-llm.com \
+     -e RELAY_TOKEN_KEYS=... -e APNS_KEY_ID=... -e APNS_TEAM_ID=B6BAJ46A72 \
+     -e APNS_PRIVATE_KEY="$(cat AuthKey_XXXX.p8)" \
+     term-llm-push-relay
+   ```
+
+4. **TLS:** terminate TLS in front of the relay. Use `/healthz` as the health check.
+
+Rate limits are kept in memory per instance. Run one instance, or accept that limits are per instance. Logs are JSON on stdout. Devices appear only as a short hash, and payloads are never logged.
+
+**Rotating the token key:** prepend a new key (`2:new,1:old`). New registrations use key 2 and old endpoints keep working. Remove key 1 once the apps have re-registered.
+
+## Development
 
 ```sh
-read -r RELAY_TOKEN < /etc/term-llm-push/relay-token
-curl -sS https://push.term-llm.com/v1/push \
-  --header "Authorization: Bearer $RELAY_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{
-    "environment": "sandbox",
-    "device_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "title": "Build finished",
-    "body": "Your task is ready."
-  }'
+cd push-relay
+go test -race ./...
 ```
-
-## Delivery behavior and limitations
-
-- The relay makes one application-level APNs request and does not retry after a rejection, timeout, or redirect. The Go HTTP/2 transport may transparently retry an HTTP/2 stream when it can prove the stream was not processed; this is still not an exactly-once delivery guarantee.
-- `apns-expiration: 0` tells APNs to attempt immediate delivery only, without storing the notification for later. `apns-priority: 10`, `apns-push-type: alert`, and the fixed topic are always set by the relay.
-- If a request times out or the connection fails after sending, delivery state is unknown. Retrying can duplicate a notification. Clients should not blindly retry ambiguous failures.
-- The provider JWT is cached for 50 minutes in-process. APNs asks providers to refresh no more often than 20 minutes and no less than 60 minutes. A process restarted several times within 20 minutes may temporarily receive `TooManyProviderTokenUpdates`.
-- The concurrency cap and rate behavior are per process. The nginx template also applies per-address limits; neither is a global delivery queue.
-- No device registration, per-user authentication, delivery receipts, APNs collapse IDs, custom sounds, rich media, or token hot-reload are implemented.
-
-## Verification
-
-Tests do not call Apple. They use local TLS `httptest` servers for HTTP/2 and HTTP/1 protocol checks and a recording fake for the relay boundary. They cover:
-
-- configuration loading, required values, private-file permissions, P-256/PKCS#8 validation, weak-token rejection, and `%d` credential paths;
-- ES256 JWT header/claims/raw `r||s` signature verification, 50-minute caching, and concurrent caching;
-- APNs request headers, payload, topic, device-token path, JWT verification, timeout/no-retry behavior, APNs rejection mapping, payload bounds, and HTTP/2 enforcement;
-- health routing, constant-time bearer rejection before body parsing, strict JSON/content-type/token validation, unknown and trailing fields, payload and body bounds, concurrency limiting, sanitized upstream errors, and APNs error mapping.
-
-Run `go test -race ./...` from this directory.
