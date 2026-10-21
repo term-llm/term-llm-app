@@ -1,0 +1,62 @@
+[Unit]
+Description=term-llm encrypted Web Push to APNs relay
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=term-llm-push
+Group=term-llm-push
+WorkingDirectory=/opt/term-llm-push/current
+ExecStart=/opt/term-llm-push/current/term-llm-push serve
+Environment=RELAY_LISTEN_ADDR=127.0.0.1:8768
+Environment=RELAY_PUBLIC_URL=https://push.term-llm.com
+Environment=RELAY_APNS_ENVIRONMENTS=production
+Environment=RELAY_GLOBAL_PUSH_BURST=10
+Environment=RELAY_GLOBAL_PUSH_PER_MINUTE=60
+Environment=RELAY_MAX_CONCURRENCY=8
+# nginx overwrites this header with its trusted/restored client address.
+Environment=RELAY_CLIENT_IP_HEADER=X-Relay-Client-IP
+Environment=APNS_KEY_ID=6Q6W284ZY6
+Environment=APNS_TEAM_ID=B6BAJ46A72
+Environment=APNS_TOPIC=com.termllm.app
+RuntimeDirectory=term-llm-push
+RuntimeDirectoryMode=0700
+# systemd credential mounts can be 0440 on this host; preserve strict secret
+# validation by staging owner-only copies in a private runtime directory.
+LoadCredential=apns-key.p8:/etc/term-llm-push/apns-key.p8
+LoadCredential=endpoint-token-keys:/etc/term-llm-push/endpoint-token-keys
+ExecStartPre=/usr/bin/install -m 0400 %d/apns-key.p8 /run/term-llm-push/apns-key.p8
+ExecStartPre=/usr/bin/install -m 0400 %d/endpoint-token-keys /run/term-llm-push/endpoint-token-keys
+Environment=APNS_PRIVATE_KEY_FILE=/run/term-llm-push/apns-key.p8
+Environment=RELAY_TOKEN_KEYS_FILE=/run/term-llm-push/endpoint-token-keys
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+TasksMax=256
+LimitNOFILE=1024
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

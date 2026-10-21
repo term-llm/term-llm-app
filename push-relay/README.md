@@ -1,6 +1,6 @@
 # term-llm push relay
 
-This module provides two separate commands: the encrypted Web Push relay described below (`go build .`), and the existing operator-only bearer-authenticated relay (`go build -o term-llm-push ./cmd/term-llm-push`). The latter retains its original configuration and API; see [operator relay documentation](ops/OPERATOR-RELAY.md) and [existing deployment notes](ops/DEPLOYMENT.md). The `ops/` systemd and nginx templates target that operator command, not the encrypted relay. Do not replace the deployed operator binary with the module-root command without migrating its configuration and proxy routes.
+This module provides two separate commands: the encrypted Web Push relay described below (`go build .`), and the existing operator-only bearer-authenticated relay (`go build -o term-llm-push ./cmd/term-llm-push`). The latter retains its original configuration and API; see [operator relay documentation](ops/OPERATOR-RELAY.md) and [existing deployment notes](ops/DEPLOYMENT.md). The `ops/` directory holds separate service and nginx templates for each command; deploy the pair that matches the binary you build and do not replace one with the other.
 
 A small Go service that lets self-hosted term-llm servers send native iOS notifications to the term-llm app.
 
@@ -28,7 +28,7 @@ Called by the app.
 
 Returns `200 {"endpoint": "https://push.example.com/v1/push/<token>", "environment": "..."}`.
 
-- **environment:** `development` is only for builds signed with a development profile (run from Xcode). TestFlight, App Store and Ad Hoc builds are `production`. Read it from the `aps-environment` entitlement.
+- **environment:** `development` is only for builds signed with a development profile (run from Xcode). TestFlight, App Store and Ad Hoc builds are `production`. Read it from the `aps-environment` entitlement. `sandbox` is accepted as an alias for `development`. The relay accepts only the environments enabled in `RELAY_APNS_ENVIRONMENTS` (default `production`); a disabled environment returns `422` with `{"code":"unsupported_environment","error":"..."}` before any endpoint is minted.
 - **application_server_key:** the same key the web UI passes to `pushManager.subscribe`. The endpoint only accepts pushes signed by that key, so one endpoint belongs to one term-llm server.
 - **Deterministic endpoint:** the same inputs always return the same endpoint. term-llm upserts subscriptions by endpoint, so the app can re-register on every launch without creating duplicates.
 - **Subscribing:** the app then subscribes to term-llm with the existing API. It sends this `endpoint` plus its own `p256dh` key and `auth` secret, both generated and kept on the device.
@@ -56,8 +56,8 @@ Optional headers:
 | 404 | Unknown or undecryptable token. Delete the subscription. |
 | 410 | APNs says the device token is gone (`Unregistered`, `BadDeviceToken`, `DeviceTokenNotForTopic`). Delete the subscription. |
 | 413 | Payload too large for APNs. |
-| 429 | Rate limited, per device or by APNs. Honour `Retry-After`. |
-| 502 / 503 | APNs unreachable or relay misconfigured. Retry after `Retry-After`. |
+| 429 | Rate limited: the per-device bucket, the process-wide outbound budget, or APNs. Honour `Retry-After`. |
+| 502 / 503 | APNs unreachable, relay misconfigured, or the process is at its send concurrency limit. Retry after `Retry-After`. |
 
 term-llm already marks subscriptions stale on 404/410 and retries everything else with backoff.
 
@@ -102,23 +102,34 @@ The alert is a placeholder shown only if the extension fails or times out. To bu
 | Variable | Required | Description |
 | --- | --- | --- |
 | `RELAY_PUBLIC_URL` | yes | Public origin, e.g. `https://push.term-llm.com`. Used in endpoints and as the VAPID `aud`. HTTPS only (HTTP is allowed for loopback). No path. |
-| `RELAY_TOKEN_KEYS` | yes | `id:base64(32 bytes)[,id:base64...]`. The first key seals new endpoints; all listed keys open existing ones. Generate with `push-relay genkey`. |
+| `RELAY_TOKEN_KEYS` | one of | `id:base64(32 bytes)[,id:base64...]`. The first key seals new endpoints; all listed keys open existing ones. Generate with `push-relay genkey`. |
+| `RELAY_TOKEN_KEYS_FILE` | one of | Path to a file containing only the `id:base64(32 bytes)` value (not a `RELAY_TOKEN_KEYS=` prefix), with entries separated by commas or newlines. The service reads it at startup; the file must be a regular file with no group or other permission bits (for example `0400` or `0600`) and at most 4096 bytes. Set exactly one of this and `RELAY_TOKEN_KEYS`; use the file with `LoadCredential` so the secret is not in the unit environment. Errors never echo key material. |
 | `APNS_KEY_ID` | yes | Key ID of the APNs auth key. |
 | `APNS_TEAM_ID` | yes | Apple Developer Team ID (`B6BAJ46A72`). |
 | `APNS_PRIVATE_KEY` / `APNS_PRIVATE_KEY_FILE` | yes | Contents of the `.p8` file (PEM, or base64 of the PEM), or a path to it. |
 | `APNS_TOPIC` | no | App bundle ID. Default `com.termllm.app`. |
+| `APNS_PRODUCTION_URL` / `APNS_DEVELOPMENT_URL` | no | APNs base URLs. Leave at the defaults; override only to point at a local fake for tests. HTTPS is required except for loopback HTTP. |
+| `RELAY_APNS_ENVIRONMENTS` | no | Comma-separated gateways this deployment accepts: `production` and/or `development` (`sandbox` is an alias). Default `production`. Registration for a disabled environment returns `422 unsupported_environment`. |
 | `PORT` / `RELAY_LISTEN_ADDR` | no | Listen on `:$PORT`, or an explicit address. Default `:8080`. |
 | `RELAY_CLIENT_IP_HEADER` | no | Trusted proxy header for the client IP (`Fly-Client-IP`, `CF-Connecting-IP`). Only set it behind such a proxy. |
 | `RELAY_PUSH_BURST` / `RELAY_PUSH_PER_MINUTE` | no | Per-device token bucket. Default 30 / 20. |
 | `RELAY_REGISTER_BURST` / `RELAY_REGISTER_PER_MINUTE` | no | Per-IP registration bucket. Default 20 / 10. |
+| `RELAY_GLOBAL_PUSH_BURST` / `RELAY_GLOBAL_PUSH_PER_MINUTE` | no | Process-wide outbound APNs budget, shared by every device and client IP. Default 10 / 60. |
+| `RELAY_MAX_CONCURRENCY` | no | Maximum APNs sends in flight per process, 1-256. Default 8. Excess requests get `503` with `Retry-After` without consuming the global budget. |
 | `RELAY_ALERT_TITLE` / `RELAY_ALERT_BODY` | no | Placeholder alert text. |
 
-Missing or invalid settings are all reported at startup and the process exits.
+Missing or invalid settings are all reported at startup and the process exits. Bursts are integers from 1 to 10000; rates must be finite positive numbers no greater than 600000 per minute (`NaN` and infinities are rejected).
+
+## Abuse limits and trust model
+
+`POST /v1/register` is intentionally unauthenticated: the app must be able to enroll without holding the relay's Apple credential. It accepts a caller-supplied device token and VAPID key, so per-device limits alone can be bypassed by inventing more devices. The process-wide outbound bucket (`RELAY_GLOBAL_PUSH_BURST` / `RELAY_GLOBAL_PUSH_PER_MINUTE`) and send concurrency cap (`RELAY_MAX_CONCURRENCY`) bound total APNs egress regardless of device token or source IP. Malformed requests and requests with a missing or invalid VAPID signature are rejected before either budget is touched, so they cannot consume egress. A plausible invented device token paired with the caller's own VAPID key does pass validation, however, and can consume the global budget.
+
+These limits bound outbound volume; they do not guarantee availability. An attacker can use invented registrations to exhaust the global cap and temporarily starve legitimate clients. The limits are also **not device attestation** and do not prove that a registration came from a genuine app install or that the caller owns the device token. App Attest and any equivalent device-ownership proof are not implemented. Do not describe a successful registration, or the global caps, as proof of legitimacy. All buckets and slots are in memory per process and reset on restart; run one instance or accept per-instance limits.
 
 ## Deploying
 
-1. **APNs key:** in the Apple Developer portal go to Certificates, IDs & Profiles → Keys. Create a key with *Apple Push Notifications service (APNs)* enabled and download the `.p8` (it can only be downloaded once). One key covers both sandbox and production. Also enable the Push Notifications capability on the `com.termllm.app` App ID.
-2. **Token key:** run `go run . genkey` (or `docker run --rm <image> genkey`). Store `RELAY_TOKEN_KEYS` as a secret and keep a backup. Losing it invalidates every endpoint; devices recover when the app re-registers, and servers drop the old subscriptions on 404.
+1. **APNs key:** in the Apple Developer portal go to Certificates, IDs & Profiles → Keys. Create a key with *Apple Push Notifications service (APNs)* enabled and download the `.p8` (it can only be downloaded once). **Do not assume an APNs key works for both production and sandbox.** Its environment scope is determined outside the relay, the relay cannot change it, and Apple rejects mismatches (for example `BadEnvironmentKeyInToken`). The key must cover every environment listed in `RELAY_APNS_ENVIRONMENTS`. Development/Xcode builds require a sandbox-capable key and `RELAY_APNS_ENVIRONMENTS=production,development`; a production-only key must be deployed with the default `RELAY_APNS_ENVIRONMENTS=production`, and development registration is then rejected. Also enable the Push Notifications capability on the `com.termllm.app` App ID.
+2. **Token key:** run `go run . genkey` (or `docker run --rm <image> genkey`). It prints `RELAY_TOKEN_KEYS=1:...`; store that value in `RELAY_TOKEN_KEYS`, or put only the `1:...` part (without the variable name) in a root-only `RELAY_TOKEN_KEYS_FILE` staged by `LoadCredential`. Keep a backup. Losing it invalidates every endpoint; devices recover when the app re-registers, and servers drop the old subscriptions on 404.
 3. **Run the image:**
 
    ```sh
@@ -130,11 +141,11 @@ Missing or invalid settings are all reported at startup and the process exits.
      term-llm-push-relay
    ```
 
-4. **TLS:** terminate TLS in front of the relay. Use `/healthz` as the health check.
+4. **TLS:** terminate TLS in front of the relay. Use `/healthz` as the health check. The APNs client itself requires HTTP/2 over TLS 1.2 or newer, ignores proxy environment variables and does not follow redirects; `APNS_*_URL` plain-HTTP overrides are only for loopback test fakes.
 
-Rate limits are kept in memory per instance. Run one instance, or accept that limits are per instance. Logs are JSON on stdout. Devices appear only as a short hash, and payloads are never logged.
+Rate limits are kept in memory per instance; see [Abuse limits and trust model](#abuse-limits-and-trust-model). Logs are JSON on stdout. Devices appear only as a short hash, and payloads are never logged. Transport failures are logged without request URLs or headers, so the device token and provider credential are not exposed.
 
-**Rotating the token key:** prepend a new key (`2:new,1:old`). New registrations use key 2 and old endpoints keep working. Remove key 1 once the apps have re-registered.
+**Rotating the token key:** prepend a new key (`2:new,1:old`). New registrations use key 2 and old endpoints keep working. Remove key 1 once the apps have re-registered. With `RELAY_TOKEN_KEYS_FILE`, replace the file and restart the service.
 
 ## Development
 

@@ -28,8 +28,13 @@ func register(t *testing.T, baseURL string, body any) (*http.Response, map[strin
 
 func registerOK(t *testing.T, baseURL string, key vapidKey, env string) string {
 	t.Helper()
+	return registerTokenOK(t, baseURL, key, env, testDeviceToken())
+}
+
+func registerTokenOK(t *testing.T, baseURL string, key vapidKey, env string, token []byte) string {
+	t.Helper()
 	resp, out := register(t, baseURL, map[string]string{
-		"device_token": hex.EncodeToString(testDeviceToken()), "environment": env, "application_server_key": key.encoded(),
+		"device_token": hex.EncodeToString(token), "environment": env, "application_server_key": key.encoded(),
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("register: %d %v", resp.StatusCode, out)

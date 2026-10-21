@@ -38,6 +38,16 @@ func testDeviceToken() []byte {
 	return tok
 }
 
+// deviceTokenVariant returns a distinct, structurally valid device token.
+func deviceTokenVariant(n byte) []byte {
+	tok := make([]byte, 32)
+	tok[0] = n
+	for i := 1; i < len(tok); i++ {
+		tok[i] = 0x5a
+	}
+	return tok
+}
+
 type vapidKey struct {
 	priv *ecdsa.PrivateKey
 	raw  []byte // uncompressed public key
@@ -118,20 +128,29 @@ func (f *fakeSender) sent() []APNsRequest {
 
 func testConfig(publicURL string) Config {
 	return Config{
-		PublicURL:         publicURL,
-		TokenKeys:         []TokenKey{testTokenKey(1)},
-		AlertTitle:        "term-llm",
-		AlertBody:         "New notification",
-		PushBurst:         30,
-		PushPerMinute:     20,
-		RegisterBurst:     20,
-		RegisterPerMinute: 10,
+		PublicURL:           publicURL,
+		TokenKeys:           []TokenKey{testTokenKey(1)},
+		APNsEnvironments:    []Environment{EnvProduction, EnvDevelopment},
+		AlertTitle:          "term-llm",
+		AlertBody:           "New notification",
+		PushBurst:           30,
+		PushPerMinute:       20,
+		RegisterBurst:       20,
+		RegisterPerMinute:   10,
+		GlobalPushBurst:     1000,
+		GlobalPushPerMinute: 60_000,
+		MaxConcurrency:      8,
 	}
 }
 
 // startRelay runs the relay on a loopback listener whose URL is also its
 // public origin, matching how webpush-go derives the VAPID audience.
 func startRelay(t *testing.T, mutate func(*Config), sender apnsSender) (*Server, *httptest.Server) {
+	t.Helper()
+	return startRelayWithLogger(t, mutate, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func startRelayWithLogger(t *testing.T, mutate func(*Config), sender apnsSender, logger *slog.Logger) (*Server, *httptest.Server) {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(nil)
 	cfg := testConfig("http://" + ts.Listener.Addr().String())
@@ -142,7 +161,7 @@ func startRelay(t *testing.T, mutate func(*Config), sender apnsSender) (*Server,
 	if err != nil {
 		t.Fatal(err)
 	}
-	relay := NewServer(cfg, sealer, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	relay := NewServer(cfg, sealer, sender, logger)
 	ts.Config.Handler = relay.Handler()
 	ts.Start()
 	t.Cleanup(ts.Close)

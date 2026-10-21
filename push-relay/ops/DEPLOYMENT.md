@@ -1,4 +1,6 @@
-# push.term-llm.com deployment
+# push.term-llm.com operator deployment (historical)
+
+For the encrypted native push relay rollout, use [ENCRYPTED-DEPLOYMENT.md](ENCRYPTED-DEPLOYMENT.md), `encrypted-nginx.conf`, and `encrypted-term-llm-push.service`. The original operator command and configuration below are retained for reference/rollback, not the target for new native clients.
 
 Initial rollout: 2026-10-21. This is an **operator-only relay**, not completed iOS notification integration. Do not distribute its shared bearer token with the app or to other server operators.
 

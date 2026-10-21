@@ -59,6 +59,7 @@ enum PushError: LocalizedError, Equatable {
     case invalidServerKey
     case relayUnavailable
     case relayRejected(Int)
+    case relayEnvironmentUnsupported(PushEnvironment)
     case invalidRelayResponse
     case registrationTimedOut
     case registrationFailed(String)
@@ -70,6 +71,8 @@ enum PushError: LocalizedError, Equatable {
         case .invalidServerKey: return "This server's notification key is invalid."
         case .relayUnavailable: return "The notification relay is not configured in this build."
         case .relayRejected(let status): return "The notification relay rejected the registration (HTTP \(status))."
+        case .relayEnvironmentUnsupported(let environment):
+            return "The notification relay does not support \(environment.rawValue) push. Use a relay and APNs key matching this build's signing environment."
         case .invalidRelayResponse: return "The notification relay returned an invalid response."
         case .registrationTimedOut: return "iOS did not provide a push token. Check your connection and try again."
         case .registrationFailed(let message): return "iOS push registration failed: \(message)"
@@ -119,6 +122,11 @@ struct PushRelayClient {
             "application_server_key": applicationServerKey,
         ])
         let (data, response) = try await transport(request)
+        if response.statusCode == 422,
+           let error = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           error["code"] as? String == "unsupported_environment" {
+            throw PushError.relayEnvironmentUnsupported(environment)
+        }
         guard (200..<300).contains(response.statusCode) else { throw PushError.relayRejected(response.statusCode) }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let endpoint = object["endpoint"] as? String,

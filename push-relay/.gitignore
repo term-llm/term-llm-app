@@ -1,4 +1,5 @@
 /term-llm-push
 *.p8
 /relay-token
+/endpoint-token-keys
 *.env

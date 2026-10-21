@@ -289,6 +289,28 @@ final class PushCenterTests: XCTestCase {
         }
     }
 
+    func testRelayUnsupportedEnvironmentIsActionable() async {
+        let relay = PushRelayClient(baseURL: URL(string: "https://push.example")!) { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 422, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"code":"unsupported_environment","error":"environment is not enabled"}"#.utf8), response)
+        }
+        await assertThrows(PushError.relayEnvironmentUnsupported(.development)) {
+            _ = try await relay.register(deviceToken: "aabb", environment: .development, applicationServerKey: self.serverKey)
+        }
+        XCTAssertTrue(PushError.relayEnvironmentUnsupported(.development).localizedDescription.contains("development"))
+        XCTAssertTrue(PushError.relayEnvironmentUnsupported(.development).localizedDescription.contains("APNs key"))
+    }
+
+    func testOtherRelay422RemainsGeneric() async {
+        let relay = PushRelayClient(baseURL: URL(string: "https://push.example")!) { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 422, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"error":"some other validation error"}"#.utf8), response)
+        }
+        await assertThrows(PushError.relayRejected(422)) {
+            _ = try await relay.register(deviceToken: "aabb", environment: .production, applicationServerKey: self.serverKey)
+        }
+    }
+
     func testRelayURLValidation() {
         XCTAssertEqual(PushRelayClient.validatedBaseURL("https://push.term-llm.com/")?.absoluteString, "https://push.term-llm.com")
         XCTAssertEqual(PushRelayClient.validatedBaseURL("http://localhost:8080")?.absoluteString, "http://localhost:8080")

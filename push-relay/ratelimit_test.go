@@ -33,3 +33,14 @@ func TestRateLimiter(t *testing.T) {
 		t.Fatalf("idle full buckets should be swept, have %d", got)
 	}
 }
+
+func TestRateLimiterTinyRateCapsRetryAfter(t *testing.T) {
+	l := newRateLimiter(1, 1e-9, func() time.Time { return time.Unix(1_800_000_000, 0) })
+	if ok, _ := l.allow("a"); !ok {
+		t.Fatal("burst token denied")
+	}
+	ok, wait := l.allow("a")
+	if ok || wait != maxRetryAfter {
+		t.Fatalf("tiny rate: ok=%v wait=%v, want %v", ok, wait, maxRetryAfter)
+	}
+}
