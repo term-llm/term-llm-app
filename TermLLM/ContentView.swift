@@ -46,6 +46,11 @@ struct ContentView: View {
             }
         }
         .tint(.cyan)
+        .background(NativeSceneReader { scene in
+            let id = PushCenter.windowID(for: scene)
+            push.registerWindow(id, scene: scene)
+            pushWindowID = id
+        })
         .sheet(isPresented: $showingSettings) { settings }
         .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
         .sheet(isPresented: $showingListen) { ListenView(listen: listen) }
@@ -60,18 +65,29 @@ struct ContentView: View {
         }
         .onChange(of: pushWindowID) { _, id in
             if let id, let pushActivity { push.claimNavigation(pushActivity, windowID: id) }
+            if let request = voiceLaunches.request { beginVoiceLaunch(request) }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await push.refreshAuthorization() } }
+            if phase == .active {
+                Task { await push.refreshAuthorization() }
+                if let request = voiceLaunches.request { beginVoiceLaunch(request) }
+                push.routeManualToKeyScene()
+            }
         }
-        .alert("Voice shortcut", isPresented: Binding(
-            get: { voiceLaunchError != nil },
-            set: { if !$0 { voiceLaunchError = nil } }
+        .alert(push.navigationIssue == nil ? "Voice shortcut" : "Notification", isPresented: Binding(
+            get: {
+                guard let pushWindowID, push.isKeyScene(pushWindowID) else { return false }
+                return voiceLaunchError != nil || push.navigationIssue != nil
+            },
+            set: { if !$0 { voiceLaunchError = nil; push.navigationIssue = nil } }
         )) {
-            Button("OK", role: .cancel) { voiceLaunchError = nil }
-            Button("Settings", action: openSettings)
+            Button("OK", role: .cancel) { voiceLaunchError = nil; push.navigationIssue = nil }
+            Button("Settings") {
+                voiceLaunchError = nil; push.navigationIssue = nil
+                openSettings()
+            }
         } message: {
-            Text(voiceLaunchError ?? "")
+            Text(push.navigationIssue ?? voiceLaunchError ?? "")
         }
     }
 
@@ -319,7 +335,8 @@ struct ContentView: View {
     }
 
     private func beginVoiceLaunch(_ id: UUID) {
-        guard voiceRequest == nil else { return }
+        guard voiceRequest == nil, scenePhase == .active, let pushWindowID,
+              voiceLaunches.claim(id, windowID: pushWindowID, isKeyScene: push.isKeyScene(pushWindowID)) else { return }
         do {
             guard let address else {
                 throw VoiceLaunchFailure(message: "Connect to a server in Settings first.")
@@ -401,6 +418,39 @@ struct ContentView: View {
                 Text("\(push.pendingCleanupCount) server enrollment cleanup(s) pending. Open each enrolled node while signed in and online to retry.")
             }
             if let issue = push.storageIssue { Text(issue) }
+            if let issue = push.navigationIssue { Text(issue) }
+        }
+    }
+}
+
+/// Resolve the actual containing scene even on the unconfigured/setup screen;
+/// global shortcut/error handling must not sample an arbitrary current scene.
+private struct NativeSceneReader: UIViewRepresentable {
+    let ready: (UIWindowScene) -> Void
+
+    func makeUIView(context: Context) -> Reader {
+        let view = Reader()
+        view.isUserInteractionEnabled = false
+        view.ready = ready
+        return view
+    }
+
+    func updateUIView(_ view: Reader, context: Context) {
+        view.ready = ready
+        view.resolveScene()
+    }
+
+    final class Reader: UIView {
+        var ready: ((UIWindowScene) -> Void)?
+        private var lastIdentifier: String?
+
+        override func didMoveToWindow() { super.didMoveToWindow(); resolveScene() }
+
+        func resolveScene() {
+            guard let scene = window?.windowScene, scene.session.persistentIdentifier != lastIdentifier else { return }
+            lastIdentifier = scene.session.persistentIdentifier
+            let callback = ready
+            DispatchQueue.main.async { callback?(scene) }
         }
     }
 }

@@ -272,13 +272,20 @@ final class VoiceShortcutSettings: ObservableObject {
 final class VoiceLaunchCenter: ObservableObject {
     static let shared = VoiceLaunchCenter()
     @Published private(set) var request: UUID?
+    private(set) var ownerWindowID: String?
+
+    func claim(_ id: UUID, windowID: String, isKeyScene: Bool) -> Bool {
+        guard request == id, isKeyScene, ownerWindowID == nil else { return false }
+        ownerWindowID = windowID
+        return true
+    }
 
     func requestLaunch() {
         guard request == nil else { return }
         request = UUID()
     }
 
-    func finish() { request = nil }
+    func finish() { request = nil; ownerWindowID = nil }
 }
 
 struct StartLiveConversationIntent: AppIntent {

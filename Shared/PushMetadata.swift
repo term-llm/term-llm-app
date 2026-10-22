@@ -63,7 +63,7 @@ struct PushMetadata: Codable, Equatable {
         if kind == "completion" {
             guard metadata.turnID != nil, metadata.responseID != nil, metadata.windowID != nil,
                   metadata.storeInstanceID != nil, metadata.sessionID != nil,
-                  (metadata.attentionSequence ?? 0) > 0, metadata.runEpoch != nil,
+                  (metadata.attentionSequence ?? 0) > 0, (metadata.runEpoch ?? 0) > 0,
                   let source = metadata.source, validScope(source),
                   ["completed", "failed"].contains(object["outcome"] as? String ?? "") else {
                 throw PushMessage.Failure.invalidMessage
@@ -79,13 +79,14 @@ struct PushMetadata: Codable, Equatable {
 
     static func date(_ text: String) -> Date? {
         guard text.utf8.count <= 64 else { return nil }
-        // Core emits RFC3339Nano. Foundation formatter precision varies across
-        // supported OS releases; sub-millisecond precision is not read identity.
+        // Core emits RFC3339Nano. Normalize fractional widths defensively to
+        // explicit milliseconds; this adds no tolerance to the 24h horizon.
         var input = text
         if let dot = text.firstIndex(of: ".") {
-            let fraction = text[text.index(after: dot)...].prefix(while: { $0.isNumber })
-            if fraction.count > 3 {
-                input = String(text[...dot]) + String(fraction.prefix(3)) + String(text[fraction.endIndex...])
+            let fraction = text[text.index(after: dot)...].prefix(while: { $0 >= "0" && $0 <= "9" })
+            if !fraction.isEmpty {
+                let milliseconds = String(fraction.prefix(3)).padding(toLength: 3, withPad: "0", startingAt: 0)
+                input = String(text[...dot]) + milliseconds + String(text[fraction.endIndex...])
             }
         }
         let formatter = ISO8601DateFormatter()

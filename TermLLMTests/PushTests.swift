@@ -228,7 +228,7 @@ final class PushCenterTests: XCTestCase {
             environment: .development, tokenTimeout: timeout, deliveries: deliveries, inbox: FakePushInbox())
         centerRef = center
         center.isActive = { true }
-        center.activateScene = { _, _ in }
+        center.activateScene = { _, _, _ in }
         return center
     }
 

@@ -5,7 +5,8 @@ import UserNotifications
 private let log = Logger(subsystem: "com.termllm.app", category: "push")
 
 /// Decrypts relayed Web Push messages on the device. The relay only ever sees
-/// ciphertext; if decryption fails the relay's placeholder alert is shown.
+/// ciphertext. Unclassified content is quieted; iOS can still show its original
+/// provider fallback if the extension is not run or cannot complete.
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var fallback: UNNotificationContent?
@@ -19,14 +20,14 @@ final class NotificationService: UNNotificationServiceExtension {
             self.contentHandler = contentHandler
             fallback = Self.quiet(request.content)
         }
-        let permitted = (try? PushDeliveryStore().isEnabled(origin: nil, scope: nil)) == true
         do {
             deliver(try PushMessage.content(for: request))
         } catch {
             // Never log content; the failure kind is enough to diagnose.
             log.error("Unable to decode notification: \(String(describing: error), privacy: .public)")
-            let invalid = error as? PushMessage.Failure == .invalidMessage
-            deliver(!permitted || invalid ? Self.quiet(request.content) : request.content)
+            // Unknown ciphertext/envelopes cannot prove manual intent. In
+            // particular, never turn an unavailable completion into an alert.
+            deliver(Self.quiet(request.content))
         }
     }
 

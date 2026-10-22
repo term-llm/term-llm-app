@@ -69,6 +69,34 @@ final class BrowserLifecycleTests: XCTestCase {
         return view
     }
 
+    func testProvisionalFailureCancelAndDownloadKeepNativeDocumentGenerationUntilCommit() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "provisional-push-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let push = PushCenter(defaults: defaults, identities: PushIdentityStore(storage: InMemoryPushStorage()),
+            relayTransport: { _ in XCTFail("No relay request expected"); throw PushError.relayUnavailable }, registerForRemote: {},
+            deliveries: PushDeliveryStore(url: directory.appendingPathComponent("state.json")), inbox: FakePushInbox())
+        let state = State()
+        var parent = browser(state); parent.push = push
+        let coordinator = coordinator(parent)
+        let view = webView(server)
+        coordinator.syncPushBridge(url: server, center: push, controller: view.configuration.userContentController)
+        let bridge = try XCTUnwrap(coordinator.pushBridge)
+        for error in [NSURLErrorCancelled, NSURLErrorNotConnectedToInternet] {
+            coordinator.webView(view, didStartProvisionalNavigation: nil)
+            coordinator.webView(view, didFailProvisionalNavigation: nil, withError: NSError(domain: NSURLErrorDomain, code: error))
+            XCTAssertEqual(bridge.documentGeneration, 0)
+        }
+        coordinator.webView(view, didStartProvisionalNavigation: nil) // response becomes download, no document commit
+        XCTAssertEqual(bridge.documentGeneration, 0)
+        coordinator.webView(view, didCommit: nil)
+        XCTAssertEqual(bridge.documentGeneration, 1)
+        coordinator.tearDown()
+    }
+
     func testControlsPullUsesViewportAtTopScrolledAndBouncingOffsets() {
         for offset: CGFloat in [0, 420, -90] {
             var pull = BrowserControlsPullGesture()

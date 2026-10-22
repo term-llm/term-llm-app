@@ -88,6 +88,9 @@
 		000000000000000000000517 /* NativePushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000505 /* NativePushNotifications.swift */; };
 		000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000506 /* NotificationLifecycleTests.swift */; };
 		000000000000000000000521 /* ProducerFixtures in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000520 /* ProducerFixtures */; };
+		000000000000000000000531 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
+		000000000000000000000532 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
+		000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000533 /* NotificationReviewRegressionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -203,6 +206,8 @@
 		000000000000000000000505 /* NativePushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushNotifications.swift; sourceTree = "<group>"; };
 		000000000000000000000506 /* NotificationLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationLifecycleTests.swift; sourceTree = "<group>"; };
 		000000000000000000000520 /* ProducerFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ProducerFixtures; sourceTree = "<group>"; };
+		000000000000000000000530 /* PushConsentJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushConsentJournal.swift; sourceTree = "<group>"; };
+		000000000000000000000533 /* NotificationReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReviewRegressionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -329,6 +334,7 @@
 				0000000000000000000000E0 /* CatalogParsingTests.swift */,
 				000000000000000000000430 /* PushTests.swift */,
 				000000000000000000000506 /* NotificationLifecycleTests.swift */,
+				000000000000000000000533 /* NotificationReviewRegressionTests.swift */,
 				000000000000000000000520 /* ProducerFixtures */,
 				000000000000000000000431 /* PushLiveE2ETests.swift */,
 			);
@@ -343,6 +349,7 @@
 				000000000000000000000412 /* PushMessage.swift */,
 				000000000000000000000502 /* PushMetadata.swift */,
 				000000000000000000000501 /* PushDeliveryStore.swift */,
+				000000000000000000000530 /* PushConsentJournal.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -485,6 +492,7 @@
 				000000000000000000000453 /* WebPushCrypto.swift in Sources */,
 				000000000000000000000513 /* PushMetadata.swift in Sources */,
 				000000000000000000000511 /* PushDeliveryStore.swift in Sources */,
+				000000000000000000000531 /* PushConsentJournal.swift in Sources */,
 				000000000000000000000454 /* PushIdentityStore.swift in Sources */,
 				000000000000000000000455 /* PushMessage.swift in Sources */,
 				000000000000000000000352 /* AppControlsBar.swift in Sources */,
@@ -551,6 +559,7 @@
 				0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */,
 				00000000000000000000045A /* PushTests.swift in Sources */,
 				000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */,
+				000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */,
 				00000000000000000000045C /* PushLiveE2ETests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -563,6 +572,7 @@
 				000000000000000000000456 /* WebPushCrypto.swift in Sources */,
 				000000000000000000000514 /* PushMetadata.swift in Sources */,
 				000000000000000000000512 /* PushDeliveryStore.swift in Sources */,
+				000000000000000000000532 /* PushConsentJournal.swift in Sources */,
 				000000000000000000000457 /* PushIdentityStore.swift in Sources */,
 				000000000000000000000458 /* PushMessage.swift in Sources */,
 			);

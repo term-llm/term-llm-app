@@ -17,11 +17,16 @@ working but automatic completion targeting disabled.
   survives NSE decryption in delivered userInfo. Grouping includes the enrolled
   scope. Manual messages do not acquire completion/read authority.
 - `notificationCapabilities()` returns version 2 plus an actual native scene's
-  persistent `window_id` and an injected per-load `document_id`. It requires an
-  attached scene, current authenticated-origin main frame, live document nonce,
-  and readable/writable shared app-group state. Navigation invalidates prior
-  local attendance. Missing app-group entitlement/container or corrupt state
-  withholds v2 instead of falling back to URL/visibility-based eligibility.
+  persistent `window_id` and an injected per-load `document_id`. The window ID is
+  `native_` + unpadded base64url(SHA256(UTF8(scene persistent identifier))), exactly
+  50 core-safe ASCII characters; registration and tap routing use that same
+  encoder. Shared `native-identity-contract.json` vectors pin the public boundary.
+  Capability requires an attached scene, configured-origin main frame, live nonce,
+  and readable/writable shared state/consent resources. Only document **commit**
+  invalidates prior binding; failed/cancelled/download provisional navigation
+  leaves the still-live document functional. Missing app-group entitlement,
+  unknown consent or corrupt state withholds v2 instead of falling back to
+  URL/visibility-based eligibility.
 - `notificationPresence(payload)` accepts the frontend's existing policy-derived
   presence with exact window/document, monotone sequence and at most 65s lease.
   Both wall-clock and uptime bounds apply. Only the owning foreground scene's
@@ -38,9 +43,14 @@ working but automatic completion targeting disabled.
 - Taps activate the exact owner scene session, including restorable sessions.
   If gone, UIKit is asked to create a new scene with a single-use navigation
   activity. An arbitrary currently rendered sibling cannot consume an unclaimed
-  navigation. Multiple native scenes and the activity type are declared in the
-  app manifest. Scene creation/restoration on supported devices needs device
-  verification; there is no arbitrary-sibling fallback if activation fails.
+  navigation. Ownerless manual/legacy taps instead use the current key scene,
+  waiting for that scene on cold launch, without requesting another scene. An
+  activation error clears the exact pending completion and surfaces an explanation;
+  it never falls back to a sibling. Multi-scene creation remains **disabled** while
+  voice/listen singleton behavior is unproven. The global voice request can be
+  claimed once by its intended key scene. UIKit may reject a fresh-scene request
+  in single-scene mode; this is an honest routing limitation, not silent success.
+  Scene activation/restoration remains a simulator/device release gate.
 
 ## Durable opt-out and cleanup
 
@@ -48,13 +58,24 @@ The app and NSE share `group.com.termllm.app.shared`. Both app IDs/provisioning
 profiles must enable this Application Group in addition to the existing shared
 keychain group. No production signing/profile changes were made here.
 
-A separately locked file and atomic replacement serialize app/NSE state. It
-contains preference, cleanup handles, read watermarks and replay identity—not
-notification text or credentials. Successful shared preference writes precede
-legacy app preference updates. The app-wide and per-scope off state gates native
-presentation independently of the web page; explicit enable alone changes off.
-An enrollment-generation check rejects relay responses from a prior consent
-state. Already returned endpoints are retained if server enrollment/disable race.
+A stable-inode locked file and atomic replacement serialize replay/read/cleanup
+state. An independent **authoritative consent journal** uses a separate account
+in the existing shared keychain (no private default-group fallback). The app saves
+an explicit pending preference request locally, commits the shared journal first,
+then mirrors it into the app-group file. A failed mirror cannot overwrite off on
+restart; a failed keychain write rejects the operation and retains the local retry
+marker. Startup reconciles that request before importing any old enabled state.
+Before an enable clears previous off, that off is mirrored so its cleanup handles
+cannot disappear; failure leaves enable pending/rejected. Cached enrollments
+recovered from off remain retired until authenticated cleanup instead of silently
+reactivating on enable. Legacy explicit off is conservatively imported when
+establishing the journal.
+These records contain consent/cleanup/read identity, not notification text or
+credentials. Bridge disable/unsubscribe rejects persistence failure rather than
+resolving true. If both persistence paths are unavailable, durable local off cannot
+be promised: the failure is surfaced and iOS Settings remains the OS-level block.
+Explicit enable alone clears off. Consent-generation fencing still rejects stale
+relay responses; returned endpoints survive enrollment/disable races.
 
 `notificationEnrollment({source,subscription_id})` records successful/verified
 server enrollment. `notificationPendingCleanup({source})` exposes retained IDs;
@@ -65,10 +86,18 @@ remain pending rather than being discarded or treated as remotely revoked.
 The native toggle cannot authenticate an arbitrary unloaded node and does **not**
 revoke iOS permission. Settings shows pending cleanup/storage limitations.
 
-If shared storage cannot persist a preference, background/in-flight delivery
-cannot be guaranteed off; use iOS Settings for an OS-level block. This condition
-withholds automatic capability and is surfaced, not reported as successful remote
-cleanup. No relay revocation database or new service is introduced.
+Missing or unknown consent is **not** automatic permission: completion delivery
+and v2 capability remain fail-closed. Recognized manual/legacy content preserves
+compatibility before first post-upgrade launch or with a missing app-group
+container when there is no established off; a readable explicit journal off is
+always respected even without that container. A readable journal can authorize
+manual presentation during mirror/lock failure, without claiming replay durability.
+A locked/corrupt existing file with no readable journal, or an unreadable shared
+keychain that might hide off, is quieted rather than guessed. Unsupported or
+unclassified envelopes never use manual compatibility. Old UserDefaults-only
+intent becomes shared on the first upgraded app launch; an NSE cannot read that
+private legacy store beforehand. OS Settings is the only universal pre-launch
+block. No relay revocation database or new service is introduced.
 
 ## Replay and unavoidable platform limits
 
@@ -76,9 +105,19 @@ The persistent arrival ledger retains at most 4096 scoped event IDs for 24h.
 At saturation it quiets additional events rather than evicting unexpired replay
 protection. Read watermarks and cleanup handles are separately bounded at 4096.
 Failed/corrupt reads do not reset the ledger or consent state silently. Independent
-store instances use `flock` on a stable lock inode; data replacement never replaces
-the lock file. XCTest exercises independent concurrent instances and restart state;
-a real app/NSE multi-process/device run remains necessary.
+store instances use `LOCK_EX | LOCK_NB` on a stable inode, at most 40 attempts with
+5ms backoff (under 200ms deliberate waiting, not an OS-I/O deadline). A suspended
+app cannot make the NSE wait on a blocking flock until extension expiry. Lock
+exhaustion is explicit unavailable state; it never fails open for completion.
+Data replacement never replaces the lock file. Fault-injection XCTest covers
+shared writes, journal writes, restart/recovery and a held lock; those tests remain
+unexecuted here. Real app/NSE multi-process/device proof remains necessary.
+
+Enrollment cleanup is bounded at 4096 retained generations. Nonpending old
+endpoint generations may still consume that capacity; only authenticated cleanup
+ACK is proof they can be discarded. No speculative age-pruning or pending-handle
+eviction was added. Saturation surfaces a storage/capability error and may require
+authenticated node cleanup; it is not successful remote retirement.
 
 The NSE **cannot cancel an alert remote push**. Suppressed/replayed/read/disabled
 arrivals are quieted and redacted while preserving metadata; iOS can still leave
@@ -146,8 +185,30 @@ execution evidence.
 Before release, run the focused suites on a disposable simulator (not the opt-in
 live E2E suite): `PushCenterTests`, `PushMessageTests`, `PushDeliveryStoreTests`,
 `NotificationMetadataTests`, `NativeNotificationLifecycleTests`, `ActualProducerFixtureTests`,
-`WebPushCryptoTests`,
+`NotificationReviewRegressionTests`, `WebPushCryptoTests`,
 and affected browser lifecycle tests. Then explicitly authorize device acceptance
 for two scenes/nodes sharing VAPID, owner-closed taps, app/NSE concurrent arrival,
 background off/expiry, and authenticated offline cleanup retry. No live enrollment,
 APNs send, service/config/state change, deployment, push or PR was performed here.
+
+
+## Pending macOS CI verification (not invoked)
+
+The shared TermLLM scheme builds the app plus embedded extension and the XCTest
+bundle. `.github/workflows/native-notification-tests.yml` adds a narrowly scoped
+PR/workflow-dispatch macOS simulator job, read-only contents permission, pinned
+checkout without persisted credentials, no secrets or signing, and a 30-minute
+job bound. It chooses an already available iPhone/iOS >=17 deterministically from
+`xcrun simctl` JSON; it never provisions a runtime/device. `xcodebuild test` uses
+`CODE_SIGNING_ALLOWED=NO`, focuses the notification/browser/voice unit suites and
+excludes opt-in live E2E tests. Failure logs/xcresult can be retained for 7 days.
+The selector has executable offline Python tests. Workflow policy/YAML was checked
+offline, but **the workflow, Xcode build and native tests have not run**. Parent
+must inspect actual CI after review clearance/PR publication before treating this
+as native compile or XCTest evidence. No dispatch/publication was performed.
+
+Timestamp review clarification: the floating-point 24h rejection allegation was
+retracted after counter-checking; no +1-second tolerance was introduced. Fraction
+parsing is defensively normalized for 1/2/3/9 digits at millisecond precision.
+Actual producer fixtures and derived strict 24h/+1ms/zero-lifetime XCTest cases
+are included; variable-fraction Foundation behavior is unverified until native CI.

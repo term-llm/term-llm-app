@@ -12,7 +12,7 @@ extension NativePushBridge {
             return failure("Stale notification document")
         }
         if method == "notificationCapabilities" {
-            guard center.storageIssue == nil, center.deliveries.available else {
+            guard center.storageIssue == nil, center.deliveries.automaticStateAvailable else {
                 return failure("Shared notification state is unavailable")
             }
             center.windows.bind(windowID: windowID, documentID: documentID, origin: origin)

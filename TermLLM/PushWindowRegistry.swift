@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import UIKit
 
@@ -5,6 +6,10 @@ import UIKit
 /// The page supplies attendance only after applying the shared presence policy.
 @MainActor
 final class PushWindowRegistry {
+    nonisolated static func identifier(persistentIdentifier: String) -> String {
+        "native_" + Data(SHA256.hash(data: Data(persistentIdentifier.utf8))).base64URLEncodedString()
+    }
+
     struct Binding {
         var documentID: String
         var origin: String
@@ -16,6 +21,7 @@ final class PushWindowRegistry {
 
     private var bindings: [String: Binding] = [:]
     private var scenes: [String: WeakScene] = [:]
+    var keyWindowOverride: (() -> String?)?
     var sceneIsActive: (String) -> Bool = { _ in false }
 
     private final class WeakScene {
@@ -28,6 +34,19 @@ final class PushWindowRegistry {
     }
 
     func scene(windowID: String) -> UIWindowScene? { scenes[windowID]?.value }
+
+    func keyWindowID() -> String? {
+        if let keyWindowOverride { return keyWindowOverride() }
+        let keys = scenes.filter { $0.value.value?.activationState == .foregroundActive &&
+            $0.value.value?.windows.contains(where: \.isKeyWindow) == true }.map { $0.key }
+        return keys.count == 1 ? keys.first : nil // ambiguous is not arbitrary
+    }
+
+    func existingWindowIDs() -> Set<String> {
+        var ids = Set(scenes.compactMap { $0.value.value == nil ? nil : $0.key })
+        if let key = keyWindowID() { ids.insert(key) }
+        return ids
+    }
 
     func bind(windowID: String, documentID: String, origin: String) {
         if bindings[windowID]?.documentID == documentID { return }

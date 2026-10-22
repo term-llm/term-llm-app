@@ -152,6 +152,7 @@ struct PushMessage: Equatable {
         let metadata = (userInfo[PushMetadata.key] as? String).flatMap {
             try? JSONDecoder().decode(PushMetadata.self, from: Data($0.utf8))
         }
+        if userInfo[PushMetadata.key] != nil, metadata == nil { return nil }
         let url = (userInfo[urlKey] as? String).flatMap(URL.init(string:))
         return PushMessage(title: "", body: "", threadIdentifier: "", url: url, origin: origin,
                            scope: userInfo[scopeKey] as? String, sourceID: userInfo[sourceKey] as? String,
@@ -174,12 +175,12 @@ import UserNotifications
 
 extension PushMessage {
     /// What the Notification Service Extension delivers: the decrypted
-    /// notification. Throws to keep the relay's placeholder.
+    /// notification. Unclassified content throws; the NSE supplies quiet fallback.
     static func content(for request: UNNotificationRequest, identities: PushIdentityStore = PushIdentityStore(),
                         deliveries: PushDeliveryStore = PushDeliveryStore()) throws -> UNNotificationContent {
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else { throw Failure.invalidMessage }
         let message = try decode(userInfo: request.content.userInfo, identity: identities.load())
-        let disposition = (try? deliveries.receive(message)) ?? .capacity
+        let disposition = deliveries.admit(message)
         content.title = message.title
         content.body = message.body
         content.threadIdentifier = message.threadIdentifier

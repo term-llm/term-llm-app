@@ -88,26 +88,23 @@ extension PushCenter {
             return info[PushMessage.originKey] as? String == origin && info[PushMessage.scopeKey] as? String == scope
         }
         if let origin, let scope {
-            guard (try? deliveries.isEnabled(origin: origin, scope: scope)) == false else { return }
+            guard !enabled || scopeIsOptedOut(origin: origin, scope: scope) else { return }
         } else { guard !enabled else { return } }
         inbox.removeDelivered(delivered.filter(matches).map(\.identifier))
         inbox.removePending(pending.filter(matches).map(\.identifier))
     }
 
     func presentationOptions(userInfo: [AnyHashable: Any]) -> UNNotificationPresentationOptions {
-        guard enabled else { return [] }
         var message = PushMessage.delivered(userInfo: userInfo)
         if userInfo["webpush"] != nil {
             // Most foreground pushes have already passed through NSE. If not,
             // admission here uses the same cross-process ledger.
             message = try? PushMessage.decode(userInfo: userInfo, identity: notificationIdentity())
-            guard let message, (try? deliveries.receive(message)) == .allowed else { return [] }
+            guard let message, deliveries.admit(message) == .allowed else { return [] }
         } else if let status = userInfo[PushMessage.dispositionKey] as? String, status != PushDeliveryStore.Disposition.allowed.rawValue {
             return []
         }
-        guard let message, (try? deliveries.isEnabled(origin: message.origin, scope: message.scope)) == true,
-              (try? deliveries.hasRead(message)) == false else { return [] }
-        if let expires = message.metadata?.expiresAt, expires <= Date() { return [] }
+        guard let message, !locallyOptedOut(message), deliveries.presentationDisposition(message) == .allowed else { return [] }
         if let metadata = message.metadata, metadata.kind == "completion", let window = metadata.windowID,
            let origin = message.origin, isActive(), windows.isAround(windowID: window, origin: origin) { return [] }
         return [.banner, .list, .sound]

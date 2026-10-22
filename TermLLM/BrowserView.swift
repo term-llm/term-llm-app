@@ -190,7 +190,7 @@ struct BrowserView: UIViewRepresentable {
         var pushChangeCount = 0
         private var handledPushNavigation: UUID?
         private var bridge: WebMCPBridge?
-        private var pushBridge: NativePushBridge?
+        private(set) var pushBridge: NativePushBridge?
         private var registeredPushWindowID: String?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
@@ -209,7 +209,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func tearDown() {
-            MainActor.assumeIsolated { pushBridge?.navigationStarted() }
+            MainActor.assumeIsolated { pushBridge?.documentCommitted() }
             controlsPull.reset()
             voiceTask?.cancel()
             voiceTask = nil
@@ -488,11 +488,21 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            MainActor.assumeIsolated { pushBridge?.navigationStarted() }
+            // A provisional load may fail, be cancelled or become a download.
+            // The still-live document keeps its binding until actual commit.
             rejectedHTTPResponse = false
             parent.loading = true
             parent.loadError = nil
             parent.loginRequired = false
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            MainActor.assumeIsolated {
+                let owner: String?
+                if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }
+                else { owner = nil }
+                pushBridge?.documentCommitted(windowID: owner)
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

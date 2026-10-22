@@ -206,7 +206,7 @@ final class NativeNotificationLifecycleTests: XCTestCase {
         center = PushCenter(defaults: defaults, identities: identities,
             authorizer: NotificationTestAuthorizer(), relayTransport: { _ in XCTFail("No relay calls expected"); throw PushError.relayUnavailable },
             registerForRemote: {}, deliveries: deliveries, inbox: inbox)
-        center.activateScene = { _, _ in }
+        center.activateScene = { _, _, _ in }
         center.isActive = { true }
         center.windows.sceneIsActive = { _ in true }
         await center.setEnabled(true)
@@ -320,7 +320,7 @@ final class NativeNotificationLifecycleTests: XCTestCase {
     func testOwnerGoneRequiresExplicitFreshSceneClaimAndTapIsNotRead() throws {
         let target = completionMessage()
         var activity: NSUserActivity?
-        center.activateScene = { session, value in XCTAssertNil(session); activity = value }
+        center.activateScene = { session, value, _ in XCTAssertNil(session); activity = value }
         center.open(urlString: target.url?.absoluteString, configuredServer: URL(string: origin), windowID: "closed-owner")
         let navigation = try XCTUnwrap(center.pendingNavigation)
         XCTAssertNil(navigation.windowID, "no arbitrary sibling owner")
@@ -454,6 +454,31 @@ final class ActualProducerFixtureTests: XCTestCase {
         XCTAssertEqual(try shared.receive(decodeProducerFixture(primary), now: now), .allowed)
         XCTAssertEqual(try shared.receive(decodeProducerFixture(compact), now: now), .replay,
                        "compact wire retry cannot mint another native event")
+    }
+
+    func testActualProducerStrictHorizonAndVariableFractionParsing() throws {
+        let fixture = try XCTUnwrap(loadProducerFixtures().first { $0.entry.file == "completion.json" })
+        XCTAssertNotNil(try PushMetadata.parse(fixture.object), "unaltered actual 24h producer export must decode")
+        // Derived boundary cases are not replacements for the checked-in bytes.
+        // No +1s tolerance: the review's floating-point rejection claim was retracted.
+        for fraction in ["1", "12", "123", "123456789"] {
+            var object = fixture.object
+            object["created_at"] = "2026-10-22T11:19:03.\(fraction)Z"
+            object["expires_at"] = "2026-10-23T11:19:03.\(fraction)Z"
+            let metadata = try XCTUnwrap(PushMetadata.parse(object))
+            XCTAssertEqual(try XCTUnwrap(metadata.expiresAt).timeIntervalSince(XCTUnwrap(metadata.createdAt)), 86400)
+        }
+        var boundary = fixture.object
+        boundary["run_epoch"] = 0
+        XCTAssertThrowsError(try PushMetadata.parse(boundary), "new completion epochs are strictly positive, matching public receiver")
+        boundary.removeValue(forKey: "run_epoch")
+        XCTAssertThrowsError(try PushMetadata.parse(boundary), "missing completion epoch remains fail-closed")
+        boundary = fixture.object
+        boundary["created_at"] = "2026-10-22T11:19:03.000Z"
+        boundary["expires_at"] = "2026-10-23T11:19:03.001Z"
+        XCTAssertThrowsError(try PushMetadata.parse(boundary), "24h +1ms remains invalid")
+        boundary["expires_at"] = boundary["created_at"]
+        XCTAssertThrowsError(try PushMetadata.parse(boundary), "zero lifetime remains invalid")
     }
 
     private func loadProducerFixtures() throws -> [ProducerFixture] {

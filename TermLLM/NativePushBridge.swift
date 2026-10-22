@@ -20,13 +20,13 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
     private(set) var userScript: WKUserScript
     /// Weak: the controller retains its message handlers (this bridge).
     private weak var installedController: WKUserContentController?
-    private var documentGeneration: UInt64 = 0
+    private(set) var documentGeneration: UInt64 = 0
     private var boundWindowID: String?
 
     @MainActor
-    func navigationStarted() {
+    func documentCommitted(windowID: String? = nil) {
         documentGeneration &+= 1
-        if let boundWindowID { center.windows.invalidate(windowID: boundWindowID) }
+        if let owner = windowID ?? boundWindowID { center.windows.invalidate(windowID: owner) }
     }
 
     @MainActor
@@ -151,10 +151,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
                 return .failure(BridgeError(message: error.localizedDescription))
             }
         case "unsubscribe":
-            center.unsubscribe(origin: frameOrigin, scope: scope)
+            guard center.unsubscribe(origin: frameOrigin, scope: scope) else {
+                return .failure(BridgeError(message: "Notification cleanup could not be persisted; retry is required"))
+            }
             return .success(true)
         case "disable":
-            center.disable(origin: frameOrigin, scope: scope)
+            guard center.disable(origin: frameOrigin, scope: scope) else {
+                return .failure(BridgeError(message: "Notification off/cleanup could not be fully persisted; retry is required"))
+            }
             return .success(true)
         default:
             return .failure(BridgeError(message: "Unknown notification request: \(method)"))
