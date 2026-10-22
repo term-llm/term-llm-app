@@ -314,8 +314,9 @@ final class PushCenter: NSObject, ObservableObject {
             try identities.setRoute(tag: WebPushCrypto.sourceTag(applicationServerKey: rawKey), origin: origin,
                                     scope: scope, label: label, nodeBasePath: nodeBasePath)
         } catch { return nil }
+        let tag = WebPushCrypto.sourceTag(applicationServerKey: rawKey)
         return NativePushSubscription(endpoint: record.endpoint, p256dh: p256dh,
-                                      auth: identity.authSecret.base64URLEncodedString(),
+                                      auth: identity.authenticationSecret(tag: tag, origin: origin, scope: scope).base64URLEncodedString(),
                                       applicationServerKey: record.applicationServerKey)
     }
 
@@ -338,8 +339,10 @@ final class PushCenter: NSObject, ObservableObject {
             endpoint: endpoint, applicationServerKey: key, deviceToken: token,
             environment: environment, relay: relay.absoluteString)
         persistRecords()
+        let tag = WebPushCrypto.sourceTag(applicationServerKey: rawKey)
         return NativePushSubscription(endpoint: endpoint, p256dh: try identity.publicKeyBase64URL(),
-                                      auth: identity.authSecret.base64URLEncodedString(), applicationServerKey: key)
+                                      auth: identity.authenticationSecret(tag: tag, origin: origin, scope: scope).base64URLEncodedString(),
+                                      applicationServerKey: key)
     }
 
     /// Forgets this node's record (key rotation, permission withdrawn). Not an opt-out.

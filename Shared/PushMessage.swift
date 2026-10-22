@@ -33,13 +33,31 @@ struct PushMessage: Equatable {
               let encoded = envelope["body"] as? String,
               let body = Data(base64Encoded: encoded) else { throw Failure.notWebPush }
         guard let identity else { throw Failure.noIdentity }
-        let plaintext = try WebPushCrypto.decrypt(body, privateKey: identity.agreementKey(), authSecret: identity.authSecret)
+        let tag = envelope["k"] as? String
+        let candidates = (identity.scopedRoutes ?? [:]).filter { $0.value.tag == tag }
+        let privateKey = try identity.agreementKey()
+        // The successful authentication secret identifies the enrollment even
+        // when Dev and Hub share both an origin and a VAPID source tag.
+        for (id, candidate) in candidates {
+            guard let plaintext = try? WebPushCrypto.decrypt(body, privateKey: privateKey,
+                                                            authSecret: identity.authenticationSecret(routeID: id)) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
+                throw Failure.invalidMessage
+            }
+            let route = candidate.route
+            return message(from: object, origin: candidate.origin, scope: route.scope,
+                           label: route.label, nodeBasePath: route.nodeBasePath)
+        }
+        // Keep already-sent and pre-upgrade subscriptions readable. A legacy
+        // ciphertext cannot distinguish multiple scopes sharing its key; do not
+        // mislabel it or guess the last page visited in that case.
+        let plaintext = try WebPushCrypto.decrypt(body, privateKey: privateKey, authSecret: identity.authSecret)
         guard let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
             throw Failure.invalidMessage
         }
-        let tag = envelope["k"] as? String
-        let origin = tag.flatMap { identity.routes[$0] }
-        let route = tag.flatMap { identity.routeDetails?[$0] }
+        let origins = Set(candidates.values.map { $0.origin })
+        let origin = origins.count > 1 ? nil : tag.flatMap { identity.routes[$0] }
+        let route = candidates.count > 1 ? nil : tag.flatMap { identity.routeDetails?[$0] }
         return message(from: object, origin: origin, scope: route?.scope, label: route?.label, nodeBasePath: route?.nodeBasePath)
     }
 

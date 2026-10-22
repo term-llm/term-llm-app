@@ -298,13 +298,64 @@ final class PushCenterTests: XCTestCase {
     func testRelayedPushDecryptsWithTheSubscribedKeys() async throws {
         let center = makeCenter()
         await center.setEnabled(true)
-        _ = try await center.subscribe(origin: origin, scope: "/ui", applicationServerKey: serverKey)
+        let subscription = try await center.subscribe(origin: origin, scope: "/ui", applicationServerKey: serverKey)
         let identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
         let tag = WebPushCrypto.sourceTag(applicationServerKey: Data(base64URLEncoded: serverKey)!)
         let payload = try relayedPayload(#"{"title":"Response complete","body":"ready","url":"/ui/chat/s1","session_id":"s1"}"#,
-                                         identity: identity, tag: tag)
+                                         identity: identity, tag: tag, authSecret: Data(base64URLEncoded: subscription.auth))
         let message = try PushMessage.decode(userInfo: payload, identity: PushIdentityStore(storage: storage).load())
         XCTAssertEqual(message.url?.absoluteString, "https://hub.example/ui/chat/s1")
+    }
+
+    func testSharedVAPIDKeyDoesNotRouteDevNotificationsToLastVisitedHub() async throws {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        let dev = try await center.subscribe(origin: origin, scope: "/node/Dev", applicationServerKey: serverKey,
+                                             label: "Dev", nodeBasePath: "/ui")
+        let hub = try await center.subscribe(origin: origin, scope: "/", applicationServerKey: serverKey, label: "Hub")
+        XCTAssertEqual(dev.p256dh, hub.p256dh)
+        XCTAssertNotEqual(dev.auth, hub.auth, "VAPID keys identify servers, not individual node enrollments")
+        let tag = WebPushCrypto.sourceTag(applicationServerKey: Data(base64URLEncoded: serverKey)!)
+        for lastVisited in ["/node/Dev", "/"] {
+            _ = center.subscription(origin: origin, scope: lastVisited)
+            let identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
+            for (subscription, title, path) in [(dev, "Dev", "/node/Dev/"), (hub, "Hub", "/")] {
+                let auth = try XCTUnwrap(Data(base64URLEncoded: subscription.auth))
+                let payload = try relayedPayload(#"{"title":"term-llm","body":"hello"}"#,
+                                                 identity: identity, tag: tag, authSecret: auth)
+                let message = try PushMessage.decode(userInfo: payload, identity: identity)
+                XCTAssertEqual(message.title, title)
+                XCTAssertEqual(message.url?.absoluteString, origin + path)
+            }
+            let payload = try relayedPayload(#"{"title":"Response complete","url":"/ui/chat/s1"}"#,
+                                             identity: identity, tag: tag, authSecret: Data(base64URLEncoded: dev.auth))
+            let completion = try PushMessage.decode(userInfo: payload, identity: identity)
+            XCTAssertEqual(completion.url?.absoluteString, origin + "/node/Dev/chat/s1")
+            XCTAssertEqual(completion.title, "Dev: Response complete")
+            let legacy = try relayedPayload(#"{"title":"term-llm","body":"old"}"#, identity: identity, tag: tag)
+            let ambiguous = try PushMessage.decode(userInfo: legacy, identity: identity)
+            XCTAssertNil(ambiguous.url, "old shared-key pushes must not guess the last enrolled agent")
+            XCTAssertEqual(ambiguous.title, "term-llm")
+        }
+        XCTAssertEqual(center.subscription(origin: origin, scope: "/node/Dev")?.auth, dev.auth)
+        let restored = makeCenter()
+        await restored.refreshAuthorization()
+        XCTAssertEqual(restored.subscription(origin: origin, scope: "/node/Dev")?.auth, dev.auth,
+                       "scoped authentication must survive an app restart")
+    }
+
+    func testScopedAuthenticationIsBoundToSourceTagAndOrigin() throws {
+        let store = PushIdentityStore(storage: storage)
+        _ = try store.loadOrCreate()
+        try store.setRoute(tag: "key", origin: origin, scope: "/node/Dev", label: "Dev")
+        try store.setRoute(tag: "key", origin: "https://other.example", scope: "/node/Dev", label: "Other")
+        let identity = try XCTUnwrap(store.load())
+        let auth = identity.authenticationSecret(tag: "key", origin: origin, scope: "/node/Dev")
+        XCTAssertNotEqual(auth, identity.authenticationSecret(tag: "key", origin: "https://other.example", scope: "/node/Dev"))
+        let payload = try relayedPayload(#"{"body":"hello"}"#, identity: identity, tag: "key", authSecret: auth)
+        XCTAssertEqual(try PushMessage.decode(userInfo: payload, identity: identity).origin, origin)
+        let wrongTag = try relayedPayload(#"{"body":"hello"}"#, identity: identity, tag: "other-key", authSecret: auth)
+        XCTAssertThrowsError(try PushMessage.decode(userInfo: wrongTag, identity: identity))
     }
 
     func testTokenChangeInvalidatesRecordsAndNotifiesPages() async throws {
@@ -387,17 +438,20 @@ final class PushCenterTests: XCTestCase {
         // Simulate an existing installation whose identity only stored origins.
         var identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
         identity.routeDetails = nil
+        identity.scopedRoutes = nil
         try storage.write(JSONEncoder().encode(identity))
         let requestCount = relayRequests.count
         let result = await NativePushBridge.handle(body: ["method": "getSubscription", "scope": scope, "label": "Dev"],
                                                   frameOrigin: origin, isMainFrame: true, expectedOrigin: origin, center: center)
-        let value = try result.get()
-        XCTAssertTrue(value is [String: Any])
+        let value = try XCTUnwrap(try result.get() as? [String: Any])
+        let keys = try XCTUnwrap(value["keys"] as? [String: String])
+        let auth = try XCTUnwrap(keys["auth"].flatMap { Data(base64URLEncoded: $0) })
+        XCTAssertNotEqual(auth, identity.authSecret, "cached enrollment migrates to a scope-bound secret")
         XCTAssertEqual(relayRequests.count, requestCount)
         identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
         XCTAssertEqual(identity.routeDetails?[tag]?.scope, scope)
         XCTAssertEqual(identity.routeDetails?[tag]?.label, "Dev")
-        let payload = try relayedPayload(#"{"title":"term-llm","body":"hello"}"#, identity: identity, tag: tag)
+        let payload = try relayedPayload(#"{"title":"term-llm","body":"hello"}"#, identity: identity, tag: tag, authSecret: auth)
         let message = try PushMessage.decode(userInfo: payload, identity: identity)
         defaults.set("https://hub.example/hub/", forKey: "serverURL")
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -620,13 +674,13 @@ private final class PushNavigationWaiter: NSObject, WKNavigationDelegate {
 }
 
 /// The sending side of RFC 8291, as term-llm (webpush-go) does it.
-func encryptWebPush(_ plaintext: Data, identity: PushIdentity, recordSize: Int = 2048) throws -> Data {
+func encryptWebPush(_ plaintext: Data, identity: PushIdentity, recordSize: Int = 2048, authSecret: Data? = nil) throws -> Data {
     let receiver = try identity.agreementKey().publicKey
     let sender = P256.KeyAgreement.PrivateKey()
     let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
     let ecdh = try sender.sharedSecretFromKeyAgreement(with: receiver).withUnsafeBytes { Data($0) }
     let keyInfo = Data("WebPush: info".utf8) + Data([0]) + receiver.x963Representation + sender.publicKey.x963Representation
-    let ikm = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ecdh), salt: identity.authSecret, info: keyInfo, outputByteCount: 32)
+    let ikm = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ecdh), salt: authSecret ?? identity.authSecret, info: keyInfo, outputByteCount: 32)
     let cek = HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm, salt: salt, info: Data("Content-Encoding: aes128gcm".utf8) + Data([0]), outputByteCount: 16)
     let nonce = HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm, salt: salt, info: Data("Content-Encoding: nonce".utf8) + Data([0]), outputByteCount: 12)
     var header = salt
@@ -639,8 +693,8 @@ func encryptWebPush(_ plaintext: Data, identity: PushIdentity, recordSize: Int =
 }
 
 /// The APNs userInfo the relay produces for a Web Push message.
-func relayedPayload(_ json: String, identity: PushIdentity, tag: String) throws -> [AnyHashable: Any] {
-    let body = try encryptWebPush(Data(json.utf8), identity: identity)
+func relayedPayload(_ json: String, identity: PushIdentity, tag: String, authSecret: Data? = nil) throws -> [AnyHashable: Any] {
+    let body = try encryptWebPush(Data(json.utf8), identity: identity, authSecret: authSecret)
     return [
         "aps": ["alert": ["title": "term-llm", "body": "New notification"], "mutable-content": 1],
         "webpush": ["v": 1, "ce": "aes128gcm", "k": tag, "body": body.base64EncodedString()],

@@ -5,16 +5,46 @@ import Security
 /// The device's Web Push identity, shared by the app and its Notification
 /// Service Extension through a keychain access group.
 ///
-/// One key pair and auth secret serve every server and hub node: they only
-/// let this device decrypt. `routes` maps each server's source tag (see
-/// `WebPushCrypto.sourceTag`) to the origin it was registered for, so a push
-/// can be attributed and its tap routed without trusting the payload's URL.
+/// One key pair serves every server and hub node. A master secret derives a
+/// distinct Web Push authentication secret for each origin, scope and server
+/// key, so successful decryption identifies the enrollment even when several
+/// agents share a VAPID source tag. Legacy `routes` remain for old ciphertexts.
 struct PushIdentity: Codable, Equatable {
     var privateKey: Data // P256.KeyAgreement raw representation (32 bytes)
     var authSecret: Data // 16 bytes
     var routes: [String: String] = [:]
     /// Optional for compatibility with identities saved before scoped routing.
     var routeDetails: [String: Route]?
+    /// Enrollment identities must be scoped: several hub nodes may share VAPID
+    /// keys, so the relay's source tag alone cannot identify the sending node.
+    var scopedRoutes: [String: ScopedRoute]?
+
+    struct ScopedRoute: Codable, Equatable {
+        let tag: String
+        let origin: String
+        let route: Route
+    }
+
+    static func routeID(tag: String, origin: String, scope: String) -> String {
+        var encoded = Data()
+        for value in [tag, origin, scope] {
+            let bytes = Data(value.utf8)
+            encoded += withUnsafeBytes(of: UInt64(bytes.count).bigEndian) { Data($0) }
+            encoded += bytes
+        }
+        return Data(SHA256.hash(data: encoded)).base64URLEncodedString()
+    }
+
+    func authenticationSecret(routeID: String) -> Data {
+        let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: authSecret),
+                                        salt: Data("term-llm scoped push v1".utf8),
+                                        info: Data(routeID.utf8), outputByteCount: 16)
+        return key.withUnsafeBytes { Data($0) }
+    }
+
+    func authenticationSecret(tag: String, origin: String, scope: String) -> Data {
+        authenticationSecret(routeID: Self.routeID(tag: tag, origin: origin, scope: scope))
+    }
 
     struct Route: Codable, Equatable {
         let scope: String
@@ -161,8 +191,14 @@ final class PushIdentityStore {
                 let safeLabel = cleanLabel.flatMap {
                     !$0.isEmpty && $0.count <= 128 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) ? $0 : nil
                 }
-                details[tag] = PushIdentity.Route(scope: scope, label: safeLabel ?? details[tag]?.label,
-                                                 nodeBasePath: nodeBasePath ?? details[tag]?.nodeBasePath)
+                let id = PushIdentity.routeID(tag: tag, origin: origin, scope: scope)
+                var scoped = identity.scopedRoutes ?? [:]
+                let oldRoute = scoped[id]?.route
+                let route = PushIdentity.Route(scope: scope, label: safeLabel ?? oldRoute?.label,
+                                               nodeBasePath: nodeBasePath ?? oldRoute?.nodeBasePath)
+                scoped[id] = PushIdentity.ScopedRoute(tag: tag, origin: origin, route: route)
+                identity.scopedRoutes = scoped
+                details[tag] = route
                 identity.routeDetails = details
             }
             guard identity != previous else { return }
