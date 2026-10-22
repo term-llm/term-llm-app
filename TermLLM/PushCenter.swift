@@ -417,10 +417,19 @@ extension PushCenter: UNUserNotificationCenterDelegate {
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            didReceive response: UNNotificationResponse) async {
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping () -> Void) {
         let url = response.notification.request.content.userInfo[PushMessage.urlKey] as? String
-        await MainActor.run {
-            open(urlString: url, configuredServer: ServerAddress.parse(UserDefaults.standard.string(forKey: "serverURL") ?? ""))
+        handleNotificationTap(urlString: url, completionHandler: completionHandler)
+    }
+
+    /// Use the completion-handler delegate API so UIKit's completion runs on the
+    /// main thread too. The async delegate's generated thunk can resume on a
+    /// worker thread after our actor hop and crash UIKit's state restoration.
+    nonisolated func handleNotificationTap(urlString: String?, completionHandler: @escaping () -> Void) {
+        Task { @MainActor in
+            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""))
+            completionHandler()
         }
     }
 }

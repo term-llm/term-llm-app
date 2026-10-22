@@ -339,6 +339,42 @@ final class PushCenterTests: XCTestCase {
         XCTAssertNil(center.pendingNavigation)
     }
 
+    func testNotificationTapCompletesOnMainThreadAfterRouting() async {
+        defaults.set("https://hub.example/ui/", forKey: "serverURL")
+        let center = makeCenter()
+        let target = "https://hub.example/ui/chat/s1"
+        await Task.detached {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                center.handleNotificationTap(urlString: target) {
+                    XCTAssertTrue(Thread.isMainThread, "UIKit's notification completion must run on the main thread")
+                    MainActor.assumeIsolated {
+                        XCTAssertEqual(center.pendingNavigation?.url.absoluteString, target,
+                                       "route the tap before completing the system callback")
+                    }
+                    continuation.resume()
+                }
+            }
+        }.value
+    }
+
+    func testNotificationTapWithoutTrustedURLStillCompletesOnMainThread() async {
+        defaults.set("https://hub.example/ui/", forKey: "serverURL")
+        let center = makeCenter()
+        // `term-llm notify app hello` need not contain a chat URL. Both that
+        // case and an unrelated server must complete, without navigating.
+        for url in [nil, "https://other.example/ui/chat/s1"] as [String?] {
+            await Task.detached {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    center.handleNotificationTap(urlString: url) {
+                        XCTAssertTrue(Thread.isMainThread)
+                        MainActor.assumeIsolated { XCTAssertNil(center.pendingNavigation) }
+                        continuation.resume()
+                    }
+                }
+            }.value
+        }
+    }
+
     func testProvisioningProfileEnvironment() {
         func profile(_ entitlements: String) -> Data {
             Data("garbage\u{0}<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Entitlements</key><dict>\(entitlements)</dict></dict></plist>\u{0}sig".utf8)
