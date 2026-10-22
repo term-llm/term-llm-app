@@ -86,6 +86,7 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
               let scope = object["scope"] as? String, validScope(scope) else {
             return .failure(BridgeError(message: "Malformed notification request"))
         }
+        let nodeBasePath = (object["nodeBasePath"] as? String).flatMap { Self.validScope($0) ? $0 : nil }
         switch method {
         case "permission":
             await center.refreshAuthorization()
@@ -93,13 +94,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "requestPermission":
             return .success(await center.requestPermission(origin: frameOrigin, scope: scope).rawValue)
         case "getSubscription":
-            return .success(center.subscription(origin: frameOrigin, scope: scope)?.bridgeValue ?? NSNull())
+            return .success(center.subscription(origin: frameOrigin, scope: scope, label: object["label"] as? String, nodeBasePath: nodeBasePath)?.bridgeValue ?? NSNull())
         case "subscribe":
             guard let key = object["applicationServerKey"] as? String else {
                 return .failure(BridgeError(message: "Malformed notification request"))
             }
             do {
-                return .success(try await center.subscribe(origin: frameOrigin, scope: scope, applicationServerKey: key).bridgeValue)
+                return .success(try await center.subscribe(origin: frameOrigin, scope: scope, applicationServerKey: key,
+                                                           label: object["label"] as? String, nodeBasePath: nodeBasePath).bridgeValue)
             } catch {
                 return .failure(BridgeError(message: error.localizedDescription))
             }
@@ -122,8 +124,12 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
           if (location.origin !== \(literal(origin))) return;
           const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[\(literal(handlerName))];
           if (!handler) return;
-          const call = (method, scope, extra) =>
-            handler.postMessage({ method, scope: String(scope ?? ''), ...(extra || {}) });
+          const call = (method, scope, extra) => {
+            const label = [window.TERM_LLM_UI_TITLE, window.TERM_LLM_HUB?.nodeName, window.TERM_LLM_HUB?.nodeId]
+              .find(value => typeof value === 'string' && value.trim()) || null;
+            const nodeBasePath = window.TERM_LLM_HUB?.nodeBasePath ?? null;
+            return handler.postMessage({ method, scope: String(scope ?? ''), label, nodeBasePath, ...(extra || {}) });
+          };
           Object.defineProperty(window, '__termLLMNativePush', {
             value: Object.freeze({
               version: 1,

@@ -76,6 +76,64 @@ final class PushMessageTests: XCTestCase {
         XCTAssertNil(message.origin)
     }
 
+    func testNotifyUsesEnrolledAgentScopeAndLabel() throws {
+        let storage = InMemoryPushStorage()
+        let store = PushIdentityStore(storage: storage)
+        let identity = try store.loadOrCreate()
+        try store.setRoute(tag: "dev", origin: "https://hub.example", scope: "/hub/nodes/Dev", label: "Dev")
+        try store.setRoute(tag: "hub", origin: "https://hub.example", scope: "/hub", label: "Hub")
+        let payload = try relayedPayload(#"{"title":"term-llm","body":"hello"}"#, identity: identity, tag: "dev")
+        let message = try PushMessage.decode(userInfo: payload, identity: store.load())
+        XCTAssertEqual(message.title, "Dev")
+        XCTAssertEqual(message.body, "hello")
+        XCTAssertEqual(message.url?.absoluteString, "https://hub.example/hub/nodes/Dev/")
+        XCTAssertEqual(message.userInfo[PushMessage.urlKey], message.url?.absoluteString)
+    }
+
+    func testAgentFormattingPreservesChatDestinationAndAvoidsDuplicatePrefix() {
+        for (title, expected) in [("Response complete", "Dev: Response complete"),
+                                  ("Dev: Response complete", "Dev: Response complete"),
+                                  ("dev: Response failed", "dev: Response failed")] {
+            let message = PushMessage.message(from: ["title": title, "url": "/hub/nodes/Dev/chat/s1"],
+                                              origin: "https://hub.example", scope: "/hub/nodes/Dev", label: "Dev")
+            XCTAssertEqual(message.title, expected)
+            XCTAssertEqual(message.url?.absoluteString, "https://hub.example/hub/nodes/Dev/chat/s1")
+        }
+        let rejected = PushMessage.message(from: ["url": "https://evil.example/"], origin: "https://hub.example",
+                                           scope: "/hub/nodes/Dev", label: "Dev")
+        XCTAssertNil(rejected.url, "an explicitly invalid URL must not become a fallback navigation")
+    }
+
+    func testCompletionRebasesBackendPathOntoPublicAgentMount() throws {
+        var identity = PushIdentity.generate()
+        identity.routes["dev"] = "https://hub.example"
+        identity.routeDetails = ["dev": .init(scope: "/hub/node/Dev", label: "Dev", nodeBasePath: "/ui")]
+        for path in ["/ui/chat/s1", "/hub/node/Dev/chat/s1"] {
+            let payload = try relayedPayload("{\"title\":\"Dev: Response complete\",\"url\":\"\(path)\"}",
+                                             identity: identity, tag: "dev")
+            let message = try PushMessage.decode(userInfo: payload, identity: identity)
+            XCTAssertEqual(message.url?.absoluteString, "https://hub.example/hub/node/Dev/chat/s1")
+            XCTAssertEqual(message.title, "Dev: Response complete")
+        }
+        let rootNode = PushMessage.message(from: ["url": "/chat/s1?view=full"], origin: "https://hub.example",
+                                          scope: "/node/Dev", nodeBasePath: "")
+        XCTAssertEqual(rootNode.url?.absoluteString, "https://hub.example/node/Dev/chat/s1?view=full")
+        let unrelated = PushMessage.message(from: ["url": "/uiverse/chat/s1"], origin: "https://hub.example",
+                                           scope: "/node/Dev", nodeBasePath: "/ui")
+        XCTAssertEqual(unrelated.url?.path, "/uiverse/chat/s1", "match whole path segments only")
+    }
+
+    func testLegacyIdentityWithoutRouteDetailsStillDecodes() throws {
+        let identity = PushIdentity.generate()
+        let data = try JSONEncoder().encode(identity)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["routeDetails"])
+        XCTAssertEqual(try JSONDecoder().decode(PushIdentity.self, from: data), identity)
+        let message = PushMessage.message(from: ["title": "term-llm", "body": "hello"], origin: "https://hub.example")
+        XCTAssertNil(message.url, "old records must not guess which agent sent the push")
+        XCTAssertEqual(message.title, "term-llm")
+    }
+
     func testFailuresKeepPlaceholder() throws {
         let identity = PushIdentity.generate()
         XCTAssertThrowsError(try PushMessage.decode(userInfo: ["aps": [:]], identity: identity)) {
@@ -320,6 +378,34 @@ final class PushCenterTests: XCTestCase {
         }
     }
 
+    func testCachedSubscriptionRefreshesAgentMetadataWithoutRelayRegistration() async throws {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        let scope = "/hub/nodes/Dev"
+        _ = try await center.subscribe(origin: origin, scope: scope, applicationServerKey: serverKey)
+        let tag = WebPushCrypto.sourceTag(applicationServerKey: Data(base64URLEncoded: serverKey)!)
+        // Simulate an existing installation whose identity only stored origins.
+        var identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
+        identity.routeDetails = nil
+        try storage.write(JSONEncoder().encode(identity))
+        let requestCount = relayRequests.count
+        let result = await NativePushBridge.handle(body: ["method": "getSubscription", "scope": scope, "label": "Dev"],
+                                                  frameOrigin: origin, isMainFrame: true, expectedOrigin: origin, center: center)
+        let value = try result.get()
+        XCTAssertTrue(value is [String: Any])
+        XCTAssertEqual(relayRequests.count, requestCount)
+        identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
+        XCTAssertEqual(identity.routeDetails?[tag]?.scope, scope)
+        XCTAssertEqual(identity.routeDetails?[tag]?.label, "Dev")
+        let payload = try relayedPayload(#"{"title":"term-llm","body":"hello"}"#, identity: identity, tag: tag)
+        let message = try PushMessage.decode(userInfo: payload, identity: identity)
+        defaults.set("https://hub.example/hub/", forKey: "serverURL")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            center.handleNotificationTap(urlString: message.userInfo[PushMessage.urlKey]) { continuation.resume() }
+        }
+        XCTAssertEqual(center.pendingNavigation?.url.absoluteString, "https://hub.example/hub/nodes/Dev/")
+    }
+
     func testForegroundAlertsAndTapRouting() {
         let center = makeCenter()
         center.visibleURL = URL(string: "https://hub.example/ui/chat/s1/")
@@ -456,6 +542,16 @@ final class PushCenterTests: XCTestCase {
         let missing = try await webView.callAsyncJavaScript(
             "return await window.__termLLMNativePush.getSubscription('/ui')", contentWorld: .page)
         XCTAssertTrue(missing == nil || missing is NSNull)
+
+        _ = try await webView.callAsyncJavaScript("""
+            window.TERM_LLM_HUB = { nodeName: 'Dev', nodeBasePath: '/ui' };
+            return await window.__termLLMNativePush.subscribe('/node/Dev', key);
+            """, arguments: ["key": serverKey], contentWorld: .page)
+        let tag = WebPushCrypto.sourceTag(applicationServerKey: Data(base64URLEncoded: serverKey)!)
+        let route = try XCTUnwrap(PushIdentityStore(storage: storage).load()?.routeDetails?[tag])
+        XCTAssertEqual(route.scope, "/node/Dev")
+        XCTAssertEqual(route.label, "Dev")
+        XCTAssertEqual(route.nodeBasePath, "/ui")
 
         try await load(webView, baseURL: URL(string: "https://evil.example/")!)
         let other = try await webView.callAsyncJavaScript("return typeof window.__termLLMNativePush", contentWorld: .page) as? String

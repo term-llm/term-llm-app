@@ -301,18 +301,25 @@ final class PushCenter: NSObject, ObservableObject {
         return permission(origin: origin, scope: scope)
     }
 
-    func subscription(origin: String, scope: String) -> NativePushSubscription? {
+    func subscription(origin: String, scope: String, label: String? = nil, nodeBasePath: String? = nil) -> NativePushSubscription? {
         guard permission(origin: origin, scope: scope) == .granted,
               let record = records[Self.scopeKey(origin: origin, scope: scope)],
               record.environment == environment, record.relay == relayURL?.absoluteString,
               deviceToken == nil || record.deviceToken == deviceToken,
               let identity = try? identities.load(), let p256dh = try? identity.publicKeyBase64URL() else { return nil }
+        // Refresh metadata even for a cached endpoint so existing installs gain
+        // scoped routing on their next page visit without re-enrolling.
+        guard let rawKey = Data(base64URLEncoded: record.applicationServerKey) else { return nil }
+        do {
+            try identities.setRoute(tag: WebPushCrypto.sourceTag(applicationServerKey: rawKey), origin: origin,
+                                    scope: scope, label: label, nodeBasePath: nodeBasePath)
+        } catch { return nil }
         return NativePushSubscription(endpoint: record.endpoint, p256dh: p256dh,
                                       auth: identity.authSecret.base64URLEncodedString(),
                                       applicationServerKey: record.applicationServerKey)
     }
 
-    func subscribe(origin: String, scope: String, applicationServerKey: String) async throws -> NativePushSubscription {
+    func subscribe(origin: String, scope: String, applicationServerKey: String, label: String? = nil, nodeBasePath: String? = nil) async throws -> NativePushSubscription {
         guard permission(origin: origin, scope: scope) == .granted else { throw PushError.notAllowed }
         guard let rawKey = Data(base64URLEncoded: applicationServerKey), rawKey.count == 65,
               (try? P256.Signing.PublicKey(x963Representation: rawKey)) != nil else { throw PushError.invalidServerKey }
@@ -324,7 +331,8 @@ final class PushCenter: NSObject, ObservableObject {
         let endpoint = try await PushRelayClient(baseURL: relay, transport: relayTransport)
             .register(deviceToken: token, environment: environment, applicationServerKey: key)
         do {
-            try identities.setRoute(tag: WebPushCrypto.sourceTag(applicationServerKey: rawKey), origin: origin)
+            try identities.setRoute(tag: WebPushCrypto.sourceTag(applicationServerKey: rawKey), origin: origin,
+                                    scope: scope, label: label, nodeBasePath: nodeBasePath)
         } catch { throw PushError.keychain }
         records[Self.scopeKey(origin: origin, scope: scope)] = Record(
             endpoint: endpoint, applicationServerKey: key, deviceToken: token,

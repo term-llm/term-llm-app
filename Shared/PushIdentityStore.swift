@@ -13,6 +13,15 @@ struct PushIdentity: Codable, Equatable {
     var privateKey: Data // P256.KeyAgreement raw representation (32 bytes)
     var authSecret: Data // 16 bytes
     var routes: [String: String] = [:]
+    /// Optional for compatibility with identities saved before scoped routing.
+    var routeDetails: [String: Route]?
+
+    struct Route: Codable, Equatable {
+        let scope: String
+        let label: String?
+        /// Backend prefix before the hub rebases the page onto its public mount.
+        let nodeBasePath: String?
+    }
 
     static func generate() -> PushIdentity {
         var secret = Data(count: 16)
@@ -139,13 +148,24 @@ final class PushIdentityStore {
         }
     }
 
-    func setRoute(tag: String, origin: String) throws {
+    func setRoute(tag: String, origin: String, scope: String? = nil, label: String? = nil, nodeBasePath: String? = nil) throws {
         try lock.withLock {
             guard let data = try storage.read(), var identity = try? JSONDecoder().decode(PushIdentity.self, from: data) else {
                 return
             }
-            guard identity.routes[tag] != origin else { return }
+            let previous = identity
             identity.routes[tag] = origin
+            if let scope {
+                var details = identity.routeDetails ?? [:]
+                let cleanLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let safeLabel = cleanLabel.flatMap {
+                    !$0.isEmpty && $0.count <= 128 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) ? $0 : nil
+                }
+                details[tag] = PushIdentity.Route(scope: scope, label: safeLabel ?? details[tag]?.label,
+                                                 nodeBasePath: nodeBasePath ?? details[tag]?.nodeBasePath)
+                identity.routeDetails = details
+            }
+            guard identity != previous else { return }
             try storage.write(JSONEncoder().encode(identity))
         }
     }

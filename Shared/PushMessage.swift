@@ -37,20 +37,45 @@ struct PushMessage: Equatable {
         guard let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
             throw Failure.invalidMessage
         }
-        let origin = (envelope["k"] as? String).flatMap { identity.routes[$0] }
-        return message(from: object, origin: origin)
+        let tag = envelope["k"] as? String
+        let origin = tag.flatMap { identity.routes[$0] }
+        let route = tag.flatMap { identity.routeDetails?[$0] }
+        return message(from: object, origin: origin, scope: route?.scope, label: route?.label, nodeBasePath: route?.nodeBasePath)
     }
 
-    static func message(from object: [String: Any], origin: String?) -> PushMessage {
+    static func message(from object: [String: Any], origin: String?, scope: String? = nil, label: String? = nil, nodeBasePath: String? = nil) -> PushMessage {
         func text(_ key: String) -> String? {
             (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         }
         let session = text("session_id")
+        var title = text("title") ?? "term-llm"
+        if origin != nil, let label, !label.isEmpty {
+            if title == "term-llm" {
+                title = label
+            } else if title.caseInsensitiveCompare(label) != .orderedSame,
+                      !title.lowercased().hasPrefix(label.lowercased() + ":") {
+                title = label + ": " + title
+            }
+        }
+        // CLI notifications omit the URL. Like a browser service worker, fall
+        // back to the enrolled node's scope, not the app's configured hub URL.
+        var path = text("url") ?? scope.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        if let scope, let nodeBasePath, let raw = path,
+           raw.hasPrefix("/"), !raw.hasPrefix("//") {
+            let mount = scope.hasSuffix("/") ? String(scope.dropLast()) : scope
+            let base = nodeBasePath.hasSuffix("/") ? String(nodeBasePath.dropLast()) : nodeBasePath
+            // A completion sender knows its local /ui prefix, not the hub's
+            // public /node/Dev mount. Never rebase an already-public URL.
+            if raw != mount && !raw.hasPrefix(mount + "/"),
+               raw == base || raw.hasPrefix(base + "/") {
+                path = mount + raw.dropFirst(base.count)
+            }
+        }
         return PushMessage(
-            title: text("title") ?? "term-llm",
+            title: title,
             body: text("body") ?? "",
             threadIdentifier: [origin, session].compactMap { $0 }.joined(separator: "#").nilIfEmpty ?? "term-llm",
-            url: text("url").flatMap { resolve(path: $0, origin: origin) },
+            url: path.flatMap { resolve(path: $0, origin: origin) },
             origin: origin
         )
     }
