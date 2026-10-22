@@ -127,14 +127,26 @@ storage, fake inbox/authorizer/relay/scene activation. They cover metadata reten
 shared-VAPID routes, expiry/replay/capacity/concurrency, exact read races, durable
 off/unloaded-node cleanup, late consent/enrollment responses, stale presence and
 owner-gone activity claims. They were **written but not executed** on Linux:
-no Swift, Xcode, XCTest, signing or iOS device is available. Actual core-producer
-JSON fixture export to native tests is pending coordination; current native
-fixtures are synthetic v2 contract payloads. The public workstream owns its actual
-producer-to-worker contract tests.
+no Swift, Xcode, XCTest, signing or iOS device is available. The test-only
+`TermLLMTests/ProducerFixtures` bundle now pins exact actual-core-producer exports
+(primary/compact completion and manual), manifest hashes/clocks and original
+provenance README from public review `600d7199e30375758fefba7a0e57a4ae72f9a923`
+(production implementation `7f8b8251d0370fe7f475925b50ad7f46a8a697a2`).
+`ActualProducerFixtureTests` encrypts those unmodified bytes for the native
+receiver, checks delivered metadata and primary/compact agreement, and explicitly
+injects the manifest clock into read/replay/expiry tests. The actual manual
+producer lifetime remains **60 seconds**; no timestamp is rewritten. These native
+tests are still unexecuted here. The offline script verifies bytes/provenance,
+clock windows, Unicode body and test-only resource membership. The relay's
+`TestActualProducerFixturesThroughRelay` additionally verifies byte-for-byte
+export preservation through actual WebPush encryption, the real relay and fake
+APNs; it is not native execution. The public workstream owns producer-to-worker
+execution evidence.
 
 Before release, run the focused suites on a disposable simulator (not the opt-in
 live E2E suite): `PushCenterTests`, `PushMessageTests`, `PushDeliveryStoreTests`,
-`NotificationMetadataTests`, `NativeNotificationLifecycleTests`, `WebPushCryptoTests`,
+`NotificationMetadataTests`, `NativeNotificationLifecycleTests`, `ActualProducerFixtureTests`,
+`WebPushCryptoTests`,
 and affected browser lifecycle tests. Then explicitly authorize device acceptance
 for two scenes/nodes sharing VAPID, owner-closed taps, app/NSE concurrent arrival,
 background off/expiry, and authenticated offline cleanup retry. No live enrollment,

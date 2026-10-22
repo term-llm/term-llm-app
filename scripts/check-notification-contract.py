@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Offline structural/JS bridge checks. NOT Swift compilation or XCTest."""
+import datetime
+import hashlib
 import json
 import pathlib
 import plistlib
@@ -33,7 +35,46 @@ def check_project():
         assert name in actual["050"], name
         assert (ROOT / "TermLLM" / name).is_file(), name
     assert "NotificationLifecycleTests.swift" in actual["053"]
-    print("PASS: entitlement plists, unique Xcode IDs and notification target memberships")
+    resource_phases = dict(re.findall(r"([A-F0-9]{24}) /\* Resources \*/ = \{\s*isa = PBXResourcesBuildPhase;.*?files = \((.*?)\);", project, re.S))
+    fixture_phase = "000000000000000000000522"
+    assert fixture_phase in resource_phases
+    assert "ProducerFixtures in Resources" in resource_phases[fixture_phase]
+    assert all("ProducerFixtures" not in files for phase, files in resource_phases.items() if phase != fixture_phase)
+    test_target = re.search(r'000000000000000000000011 /\* TermLLMTests \*/ = \{(.*?)buildRules', project, re.S).group(1)
+    assert fixture_phase in test_target, "fixtures must belong only to the test bundle"
+    print("PASS: entitlement plists, unique Xcode IDs and notification target memberships (fixtures test-only)")
+
+
+def check_producer_fixtures():
+    root = ROOT / "TermLLMTests/ProducerFixtures"
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    assert manifest["public_review_sha"] == "600d7199e30375758fefba7a0e57a4ae72f9a923"
+    assert manifest["production_implementation_sha"] == "7f8b8251d0370fe7f475925b50ad7f46a8a697a2"
+    assert manifest["synthetic_only"] and manifest["unmodified_producer_bytes"]
+    assert manifest["credentials_or_endpoints_in_payload"] is False
+    assert {entry["file"] for entry in manifest["fixtures"]} == {"completion.json", "completion-compact.json", "manual.json"}
+    payloads = {}
+    for entry in manifest["fixtures"]:
+        raw = (root / entry["file"]).read_bytes()
+        assert len(raw) == entry["bytes"], entry["file"]
+        assert hashlib.sha256(raw).hexdigest() == entry["sha256"], entry["file"]
+        payload = json.loads(raw)
+        created = datetime.datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00"))
+        expires = datetime.datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
+        now = datetime.datetime.fromisoformat(entry["injected_test_now"].replace("Z", "+00:00"))
+        assert created < now < expires, "use manifest clock, never rewrite producer timestamps"
+        assert (expires - created).total_seconds() == (60 if entry["kind"] == "manual" else 86400)
+        assert payload["kind"] == entry["kind"] and payload["source"] == entry["source"]
+        assert payload["version"] == 2 and payload["event_id"]
+        payloads[entry["file"]] = payload
+    primary = dict(payloads["completion.json"])
+    compact = dict(payloads["completion-compact.json"])
+    assert primary.pop("title") != compact.pop("title")
+    assert primary == compact, "compact producer must retain all identity/expiry/routing fields"
+    manual = payloads["manual.json"]
+    assert manual["body"] == "Build finished: all tests passed. 节点 😀 <&>\nNext step."
+    assert not {"turn_id", "window_id", "store_instance_id", "attention_seq"}.intersection(manual)
+    print("PASS: exact actual-producer hashes/provenance, compact identity, Unicode manual body and manifest clocks (manual TTL 60s)")
 
 
 def check_injected_javascript():
@@ -98,5 +139,6 @@ console.log('PASS: actual injected bridge JS compatibility, v2 payloads, reload 
 
 if __name__ == "__main__":
     check_project()
+    check_producer_fixtures()
     check_injected_javascript()
     print("Swift/XCTest, signing, NSE scheduling and device scene behavior remain UNVERIFIED here.")

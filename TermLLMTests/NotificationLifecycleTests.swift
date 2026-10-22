@@ -370,3 +370,148 @@ private func request(_ identifier: String, _ message: PushMessage) -> UNNotifica
     let content = UNMutableNotificationContent(); content.userInfo = message.userInfo
     return UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
 }
+
+// MARK: - Exact actual-core-producer export bytes (test bundle resources)
+
+final class ActualProducerFixtureTests: XCTestCase {
+    private let origin = "https://producer-fixture.example"
+
+    func testActualProducerDecoderMetadataAndCompactAgreement() throws {
+        let fixtures = try loadProducerFixtures()
+        var messages: [String: PushMessage] = [:]
+        for fixture in fixtures {
+            let message = try decodeProducerFixture(fixture)
+            let metadata = try XCTUnwrap(message.metadata)
+            XCTAssertEqual(metadata.version, 2)
+            XCTAssertEqual(metadata.kind, fixture.entry.kind)
+            XCTAssertEqual(metadata.eventID, fixture.object["event_id"] as? String)
+            XCTAssertEqual(metadata.source, fixture.entry.source)
+            XCTAssertEqual(metadata.createdAt, (fixture.object["created_at"] as? String).flatMap(PushMetadata.date))
+            XCTAssertEqual(metadata.expiresAt, (fixture.object["expires_at"] as? String).flatMap(PushMetadata.date))
+            XCTAssertEqual(message.title, fixture.object["title"] as? String)
+            XCTAssertEqual(message.body, fixture.object["body"] as? String)
+            XCTAssertEqual(message.url?.absoluteString, origin + (fixture.object["url"] as? String ?? ""))
+            XCTAssertEqual(message.scope, fixture.entry.source)
+            XCTAssertEqual(message.sourceID, PushIdentity.routeID(tag: "producer", origin: origin, scope: fixture.entry.source))
+            XCTAssertEqual(PushMessage.delivered(userInfo: message.userInfo)?.metadata, metadata,
+                           "exact event/read identity survives delivered metadata encoding")
+            if metadata.kind == "completion" {
+                XCTAssertEqual(metadata.turnID, fixture.object["turn_id"] as? String)
+                XCTAssertEqual(metadata.responseID, fixture.object["response_id"] as? String)
+                XCTAssertEqual(metadata.windowID, fixture.object["window_id"] as? String)
+                XCTAssertEqual(metadata.storeInstanceID, fixture.object["store_instance_id"] as? String)
+                XCTAssertEqual(metadata.sessionID, fixture.object["session_id"] as? String)
+                XCTAssertEqual(metadata.attentionSequence, PushMetadata.sequence(fixture.object["attention_seq"]))
+                XCTAssertEqual(metadata.runEpoch, PushMetadata.sequence(fixture.object["run_epoch"]))
+                XCTAssertEqual(metadata.outcome, fixture.object["outcome"] as? String)
+            } else {
+                XCTAssertNil(metadata.windowID); XCTAssertNil(metadata.turnID)
+                XCTAssertNil(metadata.storeInstanceID); XCTAssertNil(metadata.attentionSequence)
+                XCTAssertEqual(message.body, "Build finished: all tests passed. 节点 😀 <&>\nNext step.")
+            }
+            messages[fixture.entry.file] = message
+        }
+        let primary = try XCTUnwrap(messages["completion.json"])
+        let compact = try XCTUnwrap(messages["completion-compact.json"])
+        XCTAssertEqual(primary.metadata, compact.metadata, "compact retry retains every ownership/read/replay field")
+        XCTAssertEqual(primary.url, compact.url)
+        XCTAssertEqual(primary.userInfo, compact.userInfo)
+        XCTAssertNotEqual(primary.title, compact.title, "actual compact retry shortened display title only")
+    }
+
+    func testActualProducerReplayExpiryAndReadUseManifestClockNotWallClock() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixtures = try loadProducerFixtures()
+        for fixture in fixtures {
+            let message = try decodeProducerFixture(fixture)
+            let metadata = try XCTUnwrap(message.metadata)
+            let created = try XCTUnwrap(metadata.createdAt)
+            let expires = try XCTUnwrap(metadata.expiresAt)
+            let now = try XCTUnwrap(PushMetadata.date(fixture.entry.injectedTestNow))
+            XCTAssertGreaterThan(now, created); XCTAssertLessThan(now, expires)
+            XCTAssertEqual(expires.timeIntervalSince(created), metadata.kind == "manual" ? 60 : 86400, accuracy: 0.001)
+            let store = PushDeliveryStore(url: directory.appendingPathComponent(fixture.entry.file))
+            try store.migrate(enabled: true, optOuts: [])
+            // These historic exports must NEVER be timestamp-rewritten or tested
+            // against Date(). The manual CLI producer's real lifetime is 60s.
+            XCTAssertEqual(try store.receive(message, now: now), .allowed)
+            XCTAssertEqual(try PushDeliveryStore(url: store.url).receive(message, now: now), .replay)
+            XCTAssertEqual(try store.receive(message, now: expires), .expired)
+            if metadata.kind == "completion" {
+                try store.acknowledgeRead(origin: origin, scope: fixture.entry.source,
+                    store: XCTUnwrap(metadata.storeInstanceID), session: XCTUnwrap(metadata.sessionID),
+                    sequence: XCTUnwrap(metadata.attentionSequence), now: now)
+                XCTAssertEqual(try store.receive(message, now: now), .read)
+            }
+        }
+        let primary = try XCTUnwrap(fixtures.first { $0.entry.file == "completion.json" })
+        let compact = try XCTUnwrap(fixtures.first { $0.entry.file == "completion-compact.json" })
+        let now = try XCTUnwrap(PushMetadata.date(primary.entry.injectedTestNow))
+        let shared = PushDeliveryStore(url: directory.appendingPathComponent("same-event.json"))
+        try shared.migrate(enabled: true, optOuts: [])
+        XCTAssertEqual(try shared.receive(decodeProducerFixture(primary), now: now), .allowed)
+        XCTAssertEqual(try shared.receive(decodeProducerFixture(compact), now: now), .replay,
+                       "compact wire retry cannot mint another native event")
+    }
+
+    private func loadProducerFixtures() throws -> [ProducerFixture] {
+        let bundle = Bundle(for: ActualProducerFixtureTests.self)
+        let root = try XCTUnwrap(bundle.url(forResource: "ProducerFixtures", withExtension: nil))
+        let manifest = try JSONDecoder().decode(ProducerFixtureManifest.self,
+                                               from: Data(contentsOf: root.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(manifest.publicReviewSHA, "600d7199e30375758fefba7a0e57a4ae72f9a923")
+        XCTAssertEqual(manifest.implementationSHA, "7f8b8251d0370fe7f475925b50ad7f46a8a697a2")
+        XCTAssertTrue(manifest.syntheticOnly); XCTAssertTrue(manifest.unmodifiedProducerBytes)
+        XCTAssertEqual(Set(manifest.fixtures.map(\.file)), ["completion.json", "completion-compact.json", "manual.json"])
+        return try manifest.fixtures.map { entry in
+            let bytes = try Data(contentsOf: root.appendingPathComponent(entry.file))
+            XCTAssertEqual(bytes.count, entry.bytes)
+            XCTAssertEqual(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(), entry.sha256)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            return ProducerFixture(entry: entry, bytes: bytes, object: object)
+        }
+    }
+
+    private func decodeProducerFixture(_ fixture: ProducerFixture) throws -> PushMessage {
+        let identities = PushIdentityStore(storage: InMemoryPushStorage())
+        let identity = try identities.loadOrCreate()
+        try identities.setRoute(tag: "producer", origin: origin, scope: fixture.entry.source)
+        let auth = identity.authenticationSecret(tag: "producer", origin: origin, scope: fixture.entry.source)
+        // Encrypt the exact Data export, not a parsed/remarshaled lookalike.
+        let ciphertext = try encryptWebPush(fixture.bytes, identity: identity, authSecret: auth)
+        let payload: [AnyHashable: Any] = ["webpush": ["v": 1, "ce": "aes128gcm", "k": "producer", "body": ciphertext.base64EncodedString()]]
+        return try PushMessage.decode(userInfo: payload, identity: identities.load())
+    }
+}
+
+private struct ProducerFixtureManifest: Decodable {
+    let publicReviewSHA: String
+    let implementationSHA: String
+    let syntheticOnly: Bool
+    let unmodifiedProducerBytes: Bool
+    let fixtures: [Entry]
+    enum CodingKeys: String, CodingKey {
+        case publicReviewSHA = "public_review_sha", implementationSHA = "production_implementation_sha"
+        case syntheticOnly = "synthetic_only", unmodifiedProducerBytes = "unmodified_producer_bytes", fixtures
+    }
+    struct Entry: Decodable {
+        let file: String
+        let sha256: String
+        let bytes: Int
+        let kind: String
+        let source: String
+        let injectedTestNow: String
+        enum CodingKeys: String, CodingKey {
+            case file, sha256, bytes, kind, source
+            case injectedTestNow = "injected_test_now"
+        }
+    }
+}
+
+private struct ProducerFixture {
+    let entry: ProducerFixtureManifest.Entry
+    let bytes: Data
+    let object: [String: Any]
+}

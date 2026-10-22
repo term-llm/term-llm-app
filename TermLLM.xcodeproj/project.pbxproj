@@ -87,6 +87,7 @@
 		000000000000000000000516 /* PushNotificationLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000504 /* PushNotificationLifecycle.swift */; };
 		000000000000000000000517 /* NativePushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000505 /* NativePushNotifications.swift */; };
 		000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000506 /* NotificationLifecycleTests.swift */; };
+		000000000000000000000521 /* ProducerFixtures in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000520 /* ProducerFixtures */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -201,6 +202,7 @@
 		000000000000000000000504 /* PushNotificationLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationLifecycle.swift; sourceTree = "<group>"; };
 		000000000000000000000505 /* NativePushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushNotifications.swift; sourceTree = "<group>"; };
 		000000000000000000000506 /* NotificationLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationLifecycleTests.swift; sourceTree = "<group>"; };
+		000000000000000000000520 /* ProducerFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ProducerFixtures; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -327,6 +329,7 @@
 				0000000000000000000000E0 /* CatalogParsingTests.swift */,
 				000000000000000000000430 /* PushTests.swift */,
 				000000000000000000000506 /* NotificationLifecycleTests.swift */,
+				000000000000000000000520 /* ProducerFixtures */,
 				000000000000000000000431 /* PushLiveE2ETests.swift */,
 			);
 			path = TermLLMTests;
@@ -381,6 +384,7 @@
 			buildConfigurationList = 000000000000000000000022 /* Build configuration list for PBXNativeTarget "TermLLMTests" */;
 			buildPhases = (
 				000000000000000000000053 /* Sources */,
+				000000000000000000000522 /* Resources */,
 				000000000000000000000054 /* Frameworks */,
 			);
 			buildRules = (
@@ -452,6 +456,14 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000522 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000521 /* ProducerFixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
