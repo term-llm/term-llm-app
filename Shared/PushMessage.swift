@@ -10,6 +10,10 @@ import Foundation
 struct PushMessage: Equatable {
     static let urlKey = "termllm_url"
     static let originKey = "termllm_origin"
+    static let scopeKey = "termllm_scope"
+    static let sourceKey = "termllm_source"
+    static let dispositionKey = "termllm_disposition"
+    static let decodedKey = "termllm_decoded"
 
     var title: String
     var body: String
@@ -19,6 +23,11 @@ struct PushMessage: Equatable {
     var url: URL?
     /// Server the push came from, when this device registered its source tag.
     var origin: String?
+    /// Origin/scope/source come from successful enrollment authentication, never
+    /// from a payload claiming to belong to another node.
+    var scope: String?
+    var sourceID: String?
+    var metadata: PushMetadata?
 
     enum Failure: Error, Equatable {
         case notWebPush
@@ -44,9 +53,12 @@ struct PushMessage: Equatable {
             guard let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
                 throw Failure.invalidMessage
             }
+            _ = try PushMetadata.parse(object)
             let route = candidate.route
-            return message(from: object, origin: candidate.origin, scope: route.scope,
-                           label: route.label, nodeBasePath: route.nodeBasePath)
+            let message = message(from: object, origin: candidate.origin, scope: route.scope,
+                                  label: route.label, nodeBasePath: route.nodeBasePath, sourceID: id)
+            try validateCompletionRoute(message, authenticated: true)
+            return message
         }
         // Keep already-sent and pre-upgrade subscriptions readable. A legacy
         // ciphertext cannot distinguish multiple scopes sharing its key; do not
@@ -58,10 +70,23 @@ struct PushMessage: Equatable {
         let origins = Set(candidates.values.map { $0.origin })
         let origin = origins.count > 1 ? nil : tag.flatMap { identity.routes[$0] }
         let route = candidates.count > 1 ? nil : tag.flatMap { identity.routeDetails?[$0] }
-        return message(from: object, origin: origin, scope: route?.scope, label: route?.label, nodeBasePath: route?.nodeBasePath)
+        _ = try PushMetadata.parse(object)
+        let message = message(from: object, origin: origin, scope: route?.scope, label: route?.label, nodeBasePath: route?.nodeBasePath, sourceID: tag)
+        try validateCompletionRoute(message, authenticated: false)
+        return message
     }
 
-    static func message(from object: [String: Any], origin: String?, scope: String? = nil, label: String? = nil, nodeBasePath: String? = nil) -> PushMessage {
+    private static func validateCompletionRoute(_ message: PushMessage, authenticated: Bool) throws {
+        guard let metadata = message.metadata, metadata.version == 2, metadata.kind == "completion" else { return }
+        guard authenticated, message.origin != nil, let scope = message.scope,
+              metadata.source == scope, let url = message.url else { throw Failure.invalidMessage }
+        let decoded = scope.removingPercentEncoding ?? scope
+        let root = decoded.hasSuffix("/") ? String(decoded.dropLast()) : decoded
+        guard PushMetadata.validScope(url.path),
+              root.isEmpty || url.path == root || url.path.hasPrefix(root + "/") else { throw Failure.invalidMessage }
+    }
+
+    static func message(from object: [String: Any], origin: String?, scope: String? = nil, label: String? = nil, nodeBasePath: String? = nil, sourceID: String? = nil) -> PushMessage {
         func text(_ key: String) -> String? {
             (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         }
@@ -91,26 +116,52 @@ struct PushMessage: Equatable {
         }
         return PushMessage(
             title: title,
-            body: text("body") ?? "",
-            threadIdentifier: [origin, session].compactMap { $0 }.joined(separator: "#").nilIfEmpty ?? "term-llm",
+            body: object["body"] as? String ?? "",
+            threadIdentifier: [origin, scope, session].compactMap { $0 }.joined(separator: "#").nilIfEmpty ?? "term-llm",
             url: path.flatMap { resolve(path: $0, origin: origin) },
-            origin: origin
+            origin: origin, scope: scope, sourceID: sourceID,
+            metadata: try? PushMetadata.parse(object)
         )
     }
 
     /// Accepts only a same-origin absolute path; never a full URL from the payload.
     static func resolve(path: String, origin: String?) -> URL? {
-        guard let origin, path.hasPrefix("/"), !path.hasPrefix("//"),
+        guard let origin, path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains("\\"),
+              !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               let base = URL(string: origin), let url = URL(string: path, relativeTo: base)?.absoluteURL,
               url.scheme == base.scheme, url.host == base.host, url.port == base.port else { return nil }
         return url
     }
 
     var userInfo: [String: String] {
-        var info: [String: String] = [:]
+        var info: [String: String] = [Self.decodedKey: "1"]
         if let url { info[Self.urlKey] = url.absoluteString }
         if let origin { info[Self.originKey] = origin }
+        if let scope { info[Self.scopeKey] = scope }
+        if let sourceID { info[Self.sourceKey] = sourceID }
+        if let metadata, let data = try? JSONEncoder().encode(metadata) {
+            info[PushMetadata.key] = String(decoding: data, as: UTF8.self)
+        }
         return info
+    }
+
+    /// Delivered metadata must survive after NSE removes the encrypted body.
+    static func delivered(userInfo: [AnyHashable: Any]) -> PushMessage? {
+        let origin = userInfo[originKey] as? String
+        guard origin != nil || userInfo[decodedKey] as? String == "1" else { return nil }
+        let metadata = (userInfo[PushMetadata.key] as? String).flatMap {
+            try? JSONDecoder().decode(PushMetadata.self, from: Data($0.utf8))
+        }
+        let url = (userInfo[urlKey] as? String).flatMap(URL.init(string:))
+        return PushMessage(title: "", body: "", threadIdentifier: "", url: url, origin: origin,
+                           scope: userInfo[scopeKey] as? String, sourceID: userInfo[sourceKey] as? String,
+                           metadata: metadata)
+    }
+
+    func isRead(origin: String, scope: String, store: String, session: String, through sequence: Int64) -> Bool {
+        self.origin == origin && self.scope == scope && metadata?.kind == "completion" &&
+            metadata?.storeInstanceID == store && metadata?.sessionID == session &&
+            metadata?.attentionSequence.map { $0 <= sequence } == true
     }
 }
 
@@ -124,16 +175,26 @@ import UserNotifications
 extension PushMessage {
     /// What the Notification Service Extension delivers: the decrypted
     /// notification. Throws to keep the relay's placeholder.
-    static func content(for request: UNNotificationRequest, identities: PushIdentityStore = PushIdentityStore()) throws -> UNNotificationContent {
+    static func content(for request: UNNotificationRequest, identities: PushIdentityStore = PushIdentityStore(),
+                        deliveries: PushDeliveryStore = PushDeliveryStore()) throws -> UNNotificationContent {
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else { throw Failure.invalidMessage }
         let message = try decode(userInfo: request.content.userInfo, identity: identities.load())
+        let disposition = (try? deliveries.receive(message)) ?? .capacity
         content.title = message.title
         content.body = message.body
         content.threadIdentifier = message.threadIdentifier
         var userInfo = content.userInfo
         userInfo.removeValue(forKey: "webpush")
         for (key, value) in message.userInfo { userInfo[key] = value }
+        userInfo[Self.dispositionKey] = disposition.rawValue
         content.userInfo = userInfo
+        if disposition != .allowed {
+            // NSE cannot cancel a remote alert. Quiet/redact best-effort; iOS
+            // may still show an empty card or the original fallback on expiry.
+            content.title = ""; content.subtitle = ""; content.body = ""
+            content.sound = nil; content.badge = nil
+            content.interruptionLevel = .passive
+        }
         return content
     }
 }

@@ -250,7 +250,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 
 	req := APNsRequest{
 		Env: sub.Env, DeviceToken: sub.DeviceToken, Payload: payload,
-		Priority: priority, CollapseID: collapseID, ID: newUUID(),
+		Priority: priority, CollapseID: collapseID, ID: eventAPNsID(sub, collapseID),
 	}
 	if ttl > 0 {
 		req.Expiration = s.now().Add(time.Duration(ttl) * time.Second)
@@ -260,6 +260,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	result, sendErr := s.apns.Send(ctx, req)
 	status, retryAfter, message := mapAPNsResult(result, sendErr)
 	attrs := []any{"device", device, "env", sub.Env.String(), "status", status, "apns_status", result.Status,
+		"request_apns_id", req.ID, "apns_id", result.APNsID,
 		"body_bytes", len(body), "ttl", ttl, "priority", priority, "duration_ms", s.now().Sub(start).Milliseconds()}
 	if result.Reason != "" {
 		attrs = append(attrs, "apns_reason", result.Reason)

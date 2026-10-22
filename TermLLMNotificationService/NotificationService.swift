@@ -1,3 +1,4 @@
+import Foundation
 import OSLog
 import UserNotifications
 
@@ -8,27 +9,43 @@ private let log = Logger(subsystem: "com.termllm.app", category: "push")
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var fallback: UNNotificationContent?
+    private let completionLock = NSLock()
 
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
-        self.contentHandler = contentHandler
-        fallback = request.content
+        // Install a quiet fallback BEFORE shared-state IO: a competing process
+        // may hold the file lock when iOS asks this extension to expire.
+        completionLock.withLock {
+            self.contentHandler = contentHandler
+            fallback = Self.quiet(request.content)
+        }
+        let permitted = (try? PushDeliveryStore().isEnabled(origin: nil, scope: nil)) == true
         do {
             deliver(try PushMessage.content(for: request))
         } catch {
             // Never log content; the failure kind is enough to diagnose.
-            log.error("Showing placeholder: \(String(describing: error), privacy: .public)")
-            deliver(request.content)
+            log.error("Unable to decode notification: \(String(describing: error), privacy: .public)")
+            let invalid = error as? PushMessage.Failure == .invalidMessage
+            deliver(!permitted || invalid ? Self.quiet(request.content) : request.content)
         }
     }
 
     override func serviceExtensionTimeWillExpire() {
-        if let fallback { deliver(fallback) }
+        if let fallback = completionLock.withLock({ fallback }) { deliver(fallback) }
+    }
+
+    private static func quiet(_ original: UNNotificationContent) -> UNNotificationContent {
+        guard let content = original.mutableCopy() as? UNMutableNotificationContent else { return original }
+        content.title = ""; content.subtitle = ""; content.body = ""
+        content.sound = nil; content.badge = nil; content.interruptionLevel = .passive
+        return content
     }
 
     private func deliver(_ content: UNNotificationContent) {
-        guard let handler = contentHandler else { return }
-        contentHandler = nil
-        handler(content)
+        let handler = completionLock.withLock { () -> ((UNNotificationContent) -> Void)? in
+            defer { contentHandler = nil }
+            return contentHandler
+        }
+        handler?(content)
     }
 }

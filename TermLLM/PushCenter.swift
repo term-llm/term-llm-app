@@ -52,6 +52,8 @@ struct NativePushSubscription: Equatable {
 struct PushNavigation: Equatable {
     let id: UUID
     let url: URL
+    /// nil requires a new-scene activity claim; no current scene may consume it.
+    var windowID: String? = nil
 }
 
 enum PushError: LocalizedError, Equatable {
@@ -164,6 +166,8 @@ final class PushCenter: NSObject, ObservableObject {
         var deviceToken: String
         var environment: PushEnvironment
         var relay: String
+        var retired: Bool?
+        var subscriptionID: String?
     }
 
     static let enabledKey = "push.enabled"
@@ -177,7 +181,18 @@ final class PushCenter: NSObject, ObservableObject {
     /// Bumped when app-level state changes; the browser tells the page to reconcile.
     @Published private(set) var changeCount = 0
     @Published private(set) var pendingNavigation: PushNavigation?
-    /// The page currently shown, for suppressing alerts about it.
+    @Published var storageIssue: String?
+    @Published var pendingCleanupCount = 0
+    let deliveries: PushDeliveryStore
+    let windows = PushWindowRegistry()
+    let inbox: PushNotificationInbox
+    /// Injected by tests; production requests the exact scene or a fresh scene.
+    var activateScene: (UISceneSession?, NSUserActivity) -> Void = { session, activity in
+        UIApplication.shared.requestSceneSessionActivation(session, userActivity: activity, options: nil)
+    }
+    static let navigationActivity = "com.termllm.app.notification"
+    static let windowSessionsKey = "push.windowSessions"
+    /// Legacy diagnostic only. A URL is never attendance or read authority.
     var visibleURL: URL?
     var isActive: () -> Bool = { UIApplication.shared.applicationState == .active }
 
@@ -189,10 +204,11 @@ final class PushCenter: NSObject, ObservableObject {
     private let environment: PushEnvironment
     private let tokenTimeout: Duration
     private var optOuts: Set<String>
-    private var records: [String: Record]
+    var records: [String: Record]
     private var deviceToken: String?
     private var tokenWaiters: [CheckedContinuation<String, Error>] = []
     private var tokenTimeoutTask: Task<Void, Never>?
+    private var enrollmentGeneration: UInt64 = 0
 
     init(defaults: UserDefaults = .standard,
          identities: PushIdentityStore = PushIdentityStore(),
@@ -200,7 +216,11 @@ final class PushCenter: NSObject, ObservableObject {
          relayTransport: @escaping PushRelayClient.Transport = PushRelayClient.defaultTransport,
          registerForRemote: @escaping @MainActor () -> Void = { UIApplication.shared.registerForRemoteNotifications() },
          environment: PushEnvironment = .current,
-         tokenTimeout: Duration = .seconds(20)) {
+         tokenTimeout: Duration = .seconds(20),
+         deliveries: PushDeliveryStore = PushDeliveryStore(),
+         inbox: PushNotificationInbox = SystemPushNotificationInbox()) {
+        self.deliveries = deliveries
+        self.inbox = inbox
         self.defaults = defaults
         self.identities = identities
         self.authorizer = authorizer
@@ -213,6 +233,20 @@ final class PushCenter: NSObject, ObservableObject {
         records = defaults.data(forKey: Self.recordsKey)
             .flatMap { try? JSONDecoder().decode([String: Record].self, from: $0) } ?? [:]
         super.init()
+        do {
+            try deliveries.migrate(enabled: enabled, optOuts: optOuts)
+            let shared = try deliveries.transaction { $0 }
+            enabled = shared.enabled == true
+            optOuts = shared.optOuts
+            for (key, record) in records {
+                guard let separator = key.firstIndex(of: "|") else { continue }
+                let origin = String(key[..<separator])
+                let scope = String(key[key.index(after: separator)...])
+                try deliveries.remember(origin: origin, scope: scope, endpoint: record.endpoint, subscriptionID: record.subscriptionID)
+                if record.retired == true { try deliveries.retire(origin: origin, scope: scope) }
+            }
+            refreshPendingCleanup()
+        } catch { reportStorageFailure() }
     }
 
     var relayURL: URL? {
@@ -262,15 +296,23 @@ final class PushCenter: NSObject, ObservableObject {
     func setEnabled(_ on: Bool) async {
         if on {
             await turnOn()
-        } else if enabled {
+        } else {
+            enrollmentGeneration &+= 1
+            do { try deliveries.setEnabled(false) } catch { reportStorageFailure() }
             enabled = false
             defaults.set(false, forKey: Self.enabledKey)
+            for key in records.keys { records[key]?.retired = true }
+            persistRecords()
+            refreshPendingCleanup()
+            await clearNotifications()
             notifyChange()
         }
     }
 
     private func turnOn() async {
         let wasEnabled = enabled
+        enrollmentGeneration &+= 1
+        do { try deliveries.setEnabled(true) } catch { reportStorageFailure() }
         enabled = true
         defaults.set(true, forKey: Self.enabledKey)
         var status = await authorizer.status()
@@ -296,6 +338,7 @@ final class PushCenter: NSObject, ObservableObject {
 
     /// The web UI's Enable: clears this node's opt-out and turns notifications on.
     func requestPermission(origin: String, scope: String) async -> PushPermission {
+        do { try deliveries.setEnabled(true, origin: origin, scope: scope) } catch { reportStorageFailure() }
         if optOuts.remove(Self.scopeKey(origin: origin, scope: scope)) != nil { persistOptOuts() }
         await turnOn()
         return permission(origin: origin, scope: scope)
@@ -303,7 +346,7 @@ final class PushCenter: NSObject, ObservableObject {
 
     func subscription(origin: String, scope: String, label: String? = nil, nodeBasePath: String? = nil) -> NativePushSubscription? {
         guard permission(origin: origin, scope: scope) == .granted,
-              let record = records[Self.scopeKey(origin: origin, scope: scope)],
+              let record = records[Self.scopeKey(origin: origin, scope: scope)], record.retired != true,
               record.environment == environment, record.relay == relayURL?.absoluteString,
               deviceToken == nil || record.deviceToken == deviceToken,
               let identity = try? identities.load(), let p256dh = try? identity.publicKeyBase64URL() else { return nil }
@@ -322,6 +365,7 @@ final class PushCenter: NSObject, ObservableObject {
 
     func subscribe(origin: String, scope: String, applicationServerKey: String, label: String? = nil, nodeBasePath: String? = nil) async throws -> NativePushSubscription {
         guard permission(origin: origin, scope: scope) == .granted else { throw PushError.notAllowed }
+        let generation = enrollmentGeneration
         guard let rawKey = Data(base64URLEncoded: applicationServerKey), rawKey.count == 65,
               (try? P256.Signing.PublicKey(x963Representation: rawKey)) != nil else { throw PushError.invalidServerKey }
         guard let relay = relayURL else { throw PushError.relayUnavailable }
@@ -331,6 +375,15 @@ final class PushCenter: NSObject, ObservableObject {
         let key = rawKey.base64URLEncodedString()
         let endpoint = try await PushRelayClient(baseURL: relay, transport: relayTransport)
             .register(deviceToken: token, environment: environment, applicationServerKey: key)
+        // No server enrollment exists until this method returns an endpoint.
+        // A stale relay registration is stateless; never retire a newer consent
+        // epoch's enrollment just because an older request finished late.
+        guard generation == enrollmentGeneration, permission(origin: origin, scope: scope) == .granted else {
+            throw PushError.notAllowed
+        }
+        do {
+            try deliveries.remember(origin: origin, scope: scope, endpoint: endpoint)
+        } catch { reportStorageFailure() }
         do {
             try identities.setRoute(tag: WebPushCrypto.sourceTag(applicationServerKey: rawKey), origin: origin,
                                     scope: scope, label: label, nodeBasePath: nodeBasePath)
@@ -347,28 +400,61 @@ final class PushCenter: NSObject, ObservableObject {
 
     /// Forgets this node's record (key rotation, permission withdrawn). Not an opt-out.
     func unsubscribe(origin: String, scope: String) {
-        if records.removeValue(forKey: Self.scopeKey(origin: origin, scope: scope)) != nil { persistRecords() }
+        enrollmentGeneration &+= 1
+        // A transport forget is not proof of a successful authenticated DELETE.
+        do { try deliveries.retire(origin: origin, scope: scope) } catch { reportStorageFailure() }
+        refreshPendingCleanup()
+        let key = Self.scopeKey(origin: origin, scope: scope)
+        if records[key] != nil { records[key]?.retired = true; persistRecords() }
     }
 
     /// The user turned notifications off for this node in its web UI.
     func disable(origin: String, scope: String) {
         let key = Self.scopeKey(origin: origin, scope: scope)
+        do { try deliveries.setEnabled(false, origin: origin, scope: scope) } catch { reportStorageFailure() }
         if optOuts.insert(key).inserted { persistOptOuts() }
         unsubscribe(origin: origin, scope: scope)
+        Task { await clearNotifications(origin: origin, scope: scope) }
+        notifyChange()
     }
 
     // MARK: Notifications shown and tapped
 
-    func presentationOptions(forURL raw: String?) -> UNNotificationPresentationOptions {
-        if isActive(), let raw, let target = URL(string: raw), let visible = visibleURL,
-           Self.samePage(target, visible) { return [] }
-        return [.banner, .list, .sound]
-    }
-
-    func open(urlString raw: String?, configuredServer: URL?) {
+    func open(urlString raw: String?, configuredServer: URL?, windowID: String? = nil) {
         guard let raw, let url = URL(string: raw), let server = configuredServer,
               let origin = Self.origin(url), origin == Self.origin(server) else { return }
-        pendingNavigation = PushNavigation(id: UUID(), url: url)
+        let sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
+        let session = windowID.flatMap { id in
+            windows.scene(windowID: id)?.session ?? UIApplication.shared.openSessions.first { $0.persistentIdentifier == sessions[id] }
+        }
+        // If the exact scene is gone, only the scene activity may claim a fresh
+        // destination. Existing sibling BrowserViews cannot consume nil owner.
+        let navigation = PushNavigation(id: UUID(), url: url, windowID: session == nil ? nil : windowID)
+        pendingNavigation = navigation
+        let activity = NSUserActivity(activityType: Self.navigationActivity)
+        activity.userInfo = ["navigation_id": navigation.id.uuidString]
+        activateScene(session, activity)
+    }
+
+    static func windowID(for scene: UIWindowScene) -> String { "scene:" + scene.session.persistentIdentifier }
+
+    func registerWindow(_ windowID: String, scene: UIWindowScene) {
+        windows.register(windowID: windowID, scene: scene)
+        var sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
+        // Retain only live/restorable scene sessions; no unbounded scene history.
+        let live = Set(UIApplication.shared.openSessions.map(\.persistentIdentifier))
+        sessions = sessions.filter { live.contains($0.value) }
+        sessions[windowID] = scene.session.persistentIdentifier
+        defaults.set(sessions, forKey: Self.windowSessionsKey)
+    }
+
+    func claimNavigation(_ activity: NSUserActivity, windowID: String) {
+        guard activity.activityType == Self.navigationActivity,
+              let id = activity.userInfo?["navigation_id"] as? String,
+              var navigation = pendingNavigation, navigation.id.uuidString == id,
+              navigation.windowID == nil || navigation.windowID == windowID else { return }
+        navigation.windowID = windowID
+        pendingNavigation = navigation
     }
 
     func navigationHandled(_ id: UUID) {
@@ -413,33 +499,36 @@ final class PushCenter: NSObject, ObservableObject {
         waiters.forEach { $0.resume(with: result) }
     }
 
+    func notificationIdentity() -> PushIdentity? { try? identities.load() }
+
     private func notifyChange() { changeCount += 1 }
 
     private func persistOptOuts() { defaults.set(optOuts.sorted(), forKey: Self.optOutsKey) }
 
-    private func persistRecords() { defaults.set(try? JSONEncoder().encode(records), forKey: Self.recordsKey) }
+    func persistRecords() { defaults.set(try? JSONEncoder().encode(records), forKey: Self.recordsKey) }
 }
 
 extension PushCenter: UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        let url = notification.request.content.userInfo[PushMessage.urlKey] as? String
-        return await presentationOptions(forURL: url)
+        return await presentationOptions(userInfo: notification.request.content.userInfo)
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let url = response.notification.request.content.userInfo[PushMessage.urlKey] as? String
-        handleNotificationTap(urlString: url, completionHandler: completionHandler)
+        let info = response.notification.request.content.userInfo
+        let url = info[PushMessage.urlKey] as? String
+        let windowID = PushMessage.delivered(userInfo: info)?.metadata?.windowID
+        handleNotificationTap(urlString: url, windowID: windowID, completionHandler: completionHandler)
     }
 
     /// Use the completion-handler delegate API so UIKit's completion runs on the
     /// main thread too. The async delegate's generated thunk can resume on a
     /// worker thread after our actor hop and crash UIKit's state restoration.
-    nonisolated func handleNotificationTap(urlString: String?, completionHandler: @escaping () -> Void) {
+    nonisolated func handleNotificationTap(urlString: String?, windowID: String? = nil, completionHandler: @escaping () -> Void) {
         Task { @MainActor in
-            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""))
+            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""), windowID: windowID)
             completionHandler()
         }
     }

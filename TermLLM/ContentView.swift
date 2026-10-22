@@ -26,6 +26,8 @@ struct ContentView: View {
     @StateObject private var deviceTools = DeviceToolsSettings.shared
     @StateObject private var voiceLaunches = VoiceLaunchCenter.shared
     @StateObject private var push = PushCenter.shared
+    @State private var pushWindowID: String?
+    @State private var pushActivity: NSUserActivity?
     @State private var voiceRequest: VoiceBrowserLaunch?
     @State private var voiceLaunchError: String?
     private let listen = Listen.shared
@@ -51,6 +53,13 @@ struct ContentView: View {
         .onChange(of: voiceLaunches.request, initial: true) { _, request in
             guard let request else { return }
             beginVoiceLaunch(request)
+        }
+        .onContinueUserActivity(PushCenter.navigationActivity) { activity in
+            pushActivity = activity
+            if let pushWindowID { push.claimNavigation(activity, windowID: pushWindowID) }
+        }
+        .onChange(of: pushWindowID) { _, id in
+            if let id, let pushActivity { push.claimNavigation(pushActivity, windowID: id) }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await push.refreshAuthorization() } }
@@ -143,7 +152,8 @@ struct ContentView: View {
                         onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls,
                         voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
                         push: push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
-                        onPushNavigationHandled: push.navigationHandled)
+                        onPushNavigationHandled: push.navigationHandled,
+                        onPushWindowReady: { pushWindowID = $0 })
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
 
@@ -386,7 +396,11 @@ struct ContentView: View {
         } footer: {
             Text(push.authorization == .denied
                  ? "Notifications are blocked for term-llm in iOS Settings."
-                 : "Alerts when a response finishes or an agent sends you a message. Sites and hub agents you open here sign up automatically; turn one off from its own settings.")
+                 : "This switch keeps a local opt-out; it does not change iOS permission. Cleanup of server enrollments retries when their authenticated pages reconnect. Offline or unopened nodes may retain remote subscriptions and in-flight alerts may still leave quiet cards.")
+            if push.pendingCleanupCount > 0 {
+                Text("\(push.pendingCleanupCount) server enrollment cleanup(s) pending. Open each enrolled node while signed in and online to retry.")
+            }
+            if let issue = push.storageIssue { Text(issue) }
         }
     }
 }

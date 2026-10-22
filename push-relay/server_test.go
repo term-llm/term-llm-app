@@ -325,3 +325,49 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("healthz %d", resp.StatusCode)
 	}
 }
+
+func TestPushEventDiagnosticIdentity(t *testing.T) {
+	sender := &fakeSender{result: APNsResult{Status: 200}}
+	_, ts := startRelay(t, nil, sender)
+	key := newVAPIDKey(t)
+	otherKey := newVAPIDKey(t)
+	endpoint := registerOK(t, ts.URL, key, "development")
+	otherToken := append([]byte(nil), testDeviceToken()...)
+	otherToken[0] ^= 1
+	tests := []struct {
+		endpoint string
+		key      vapidKey
+		topic    string
+	}{
+		{endpoint, key, "event-a"},
+		{endpoint, key, "event-a"},
+		{endpoint, key, "event-b"},
+		{registerOK(t, ts.URL, key, "production"), key, "event-a"},
+		{registerTokenOK(t, ts.URL, key, "development", otherToken), key, "event-a"},
+		{registerOK(t, ts.URL, otherKey, "development"), otherKey, "event-a"},
+		{endpoint, key, ""},
+		{endpoint, key, ""},
+	}
+	for _, tc := range tests {
+		resp := push(t, tc.endpoint, pushOpts{auth: tc.key.header(t, validClaims(ts.URL, time.Now())), topic: tc.topic})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("push status %d", resp.StatusCode)
+		}
+	}
+	sent := sender.sent()
+	if sent[0].ID != sent[1].ID {
+		t.Fatal("retry changed event diagnostic ID")
+	}
+	seen := map[string]bool{sent[0].ID: true}
+	for _, req := range sent[2:] {
+		if seen[req.ID] || len(req.ID) != 36 {
+			t.Fatalf("distinct event/destination reused ID %q", req.ID)
+		}
+		seen[req.ID] = true
+	}
+	// No relay DB or process-local ledger is needed to recover the identity.
+	sub := Subscription{Env: EnvDevelopment, DeviceToken: testDeviceToken(), VAPIDKeyHash: sha256.Sum256(key.raw)}
+	if got := eventAPNsID(sub, "event-a"); got != sent[0].ID {
+		t.Fatalf("stateless reconstruction %q != %q", got, sent[0].ID)
+	}
+}

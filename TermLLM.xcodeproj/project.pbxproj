@@ -79,6 +79,14 @@
 		00000000000000000000045A /* PushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000430 /* PushTests.swift */; };
 		00000000000000000000045B /* TermLLMNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000440 /* TermLLMNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		00000000000000000000045C /* PushLiveE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000431 /* PushLiveE2ETests.swift */; };
+		000000000000000000000511 /* PushDeliveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000501 /* PushDeliveryStore.swift */; };
+		000000000000000000000512 /* PushDeliveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000501 /* PushDeliveryStore.swift */; };
+		000000000000000000000513 /* PushMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000502 /* PushMetadata.swift */; };
+		000000000000000000000514 /* PushMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000502 /* PushMetadata.swift */; };
+		000000000000000000000515 /* PushWindowRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000503 /* PushWindowRegistry.swift */; };
+		000000000000000000000516 /* PushNotificationLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000504 /* PushNotificationLifecycle.swift */; };
+		000000000000000000000517 /* NativePushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000505 /* NativePushNotifications.swift */; };
+		000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000506 /* NotificationLifecycleTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -187,6 +195,12 @@
 		000000000000000000000430 /* PushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTests.swift; sourceTree = "<group>"; };
 		000000000000000000000440 /* TermLLMNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TermLLMNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000431 /* PushLiveE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLiveE2ETests.swift; sourceTree = "<group>"; };
+		000000000000000000000501 /* PushDeliveryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushDeliveryStore.swift; sourceTree = "<group>"; };
+		000000000000000000000502 /* PushMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushMetadata.swift; sourceTree = "<group>"; };
+		000000000000000000000503 /* PushWindowRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushWindowRegistry.swift; sourceTree = "<group>"; };
+		000000000000000000000504 /* PushNotificationLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationLifecycle.swift; sourceTree = "<group>"; };
+		000000000000000000000505 /* NativePushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushNotifications.swift; sourceTree = "<group>"; };
+		000000000000000000000506 /* NotificationLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationLifecycleTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -242,6 +256,9 @@
 				000000000000000000000400 /* AppDelegate.swift */,
 				000000000000000000000041 /* ContentView.swift */,
 				000000000000000000000401 /* PushCenter.swift */,
+				000000000000000000000505 /* NativePushNotifications.swift */,
+				000000000000000000000504 /* PushNotificationLifecycle.swift */,
+				000000000000000000000503 /* PushWindowRegistry.swift */,
 				000000000000000000000402 /* NativePushBridge.swift */,
 				000000000000000000000350 /* AppControlsBar.swift */,
 				000000000000000000000042 /* BrowserView.swift */,
@@ -309,6 +326,7 @@
 				0000000000000000000000CE /* MusicViewRenderingTests.swift */,
 				0000000000000000000000E0 /* CatalogParsingTests.swift */,
 				000000000000000000000430 /* PushTests.swift */,
+				000000000000000000000506 /* NotificationLifecycleTests.swift */,
 				000000000000000000000431 /* PushLiveE2ETests.swift */,
 			);
 			path = TermLLMTests;
@@ -320,6 +338,8 @@
 				000000000000000000000410 /* WebPushCrypto.swift */,
 				000000000000000000000411 /* PushIdentityStore.swift */,
 				000000000000000000000412 /* PushMessage.swift */,
+				000000000000000000000502 /* PushMetadata.swift */,
+				000000000000000000000501 /* PushDeliveryStore.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -446,8 +466,13 @@
 				000000000000000000000450 /* AppDelegate.swift in Sources */,
 				000000000000000000000081 /* ContentView.swift in Sources */,
 				000000000000000000000451 /* PushCenter.swift in Sources */,
+				000000000000000000000517 /* NativePushNotifications.swift in Sources */,
+				000000000000000000000516 /* PushNotificationLifecycle.swift in Sources */,
+				000000000000000000000515 /* PushWindowRegistry.swift in Sources */,
 				000000000000000000000452 /* NativePushBridge.swift in Sources */,
 				000000000000000000000453 /* WebPushCrypto.swift in Sources */,
+				000000000000000000000513 /* PushMetadata.swift in Sources */,
+				000000000000000000000511 /* PushDeliveryStore.swift in Sources */,
 				000000000000000000000454 /* PushIdentityStore.swift in Sources */,
 				000000000000000000000455 /* PushMessage.swift in Sources */,
 				000000000000000000000352 /* AppControlsBar.swift in Sources */,
@@ -513,6 +538,7 @@
 				0000000000000000000000DE /* MusicViewRenderingTests.swift in Sources */,
 				0000000000000000000000F0 /* CatalogParsingTests.swift in Sources */,
 				00000000000000000000045A /* PushTests.swift in Sources */,
+				000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */,
 				00000000000000000000045C /* PushLiveE2ETests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -523,6 +549,8 @@
 			files = (
 				000000000000000000000459 /* NotificationService.swift in Sources */,
 				000000000000000000000456 /* WebPushCrypto.swift in Sources */,
+				000000000000000000000514 /* PushMetadata.swift in Sources */,
+				000000000000000000000512 /* PushDeliveryStore.swift in Sources */,
 				000000000000000000000457 /* PushIdentityStore.swift in Sources */,
 				000000000000000000000458 /* PushMessage.swift in Sources */,
 			);

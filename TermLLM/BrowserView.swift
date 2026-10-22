@@ -130,6 +130,7 @@ struct BrowserView: UIViewRepresentable {
     var pushNavigation: PushNavigation? = nil
     var pushChangeCount = 0
     var onPushNavigationHandled: (UUID) -> Void = { _ in }
+    var onPushWindowReady: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -160,12 +161,9 @@ struct BrowserView: UIViewRepresentable {
         view.scrollView.addGestureRecognizer(pull)
         context.coordinator.loadedURL = url
         context.coordinator.pushChangeCount = pushChangeCount
-        if let navigation = pushNavigation, context.coordinator.sameOrigin(navigation.url, url) {
-            context.coordinator.handlePushNavigation(navigation)
-            view.load(URLRequest(url: navigation.url))
-        } else {
-            view.load(URLRequest(url: url))
-        }
+        // Ownership is resolved from the attached UIWindowScene in updateUIView.
+        // Do not let a newly created sibling consume the app-global tap here.
+        view.load(URLRequest(url: url))
         return view
     }
 
@@ -193,6 +191,7 @@ struct BrowserView: UIViewRepresentable {
         private var handledPushNavigation: UUID?
         private var bridge: WebMCPBridge?
         private var pushBridge: NativePushBridge?
+        private var registeredPushWindowID: String?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
         private var voiceTask: Task<Void, Never>?
@@ -210,6 +209,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func tearDown() {
+            MainActor.assumeIsolated { pushBridge?.navigationStarted() }
             controlsPull.reset()
             voiceTask?.cancel()
             voiceTask = nil
@@ -226,6 +226,14 @@ struct BrowserView: UIViewRepresentable {
 
         func update(_ view: WKWebView, parent: BrowserView) {
             self.parent = parent
+            if let scene = view.window?.windowScene {
+                registerPushScene(scene)
+            }
+            if parent.scenePhase != .active || parent.isSigningIn || parent.loginRequired || parent.loadError != nil {
+                if let scene = view.window?.windowScene {
+                    MainActor.assumeIsolated { parent.push?.windows.release(windowID: PushCenter.windowID(for: scene)) }
+                }
+            }
             let serverChanged = loadedURL != parent.url
             let reloadRequested = reloadCount != parent.reloadCount
             let authenticated = authenticatedCount != parent.authenticatedCount
@@ -274,13 +282,14 @@ struct BrowserView: UIViewRepresentable {
             if !serverChanged && !backRequested && !reloadRequested {
                 startVoiceLaunchIfNeeded(view)
             }
-            if let navigation = parent.pushNavigation, navigation.id != handledPushNavigation {
+            if let navigation = parent.pushNavigation, let scene = view.window?.windowScene,
+               navigation.windowID == MainActor.assumeIsolated({ PushCenter.windowID(for: scene) }),
+               navigation.id != handledPushNavigation, sameOrigin(navigation.url, parent.url) {
+                cancelVoiceLaunch(error: "Voice launch interrupted by notification tap.")
+                resetRecovery()
+                rejectedHTTPResponse = false
+                view.load(URLRequest(url: navigation.url))
                 handlePushNavigation(navigation)
-                if voiceTask == nil, sameOrigin(navigation.url, parent.url) {
-                    resetRecovery()
-                    rejectedHTTPResponse = false
-                    view.load(URLRequest(url: navigation.url))
-                }
             }
             if pushChangeCount != parent.pushChangeCount {
                 pushChangeCount = parent.pushChangeCount
@@ -290,7 +299,16 @@ struct BrowserView: UIViewRepresentable {
             }
         }
 
-        /// Marks a notification tap consumed (whether or not it was allowed to navigate).
+        func registerPushScene(_ scene: UIWindowScene) {
+            let id = MainActor.assumeIsolated { PushCenter.windowID(for: scene) }
+            MainActor.assumeIsolated { parent.push?.registerWindow(id, scene: scene) }
+            guard registeredPushWindowID != id else { return }
+            registeredPushWindowID = id
+            let ready = parent.onPushWindowReady
+            DispatchQueue.main.async { ready(id) }
+        }
+
+        /// Only the exact owner scene may mark a notification tap consumed.
         func handlePushNavigation(_ navigation: PushNavigation) {
             handledPushNavigation = navigation.id
             let done = parent.onPushNavigationHandled
@@ -470,6 +488,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            MainActor.assumeIsolated { pushBridge?.navigationStarted() }
             rejectedHTTPResponse = false
             parent.loading = true
             parent.loadError = nil
@@ -477,6 +496,9 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if let scene = webView.window?.windowScene {
+                registerPushScene(scene)
+            }
             rejectedHTTPResponse = false
             parent.loading = false
             parent.loadError = nil
