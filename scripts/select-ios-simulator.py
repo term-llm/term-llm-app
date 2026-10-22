@@ -24,7 +24,8 @@ def select_device(document):
             if not device.get("deviceTypeIdentifier", "").startswith("com.apple.CoreSimulator.SimDeviceType.iPhone-"):
                 continue
             try:
-                udid = str(uuid.UUID(device["udid"]))
+                udid = device["udid"]
+                uuid.UUID(udid)  # Validate without changing xcodebuild's case-sensitive destination ID.
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
             # Highest iOS, then lexical model/UUID; JSON iteration order is irrelevant.

@@ -29,6 +29,17 @@ class SimulatorSelectionTests(unittest.TestCase):
         reversed_entries = {key: list(reversed(value)) for key, value in reversed(list(entries.items()))}
         self.assertEqual(selector.select_device({"devices": reversed_entries}), first)
 
+    def test_preserves_actual_xcode_destination_uuid_case(self):
+        for udid in [
+            "2911FD29-A09E-4A81-BEA7-99A616FB7FC8",
+            "2911Fd29-a09E-4a81-bEa7-99a616fB7fc8",
+        ]:
+            with self.subTest(udid=udid):
+                device = self.device("iPhone 16", 1)
+                device["udid"] = udid
+                document = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-2": [device]}}
+                self.assertEqual(selector.select_device(document), udid)
+
     def test_ignores_ipad_old_unavailable_and_invalid_ids(self):
         invalid = self.device("iPhone 16", 1)
         invalid["udid"] = "invalid\nSIMULATOR_UDID=unsafe"
