@@ -415,7 +415,10 @@ final class ActualProducerFixtureTests: XCTestCase {
         let compact = try XCTUnwrap(messages["completion-compact.json"])
         XCTAssertEqual(primary.metadata, compact.metadata, "compact retry retains every ownership/read/replay field")
         XCTAssertEqual(primary.url, compact.url)
-        XCTAssertEqual(primary.userInfo, compact.userInfo)
+        // Metadata is compared structurally above; JSON object key order is not stable.
+        XCTAssertEqual(primary.userInfo.filter { $0.key != PushMetadata.key },
+                       compact.userInfo.filter { $0.key != PushMetadata.key },
+                       "compact retry retains every non-metadata delivery routing field")
         XCTAssertNotEqual(primary.title, compact.title, "actual compact retry shortened display title only")
     }
 
