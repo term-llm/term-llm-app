@@ -242,11 +242,35 @@ func (c *APNsClient) Send(ctx context.Context, req APNsRequest) (APNsResult, err
 	return result, nil
 }
 
+// eventAPNsID is diagnostic identity, not a provider deduplication guarantee.
+// Topic must identify one logical event, not a session. Bind it to the verified
+// destination so unrelated senders/devices/environments cannot share an ID.
+// Without Topic preserve manual legacy semantics: each invocation is distinct.
+func eventAPNsID(sub Subscription, topic string) string {
+	if topic == "" {
+		return newUUID()
+	}
+	hash := sha256.New()
+	hash.Write([]byte("term-llm apns event v1\x00"))
+	hash.Write([]byte{byte(sub.Env), byte(len(sub.DeviceToken))})
+	hash.Write(sub.DeviceToken)
+	hash.Write(sub.VAPIDKeyHash[:])
+	hash.Write([]byte(topic))
+	b := hash.Sum(nil)[:16]
+	b[6] = (b[6] & 0x0f) | 0x80 // UUIDv8: application-defined SHA-256 identity
+	b[8] = (b[8] & 0x3f) | 0x80
+	return formatUUID(b)
+}
+
 func newUUID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	h := hex.EncodeToString(b[:])
+	return formatUUID(b[:])
+}
+
+func formatUUID(b []byte) string {
+	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }

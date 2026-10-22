@@ -45,7 +45,7 @@ Called by term-llm, using any Web Push library. The request must have:
 Optional headers:
 
 - **`Urgency`:** `very-low` and `low` map to `apns-priority: 5`; everything else to `10`.
-- **`Topic`:** becomes `apns-collapse-id`.
+- **`Topic`:** becomes `apns-collapse-id`. Producers should use a stable **per-event** Topic, not a session-wide Topic. With a nonempty Topic, the relay derives a stable diagnostic `apns-id` from the verified device/environment/VAPID destination and Topic, even when a retry re-encrypts the body. Distinct events/destinations remain independent; legacy requests without Topic get fresh UUIDs. Requested/returned APNs IDs are logged for correlation. This introduces no relay database and is **not** an APNs exactly-once/idempotency guarantee.
 - **`TTL`:** becomes `apns-expiration` (0 means deliver now or drop), capped at 28 days.
 
 | Status | Meaning for the sender |

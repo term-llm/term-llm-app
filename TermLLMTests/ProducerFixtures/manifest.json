@@ -1,0 +1,36 @@
+{
+  "public_review_sha": "600d7199e30375758fefba7a0e57a4ae72f9a923",
+  "production_implementation_sha": "7f8b8251d0370fe7f475925b50ad7f46a8a697a2",
+  "synthetic_only": true,
+  "unmodified_producer_bytes": true,
+  "credentials_or_endpoints_in_payload": false,
+  "fixtures": [
+    {
+      "file": "completion.json",
+      "sha256": "03bde1b12b104c9b97e5f6d0e77259a18a5d2a98e280d2797d623d4327a517f9",
+      "bytes": 555,
+      "kind": "completion",
+      "source": "/ui",
+      "producer_test": "TestCompletionProducerToActualWorkerContract/primary",
+      "injected_test_now": "2026-10-22T11:19:04.380000Z"
+    },
+    {
+      "file": "completion-compact.json",
+      "sha256": "b629a4064d5fc0ed644541547f0527375bd3c8c2deed19155691af200001a809",
+      "bytes": 531,
+      "kind": "completion",
+      "source": "/ui",
+      "producer_test": "TestCompletionProducerToActualWorkerContract/compact",
+      "injected_test_now": "2026-10-22T11:19:04.380000Z"
+    },
+    {
+      "file": "manual.json",
+      "sha256": "ebecdca3fb94b8d6a1d8822b2f6cdcb98d46f895532117f41b5e3af19940c64a",
+      "bytes": 308,
+      "kind": "manual",
+      "source": "/chat",
+      "producer_test": "TestManualPushProducerToWorkerContract",
+      "injected_test_now": "2026-10-22T11:18:53.781166Z"
+    }
+  ]
+}

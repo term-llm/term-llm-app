@@ -89,8 +89,13 @@ struct KeychainPushStorage: PushSecretStorage {
     /// Unsigned builds have no access-group entitlement; fall back to the
     /// default group so simulator tests still work.
     let accessGroup: String?
+    let accountName: String
+    let allowDefaultGroup: Bool
 
-    init(accessGroup: String? = Bundle.main.object(forInfoDictionaryKey: "TermLLMKeychainAccessGroup") as? String) {
+    init(accessGroup: String? = Bundle.main.object(forInfoDictionaryKey: "TermLLMKeychainAccessGroup") as? String,
+         account: String = KeychainPushStorage.account, allowDefaultGroup: Bool = true) {
+        self.accountName = account
+        self.allowDefaultGroup = allowDefaultGroup
         let group = accessGroup?.trimmingCharacters(in: .whitespaces) ?? ""
         // An unexpanded or empty $(AppIdentifierPrefix) leaves a bare bundle-style group.
         self.accessGroup = group.isEmpty || group.hasPrefix(".") || group.contains("$(") ? nil : group
@@ -100,7 +105,7 @@ struct KeychainPushStorage: PushSecretStorage {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
+            kSecAttrAccount as String: accountName,
             kSecUseDataProtectionKeychain as String: true,
         ]
         if let group { query[kSecAttrAccessGroup as String] = group }
@@ -108,6 +113,7 @@ struct KeychainPushStorage: PushSecretStorage {
     }
 
     func read() throws -> Data? {
+        guard !candidateGroups.isEmpty else { throw PushStorageError.keychain(errSecMissingEntitlement) }
         for group in candidateGroups {
             var item = query(group: group)
             item[kSecReturnData as String] = true
@@ -117,7 +123,7 @@ struct KeychainPushStorage: PushSecretStorage {
             switch status {
             case errSecSuccess: return result as? Data
             case errSecItemNotFound: return nil
-            case errSecMissingEntitlement where group != nil: continue
+            case errSecMissingEntitlement where group != nil && allowDefaultGroup: continue
             default: throw PushStorageError.keychain(status)
             }
         }
@@ -125,6 +131,7 @@ struct KeychainPushStorage: PushSecretStorage {
     }
 
     func write(_ data: Data) throws {
+        guard !candidateGroups.isEmpty else { throw PushStorageError.keychain(errSecMissingEntitlement) }
         for group in candidateGroups {
             let base = query(group: group)
             let update: [String: Any] = [
@@ -135,13 +142,16 @@ struct KeychainPushStorage: PushSecretStorage {
             if status == errSecItemNotFound {
                 status = SecItemAdd(base.merging(update) { $1 } as CFDictionary, nil)
             }
-            if status == errSecMissingEntitlement, group != nil { continue }
+            if status == errSecMissingEntitlement, group != nil, allowDefaultGroup { continue }
             guard status == errSecSuccess else { throw PushStorageError.keychain(status) }
             return
         }
     }
 
-    private var candidateGroups: [String?] { accessGroup.map { [$0, nil] } ?? [nil] }
+    private var candidateGroups: [String?] {
+        if !allowDefaultGroup { return accessGroup.map { [$0] } ?? [] }
+        return accessGroup.map { [$0, nil] } ?? [nil]
+    }
 }
 
 final class InMemoryPushStorage: PushSecretStorage {

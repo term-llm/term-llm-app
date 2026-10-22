@@ -60,6 +60,10 @@
 	<string>$(AppIdentifierPrefix)com.termllm.app.shared</string>
 	<key>TermLLMPushRelayURL</key>
 	<string>$(TERMLLM_PUSH_RELAY_URL)</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.termllm.app.notification</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

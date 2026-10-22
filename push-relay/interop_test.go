@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -70,12 +72,22 @@ func TestWebPushGoEndToEnd(t *testing.T) {
 			Auth:   base64.RawURLEncoding.EncodeToString(authSecret),
 		},
 	}
-	message := []byte(`{"version":1,"event_id":"completion:resp-1:sub-1","session_id":"s1","outcome":"completed","title":"Response complete","body":"Your term-llm response is ready.","url":"/ui/chat/s1"}`)
+	created := time.Now().UTC().Format(time.RFC3339)
+	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	message, _ := json.Marshal(map[string]any{
+		"version": 2, "kind": "completion", "event_id": "completion:turn-1:sub-1", "turn_id": "turn-1",
+		"response_id": "resp-final", "window_id": "scene:owner", "store_instance_id": "store-1",
+		"session_id": "s1", "attention_seq": 7, "run_epoch": 1, "outcome": "completed", "source": "/ui",
+		"title": "Response complete", "body": "Your term-llm response is ready.", "url": "/ui/chat/s1",
+		"created_at": created, "expires_at": expires,
+	})
+	topicHash := sha256.Sum256([]byte("completion:turn-1:sub-1"))
+	topic := base64.RawURLEncoding.EncodeToString(topicHash[:])[:32]
 	send := func(recordSize uint32) *http.Response {
 		t.Helper()
 		resp, err := webpush.SendNotification(message, sub, &webpush.Options{
 			Subscriber: "admin@example.com", VAPIDPublicKey: vapidPublic, VAPIDPrivateKey: vapidPrivate,
-			TTL: 300, Topic: "s1", Urgency: webpush.UrgencyHigh, RecordSize: recordSize,
+			TTL: 300, Topic: topic, Urgency: webpush.UrgencyHigh, RecordSize: recordSize,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -106,7 +118,7 @@ func TestWebPushGoEndToEnd(t *testing.T) {
 		t.Fatalf("APNs received %d requests", len(reqs))
 	}
 	got := reqs[0]
-	if got.Proto != "HTTP/2.0" || got.Header.Get("apns-collapse-id") != "s1" || got.Header.Get("apns-priority") != "10" {
+	if got.Proto != "HTTP/2.0" || got.Header.Get("apns-collapse-id") != topic || got.Header.Get("apns-priority") != "10" {
 		t.Fatalf("APNs request: %s %v", got.Proto, got.Header)
 	}
 	if len(got.Payload) > apnsMaxPayloadSize {
@@ -130,6 +142,29 @@ func TestWebPushGoEndToEnd(t *testing.T) {
 	}
 	if !bytes.Equal(plaintext, message) {
 		t.Fatalf("decrypted %q, want %q", plaintext, message)
+	}
+
+	// Lost acceptance ACK: retry encrypts with fresh randomness, but keeps the
+	// event's diagnostic identity. Both requests reached fake APNs: this does
+	// NOT assert provider/device exactly-once delivery.
+	retry := send(2048)
+	reqs = fake.requests()
+	if retry.StatusCode != http.StatusCreated || len(reqs) != 2 ||
+		reqs[0].Header.Get("apns-id") == "" || reqs[0].Header.Get("apns-id") != reqs[1].Header.Get("apns-id") ||
+		retry.Header.Get("Location") != resp.Header.Get("Location") {
+		t.Fatal("retry lost event-scoped diagnostic identity at real APNs HTTP boundary")
+	}
+	if bytes.Equal(reqs[0].Payload, reqs[1].Payload) {
+		t.Fatal("test must re-encrypt the retry")
+	}
+	message, _ = json.Marshal(map[string]any{"version": 2, "kind": "manual", "event_id": "manual-invocation-2",
+		"title": "Custom title", "body": "An explicit message", "url": "/ui/", "created_at": created, "expires_at": expires})
+	topicHash = sha256.Sum256([]byte("manual-invocation-2"))
+	topic = base64.RawURLEncoding.EncodeToString(topicHash[:])[:32]
+	manual := send(2048)
+	reqs = fake.requests()
+	if manual.StatusCode != http.StatusCreated || len(reqs) != 3 || reqs[2].Header.Get("apns-id") == reqs[0].Header.Get("apns-id") {
+		t.Fatal("independent manual event reused completion identity")
 	}
 
 	// A different term-llm server cannot use this endpoint.

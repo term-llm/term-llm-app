@@ -20,6 +20,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
     private(set) var userScript: WKUserScript
     /// Weak: the controller retains its message handlers (this bridge).
     private weak var installedController: WKUserContentController?
+    private(set) var documentGeneration: UInt64 = 0
+    private var boundWindowID: String?
+
+    @MainActor
+    func documentCommitted(windowID: String? = nil) {
+        documentGeneration &+= 1
+        if let owner = windowID ?? boundWindowID { center.windows.invalidate(windowID: owner) }
+    }
 
     @MainActor
     init(serverURL: URL, center: PushCenter) {
@@ -58,9 +66,33 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
         let isMainFrame = message.frameInfo.isMainFrame
         let expected = expectedOrigin
         let center = center
+        weak var webView = message.webView
         Task { @MainActor in
+            let generation = self.documentGeneration
+            let object = body as? [String: Any]
+            let method = object?["method"] as? String ?? ""
+            let documentID = object?["document_id"] as? String
+            var currentDocument = false
+            if isMainFrame, frameOrigin == expected, let webView, let documentID {
+                // Check the LIVE document, not merely its URL. A queued message
+                // from a navigated-away document cannot rebind the owner scene.
+                let live = try? await webView.evaluateJavaScript("window.__termLLMNativePushDocumentID")
+                currentDocument = live as? String == documentID && generation == self.documentGeneration
+            }
+            if method.hasPrefix("notification"), !currentDocument {
+                replyHandler(nil, "Stale notification document")
+                return
+            }
+            let owner: String?
+            if let scene = webView?.window?.windowScene {
+                let id = PushCenter.windowID(for: scene)
+                center.registerWindow(id, scene: scene)
+                self.boundWindowID = id
+                owner = id
+            } else { owner = nil }
             switch await Self.handle(body: body, frameOrigin: frameOrigin, isMainFrame: isMainFrame,
-                                     expectedOrigin: expected, center: center) {
+                                     expectedOrigin: expected, center: center, windowID: owner,
+                                     documentID: currentDocument ? documentID : nil, documentURL: webView?.url) {
             case .success(let value): replyHandler(value, nil)
             case .failure(let error): replyHandler(nil, error.message)
             }
@@ -71,14 +103,19 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
         let message: String
     }
 
-    static func validScope(_ scope: String) -> Bool {
-        scope.count <= 512 && (scope.isEmpty || scope.hasPrefix("/")) && !scope.contains(where: { "?#\\".contains($0) })
-            && !scope.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+    static func validScope(_ scope: String) -> Bool { PushMetadata.validScope(scope) }
+
+    static func scope(_ scope: String, contains url: URL) -> Bool {
+        let path = url.path
+        let decoded = scope.removingPercentEncoding ?? scope
+        let root = decoded.hasSuffix("/") ? String(decoded.dropLast()) : decoded
+        return root.isEmpty || path == root || path.hasPrefix(root + "/")
     }
 
     @MainActor
     static func handle(body: Any, frameOrigin: String, isMainFrame: Bool, expectedOrigin: String,
-                       center: PushCenter) async -> Result<Any, BridgeError> {
+                       center: PushCenter, windowID: String? = nil, documentID: String? = nil,
+                       documentURL: URL? = nil) async -> Result<Any, BridgeError> {
         guard isMainFrame, frameOrigin == expectedOrigin else {
             return .failure(BridgeError(message: "Notifications are not available to this page"))
         }
@@ -86,7 +123,15 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
               let scope = object["scope"] as? String, validScope(scope) else {
             return .failure(BridgeError(message: "Malformed notification request"))
         }
+        if let documentURL, method != "notificationCapabilities",
+           !center.scopeMatchesDocument(origin: frameOrigin, scope: scope, url: documentURL) {
+            return .failure(BridgeError(message: "Notification scope does not match this page"))
+        }
         let nodeBasePath = (object["nodeBasePath"] as? String).flatMap { Self.validScope($0) ? $0 : nil }
+        if method.hasPrefix("notification") {
+            return await handleNotification(method: method, object: object, scope: scope, origin: frameOrigin,
+                                            windowID: windowID, documentID: documentID, center: center)
+        }
         switch method {
         case "permission":
             await center.refreshAuthorization()
@@ -106,10 +151,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
                 return .failure(BridgeError(message: error.localizedDescription))
             }
         case "unsubscribe":
-            center.unsubscribe(origin: frameOrigin, scope: scope)
+            guard center.unsubscribe(origin: frameOrigin, scope: scope) else {
+                return .failure(BridgeError(message: "Notification cleanup could not be persisted; retry is required"))
+            }
             return .success(true)
         case "disable":
-            center.disable(origin: frameOrigin, scope: scope)
+            guard center.disable(origin: frameOrigin, scope: scope) else {
+                return .failure(BridgeError(message: "Notification off/cleanup could not be fully persisted; retry is required"))
+            }
             return .success(true)
         default:
             return .failure(BridgeError(message: "Unknown notification request: \(method)"))
@@ -124,11 +173,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
           if (location.origin !== \(literal(origin))) return;
           const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[\(literal(handlerName))];
           if (!handler) return;
+          const documentID = crypto.randomUUID();
+          Object.defineProperty(window, '__termLLMNativePushDocumentID', { value: documentID });
           const call = (method, scope, extra) => {
             const label = [window.TERM_LLM_UI_TITLE, window.TERM_LLM_HUB?.nodeName, window.TERM_LLM_HUB?.nodeId]
               .find(value => typeof value === 'string' && value.trim()) || null;
             const nodeBasePath = window.TERM_LLM_HUB?.nodeBasePath ?? null;
-            return handler.postMessage({ method, scope: String(scope ?? ''), label, nodeBasePath, ...(extra || {}) });
+            return handler.postMessage({ method, scope: String(scope ?? ''), label, nodeBasePath,
+              ...(extra || {}), document_id: documentID });
           };
           Object.defineProperty(window, '__termLLMNativePush', {
             value: Object.freeze({
@@ -140,6 +192,12 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
                 call('subscribe', scope, { applicationServerKey: String(applicationServerKey ?? '') }),
               unsubscribe: (scope) => call('unsubscribe', scope),
               disable: (scope) => call('disable', scope),
+              notificationCapabilities: () => call('notificationCapabilities', ''),
+              notificationPresence: (payload) => call('notificationPresence', payload?.source, { payload }),
+              notificationRead: (payload) => call('notificationRead', payload?.source, { payload }),
+              notificationEnrollment: (payload) => call('notificationEnrollment', payload?.source, { payload }),
+              notificationPendingCleanup: (payload) => call('notificationPendingCleanup', payload?.source, { payload }),
+              notificationCleanupAcknowledged: (payload) => call('notificationCleanupAcknowledged', payload?.source, { payload }),
             }),
             configurable: true,
           });

@@ -180,25 +180,33 @@ final class PushCenterTests: XCTestCase {
     private let origin = "https://hub.example"
     private var defaults: UserDefaults!
     private var suite: String!
+    private var temporaryDirectory: URL!
+    private var deliveries: PushDeliveryStore!
     private var authorizer: FakeAuthorizer!
     private var storage: InMemoryPushStorage!
     private var relayRequests: [URLRequest] = []
     private var relayResponse: (Int, String) = (200, #"{"endpoint":"https://relay.example/v1/push/TOKEN"}"#)
     private var registrations = 0
+    private var relayBeforeReply: (() async -> Void)?
     private var token = Data([0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89])
 
     override func setUp() async throws {
         suite = "push-tests-\(UUID().uuidString)"
+        temporaryDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        deliveries = PushDeliveryStore(url: temporaryDirectory.appendingPathComponent("state.json"))
         defaults = UserDefaults(suiteName: suite)
         defaults.set("https://relay.example", forKey: PushCenter.relayOverrideKey)
         authorizer = FakeAuthorizer()
         storage = InMemoryPushStorage()
         relayRequests = []
         registrations = 0
+        relayBeforeReply = nil
     }
 
     override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suite)
+        try FileManager.default.removeItem(at: temporaryDirectory)
     }
 
     private func makeCenter(deliverToken: Bool = true, timeout: Duration = .seconds(5)) -> PushCenter {
@@ -207,6 +215,7 @@ final class PushCenterTests: XCTestCase {
             defaults: defaults, identities: PushIdentityStore(storage: storage), authorizer: authorizer,
             relayTransport: { [unowned self] request in
                 relayRequests.append(request)
+                await relayBeforeReply?()
                 let response = HTTPURLResponse(url: request.url!, statusCode: relayResponse.0, httpVersion: nil, headerFields: nil)!
                 return (Data(relayResponse.1.utf8), response)
             },
@@ -216,9 +225,10 @@ final class PushCenterTests: XCTestCase {
                 let token = token
                 Task { @MainActor in centerRef?.didRegister(deviceToken: token) }
             },
-            environment: .development, tokenTimeout: timeout)
+            environment: .development, tokenTimeout: timeout, deliveries: deliveries, inbox: FakePushInbox())
         centerRef = center
         center.isActive = { true }
+        center.activateScene = { _, _, _ in }
         return center
     }
 
@@ -295,13 +305,49 @@ final class PushCenterTests: XCTestCase {
         XCTAssertEqual(center.permission(origin: origin, scope: "/node/a"), .granted, "unsubscribe is not an opt-out")
     }
 
+    func testDisableAndReenableRejectsStaleRelayRegistration() async throws {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        let started = expectation(description: "fake relay waiting")
+        var release: CheckedContinuation<Void, Never>?
+        relayBeforeReply = {
+            await withCheckedContinuation { continuation in release = continuation; started.fulfill() }
+        }
+        let registration = Task { try await center.subscribe(origin: origin, scope: "/ui", applicationServerKey: serverKey) }
+        await fulfillment(of: [started], timeout: 2)
+        await center.setEnabled(false)
+        await center.setEnabled(true)
+        release?.resume()
+        do { _ = try await registration.value; XCTFail("stale enrollment must not return an endpoint") }
+        catch { XCTAssertEqual(error as? PushError, .notAllowed) }
+        XCTAssertNil(center.subscription(origin: origin, scope: "/ui"))
+        XCTAssertEqual(try deliveries.pending().count, 0, "stateless relay registration alone creates no server subscription")
+    }
+
+    func testOffRetainsEndpointAndLateServerIDUntilAuthenticatedCleanupACK() async throws {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        _ = try await center.subscribe(origin: origin, scope: "/ui", applicationServerKey: serverKey)
+        await center.setEnabled(false)
+        XCTAssertEqual(try deliveries.pending().count, 1)
+        XCTAssertNil(try deliveries.pending().first?.subscriptionID, "pre-callback cleanup handle is not discarded")
+        try center.recordEnrollment(origin: origin, scope: "/ui", subscriptionID: "server-sub")
+        XCTAssertEqual(try deliveries.pending().first?.subscriptionID, "server-sub")
+        let restored = makeCenter()
+        XCTAssertFalse(restored.enabled)
+        XCTAssertEqual(try deliveries.pending().first?.subscriptionID, "server-sub")
+        try restored.acknowledgeCleanup(origin: origin, scope: "/ui", subscriptionID: "server-sub")
+        _ = makeCenter()
+        XCTAssertEqual(try deliveries.pending().count, 0, "restart cannot recreate acknowledged cleanup")
+    }
+
     func testRelayedPushDecryptsWithTheSubscribedKeys() async throws {
         let center = makeCenter()
         await center.setEnabled(true)
         let subscription = try await center.subscribe(origin: origin, scope: "/ui", applicationServerKey: serverKey)
         let identity = try XCTUnwrap(PushIdentityStore(storage: storage).load())
         let tag = WebPushCrypto.sourceTag(applicationServerKey: Data(base64URLEncoded: serverKey)!)
-        let payload = try relayedPayload(#"{"title":"Response complete","body":"ready","url":"/ui/chat/s1","session_id":"s1"}"#,
+        let payload = try relayedPayload(#"{"version":1,"event_id":"legacy-completion","outcome":"completed","title":"Response complete","body":"ready","url":"/ui/chat/s1","session_id":"s1"}"#,
                                          identity: identity, tag: tag, authSecret: Data(base64URLEncoded: subscription.auth))
         let message = try PushMessage.decode(userInfo: payload, identity: PushIdentityStore(storage: storage).load())
         XCTAssertEqual(message.url?.absoluteString, "https://hub.example/ui/chat/s1")
@@ -460,14 +506,16 @@ final class PushCenterTests: XCTestCase {
         XCTAssertEqual(center.pendingNavigation?.url.absoluteString, "https://hub.example/hub/nodes/Dev/")
     }
 
-    func testForegroundAlertsAndTapRouting() {
+    func testForegroundAlertsAndTapRouting() async {
         let center = makeCenter()
+        await center.setEnabled(true)
+        let message = PushMessage.message(from: ["title": "hello"], origin: origin, scope: "/ui")
         center.visibleURL = URL(string: "https://hub.example/ui/chat/s1/")
-        XCTAssertEqual(center.presentationOptions(forURL: "https://hub.example/ui/chat/s1"), [], "already looking at it")
-        XCTAssertEqual(center.presentationOptions(forURL: "https://hub.example/ui/chat/s2"), [.banner, .list, .sound])
-        XCTAssertEqual(center.presentationOptions(forURL: nil), [.banner, .list, .sound])
+        XCTAssertEqual(center.presentationOptions(userInfo: message.userInfo), [.banner, .list, .sound], "same URL is not attendance")
+        XCTAssertEqual(center.presentationOptions(userInfo: message.userInfo), [.banner, .list, .sound])
+        XCTAssertEqual(center.presentationOptions(userInfo: [:]), [])
         center.isActive = { false }
-        XCTAssertEqual(center.presentationOptions(forURL: "https://hub.example/ui/chat/s1"), [.banner, .list, .sound])
+        XCTAssertEqual(center.presentationOptions(userInfo: message.userInfo), [.banner, .list, .sound])
 
         let server = URL(string: "https://hub.example/ui/")
         center.open(urlString: "https://other.example/ui/chat/1", configuredServer: server)
@@ -597,6 +645,7 @@ final class PushCenterTests: XCTestCase {
             "return await window.__termLLMNativePush.getSubscription('/ui')", contentWorld: .page)
         XCTAssertTrue(missing == nil || missing is NSNull)
 
+        try await load(webView, baseURL: URL(string: "https://hub.example/node/Dev/")!)
         _ = try await webView.callAsyncJavaScript("""
             window.TERM_LLM_HUB = { nodeName: 'Dev', nodeBasePath: '/ui' };
             return await window.__termLLMNativePush.subscribe('/node/Dev', key);
