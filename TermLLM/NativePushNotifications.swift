@@ -4,7 +4,8 @@ import Foundation
 extension NativePushBridge {
     @MainActor
     static func handleNotification(method: String, object: [String: Any], scope: String, origin: String,
-                                   windowID: String?, documentID: String?, center: PushCenter) async -> Result<Any, BridgeError> {
+                                   windowID: String?, documentID: String?, center: PushCenter,
+                                   isContentVisible: Bool = true) async -> Result<Any, BridgeError> {
         func failure(_ message: String) -> Result<Any, BridgeError> { .failure(BridgeError(message: message)) }
         guard let windowID, let documentID,
               PushMetadata.identifier(windowID) != nil, PushMetadata.identifier(documentID) != nil,
@@ -30,11 +31,12 @@ extension NativePushBridge {
                       let active = payload["active"] as? NSNumber, CFGetTypeID(active) == CFBooleanGetTypeID(),
                       let raw = payload["expires_at"] as? String, let expires = PushMetadata.date(raw),
                       center.windows.update(windowID: windowID, documentID: documentID, origin: origin,
-                                            sequence: sequence, active: active.boolValue, expires: expires) else {
+                                             sequence: sequence, active: active.boolValue && isContentVisible, expires: expires) else {
                     return failure("Invalid or stale notification presence")
                 }
                 return .success(true)
             case "notificationRead":
+                guard isContentVisible else { return failure("Notification document is not visible") }
                 guard PushMetadata.sequence(payload["version"]) == 2,
                       let store = PushMetadata.identifier(payload["store_instance_id"]),
                       let session = PushMetadata.identifier(payload["session_id"]),

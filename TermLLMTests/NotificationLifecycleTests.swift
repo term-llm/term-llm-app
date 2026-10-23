@@ -252,6 +252,36 @@ final class NativeNotificationLifecycleTests: XCTestCase {
         XCTAssertFalse(try PushDeliveryStore(url: deliveries.url).isEnabled(origin: origin, scope: "/node/A"))
     }
 
+    func testHiddenChatCannotRenewPresenceOrAcknowledgeAttention() async throws {
+        let documentURL = URL(string: origin + "/node/A/chat/session-1")!
+        center.windows.bind(windowID: "owner", documentID: "doc", origin: origin)
+        func presence(_ sequence: Int, visible: Bool) async -> Result<Any, NativePushBridge.BridgeError> {
+            await NativePushBridge.handle(body: [
+                "method": "notificationPresence", "scope": "/node/A", "document_id": "doc",
+                "payload": ["version": 2, "source": "/node/A", "window_id": "owner", "document_id": "doc",
+                            "sequence": sequence, "active": true,
+                            "expires_at": ISO8601DateFormatter().string(from: Date().addingTimeInterval(30))]
+            ], frameOrigin: origin, isMainFrame: true, expectedOrigin: origin, center: center,
+               windowID: "owner", documentID: "doc", documentURL: documentURL, isContentVisible: visible)
+        }
+        _ = try await presence(1, visible: true).get()
+        XCTAssertTrue(center.windows.isAround(windowID: "owner", origin: origin))
+        _ = try await presence(2, visible: false).get()
+        XCTAssertFalse(center.windows.isAround(windowID: "owner", origin: origin), "A hidden page's active heartbeat must stay inactive")
+        _ = try await presence(3, visible: false).get()
+        XCTAssertFalse(center.windows.isAround(windowID: "owner", origin: origin))
+        let read = await NativePushBridge.handle(body: [
+            "method": "notificationRead", "scope": "/node/A", "document_id": "doc",
+            "payload": ["version": 2, "source": "/node/A", "store_instance_id": "store-1",
+                        "session_id": "session-1", "attention_seq": 7]
+        ], frameOrigin: origin, isMainFrame: true, expectedOrigin: origin, center: center,
+           windowID: "owner", documentID: "doc", documentURL: documentURL, isContentVisible: false)
+        XCTAssertThrowsError(try read.get())
+        XCTAssertFalse(try deliveries.hasRead(completionMessage()))
+        _ = try await presence(4, visible: true).get()
+        XCTAssertTrue(center.windows.isAround(windowID: "owner", origin: origin), "Returning to chat can renew an actual foreground lease")
+    }
+
     func testPresenceRejectsStaleDocumentSequenceExpiryAndSleep() {
         let windows = center.windows
         let now = Date()

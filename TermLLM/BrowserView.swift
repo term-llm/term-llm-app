@@ -131,12 +131,16 @@ struct BrowserView: UIViewRepresentable {
     var pushChangeCount = 0
     var onPushNavigationHandled: (UUID) -> Void = { _ in }
     var onPushWindowReady: (String) -> Void = { _ in }
+    /// Explicit native navigation, independent of JS and WebKit UI responsiveness.
+    var nativeDestination: HubBrowserDestination? = nil
+    /// Native visibility overrides the page's own foreground/attendance claims.
+    var isContentVisible = true
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = HubFixture.isEnabled ? HubFixture.websiteDataStore : .default()
         configuration.allowsInlineMediaPlayback = true
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
@@ -224,8 +228,13 @@ struct BrowserView: UIViewRepresentable {
             recoveryPending = false
         }
 
+        private var nativeDestinationID: UUID?
+
         func update(_ view: WKWebView, parent: BrowserView) {
             self.parent = parent
+            let destination = parent.nativeDestination
+            let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
+            nativeDestinationID = destination?.id
             if let scene = view.window?.windowScene {
                 registerPushScene(scene)
             }
@@ -258,6 +267,11 @@ struct BrowserView: UIViewRepresentable {
                 rejectedHTTPResponse = false
                 view.load(URLRequest(url: !serverChanged && authenticated && voiceNavigated && !voiceClicked
                                      ? (parent.voiceLaunch?.url ?? parent.url) : parent.url))
+            } else if nativeNavigation, let destination,
+                      sameOrigin(destination.url, parent.url) {
+                resetRecovery()
+                rejectedHTTPResponse = false
+                view.load(URLRequest(url: destination.url))
             } else if reloadRequested {
                 resetRecovery()
                 if view.url == nil || rejectedHTTPResponse {
@@ -315,16 +329,28 @@ struct BrowserView: UIViewRepresentable {
             DispatchQueue.main.async { done(navigation.id) }
         }
 
+        private var pushContentIsVisible: Bool {
+            parent.isContentVisible && parent.scenePhase == .active && !parent.isSigningIn
+                && !parent.loginRequired && parent.loadError == nil
+        }
+
         /// Installs the push bridge for the configured server's origin.
         /// Returns true when the injected script changed.
         @discardableResult
         func syncPushBridge(url: URL, center: PushCenter?, controller: WKUserContentController) -> Bool {
-            if let pushBridge, let center, pushBridge.serverURL == url, pushBridge.center === center { return false }
+            if let pushBridge, let center, pushBridge.serverURL == url, pushBridge.center === center {
+                MainActor.assumeIsolated { pushBridge.setContentVisible(pushContentIsVisible) }
+                return false
+            }
             if pushBridge == nil && center == nil { return false }
             pushBridge?.uninstall()
             pushBridge = nil
             if let center {
-                let bridge = MainActor.assumeIsolated { NativePushBridge(serverURL: url, center: center) }
+                let bridge = MainActor.assumeIsolated {
+                    let bridge = NativePushBridge(serverURL: url, center: center)
+                    bridge.setContentVisible(pushContentIsVisible)
+                    return bridge
+                }
                 bridge.install(into: controller)
                 pushBridge = bridge
             }

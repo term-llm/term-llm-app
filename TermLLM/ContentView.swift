@@ -5,8 +5,8 @@ import WebKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("serverURL") private var serverURL = ""
-    @AppStorage(AppControlsBar.hintAcknowledgedKey) private var appControlsHintAcknowledged = false
+    @AppStorage("serverURL", store: HubFixture.defaults) private var serverURL = ""
+    @AppStorage(AppControlsBar.hintAcknowledgedKey, store: HubFixture.defaults) private var appControlsHintAcknowledged = false
     @State private var draftURL = ""
     @State private var showingSettings = false
     @State private var loading = false
@@ -21,6 +21,13 @@ struct ContentView: View {
     @State private var showingMusic = false
     @State private var showingListen = false
     @State private var showingPlayer = false
+    @State private var showingHub = false
+    @State private var workspaceChosen = false
+    @State private var hubRole: HubServerRole = .unknown
+    @State private var hubPresentation = UUID()
+    @State private var hubDestination: HubBrowserDestination?
+    @State private var hubBrowserRevoked = false
+    @State private var importedServer: URL?
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
     @StateObject private var deviceTools = DeviceToolsSettings.shared
@@ -45,16 +52,55 @@ struct ContentView: View {
                 setup
             }
         }
+        .task(id: address) {
+            guard let server = address else { return }
+            let role = await HubServerRole.discover(server: server)
+            guard !Task.isCancelled, address == server else { return }
+            hubRole = role
+            if role == .hub, !workspaceChosen, voiceRequest == nil, push.pendingNavigation == nil {
+                showingHub = true
+            }
+        }
         .tint(.cyan)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if HubFixture.isEnabled {
+                Text("DEMO FIXTURE · LOCAL")
+                    .font(.caption.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(6)
+                    .background(.orange.opacity(0.25))
+                    .accessibilityIdentifier("hub.fixtureBanner")
+            }
+        }
         .background(NativeSceneReader { scene in
+            guard !HubFixture.isEnabled else { return }
             let id = PushCenter.windowID(for: scene)
             push.registerWindow(id, scene: scene)
             pushWindowID = id
         })
         .sheet(isPresented: $showingSettings) { settings }
+        .onOpenURL { link in
+            guard !HubFixture.isEnabled, let server = HubConnectionImport.server(from: link) else { return }
+            importedServer = server
+        }
+        .alert("Connect to Hub?", isPresented: Binding(
+            get: { importedServer != nil }, set: { if !$0 { importedServer = nil } }
+        )) {
+            Button("Review connection") {
+                draftURL = importedServer?.absoluteString ?? ""
+                importedServer = nil
+                showingSettings = true
+            }
+            Button("Cancel", role: .cancel) { importedServer = nil }
+        } message: {
+            Text("Only connect to a server you trust. Sign-in is separate.\n" + (importedServer?.absoluteString ?? ""))
+        }
         .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
         .sheet(isPresented: $showingListen) { ListenView(listen: listen) }
         .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen) }
+        .onChange(of: push.pendingNavigation?.id) { _, id in
+            if id != nil { workspaceChosen = true; showingHub = false }
+        }
         .onChange(of: voiceLaunches.request, initial: true) { _, request in
             guard let request else { return }
             beginVoiceLaunch(request)
@@ -106,6 +152,7 @@ struct ContentView: View {
                     Button("Connect", action: saveAddress)
                         .buttonStyle(.borderedProminent)
                         .disabled(ServerAddress.parse(draftURL) == nil)
+                        .accessibilityIdentifier("serverConnect")
                     Button("Try demo") {
                         draftURL = ServerAddress.demo
                         saveAddress()
@@ -147,7 +194,35 @@ struct ContentView: View {
     /// so it (and playback) survives page loads; hiding it leaves playback on.
     private func browser(_ url: URL) -> some View {
         VStack(spacing: 0) {
-            page(url)
+            HStack {
+                Button { workspaceChosen = true; hubPresentation = UUID(); showingHub = true } label: { Label("Hub", systemImage: "square.grid.2x2") }
+                    .accessibilityIdentifier("hub.open")
+                Spacer()
+                Button { workspaceChosen = true; showingHub = false } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                    .accessibilityIdentifier("hub.chat")
+                Spacer()
+                Button("Settings", systemImage: "gearshape", action: openSettings)
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal)
+            .frame(minHeight: 48)
+            .background(.bar)
+            ZStack {
+                page(url)
+                    .opacity(showingHub ? 0 : 1)
+                    .allowsHitTesting(!showingHub)
+                    .accessibilityHidden(showingHub)
+                if showingHub {
+                    HubView(server: url, onOpenChat: { destination in
+                        loadError = nil
+                        loginRequired = false
+                        hubDestination = HubBrowserDestination(url: destination)
+                        showingHub = false
+                    }, onSettings: openSettings, requiresAuthentication: hubBrowserRevoked,
+                            onAuthorizationRevoked: revokeHubBrowser, onAuthenticated: restoreHubBrowser)
+                    .id(url.absoluteString + hubPresentation.uuidString)
+                }
+            }
             if listen.player.showsBar {
                 MiniPlayerBar(listen: listen) { showingPlayer = true }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -159,19 +234,30 @@ struct ContentView: View {
 
     private func page(_ url: URL) -> some View {
         ZStack(alignment: .top) {
+            if hubBrowserRevoked {
+                recoveryScreen("Hub sign-in required", symbol: "lock.shield", message: "The previous private browser workspace was closed after authorization changed.") {
+                    Button("Back to Hub") { showingHub = true }.buttonStyle(.borderedProminent)
+                    Button("Settings", action: openSettings).buttonStyle(.bordered)
+                }
+            } else {
             BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
-                        scenePhase: scenePhase, isSigningIn: isSigningIn,
-                        deviceTools: deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
-                        onLoginRequired: { signIn(to: url) }, onRevealControls: revealControls,
+                        scenePhase: showingHub ? .inactive : scenePhase, isSigningIn: isSigningIn,
+                        deviceTools: !HubFixture.isEnabled && deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
+                        onLoginRequired: {
+                            loginRequired = true
+                            if hubRole == .direct && !showingHub { signIn(to: url) }
+                        }, onRevealControls: revealControls,
                         voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
-                        push: push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
+                        push: HubFixture.isEnabled ? nil : push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
                         onPushNavigationHandled: push.navigationHandled,
-                        onPushWindowReady: { pushWindowID = $0 })
+                        onPushWindowReady: { pushWindowID = $0 }, nativeDestination: hubDestination,
+                        isContentVisible: !showingHub)
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
+            }
 
             if let loadError {
                 recoveryScreen("Can't load server", symbol: "wifi.exclamationmark", message: loadError) {
@@ -342,6 +428,8 @@ struct ContentView: View {
                 throw VoiceLaunchFailure(message: "Connect to a server in Settings first.")
             }
             let destination = try VoiceShortcutSettings.shared.destination(for: address)
+            workspaceChosen = true
+            showingHub = false
             showingSettings = false
             showingMusic = false
             showingListen = false
@@ -361,6 +449,25 @@ struct ContentView: View {
         voiceLaunchError = error
     }
 
+    private func revokeHubBrowser() {
+        // Destroy the protected WKWebView, not just its native dashboard cache.
+        // Chat can no longer reveal a retained authenticated document after logout.
+        hubBrowserRevoked = true
+        hubDestination = nil
+        canGoBack = false
+        loading = false
+        loadError = nil
+        loginRequired = false
+        loginError = nil
+        if let request = voiceRequest { finishVoiceLaunch(request.id, "Hub authorization changed. Sign in again before starting voice.") }
+    }
+
+    private func restoreHubBrowser() {
+        hubBrowserRevoked = false
+        hubDestination = nil
+        authenticatedCount += 1
+    }
+
     private func signIn(to url: URL) {
         guard !isSigningIn else { return }
         isSigningIn = true
@@ -371,6 +478,7 @@ struct ContentView: View {
             switch result {
             case .success:
                 loadError = nil
+                hubBrowserRevoked = false
                 authenticatedCount += 1
             case .failure(let error):
                 loginError = error.localizedDescription
@@ -379,12 +487,20 @@ struct ContentView: View {
     }
 
     private func saveAddress() {
-        guard let url = ServerAddress.parse(draftURL) else { return }
+        guard let url = ServerAddress.parse(draftURL),
+              !HubFixture.isEnabled || url == HubFixture.server else { return }
         let changed = serverURL != url.absoluteString
         if changed, let request = voiceRequest {
             finishVoiceLaunch(request.id, nil)
         }
         serverURL = url.absoluteString
+        if changed {
+            hubDestination = nil
+            hubBrowserRevoked = false
+            workspaceChosen = false
+            hubRole = .unknown
+            showingHub = false
+        }
         loadError = nil
         loginError = nil
         loginRequired = false

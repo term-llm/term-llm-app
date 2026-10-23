@@ -38,6 +38,15 @@
                ReferencedContainer = "container:TermLLM.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <!-- native-hub-ui-tests -->
+         <TestableReference skipped = "NO">
+            <BuildableReference BuildableIdentifier = "primary"
+               BlueprintIdentifier = "000000000000000000000704"
+               BuildableName = "TermLLMUITests.xctest"
+               BlueprintName = "TermLLMUITests"
+               ReferencedContainer = "container:TermLLM.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

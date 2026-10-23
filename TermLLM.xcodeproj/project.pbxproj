@@ -91,6 +91,15 @@
 		000000000000000000000531 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000532 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000533 /* NotificationReviewRegressionTests.swift */; };
+		000000000000000000000820 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000800 /* HubClient.swift */; };
+		000000000000000000000821 /* HubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000801 /* HubStore.swift */; };
+		000000000000000000000822 /* HubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000802 /* HubView.swift */; };
+		000000000000000000000823 /* HubConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000803 /* HubConnection.swift */; };
+		000000000000000000000824 /* HubNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000804 /* HubNavigation.swift */; };
+		000000000000000000000825 /* HubClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000805 /* HubClientTests.swift */; };
+		000000000000000000000826 /* HubStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000806 /* HubStoreTests.swift */; };
+		000000000000000000000827 /* HubNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000807 /* HubNavigationTests.swift */; };
+		000000000000000000000700 /* NativeHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000701 /* NativeHubUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -107,6 +116,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 000000000000000000000470;
 			remoteInfo = TermLLMNotificationService;
+		};
+		00000000000000000000070A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000010;
+			remoteInfo = TermLLM;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -208,6 +224,16 @@
 		000000000000000000000520 /* ProducerFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ProducerFixtures; sourceTree = "<group>"; };
 		000000000000000000000530 /* PushConsentJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushConsentJournal.swift; sourceTree = "<group>"; };
 		000000000000000000000533 /* NotificationReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReviewRegressionTests.swift; sourceTree = "<group>"; };
+		000000000000000000000800 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
+		000000000000000000000801 /* HubStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubStore.swift; sourceTree = "<group>"; };
+		000000000000000000000802 /* HubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubView.swift; sourceTree = "<group>"; };
+		000000000000000000000803 /* HubConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubConnection.swift; sourceTree = "<group>"; };
+		000000000000000000000804 /* HubNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubNavigation.swift; sourceTree = "<group>"; };
+		000000000000000000000805 /* HubClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClientTests.swift; sourceTree = "<group>"; };
+		000000000000000000000806 /* HubStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubStoreTests.swift; sourceTree = "<group>"; };
+		000000000000000000000807 /* HubNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubNavigationTests.swift; sourceTree = "<group>"; };
+		000000000000000000000701 /* NativeHubUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHubUITests.swift; sourceTree = "<group>"; };
+		000000000000000000000702 /* TermLLMUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermLLMUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -232,6 +258,12 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000706 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -241,6 +273,7 @@
 				000000000000000000000004 /* TermLLM */,
 				000000000000000000000460 /* Shared */,
 				000000000000000000000461 /* TermLLMNotificationService */,
+				000000000000000000000703 /* TermLLMUITests */,
 				000000000000000000000005 /* TermLLMTests */,
 				000000000000000000000003 /* Products */,
 			);
@@ -250,6 +283,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000030 /* TermLLM.app */,
+				000000000000000000000702 /* TermLLMUITests.xctest */,
 				000000000000000000000031 /* TermLLMTests.xctest */,
 				000000000000000000000440 /* TermLLMNotificationService.appex */,
 			);
@@ -259,6 +293,11 @@
 		000000000000000000000004 /* TermLLM */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000804 /* HubNavigation.swift */,
+				000000000000000000000803 /* HubConnection.swift */,
+				000000000000000000000802 /* HubView.swift */,
+				000000000000000000000801 /* HubStore.swift */,
+				000000000000000000000800 /* HubClient.swift */,
 				000000000000000000000040 /* TermLLMApp.swift */,
 				000000000000000000000400 /* AppDelegate.swift */,
 				000000000000000000000041 /* ContentView.swift */,
@@ -311,6 +350,9 @@
 		000000000000000000000005 /* TermLLMTests */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000807 /* HubNavigationTests.swift */,
+				000000000000000000000806 /* HubStoreTests.swift */,
+				000000000000000000000805 /* HubClientTests.swift */,
 				000000000000000000000045 /* ServerAddressTests.swift */,
 				000000000000000000000351 /* AppControlsTests.swift */,
 				000000000000000000000341 /* VoiceShortcutTests.swift */,
@@ -362,6 +404,12 @@
 				000000000000000000000422 /* TermLLMNotificationService.entitlements */,
 			);
 			path = TermLLMNotificationService;
+			sourceTree = "<group>";
+		};
+		000000000000000000000703 /* TermLLMUITests */ = {
+			isa = PBXGroup;
+			children = (000000000000000000000701 /* NativeHubUITests.swift */,);
+			path = TermLLMUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -421,6 +469,17 @@
 			productReference = 000000000000000000000440 /* TermLLMNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		000000000000000000000704 /* TermLLMUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000708 /* Build configuration list for PBXNativeTarget "TermLLMUITests" */;
+			buildPhases = (000000000000000000000705 /* Sources */, 000000000000000000000706 /* Frameworks */, 000000000000000000000707 /* Resources */,);
+			buildRules = ();
+			dependencies = (000000000000000000000709 /* PBXTargetDependency */,);
+			name = TermLLMUITests;
+			productName = TermLLMUITests;
+			productReference = 000000000000000000000702 /* TermLLMUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -443,6 +502,7 @@
 			projectRoot = "";
 			targets = (
 				000000000000000000000010 /* TermLLM */,
+				000000000000000000000704 /* TermLLMUITests */,
 				000000000000000000000011 /* TermLLMTests */,
 				000000000000000000000470 /* TermLLMNotificationService */,
 			);
@@ -474,6 +534,12 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000707 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -482,6 +548,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000080 /* TermLLMApp.swift in Sources */,
+				000000000000000000000824 /* HubNavigation.swift in Sources */,
+				000000000000000000000823 /* HubConnection.swift in Sources */,
+				000000000000000000000822 /* HubView.swift in Sources */,
+				000000000000000000000821 /* HubStore.swift in Sources */,
+				000000000000000000000820 /* HubClient.swift in Sources */,
 				000000000000000000000450 /* AppDelegate.swift in Sources */,
 				000000000000000000000081 /* ContentView.swift in Sources */,
 				000000000000000000000451 /* PushCenter.swift in Sources */,
@@ -537,6 +608,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
+				000000000000000000000827 /* HubNavigationTests.swift in Sources */,
+				000000000000000000000826 /* HubStoreTests.swift in Sources */,
+				000000000000000000000825 /* HubClientTests.swift in Sources */,
 				000000000000000000000353 /* AppControlsTests.swift in Sources */,
 				000000000000000000000343 /* VoiceShortcutTests.swift in Sources */,
 				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
@@ -578,6 +652,12 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000705 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (000000000000000000000700 /* NativeHubUITests.swift in Sources */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -591,6 +671,11 @@
 			target = 000000000000000000000470 /* TermLLMNotificationService */;
 			targetProxy = 000000000000000000000479 /* PBXContainerItemProxy */;
 		};
+		000000000000000000000709 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000010 /* TermLLM */;
+			targetProxy = 00000000000000000000070A /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -600,6 +685,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_TESTABILITY = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
 				SDKROOT = iphoneos;
@@ -733,6 +819,36 @@
 			};
 			name = Release;
 		};
+		00000000000000000000070B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TermLLM;
+			};
+			name = Debug;
+		};
+		00000000000000000000070C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TermLLM;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -769,6 +885,12 @@
 				000000000000000000000476 /* Debug */,
 				000000000000000000000477 /* Release */,
 			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000708 /* Build configuration list for PBXNativeTarget "TermLLMUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (00000000000000000000070B /* Debug */, 00000000000000000000070C /* Release */,);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};

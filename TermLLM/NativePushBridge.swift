@@ -22,6 +22,15 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
     private weak var installedController: WKUserContentController?
     private(set) var documentGeneration: UInt64 = 0
     private var boundWindowID: String?
+    /// Native presentation state is authoritative: an attached but hidden WKWebView
+    /// can keep sending foreground heartbeats while the user is in the Hub.
+    @MainActor private(set) var isContentVisible = true
+
+    @MainActor
+    func setContentVisible(_ visible: Bool) {
+        isContentVisible = visible
+        if !visible, let boundWindowID { center.windows.release(windowID: boundWindowID) }
+    }
 
     @MainActor
     func documentCommitted(windowID: String? = nil) {
@@ -92,7 +101,8 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
             } else { owner = nil }
             switch await Self.handle(body: body, frameOrigin: frameOrigin, isMainFrame: isMainFrame,
                                      expectedOrigin: expected, center: center, windowID: owner,
-                                     documentID: currentDocument ? documentID : nil, documentURL: webView?.url) {
+                                      documentID: currentDocument ? documentID : nil, documentURL: webView?.url,
+                                      isContentVisible: self.isContentVisible) {
             case .success(let value): replyHandler(value, nil)
             case .failure(let error): replyHandler(nil, error.message)
             }
@@ -115,7 +125,7 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
     @MainActor
     static func handle(body: Any, frameOrigin: String, isMainFrame: Bool, expectedOrigin: String,
                        center: PushCenter, windowID: String? = nil, documentID: String? = nil,
-                       documentURL: URL? = nil) async -> Result<Any, BridgeError> {
+                        documentURL: URL? = nil, isContentVisible: Bool = true) async -> Result<Any, BridgeError> {
         guard isMainFrame, frameOrigin == expectedOrigin else {
             return .failure(BridgeError(message: "Notifications are not available to this page"))
         }
@@ -130,7 +140,8 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
         let nodeBasePath = (object["nodeBasePath"] as? String).flatMap { Self.validScope($0) ? $0 : nil }
         if method.hasPrefix("notification") {
             return await handleNotification(method: method, object: object, scope: scope, origin: frameOrigin,
-                                            windowID: windowID, documentID: documentID, center: center)
+                                            windowID: windowID, documentID: documentID, center: center,
+                                            isContentVisible: isContentVisible)
         }
         switch method {
         case "permission":
