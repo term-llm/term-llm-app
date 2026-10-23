@@ -1292,3 +1292,173 @@ extension HubClientTests {
         XCTAssertFalse(workspace.store.unauthorized)
     }
 }
+
+#if canImport(Network)
+// Diagnostic controls only: do not assert a hypothesized SDK header-flush
+// behavior. The original two stalled-401 invariants remain separate and active.
+extension HubClientTests {
+    func testSDKStatusAndBodyFlushControlMatrix() async throws {
+        var rows: [[String: String]] = []
+        for status in [200, 403, 401] {
+            for mode in ["headers-only", "partial-body", "complete-body"] {
+                rows.append(try await observeSDKResponse(status: status, mode: mode))
+            }
+        }
+        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+        let text = String(decoding: data, as: UTF8.self)
+        print("Hub SDK status/body control matrix:\n\(text)")
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "Hub SDK status-body-flush controls (no credentials)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func observeSDKResponse(status: Int, mode: String) async throws -> [String: String] {
+        let record = HubTestBox<[String: String]>(["status": String(status), "mode": mode])
+        let events = HubTestBox<[String]>([])
+        let began = Date()
+        let milliseconds: @Sendable () -> String = { String(Int(Date().timeIntervalSince(began) * 1000)) }
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let listener = try NWListener(using: parameters)
+        let port = HubTestBox<UInt16>(0)
+        let connection = HubTestBox<NWConnection?>(nil)
+        let ready = expectation(description: "control listener ready")
+        let sent = expectation(description: "control response send completed")
+        listener.stateUpdateHandler = { state in
+            if case .ready = state, let value = listener.port {
+                port.set(value.rawValue)
+                ready.fulfill()
+            }
+        }
+
+        let reason = status == 200 ? "OK" : (status == 403 ? "Forbidden" : "Unauthorized")
+        let completeBody = Data("{}".utf8)
+        let contentLength = mode == "complete-body" ? completeBody.count : 65536
+        let headers = Data(("HTTP/1.1 \(status) \(reason)\r\n" +
+                            "Content-Type: application/json\r\n" +
+                            "Content-Length: \(contentLength)\r\n\r\n").utf8)
+        let prefix = mode == "partial-body" ? Data("{".utf8) : Data()
+        let payload = headers + (mode == "complete-body" ? completeBody : prefix)
+        record.update {
+            $0["responseHeaderBytes"] = String(headers.count)
+            $0["responseBodyBytesSent"] = String(payload.count - headers.count)
+            $0["advertisedContentLength"] = String(contentLength)
+        }
+
+        // Unlike the original minimal listener, accumulate a whole request
+        // header block before replying, ruling out premature-response framing.
+        @Sendable func receiveRequest(_ conn: NWConnection, accumulated: Data) {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, complete, error in
+                var bytes = accumulated
+                if let data { bytes.append(data) }
+                if let end = bytes.range(of: Data("\r\n\r\n".utf8)),
+                   let firstLineEnd = bytes.range(of: Data("\r\n".utf8)) {
+                    let firstLine = String(decoding: bytes[..<firstLineEnd.lowerBound], as: UTF8.self)
+                    // Never print the untrusted/raw line or headers. Only
+                    // verify our synthetic GET route and protocol version.
+                    record.update {
+                        $0["requestFirstLineMatchesGETControlHTTP11"] = String(firstLine == "GET /control HTTP/1.1")
+                        $0["requestHeaderBytes"] = String(end.upperBound)
+                        $0["requestHeadersCompleteMs"] = milliseconds()
+                    }
+                    conn.send(content: payload, completion: .contentProcessed { error in
+                        record.update {
+                            $0["sendCompleted"] = "true"
+                            $0["sendErrorCode"] = error.map { String(($0 as NSError).code) } ?? "none"
+                            $0["sendCompletedMs"] = milliseconds()
+                        }
+                        sent.fulfill()
+                    })
+                } else if error != nil || complete || bytes.count > 16384 {
+                    record.update {
+                        $0["requestReadFailed"] = "true"
+                        $0["requestReadErrorCode"] = error.map { String(($0 as NSError).code) } ?? "none"
+                    }
+                    sent.fulfill()
+                } else {
+                    receiveRequest(conn, accumulated: bytes)
+                }
+            }
+        }
+        listener.newConnectionHandler = { conn in
+            connection.set(conn)
+            conn.start(queue: .global())
+            receiveRequest(conn, accumulated: Data())
+        }
+        listener.start(queue: .global())
+        defer { connection.value?.cancel(); listener.cancel() }
+        await fulfillment(of: [ready], timeout: 5)
+        guard port.value > 0 else { throw URLError(.cannotConnectToHost) }
+
+        let transport = URLSessionHubTransport(observe: { event in
+            let value = "\(milliseconds())ms:\(String(describing: event))"
+            events.update { $0.append(value) }
+        })
+        var request = URLRequest(url: URL(string: "http://localhost:\(port.value)/control")!)
+        request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let finished = HubTestBox(false)
+        let task = Task {
+            defer { finished.set(true) }
+            do {
+                let (body, response) = try await transport.execute(request, onUnauthorized: {
+                    record.update {
+                        $0["unauthorizedCallbacks"] = String((Int($0["unauthorizedCallbacks"] ?? "0") ?? 0) + 1)
+                        $0["unauthorizedCallbackMs"] = milliseconds()
+                    }
+                })
+                record.update {
+                    $0["resultStatus"] = String(response.statusCode)
+                    $0["resultBodyBytes"] = String(body.count)
+                }
+            } catch {
+                record.update { $0["resultErrorCode"] = String((error as NSError).code) }
+            }
+        }
+        await fulfillment(of: [sent], timeout: 5)
+        XCTAssertEqual(record.value["requestFirstLineMatchesGETControlHTTP11"], "true")
+        XCTAssertEqual(record.value["sendCompleted"], "true")
+        XCTAssertEqual(record.value["sendErrorCode"], "none")
+        // Bounded observation AFTER the server's successful send callback.
+        // No claim about unsupported flush behavior is encoded as an assertion.
+        for _ in 0..<20 {
+            if finished.value { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        record.update {
+            $0["observationWindowMs"] = "2000"
+            $0["finishedBeforeCleanup"] = String(finished.value)
+            $0["observedEventsBeforeCleanup"] = events.value.joined(separator: " | ")
+        }
+        task.cancel()
+        await task.value
+        return record.value
+    }
+
+    func testIndependentPythonFixtureResponseControl() async throws {
+        let events = HubTestBox<[String]>([])
+        let transport = URLSessionHubTransport(observe: { event in
+            events.update { $0.append(String(describing: event)) }
+        })
+        var request = URLRequest(url: URL(string: "http://localhost:8766/__health")!, timeoutInterval: 3)
+        request.httpShouldHandleCookies = false
+        do {
+            let (data, response) = try await transport.execute(request, onUnauthorized: nil)
+            guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  body["fixture"] as? Bool == true else {
+                throw XCTSkip("Independent control requires the known local native-Hub Python fixture")
+            }
+            XCTAssertEqual(response.statusCode, 200)
+            XCTAssertFalse(events.value.isEmpty)
+            // Status + byte count + callback names only, no response payload.
+            print("Hub independent Python control: status=\(response.statusCode) bodyBytes=\(data.count) events=\(events.value)")
+        } catch let error as URLError where error.code == .cannotConnectToHost || error.code == .cannotFindHost {
+            throw XCTSkip("Independent Python fixture is not running on local CI port8766")
+        } catch {
+            print("Hub independent Python control: errorCode=\((error as NSError).code) events=\(events.value)")
+            throw error
+        }
+    }
+}
+#endif
