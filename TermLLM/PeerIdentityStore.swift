@@ -10,9 +10,20 @@ protocol PeerSecureStorage: AnyObject, Sendable {
     func delete(account: String) throws
 }
 
-enum PeerStorageError: Error, Equatable {
+enum PeerStorageError: LocalizedError, Equatable {
     case keychain(Int32)
     case corrupt(String)
+
+    /// Only fixed descriptions and the numeric status are safe to display.
+    /// Never interpolate stored data, account names or corruption details.
+    var errorDescription: String? {
+        switch self {
+        case .keychain(let status):
+            return "Keychain storage failed (OSStatus \(status))."
+        case .corrupt:
+            return "Stored peer identity or pairing records are invalid."
+        }
+    }
 }
 
 #if canImport(Security) && !os(Linux)

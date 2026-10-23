@@ -98,12 +98,24 @@ final class PeerConnectionModel: ObservableObject {
             phase = .failed(PeerPairingError.expired.localizedDescription)
             return true
         }
+        // Identity must be persisted before review can offer approval.
+        // Do not silently omit the device fingerprint on storage failure.
+        let deviceFingerprint: String
+        do {
+            deviceFingerprint = try store.deviceIdentity().fingerprint
+        } catch {
+            pendingLink = nil
+            review = nil
+            let message = (error as? PeerStorageError)?.errorDescription ?? "Device identity could not be loaded or saved."
+            phase = .failed("Device identity unavailable. \(message)")
+            return true
+        }
         pendingLink = link
         let host = link.broker.host ?? "-"
         review = PeerPairingReview(
             hostName: link.name ?? "Unnamed host",
             hostFingerprint: PeerBase64URL.encode(Data(SHA256.hash(data: link.hostKey).prefix(9))),
-            deviceFingerprint: try? store.deviceIdentity().fingerprint,
+            deviceFingerprint: deviceFingerprint,
             signallingHost: link.broker.port.map { "\(host):\($0)" } ?? host,
             expiresAt: link.expiresAt)
         phase = .review
