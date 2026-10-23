@@ -42,19 +42,48 @@ final class NativeHubUITests: XCTestCase {
         XCTAssertTrue(element.exists && element.isHittable, "Cannot reveal \(element)", file: file, line: line)
     }
 
+    private var selectedPanel = "hub.nodes"
+
     @MainActor
-    private func panel(_ identifier: String, scrollLeft: Bool = true) {
-        let button = app.buttons[identifier].firstMatch
-        // The native panel strip can overflow on a narrow iPhone. Do not assume
-        // every tab fits onscreen or tap coordinates into a synthetic layout.
-        let strip = app.scrollViews.containing(.button, identifier: "hub.nodes").firstMatch
-        for _ in 0..<4 {
-            if button.exists && button.isHittable { break }
-            XCTAssertTrue(strip.exists, "Native Hub panel strip missing")
-            if scrollLeft { strip.swipeLeft() } else { strip.swipeRight() }
+    private func selectPanel(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
+        let panels = ["hub.nodes", "hub.attention", "hub.delegations", "hub.management", "hub.security"]
+        guard let targetIndex = panels.firstIndex(of: identifier) else {
+            XCTFail("Unknown native Hub panel: \(identifier)", file: file, line: line)
+            return
         }
-        XCTAssertTrue(button.isHittable, "Native panel must be reachable: \(identifier)")
-        button.tap()
+        let button = required(app.buttons[identifier].firstMatch, file: file, line: line)
+        let strip = required(app.scrollViews.containing(.button, identifier: identifier).firstMatch,
+                             file: file, line: line)
+        for attempt in 0...panels.count {
+            let viewport = strip.frame.intersection(app.frame)
+            let frame = button.frame
+            let validFrame = !frame.isEmpty && !frame.isInfinite &&
+                frame.minX.isFinite && frame.minY.isFinite && frame.maxX.isFinite && frame.maxY.isFinite
+            guard !viewport.isEmpty && !viewport.isNull else {
+                XCTFail("Native Hub panel strip is not onscreen", file: file, line: line)
+                return
+            }
+            // Offscreen SwiftUI buttons can throw an XCTest activation-point
+            // error merely reading isHittable. Reveal the real element first.
+            if validFrame && viewport.contains(frame) {
+                guard button.isHittable else {
+                    XCTFail("Visible native panel is not hittable: \(identifier)", file: file, line: line)
+                    return
+                }
+                button.tap()
+                selectedPanel = identifier
+                return
+            }
+            guard attempt < panels.count else { break }
+            let earlier = validFrame ? frame.minX < viewport.minX :
+                targetIndex < (panels.firstIndex(of: selectedPanel) ?? 0)
+            // Swipe the actual ancestor ScrollView, never offscreen coordinates
+            // or the vertically scrolling page. This also returns to Nodes
+            // after Security has scrolled it off the left edge.
+            if earlier { strip.swipeRight() } else { strip.swipeLeft() }
+        }
+        XCTFail("Could not reveal native panel after bounded horizontal swipes: \(identifier)",
+                file: file, line: line)
     }
 
     @MainActor
@@ -90,30 +119,30 @@ final class NativeHubUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         required(app.buttons["hub.attention"])
 
-        panel("hub.attention")
+        selectPanel("hub.attention")
         let needsInput = app.staticTexts["Review the demo patch"].firstMatch
         reveal(needsInput, upwards: false)
         required(needsInput)
         required(app.staticTexts["Demo result ready"].firstMatch)
         capture("05-native-attention")
 
-        panel("hub.delegations")
+        selectPanel("hub.delegations")
         required(app.staticTexts["No delegated work yet"].firstMatch)
         capture("06-native-delegations")
 
-        panel("hub.management")
+        selectPanel("hub.management")
         let registration = app.staticTexts["Node registration is disabled."].firstMatch
         reveal(registration)
         capture("07-native-management-no-registration-token")
 
-        panel("hub.security")
+        selectPanel("hub.security")
         let credential = app.staticTexts["Demo passkey (not real)"].firstMatch
         reveal(credential, upwards: false)
         required(credential)
         capture("08-native-security-synthetic-session")
         // Read-only inspection. Never invoke destructive/security ceremonies.
 
-        panel("hub.nodes", scrollLeft: false)
+        selectPanel("hub.nodes")
         reveal(ready, upwards: false)
         ready.tap()
         required(app.webViews.staticTexts["Demo fixture chat"].firstMatch)
