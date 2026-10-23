@@ -185,6 +185,35 @@ class Capture:
             self.manifest["active_mode"] = mode
             self.mode(mode, nonce, public, private, udid, args)
 
+    def launch_diagnostics(self, mode, udid):
+        """Bounded, redacted local simulator evidence; never assume root cause."""
+        raw = self.private / f"{mode}-simulator-launch.raw.log"
+        output = self.artifacts / f"{mode}-simulator-launch.log"
+        try:
+            predicate = ('process == "SpringBoard" OR process == "runningboardd" OR '
+                         'process == "amfid" OR process == "launchd_sim" OR '
+                         'process == "TermLLMUITests-Runner"')
+            with raw.open("wb") as stream:
+                try:
+                    subprocess.run(["xcrun", "simctl", "spawn", udid, "log", "show", "--last", "3m",
+                                    "--style", "compact", "--info", "--predicate", predicate],
+                                   stdout=stream, stderr=subprocess.STDOUT, timeout=15, check=False)
+                except subprocess.TimeoutExpired:
+                    pass  # subprocess.run kills/waits its timed-out child.
+            # Redact BEFORE selecting whole lines: no partial secret is created
+            # by truncation. Bound artifact to 64KiB/200 lines, not an env dump.
+            clean = self.redact(raw.read_text(errors="replace"))
+            lines, used = [], 0
+            for line in reversed(clean.splitlines()):
+                size = len(line.encode()) + 1
+                if size + used > 65536 or len(lines) >= 200:
+                    break
+                lines.append(line)
+                used += size
+            output.write_text("Simulator diagnostic only; launch cause unconfirmed.\n" + "\n".join(reversed(lines)) + "\n")
+        except Exception:
+            output.write_text("Simulator launch diagnostics unavailable; private error details withheld.\n")
+
     def mode(self, mode, nonce, public, private, udid, args):
         docs = self.container / "Documents"
         raw_evidence = docs / "peer-capture-evidence.json"
@@ -215,6 +244,8 @@ class Capture:
                     test.wait(timeout=15)
                 self.stop_recording()
                 (self.artifacts / f"{mode}-test.log").write_text(self.redact(raw_log.read_text(errors="replace")))
+                if test.returncode != 0:
+                    self.launch_diagnostics(mode, udid)
         summary = json.loads(self.run(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(result)]))
         require(summary.get("result") == "Passed" and summary.get("passedTests", 0) >= 1 and summary.get("failedTests", 0) == 0 and summary.get("skippedTests", 0) == 0, "No passing executed peer UI test")
         devices = {entry.get("device", {}).get("deviceId", "").lower() for entry in summary.get("devicesAndConfigurations", [])}

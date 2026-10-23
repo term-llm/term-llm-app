@@ -31,7 +31,7 @@ class SigningPolicyTests(unittest.TestCase):
             self.assertNotIn('com.apple.security.application-groups', value)
 
     def test_executable_bundle_namespaces_are_distinct(self):
-        for identifier in ('com.termllm.app', 'com.termllm.app.NotificationService', 'com.termllm.app.uitests.xctrunner'):
+        for identifier in ('com.termllm.app', 'com.termllm.app.NotificationService'):
             value = entitlements(identifier)
             self.assertEqual(value['keychain-access-groups'][0], 'SIMULATOR.' + identifier)
             self.assertEqual(value['application-identifier'], 'SIMULATOR.' + identifier)
@@ -53,10 +53,9 @@ class SigningPolicyTests(unittest.TestCase):
         fat += struct.pack('>5I', 0x1000007, 0, offset + len(image), len(image), 0)
         self.assertEqual(len(embedded_entitlements(fat + image + image)), 2)
 
-    def test_nested_bundles_signed_inside_out_and_shared_queries_isolated(self):
+    def test_only_owned_app_and_nse_signed_runner_and_sdk_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
-            # macOS /var paths resolve through /private/var. Exercise an alias
-            # on every platform, and compare the canonical signing targets.
+            # Exercise canonical path handling (/var vs /private/var on macOS).
             actual = Path(temp) / 'actual'
             actual.mkdir()
             root = Path(temp) / 'alias'
@@ -68,31 +67,48 @@ class SigningPolicyTests(unittest.TestCase):
             extension = app / 'PlugIns/Notification.appex'
             framework = app / 'Frameworks/WebRTC.framework'
             test_bundle = app / 'PlugIns/TermLLMTests.xctest'
-            for path, identifier in ((app, 'com.termllm.app'), (extension, 'com.termllm.app.NotificationService'), (framework, 'org.webrtc'), (test_bundle, 'com.termllm.app.tests')):
+            runner = products / 'TermLLMUITests-Runner.app'
+            apple_framework = runner / 'Frameworks/XCTest.framework'
+            library = runner / 'Frameworks/libXCTestBundleInject.dylib'
+            fixtures = ((app, 'com.termllm.app'), (extension, 'com.termllm.app.NotificationService'),
+                        (framework, 'org.webrtc'), (test_bundle, 'com.termllm.app.tests'),
+                        (runner, 'com.termllm.app.uitests.xctrunner'), (apple_framework, 'com.apple.dt.XCTest'))
+            for path, identifier in fixtures:
                 path.mkdir(parents=True, exist_ok=True)
-                (path / 'Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier=identifier, CFBundleExecutable='Executable', TermLLMKeychainAccessGroup='unexpanded.shared')))
+                (path / 'Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier=identifier,
+                    CFBundleExecutable='Executable', TermLLMKeychainAccessGroup='unexpanded.shared')))
                 (path / 'Executable').write_bytes(macho(entitlements(identifier)) if path == app else b'test-placeholder')
-            signatures, order = {}, []
+            library.write_bytes(b'test-library-placeholder')
+            paths = [p.resolve() for p, _ in fixtures] + [library.resolve()]
+            signatures = {str(p): {'stock-xcode-test-marker': True} for p in paths}
+            stock = {str(p): dict(signatures[str(p)]) for p in paths if p not in (app.resolve(), extension.resolve())}
+            runner_info = (runner / 'Info.plist').read_bytes()
+            order = []
             def command(args, **kwargs):
                 path = args[-1]
                 if '--sign' in args:
                     order.append(path)
-                    self.assertIn('-', args)
+                    self.assertNotIn('--deep', args)
                     signatures[path] = plistlib.loads(Path(args[args.index('--entitlements') + 1]).read_bytes())
-                output = plistlib.dumps(signatures[path]) if '--display' in args else b''
-                return subprocess.CompletedProcess(args, 0, stdout=output, stderr=b'')
+                output = plistlib.dumps(signatures[path]) if '--entitlements' in args and '--display' in args else b''
+                details = str(signatures[path]).encode() if '--verbose=4' in args else b''
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr=details)
             provenance = {}
             with patch('sign_simulator.subprocess.run', side_effect=command):
                 sign_products(products, private, provenance)
-            self.assertLess(order.index(str(extension.resolve())), order.index(str(app.resolve())))
-            self.assertLess(order.index(str(framework.resolve())), order.index(str(app.resolve())))
-            self.assertEqual(signatures[str(framework.resolve())], {})
-            self.assertEqual(signatures[str(test_bundle.resolve())], {})
-            self.assertLess(order.index(str(test_bundle.resolve())), order.index(str(app.resolve())))
+            self.assertEqual(order, [str(extension.resolve()), str(app.resolve())])
+            for path, signature in stock.items():
+                self.assertEqual(signatures[path], signature)
+            self.assertEqual((runner / 'Info.plist').read_bytes(), runner_info)
             self.assertEqual(plistlib.loads((app / 'Info.plist').read_bytes())['TermLLMKeychainAccessGroup'], SHARED_GROUP)
             self.assertFalse(provenance['osstatus_measured'])
-            self.assertEqual(len(provenance['products']), 4)
-            self.assertTrue(next(record for record in provenance['products'] if record['path'] == 'TermLLM.app')['linked_entitlements'])
+            self.assertEqual(len(provenance['products']), 7)
+            runner_record = next(r for r in provenance['products'] if r['path'] == 'TermLLMUITests-Runner.app')
+            self.assertEqual(runner_record['action'], 'preserved-xcode-code')
+            self.assertEqual(runner_record['before']['entitlements'], runner_record['entitlements'])
+            self.assertEqual(runner_record['before']['signature_details'], runner_record['signature_details'])
+            self.assertEqual(runner_record['before']['binary_sha256'], runner_record['binary_sha256'])
+            self.assertTrue(next(r for r in provenance['products'] if r['path'] == 'TermLLM.app')['linked_entitlements'])
 
 
 if __name__ == '__main__':

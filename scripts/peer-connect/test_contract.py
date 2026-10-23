@@ -129,6 +129,28 @@ class AdapterTests(unittest.TestCase):
         for secret in capture.sensitive:
             self.assertNotIn(secret, clean)
 
+    def test_failed_launch_diagnostics_are_bounded_and_redacted(self):
+        from unittest.mock import patch
+        import subprocess
+        with tempfile.TemporaryDirectory() as temp:
+            capture = Capture.__new__(Capture)
+            capture.private = Path(temp) / "private"
+            capture.artifacts = Path(temp) / "artifacts"
+            capture.private.mkdir()
+            capture.artifacts.mkdir()
+            capture.sensitive = ["private-launch-capability"]
+            def logs(args, **kwargs):
+                self.assertEqual(kwargs["timeout"], 15)
+                kwargs["stdout"].write(("old entry\n" * 300 + "SBRequestDenied private-launch-capability\n").encode())
+                return subprocess.CompletedProcess(args, 0)
+            with patch("capture.subprocess.run", side_effect=logs):
+                capture.launch_diagnostics("direct", "test-simulator")
+            result = (capture.artifacts / "direct-simulator-launch.log").read_text()
+            self.assertIn("SBRequestDenied [REDACTED]", result)
+            self.assertNotIn(capture.sensitive[0], result)
+            self.assertLessEqual(len(result.splitlines()), 201)
+            self.assertLess(len(result.encode()), 65600)
+
     def test_raw_xcresult_is_quarantined_if_secret_found(self):
         with tempfile.TemporaryDirectory() as temp:
             capture = Capture.__new__(Capture)

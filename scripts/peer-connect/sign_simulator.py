@@ -1,7 +1,8 @@
 """Ad-hoc simulator signing only: no Apple identity, profile or memory keychain.
 
 Xcode must link simulator __TEXT,__entitlements (keychain checks use these).
-Post-build codesign normalizes each executable bundle's signature as well.
+Post-build codesign changes ONLY our main app and notification extension.
+Xcode runner, XCTest/SDK frameworks, libraries and test bundles are preserved.
 """
 import hashlib
 import plistlib
@@ -70,49 +71,82 @@ def embedded_entitlements(data):
     return values
 
 
+def signature_state(path):
+    """Read-only proof of actual entitlements, CodeDirectory and executable."""
+    result = subprocess.run(["codesign", "--display", "--entitlements", ":-", str(path)], check=True, capture_output=True)
+    actual = plistlib.loads(result.stdout) if result.stdout.strip() else {}
+    detail = subprocess.run(["codesign", "--display", "--verbose=4", str(path)], check=True, capture_output=True)
+    info_path = path / "Info.plist" if path.is_dir() else None
+    info = plistlib.loads(info_path.read_bytes()) if info_path and info_path.is_file() else {}
+    binary = path / info.get("CFBundleExecutable", "") if path.is_dir() else path
+    return dict(entitlements=actual,
+                signature_details=(detail.stdout + detail.stderr).decode(errors="replace")[:12000],
+                binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None)
+
+
 def sign_products(products, private, provenance):
-    """Inside-out signing; verify actual main-app linked and signed privileges."""
+    """Sign only owned app/NSE; leave all Xcode runner/SDK code untouched."""
     products = products.resolve()
     require(not any(products.rglob("embedded.mobileprovision")), "Simulator capture must not use provisioning profiles")
+    app = products / "TermLLM.app"
+    require(app.is_dir(), "Main simulator app missing")
+    app_info = plistlib.loads((app / "Info.plist").read_bytes())
+    require(app_info.get("CFBundleIdentifier") == "com.termllm.app", "Unexpected main simulator app identifier")
     bundles = [p for p in products.rglob("*") if p.is_dir() and p.suffix in (".app", ".appex", ".xctest", ".framework")]
     libraries = [p for p in products.rglob("*.dylib") if p.is_file()]
+    paths = sorted(bundles + libraries, key=str)
+    owned = [app]
+    for path in (app / "PlugIns").glob("*.appex"):
+        info = plistlib.loads((path / "Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") == "com.termllm.app.NotificationService":
+            owned.append(path)
+    preserved = [p for p in paths if p not in owned]
+    prior = {}
+    for path in paths:
+        require(path.resolve().is_relative_to(products), "Refusing to modify code outside simulator products")
+        prior[path] = signature_state(path)
+        if path in preserved:
+            subprocess.run(["codesign", "--verify", "--strict", str(path)], check=True, capture_output=True)
+    # Record runner/SDK proof before any change, even if a subsequent gate fails.
+    provenance["preserved_before"] = [dict(path=str(p.relative_to(products)), **prior[p]) for p in preserved]
     records = []
-    for index, path in enumerate(sorted(bundles + libraries, key=lambda p: (-len(p.parts), str(p)))):
-        require(path.resolve().is_relative_to(products), "Refusing to sign outside simulator products")
-        info_path = path / "Info.plist" if path.is_dir() else None
-        info = plistlib.loads(info_path.read_bytes()) if info_path and info_path.is_file() else {}
-        # XCTest bundles are loaded libraries (MH_BUNDLE), not processes.
-        # Their hosting app/runner owns Keychain privileges; codesign does not
-        # retain process entitlements on a loadable test bundle.
-        privileges = entitlements(info.get("CFBundleIdentifier")) if path.suffix in (".app", ".appex") else {}
-        if privileges and "TermLLMKeychainAccessGroup" in info:
-            # Build output ONLY, never source/project/plist mutation. Keep shared
-            # native keychain queries inside the isolated simulator namespace.
+    for index, path in enumerate(sorted(owned, key=lambda p: -len(p.parts))):
+        info_path = path / "Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        privileges = entitlements(info["CFBundleIdentifier"])
+        if "TermLLMKeychainAccessGroup" in info:
             info["TermLLMKeychainAccessGroup"] = SHARED_GROUP
             info_path.write_bytes(plistlib.dumps(info))
         entitlement_file = private / f"simulator-sign-{index}.plist"
         entitlement_file.write_bytes(plistlib.dumps(privileges))
+        # No --deep signing: nested Xcode/Apple code must remain untouched.
         subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", "--generate-entitlement-der",
                         "--entitlements", str(entitlement_file), str(path)], check=True, capture_output=True)
         subprocess.run(["codesign", "--verify", "--strict", str(path)], check=True, capture_output=True)
-        result = subprocess.run(["codesign", "--display", "--entitlements", ":-", str(path)], check=True, capture_output=True)
-        actual = plistlib.loads(result.stdout) if result.stdout.strip() else {}
-        record = dict(path=str(path.relative_to(products)), entitlements=actual,
-                      requested_entitlements=privileges, signature="ad-hoc", verified=True)
+        final = signature_state(path)
+        record = dict(path=str(path.relative_to(products)), action="resigned-owned-only",
+                      before=prior[path], **final, requested_entitlements=privileges, verified=True)
         records.append(record)
-        provenance["products"] = records
-        require(actual == privileges, "Actual ad-hoc signature entitlements differ from simulator policy: " + record["path"])
-        if path.name == "TermLLM.app":
-            binary = path / info["CFBundleExecutable"]
-            linked = embedded_entitlements(binary.read_bytes())
+        provenance["products"] = list(records)
+        require(final["entitlements"] == privileges, "Actual owned-app signature entitlements differ from simulator policy")
+        if path == app:
+            linked = embedded_entitlements((path / info["CFBundleExecutable"]).read_bytes())
             for item in linked:
                 require(item.get("application-identifier") == privileges["application-identifier"], "Linked simulator application identifier mismatch")
                 require(item.get("keychain-access-groups") == privileges["keychain-access-groups"], "Linked simulator keychain groups mismatch")
-            record.update(linked_entitlements=linked, binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())
+            record["linked_entitlements"] = linked
+    for path in preserved:
+        final = signature_state(path)
+        record = dict(path=str(path.relative_to(products)), action="preserved-xcode-code",
+                      before=prior[path], **final, verified=False)
+        records.append(record)
         provenance["products"] = list(records)
-    require(any(item["path"] == "TermLLM.app" for item in records), "Main simulator app was not signed")
+        require(final == prior[path], "Xcode runner or nested SDK code changed during owned-app signing")
+        subprocess.run(["codesign", "--verify", "--strict", str(path)], check=True, capture_output=True)
+        record["verified"] = True
     for path in bundles:
         if path.suffix == ".app":
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(path)], check=True, capture_output=True)
     provenance.update(namespace=PREFIX, shared_keychain_group=SHARED_GROUP,
+                      signing_scope="main-app-and-owned-notification-extension-only",
                       apple_identity=False, provisioning_profile=False, osstatus_measured=False, products=records)
