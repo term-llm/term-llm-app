@@ -383,10 +383,21 @@ protocol HubTransport: Sendable {
     ) async throws -> (Data, HTTPURLResponse)
 }
 
-/// Production transport obtains HTTP headers before consuming any body bytes.
-/// The task delegate is used only to refuse redirects, not for data callbacks.
+/// Production transport owns the callback-based data task. Completion-handler
+/// tasks and the async data/bytes convenience APIs can buffer 401 bodies before
+/// exposing the response; neither is used here.
 struct URLSessionHubTransport: HubTransport {
     static let maximumResponseBytes = 8 * 1024 * 1024
+
+    /// Optional non-sensitive callback diagnostics. Never contains URLs,
+    /// headers, credentials, response contents, realms, or hostnames.
+    enum Event: Sendable {
+        case response(Int)
+        case challenge(status: Int?)
+        case data(Int)
+        case completed(errorCode: Int?)
+    }
+    var observe: (@Sendable (Event) -> Void)? = nil
 
     static func processHeaders(_ response: HTTPURLResponse,
                                onUnauthorized: (@Sendable () async -> Void)?) async {
@@ -399,31 +410,165 @@ struct URLSessionHubTransport: HubTransport {
         _ request: URLRequest,
         onUnauthorized: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
-        let delegate = HubClient.HubSessionDelegate()
-        let session = HubClient.ephemeralSession(delegate: delegate)
-        // Also cancels a still-open stream on cancellation or size-limit failure.
-        defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
-        guard let http = response as? HTTPURLResponse else {
-            throw HubAPIError(status: 0, message: "Hub returned a non-HTTP response.")
-        }
-        // AsyncBytes returns the response at header time. Purge is awaited
-        // before iteration, including when a 401 advertises a stalled body.
-        await Self.processHeaders(http, onUnauthorized: onUnauthorized)
-        try Task.checkCancellation()
-        guard http.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
-            throw HubAPIError(status: http.statusCode, message: "Hub response exceeds the 8 MiB safety limit.")
-        }
-        var data = Data()
-        data.reserveCapacity(Int(max(0, http.expectedContentLength)))
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < Self.maximumResponseBytes else {
-                throw HubAPIError(status: http.statusCode, message: "Hub response exceeds the 8 MiB safety limit.")
+        let transfer = Transfer(onUnauthorized: onUnauthorized, observe: observe)
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                transfer.start(request, continuation: continuation)
             }
-            data.append(byte)
+        }, onCancel: {
+            transfer.cancel()
+        })
+    }
+
+    private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private let onUnauthorized: (@Sendable () async -> Void)?
+        private let observe: (@Sendable (Event) -> Void)?
+        private var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
+        private var session: URLSession?
+        private var task: URLSessionDataTask?
+        private var response: HTTPURLResponse?
+        private var body = Data()
+        private var finished = false
+        private var purgeTask: Task<Void, Never>?
+
+        init(onUnauthorized: (@Sendable () async -> Void)?, observe: (@Sendable (Event) -> Void)?) {
+            self.onUnauthorized = onUnauthorized
+            self.observe = observe
+            super.init()
         }
-        return (data, http)
+
+        func start(_ request: URLRequest,
+                   continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            self.continuation = continuation
+            let session = HubClient.ephemeralSession(delegate: self)
+            self.session = session
+            // Deliberately NO completion handler: this delegate owns response,
+            // data and terminal delivery, including incomplete HTTP bodies.
+            let task = session.dataTask(with: request)
+            self.task = task
+            lock.unlock()
+            task.resume()
+        }
+
+        func cancel() { finish(.failure(CancellationError())) }
+
+        private func finish(_ result: Result<(Data, HTTPURLResponse), Error>) {
+            lock.lock()
+            guard !finished else { lock.unlock(); return }
+            finished = true
+            let continuation = self.continuation
+            let task = self.task
+            let session = self.session
+            self.continuation = nil
+            self.task = nil
+            self.session = nil
+            lock.unlock()
+            task?.cancel()
+            session?.invalidateAndCancel()
+            continuation?.resume(with: result)
+        }
+
+        /// Response delivery and HTTP-auth challenges may both expose the
+        /// same 401. Join one purge task so neither path can overtake it or
+        /// fire the scoped callback twice.
+        private func authorizationTask(for response: HTTPURLResponse) -> Task<Void, Never>? {
+            guard response.statusCode == 401 || response.statusCode == 403 else { return nil }
+            lock.lock()
+            defer { lock.unlock() }
+            guard !finished else { return nil }
+            if let purgeTask { return purgeTask }
+            let callback = onUnauthorized
+            let purge = Task { await URLSessionHubTransport.processHeaders(response, onUnauthorized: callback) }
+            purgeTask = purge
+            return purge
+        }
+
+        private func prepareResponse(_ http: HTTPURLResponse) -> URLSession.ResponseDisposition {
+            lock.lock()
+            guard !finished else { lock.unlock(); return .cancel }
+            guard http.expectedContentLength <= Int64(URLSessionHubTransport.maximumResponseBytes) else {
+                lock.unlock()
+                finish(.failure(Self.tooLarge(http.statusCode)))
+                return .cancel
+            }
+            response = http
+            body.reserveCapacity(Int(max(0, http.expectedContentLength)))
+            lock.unlock()
+            return .allow
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+            guard let http = response as? HTTPURLResponse else {
+                finish(.failure(HubAPIError(status: 0, message: "Hub returned a non-HTTP response.")))
+                completionHandler(.cancel)
+                return
+            }
+            observe?(.response(http.statusCode))
+            let purge = authorizationTask(for: http)
+            Task {
+                await purge?.value
+                completionHandler(self.prepareResponse(http))
+            }
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            observe?(.data(data.count))
+            lock.lock()
+            guard !finished else { lock.unlock(); return }
+            guard data.count <= URLSessionHubTransport.maximumResponseBytes - body.count else {
+                let status = response?.statusCode ?? 0
+                lock.unlock()
+                finish(.failure(Self.tooLarge(status)))
+                return
+            }
+            body.append(data)
+            lock.unlock()
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            observe?(.completed(errorCode: error.map { ($0 as NSError).code }))
+            if let error { finish(.failure(error)); return }
+            lock.lock()
+            let response = self.response
+            let data = body
+            lock.unlock()
+            if let response { finish(.success((data, response))) }
+            else { finish(.failure(HubAPIError(status: 0, message: "Hub completed without an HTTP response."))) }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didReceive challenge: URLAuthenticationChallenge,
+                        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+            let http = challenge.failureResponse as? HTTPURLResponse
+            observe?(.challenge(status: http?.statusCode))
+            // Some SDK auth paths expose the 401 as a challenge before a data
+            // response. Revoke from those headers too, without trusting any
+            // supplied credential or altering TLS/server-trust policy.
+            let purge = http.flatMap { authorizationTask(for: $0) }
+            Task {
+                await purge?.value
+                completionHandler(.performDefaultHandling, nil)
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                        completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+
+        private static func tooLarge(_ status: Int) -> HubAPIError {
+            HubAPIError(status: status, message: "Hub response exceeds the 8 MiB safety limit.")
+        }
     }
 }
 
@@ -437,7 +582,7 @@ struct URLSessionHubTransport: HubTransport {
 /// | Cookie jar | `URLSessionConfiguration.ephemeral`, `httpShouldSetCookies = false`, `httpCookieAcceptPolicy = .never`, `httpCookieStorage = nil`, `urlCredentialStorage = nil` |
 /// | Redirects | Blocked via `URLSessionTaskDelegate` returning `nil` |
 /// | Origin | Set on every mutation (POST / PATCH / DELETE) |
-/// | 401/403 purge | `URLSession.bytes(for:)` returns headers first; scoped `on_unauthorized` is awaited before body iteration |
+/// | 401/403 purge | Owned data-task response/challenge callbacks await scoped revocation before allowing body delivery |
 /// | Response cookies | `Set-Cookie` headers are parsed, filtered to hub auth scope, and sunk to WK via `cookie_sink` — no ambient jar |
 /// | Timeout | Bounded at 30 s per request |
 /// | Cookie scope | Auth cookies restricted to exact host + configured mount path; no sibling-root leakage, no `/foo` matching `/foobar` |
@@ -865,22 +1010,6 @@ final class HubClient: @unchecked Sendable {
         config.timeoutIntervalForResource = defaultTimeout
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
-
-    /// Redirect refusal only. Header processing happens explicitly after
-    /// URLSession.bytes returns, not through async task data-delegate callbacks.
-    final class HubSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-        func urlSession(
-            _ session: URLSession,
-            task: URLSessionTask,
-            willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest,
-            completionHandler: @escaping @Sendable (URLRequest?) -> Void
-        ) {
-            completionHandler(nil)  // Block all redirects
-        }
-    }
-
-
 
     /// Core typed transport.
     private func request<T: Decodable>(

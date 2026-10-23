@@ -40,6 +40,11 @@ private final class HubTestBox<Value>: @unchecked Sendable {
         stored = value
         lock.unlock()
     }
+    func update(_ mutation: (inout Value) -> Void) {
+        lock.lock()
+        mutation(&stored)
+        lock.unlock()
+    }
 }
 
 private actor HubRequestGate {
@@ -1200,7 +1205,14 @@ extension HubClientTests {
         let base = URL(string: "http://localhost:\(listenerPort.value)/")!
         let callbackFired = expectation(description: "on_unauthorized fired")
 
-        let transport = URLSessionHubTransport()
+        let events = HubTestBox<[String]>([])
+        let transport = URLSessionHubTransport(observe: { event in
+            let description = String(describing: event)
+            events.update { $0.append(description) }
+            // Only status codes, byte counts and numeric error codes: no
+            // request URL, headers, cookies, realm, credential or body data.
+            print("Hub stalled-response callback: \(description)")
+        })
         let client = HubClient(
             base_url: base,
             cookie_source: { [] },
@@ -1223,7 +1235,8 @@ extension HubClientTests {
 
         // Callback must arrive while the response body is still pending.
         await fulfillment(of: [callbackFired, connectionReceived], timeout: 10)
-        XCTAssertFalse(requestFinished.value, "The server has not sent the advertised body")
+        XCTAssertTrue(events.value.contains { $0.contains("401") }, "Actual SDK callback events: \(events.value)")
+        XCTAssertFalse(requestFinished.value, "The server has not sent the advertised body; events: \(events.value)")
 
         requestTask.cancel()
         await requestTask.value
