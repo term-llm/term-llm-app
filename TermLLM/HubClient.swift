@@ -376,7 +376,8 @@ struct HubNodeDiagnostic: Codable, Sendable, Equatable {
 protocol HubTransport: Sendable {
     /// Execute a request and return (data, response).  The transport is
     /// responsible for blocking redirects and invoking the unauthorized
-    /// callback at header time on 401/403.
+    /// callback as soon as the SDK exposes a 401/403, before body completion.
+    /// Bare wire headers may not be exposed until a body byte arrives.
     func execute(
         _ request: URLRequest,
         onUnauthorized: (@Sendable () async -> Void)?
@@ -582,14 +583,18 @@ struct URLSessionHubTransport: HubTransport {
 /// | Cookie jar | `URLSessionConfiguration.ephemeral`, `httpShouldSetCookies = false`, `httpCookieAcceptPolicy = .never`, `httpCookieStorage = nil`, `urlCredentialStorage = nil` |
 /// | Redirects | Blocked via `URLSessionTaskDelegate` returning `nil` |
 /// | Origin | Set on every mutation (POST / PATCH / DELETE) |
-/// | 401/403 purge | Owned data-task response/challenge callbacks await scoped revocation before allowing body delivery |
+/// | 401/403 purge | Revoke as soon as the SDK exposes the response, before body completion; bare wire headers may remain buffered |
 /// | Response cookies | `Set-Cookie` headers are parsed, filtered to hub auth scope, and sunk to WK via `cookie_sink` — no ambient jar |
 /// | Timeout | Bounded at 30 s per request |
 /// | Cookie scope | Auth cookies restricted to exact host + configured mount path; no sibling-root leakage, no `/foo` matching `/foobar` |
 /// | Passkey ceremonies | begin/finish return/accept raw `Data`; caller owns WebAuthn |
 /// | Bearer login | Validates via `Authorization` header; constructs scoped HTTPOnly cookie; sinks to WK |
 ///
-/// ## Limitation
+/// ## Limitations
+///
+/// On the tested SDK, headers alone for 200/403/401 are not exposed; the first
+/// body byte makes the response visible. Bare-header stalls can therefore wait
+/// until the network timeout. This is not instant wire-header revocation.
 ///
 /// Reauthentication requires WebAuthn which this transport cannot perform.
 /// Callers must present the browser for passkey ceremonies.
@@ -612,9 +617,9 @@ final class HubClient: @unchecked Sendable {
     let is_https: Bool
     private let transport: any HubTransport
 
-    /// Fired at header time on 401/403, **before** the response body is
-    /// downloaded (body may stall indefinitely).  HubStore hooks this to
-    /// purge cached display state immediately.
+    /// Fired as soon as the SDK exposes a 401/403, before waiting for body
+    /// completion. A zero-byte body can delay SDK exposure until timeout;
+    /// no callback can revoke from wire headers the SDK has not surfaced.
     private let authorizationCallbackLock = NSLock()
     private var authorizationCallback: (@Sendable () async -> Void)?
     private var authorizationEpoch: UInt64 = 0
@@ -715,8 +720,8 @@ final class HubClient: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        // Purge private state at header time even when the login page body
-        // stalls. The delegate still permits reading its configuration body.
+        // Purge when the SDK exposes the response, even if the rest of the
+        // login page body stalls. Bare headers may remain SDK-buffered.
         let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
 
         // Process response Set-Cookie through scoped sink
@@ -1039,7 +1044,7 @@ final class HubClient: @unchecked Sendable {
     }
 
     /// Shared request execution: cookie filtering, Origin injection,
-    /// header-time 401 purge, redirect blocking, bounded timeout,
+    /// SDK-response-time 401 purge, redirect blocking, bounded timeout,
     /// response Set-Cookie processing through scoped cookie_sink.
     private func executeRequest(
         _ path: String,

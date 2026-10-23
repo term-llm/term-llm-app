@@ -1133,10 +1133,10 @@ extension HubClientTests {
 // MARK: - Real transport 401 stalled-body test
 
 /// Exercises URLSessionHubTransport against a real loopback TCP listener that
-/// sends HTTP 401 headers with Content-Length but never sends the body.
-/// Proves on_unauthorized fires at header time, before the body download
-/// would complete (it never will).  Uses Network.framework NWListener on
-/// loopback only — no shared service, no external connections.
+/// sends HTTP 401 headers and ONE body byte, then stalls the remaining 65535.
+/// Proves revocation occurs before body completion once the SDK exposes the
+/// response. The actual SDK matrix below documents that bare headers alone
+/// are not exposed on the tested simulator. Loopback only; no shared service.
 ///
 /// **Platform limitation**: Network.framework requires Apple platforms.
 /// This test is a no-op on Linux.
@@ -1146,17 +1146,17 @@ import Network
 extension HubClientTests {
 
     /// Spin up a loopback-only TCP listener that accepts one connection,
-    /// sends a minimal HTTP/1.1 401 response with a large Content-Length
-    /// but never sends the body, then holds the connection open.
-    func testOnUnauthorizedFiresBeforeBodyOnRealTransport() async throws {
-        try await assertHeaderTimeRevocation(discovery: false)
+    /// sends a minimal HTTP/1.1 401 response advertising a large body, flushes
+    /// its first byte, and then holds the incomplete body open indefinitely.
+    func testOnUnauthorizedFiresBeforeBodyCompletionOnRealTransport() async throws {
+        try await assertRevocationBeforeBodyCompletion(discovery: false)
     }
 
-    func testDiscoveryPurgesBeforeStalledLoginPageBody() async throws {
-        try await assertHeaderTimeRevocation(discovery: true)
+    func testDiscoveryPurgesBeforeLoginPageBodyCompletes() async throws {
+        try await assertRevocationBeforeBodyCompletion(discovery: true)
     }
 
-    private func assertHeaderTimeRevocation(discovery: Bool) async throws {
+    private func assertRevocationBeforeBodyCompletion(discovery: Bool) async throws {
         // Set up loopback listener on a random port
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
@@ -1173,24 +1173,25 @@ extension HubClientTests {
             }
         }
 
-        // When a connection arrives, send 401 headers then stall
+        // Send headers plus one byte, then stall before body completion
         let connectionReceived = expectation(description: "connection received")
         listener.newConnectionHandler = { conn in
             acceptedConnection.set(conn)
             conn.start(queue: .global())
-            // Wait for the request data, then send 401 headers only
+            // On the tested SDK, a body byte exposes the response (see matrix)
             conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
                 let headers = [
                     "HTTP/1.1 401 Unauthorized\r\n",
                     "Content-Type: application/json\r\n",
                     "Content-Length: 65536\r\n",  // Claim large body
                     "\r\n",
-                    // NO body follows — connection stays open
                 ].joined()
-                conn.send(content: headers.data(using: .utf8),
+                var partialResponse = Data(headers.utf8)
+                partialResponse.append(0x7B) // Exactly ONE JSON-prefix byte: "{"
+                conn.send(content: partialResponse,
                          completion: .contentProcessed({ _ in
                     connectionReceived.fulfill()
-                    // Keep conn alive — never close, never send body
+                    // Keep open; never send the remaining 65535 body bytes
                 }))
             }
         }
@@ -1204,6 +1205,7 @@ extension HubClientTests {
         // localhost is the app's explicit simulator HTTP ATS exception.
         let base = URL(string: "http://localhost:\(listenerPort.value)/")!
         let callbackFired = expectation(description: "on_unauthorized fired")
+        let callbackCount = HubTestBox(0)
 
         let events = HubTestBox<[String]>([])
         let transport = URLSessionHubTransport(observe: { event in
@@ -1219,6 +1221,7 @@ extension HubClientTests {
             transport: transport
         )
         client.on_unauthorized = {
+            callbackCount.update { $0 += 1 }
             callbackFired.fulfill()
         }
 
@@ -1233,13 +1236,16 @@ extension HubClientTests {
         }
         defer { requestTask.cancel() }
 
-        // Callback must arrive while the response body is still pending.
+        // Revoke as soon as the SDK exposes the response, without waiting for
+        // body completion. Zero-byte behavior remains recorded in the matrix.
         await fulfillment(of: [callbackFired, connectionReceived], timeout: 10)
         XCTAssertTrue(events.value.contains { $0.contains("401") }, "Actual SDK callback events: \(events.value)")
-        XCTAssertFalse(requestFinished.value, "The server has not sent the advertised body; events: \(events.value)")
+        XCTAssertEqual(callbackCount.value, 1)
+        XCTAssertFalse(requestFinished.value, "The remaining 65535 body bytes are still pending; events: \(events.value)")
 
         requestTask.cancel()
         await requestTask.value
+        XCTAssertEqual(callbackCount.value, 1)
     }
 }
 
