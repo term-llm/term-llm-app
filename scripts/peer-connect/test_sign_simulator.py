@@ -67,7 +67,8 @@ class SigningPolicyTests(unittest.TestCase):
             app = products / 'TermLLM.app'
             extension = app / 'PlugIns/Notification.appex'
             framework = app / 'Frameworks/WebRTC.framework'
-            for path, identifier in ((app, 'com.termllm.app'), (extension, 'com.termllm.app.NotificationService'), (framework, 'org.webrtc')):
+            test_bundle = app / 'PlugIns/TermLLMTests.xctest'
+            for path, identifier in ((app, 'com.termllm.app'), (extension, 'com.termllm.app.NotificationService'), (framework, 'org.webrtc'), (test_bundle, 'com.termllm.app.tests')):
                 path.mkdir(parents=True, exist_ok=True)
                 (path / 'Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier=identifier, CFBundleExecutable='Executable', TermLLMKeychainAccessGroup='unexpanded.shared')))
                 (path / 'Executable').write_bytes(macho(entitlements(identifier)) if path == app else b'test-placeholder')
@@ -86,9 +87,11 @@ class SigningPolicyTests(unittest.TestCase):
             self.assertLess(order.index(str(extension.resolve())), order.index(str(app.resolve())))
             self.assertLess(order.index(str(framework.resolve())), order.index(str(app.resolve())))
             self.assertEqual(signatures[str(framework.resolve())], {})
+            self.assertEqual(signatures[str(test_bundle.resolve())], {})
+            self.assertLess(order.index(str(test_bundle.resolve())), order.index(str(app.resolve())))
             self.assertEqual(plistlib.loads((app / 'Info.plist').read_bytes())['TermLLMKeychainAccessGroup'], SHARED_GROUP)
             self.assertFalse(provenance['osstatus_measured'])
-            self.assertEqual(len(provenance['products']), 3)
+            self.assertEqual(len(provenance['products']), 4)
             self.assertTrue(next(record for record in provenance['products'] if record['path'] == 'TermLLM.app')['linked_entitlements'])
 
 

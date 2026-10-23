@@ -81,7 +81,10 @@ def sign_products(products, private, provenance):
         require(path.resolve().is_relative_to(products), "Refusing to sign outside simulator products")
         info_path = path / "Info.plist" if path.is_dir() else None
         info = plistlib.loads(info_path.read_bytes()) if info_path and info_path.is_file() else {}
-        privileges = entitlements(info.get("CFBundleIdentifier")) if path.suffix in (".app", ".appex", ".xctest") else {}
+        # XCTest bundles are loaded libraries (MH_BUNDLE), not processes.
+        # Their hosting app/runner owns Keychain privileges; codesign does not
+        # retain process entitlements on a loadable test bundle.
+        privileges = entitlements(info.get("CFBundleIdentifier")) if path.suffix in (".app", ".appex") else {}
         if privileges and "TermLLMKeychainAccessGroup" in info:
             # Build output ONLY, never source/project/plist mutation. Keep shared
             # native keychain queries inside the isolated simulator namespace.
@@ -94,8 +97,11 @@ def sign_products(products, private, provenance):
         subprocess.run(["codesign", "--verify", "--strict", str(path)], check=True, capture_output=True)
         result = subprocess.run(["codesign", "--display", "--entitlements", ":-", str(path)], check=True, capture_output=True)
         actual = plistlib.loads(result.stdout) if result.stdout.strip() else {}
-        require(actual == privileges, "Actual ad-hoc signature entitlements differ from simulator policy")
-        record = dict(path=str(path.relative_to(products)), entitlements=actual, signature="ad-hoc", verified=True)
+        record = dict(path=str(path.relative_to(products)), entitlements=actual,
+                      requested_entitlements=privileges, signature="ad-hoc", verified=True)
+        records.append(record)
+        provenance["products"] = records
+        require(actual == privileges, "Actual ad-hoc signature entitlements differ from simulator policy: " + record["path"])
         if path.name == "TermLLM.app":
             binary = path / info["CFBundleExecutable"]
             linked = embedded_entitlements(binary.read_bytes())
@@ -103,7 +109,6 @@ def sign_products(products, private, provenance):
                 require(item.get("application-identifier") == privileges["application-identifier"], "Linked simulator application identifier mismatch")
                 require(item.get("keychain-access-groups") == privileges["keychain-access-groups"], "Linked simulator keychain groups mismatch")
             record.update(linked_entitlements=linked, binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())
-        records.append(record)
         provenance["products"] = list(records)
     require(any(item["path"] == "TermLLM.app" for item in records), "Main simulator app was not signed")
     for path in bundles:
