@@ -55,7 +55,12 @@ class SigningPolicyTests(unittest.TestCase):
 
     def test_nested_bundles_signed_inside_out_and_shared_queries_isolated(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            # macOS /var paths resolve through /private/var. Exercise an alias
+            # on every platform, and compare the canonical signing targets.
+            actual = Path(temp) / 'actual'
+            actual.mkdir()
+            root = Path(temp) / 'alias'
+            root.symlink_to(actual, target_is_directory=True)
             products, private = root / 'Products', root / 'private'
             products.mkdir()
             private.mkdir()
@@ -78,9 +83,9 @@ class SigningPolicyTests(unittest.TestCase):
             provenance = {}
             with patch('sign_simulator.subprocess.run', side_effect=command):
                 sign_products(products, private, provenance)
-            self.assertLess(order.index(str(extension)), order.index(str(app)))
-            self.assertLess(order.index(str(framework)), order.index(str(app)))
-            self.assertEqual(signatures[str(framework)], {})
+            self.assertLess(order.index(str(extension.resolve())), order.index(str(app.resolve())))
+            self.assertLess(order.index(str(framework.resolve())), order.index(str(app.resolve())))
+            self.assertEqual(signatures[str(framework.resolve())], {})
             self.assertEqual(plistlib.loads((app / 'Info.plist').read_bytes())['TermLLMKeychainAccessGroup'], SHARED_GROUP)
             self.assertFalse(provenance['osstatus_measured'])
             self.assertEqual(len(provenance['products']), 3)
