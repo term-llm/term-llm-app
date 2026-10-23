@@ -56,6 +56,7 @@ final class NativeHubUITests: XCTestCase {
         for attempt in 0...panels.count {
             let viewport = strip.frame.intersection(app.frame)
             let frame = button.frame
+            print("Hub panel reveal \(identifier) attempt \(attempt): strip=\(strip.frame), viewport=\(viewport), button=\(frame), fullyContained=\(viewport.contains(frame))")
             let validFrame = !frame.isEmpty && !frame.isInfinite &&
                 frame.minX.isFinite && frame.minY.isFinite && frame.maxX.isFinite && frame.maxY.isFinite
             guard !viewport.isEmpty && !viewport.isNull else {
@@ -81,6 +82,14 @@ final class NativeHubUITests: XCTestCase {
             // after Security has scrolled it off the left edge.
             if earlier { strip.swipeRight() } else { strip.swipeLeft() }
         }
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "panel-reveal-failure-\(identifier)-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "panel-reveal-failure-\(identifier)-DEMO-FIXTURE-LOCAL"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
         XCTFail("Could not reveal native panel after bounded horizontal swipes: \(identifier)",
                 file: file, line: line)
     }
