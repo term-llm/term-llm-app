@@ -12,6 +12,7 @@ It does not depend on the deferred WebRTC branch, SDK or remote demo services.
 - The selected source URL remains mirrored to the existing single-active-browser setting. Source-specific device-tool and shortcut opt-ins do not become app-wide grants.
 - Each source owns its WebKit website data and authentication. A changed endpoint/kind is a new trust identity; a name change is not.
 - Isolated storage may require a fresh sign-in after migrating the old URL. URL migration does not imply automatic copying of ambient browser credentials.
+- Listen items capture their originating source UUID when queued; later selection changes cannot substitute a different connection's cookies. Missing/corrupt catalogs, removed sources and media with unknown ownership fail closed for credentials. Previously queued unowned protected media may need to be added again from its signed-in source; public URLs do not gain credentials through URL matching alone.
 
 ## Slice 2: unified native views
 
@@ -21,7 +22,7 @@ The aggregate reuses one existing `HubStore` per source. Its independent panel t
 
 A Hub connection uses its existing `/api/nodes` and `/api/attention` protocol. Its returned private node address is display-only: opening a node/session must use the validated Hub proxy route under that connection’s mount. Direct Nodes use `/healthz`, `/v1/sessions/status`, and `/v1/attention` through a small adapter; 501 attention support is not mistaken for an authentication failure. Exact-item direct acknowledgement uses the existing `/v1/sessions/{id}/attention/seen` body with `store_instance_id` and `through_seq`.
 
-Direct-node bearer API mutations require the Authorization header; the legacy token cookie authenticates GET only. The existing frontend reads `localStorage.term_llm_token` at startup, so a main-frame, exact-origin/mount document-start script supplies the saved token before its modules run. Tokens are not passed in navigation URLs. Passkey sign-in reuses the existing native browser handoff, with the target connection’s cookie sink.
+Direct-node bearer API mutations require the Authorization header; the legacy token cookie authenticates GET only. The existing frontend reads `localStorage.term_llm_token` at startup, so a main-frame, exact-origin/mount document-start script supplies the saved token before its modules run. Tokens are not passed in navigation URLs. Passkey sign-in reuses the existing native browser handoff, with the target connection’s cookie sink. Starting explicit reauthentication closes the old protected chat/cache and clears the old credentials; cancelling does not silently restore the old session.
 
 Hub Manage/Security remains per-Hub. Direct Nodes are not given invented Hub registration or node-management APIs. No recursive server federation protocol is added.
 
@@ -32,8 +33,8 @@ The original `scripts/native-hub/capture.sh`, fixture HTML/logging helpers, simu
 The new workflow `.github/workflows/phone-hub.yml` checks out the exact PR head and runs:
 
 1. Existing Python fixture/provenance regressions plus the new multi-source fixture/gate tests.
-2. Actual Xcode app build and the `HubConnectionStoreTests`, `HubAggregateStoreTests`, `DirectNodeClientTests`, and `HubConnectionSecurityTests` suites.
-3. Actual `PhoneHubUITests` on the same simulator being recorded: user-added Work/Home Hubs plus a Laptop Direct Node, native unified views, correct Hub/direct chat routes, saved-catalog process relaunch, a genuinely pending source HTTP request, and one-source 401 isolation.
+2. Actual Xcode app build and all seven requested XCTest classes: `HubConnectionStoreTests`, `HubAggregateStoreTests`, `HubConnectionSecurityTests`, plus `DirectNodeClientTests`, `DirectNodeClientModelTests`, `DirectNodeClientMountTests`, and `DirectNodeClientCookieFilterTests` (all four Direct Node classes, not only the main class).
+3. Actual `PhoneHubUITests` on the same simulator being recorded: user-added Work/Home Hubs plus a Laptop Direct Node, native unified views, correct Hub/direct chat routes, saved-catalog process relaunch, a genuinely pending source HTTP request, and one-source 401 isolation. For pending-source progress, the test waits for an uncached healthy node-title update, then asserts Slow's native `nodesLoading` marker before acknowledging it to the fixture. The gate rejects a slow response completing before that assertion; server-side waiting alone does not establish that the native client remains pending.
 
 The test flag `TERMLLM_PHONE_HUB_FIXTURE_URL=http://localhost:8767/` works only in Debug simulator builds. `TERMLLM_PHONE_HUB_FIXTURE_RESET=1` clears the isolated fixture catalog for the first launch; a relaunch with `0` tests persistence. Fixture storage/auth are isolated from production. Every screen is labelled **DEMO FIXTURE · LOCAL**. The fixture uses synthetic identifiers and static chat HTML; it is not a model, a real remote agent, or a passkey provider.
 

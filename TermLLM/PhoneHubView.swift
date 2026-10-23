@@ -93,12 +93,11 @@ struct PhoneHubView: View {
                     VStack(spacing: 0) {
                         Button("Back to Phone Hub") { detailID = nil }
                             .padding().accessibilityIdentifier("phoneHub.details.close")
-                        HubView(server: source.connection.url, workspace: workspace,
-                                cookieSink: source.nativeCookieSink(epoch: source.authEpoch), onOpenChat: { url in
-                            openDetailDestination(url, source: source)
-                        }, onSettings: { detailID = nil; onSettings() }, onAuthenticated: {
-                            source.hubDetailAuthenticationSucceeded()
-                        })
+                        HubView(source: source, workspace: workspace, onOpenChat: { url in
+                            openDetailDestination(url, nodeID: nil, source: source)
+                        }, onOpenNodeChat: { url, nodeID in
+                            openDetailDestination(url, nodeID: nodeID, source: source)
+                        }, onSettings: { detailID = nil; onSettings() })
                     }
                     .safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
                 }
@@ -128,13 +127,23 @@ struct PhoneHubView: View {
                 Button("Sign in") { showAuthentication(source) }
                     .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
             } else {
-                if source.store.nodesLoading || source.store.attentionLoading { ProgressView("Loading \(source.connection.name)…") }
+                if source.store.nodesLoading {
+                    ProgressView("Loading nodes for \(source.connection.name)…")
+                        .accessibilityIdentifier("phoneHub.nodesLoading.\(source.id.uuidString)")
+                }
+                if source.store.attentionLoading { ProgressView("Loading attention for \(source.connection.name)…") }
                 if let error = source.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             if let status = source.store.attentionClearStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
             if source.store.attentionHasMore && !source.store.unauthorized {
-                Button("Load more attention") { Task { await source.store.loadMoreAttention() } }
-                    .accessibilityIdentifier("phoneHub.moreAttention.\(source.id.uuidString)")
+                if source.store.canLoadMoreAttention {
+                    Button("Load more attention") { Task { await source.store.loadMoreAttention() } }
+                        .disabled(source.store.attentionLoading)
+                        .accessibilityIdentifier("phoneHub.moreAttention.\(source.id.uuidString)")
+                } else {
+                    Text("Showing the source maximum of 500 results. Clear reviewed results to reveal more.").font(.caption)
+                        .accessibilityIdentifier("phoneHub.attentionMaximum.\(source.id.uuidString)")
+                }
             }
             HStack {
                 Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
@@ -219,18 +228,17 @@ struct PhoneHubView: View {
         }
         onOpenChat(source.id, url)
     }
-    private func openDetailDestination(_ url: URL, source: HubSourceWorkspace) {
+    private func openDetailDestination(_ url: URL, nodeID: String?, source: HubSourceWorkspace) {
         guard source.isActive, !source.store.unauthorized else { return }
-        if url == source.connection.url {
+        if nodeID == nil, url == source.connection.url {
             detailID = nil
             onOpenChat(source.id, url)
             return
         }
-        let nodeIDs = Set(source.store.nodes.map(\.id) + source.store.inputRequired.map(\.node_id) + source.store.inbox.map(\.node_id))
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         let path = parts.percentEncodedPath + (parts.percentEncodedQuery.map { "?" + $0 } ?? "")
         guard url.scheme == source.connection.url.scheme, url.host == source.connection.url.host, url.port == source.connection.url.port,
-              nodeIDs.contains(where: { aggregate.destination(path: path, sourceID: source.id, nodeID: $0) == url }) else {
+              let nodeID, aggregate.destination(path: path, sourceID: source.id, nodeID: nodeID) == url else {
             navigationError = "The source supplied an unsafe chat path. Navigation blocked."
             return
         }

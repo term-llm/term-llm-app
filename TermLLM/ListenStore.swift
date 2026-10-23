@@ -62,7 +62,7 @@ final class ListenStore {
         var placed: [ListenItem] = []
         let date = now()
         for draft in drafts {
-            if let index = next.firstIndex(where: { $0.url == draft.url }) {
+            if let index = next.firstIndex(where: { $0.url == draft.url && $0.sourceID == draft.sourceID }) {
                 var existing = next.remove(at: index)
                 Self.apply(draft, to: &existing)
                 if !existing.isQueued {
@@ -216,6 +216,7 @@ final class ListenStore {
     }
 
     private static func apply(_ draft: ListenDraft, to item: inout ListenItem) {
+        item.sourceID = draft.sourceID
         if let title = draft.title, !title.isEmpty { item.title = title }
         if let artist = draft.artist { item.artist = artist }
         if let album = draft.album { item.album = album }

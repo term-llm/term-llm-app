@@ -82,10 +82,14 @@ final class HubConnectionSecurity {
     private let bearerStorage: any HubBearerStorage
     private(set) var active = true
     private(set) var epoch: UInt64 = 0
+    private(set) var cookiesReadable = true
     private(set) var bearer: String?
+    private var cookieTail: Task<Void, Never>?
+    private let cookieWriter: (@MainActor (HTTPCookie) async -> Void)?
 
     init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(),
-         dataStore: WKWebsiteDataStore? = nil) {
+         dataStore: WKWebsiteDataStore? = nil, cookieWriter: (@MainActor (HTTPCookie) async -> Void)? = nil) {
+        self.cookieWriter = cookieWriter
         id = connection.id
         server = connection.url
         self.bearerStorage = bearerStorage
@@ -94,24 +98,54 @@ final class HubConnectionSecurity {
     }
 
     func cookies() async -> [HTTPCookie] {
-        guard active else { return [] }
-        return await withCheckedContinuation { continuation in
+        guard active, cookiesReadable else { return [] }
+        let expected = epoch
+        let cookies = await withCheckedContinuation { continuation in
             dataStore.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
         }
+        return active && cookiesReadable && epoch == expected ? cookies : []
     }
-    func saveCookies(_ cookies: [HTTPCookie], epoch expected: UInt64) async {
-        guard active, expected == epoch else { return }
-        for cookie in cookies {
-            guard active, expected == epoch else { return }
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                if let expiry = cookie.expiresDate, expiry <= Date() {
-                    dataStore.httpCookieStore.delete(cookie) { continuation.resume() }
-                } else {
-                    dataStore.httpCookieStore.setCookie(cookie) { continuation.resume() }
+    /// Serializes WebKit writes/clears across auth generations. A write already
+    /// submitted to WebKit cannot be cancelled: a new identity therefore waits
+    /// for it to complete before importing its own cookies or restoring chat.
+    @discardableResult
+    func saveCookies(_ cookies: [HTTPCookie], epoch expected: UInt64,
+                     isCurrent: @escaping @Sendable () -> Bool = { true }) async -> Bool {
+        await performCookieOperation(epoch: expected, isCurrent: isCurrent) { [self] in
+            for cookie in cookies {
+                guard active, epoch == expected, isCurrent(), !Task.isCancelled else { return }
+                if let cookieWriter { await cookieWriter(cookie) }
+                else {
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                        if let expiry = cookie.expiresDate, expiry <= Date() {
+                            dataStore.httpCookieStore.delete(cookie) { continuation.resume() }
+                        } else { dataStore.httpCookieStore.setCookie(cookie) { continuation.resume() } }
+                    }
                 }
             }
         }
     }
+    @discardableResult
+    func clearData(epoch expected: UInt64) async -> Bool {
+        await performCookieOperation(epoch: expected, isCurrent: { true }) { [self] in
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
+            }
+        }
+    }
+    private func performCookieOperation(epoch expected: UInt64, isCurrent: @escaping @Sendable () -> Bool,
+                                        operation: @escaping @MainActor () async -> Void) async -> Bool {
+        let previous = cookieTail
+        let task = Task { @MainActor [self] in
+            await previous?.value
+            guard active, epoch == expected, isCurrent(), !Task.isCancelled else { return false }
+            await operation()
+            return active && epoch == expected && isCurrent() && !Task.isCancelled
+        }
+        cookieTail = Task { _ = await task.value }
+        return await task.value
+    }
+    func waitForCookies() async { await cookieTail?.value }
     func setBearer(_ token: String?) throws {
         guard active else { throw CancellationError() }
         try bearerStorage.write(token, id: id)
@@ -119,7 +153,8 @@ final class HubConnectionSecurity {
     }
 
     /// Authentication replaces callbacks, not other connections' credentials.
-    func nextEpoch() { epoch &+= 1 }
+    func nextEpoch() { epoch &+= 1; cookiesReadable = false }
+    func authorizeCookieReads() { guard active else { return }; cookiesReadable = true }
 
     func dispose(removeCredentials: Bool) {
         active = false
@@ -128,7 +163,13 @@ final class HubConnectionSecurity {
             try? bearerStorage.write(nil, id: id)
             bearer = nil
             // This store is UUID-owned. Never clear the ambient/default jar.
-            dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+            let previous = cookieTail
+            cookieTail = Task { @MainActor [self] in
+                await previous?.value
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
+                }
+            }
         }
     }
 

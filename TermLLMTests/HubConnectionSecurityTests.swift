@@ -96,23 +96,125 @@ final class HubConnectionSecurityTests: XCTestCase {
         do { try await sink([try cookie(sourceConnection, value: "stale")]); XCTFail("Stale native callback accepted") } catch {}
     }
 
-    func testLegacyCookieConsumersResolveTheSameSourceStore() async throws {
-        let aConnection = connection("/"), bConnection = connection("/nested/")
-        let a = HubConnectionSecurity(connection: aConnection, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
-        let b = HubConnectionSecurity(connection: bConnection, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
-        let registry = HubCookieScopeRegistry.shared
-        registry.register(a, kind: .directNode)
-        registry.register(b, kind: .directNode)
-        defer { registry.unregister(a); registry.unregister(b); registry.selectedID = nil }
-        await a.saveCookies([try cookie(aConnection, value: "root")], epoch: a.epoch)
-        await b.saveCookies([try cookie(bConnection, value: "nested")], epoch: b.epoch)
-        registry.selectedID = b.id
-        XCTAssertTrue(registry.dataStore(for: URL(string: "https://example.com/nested/file.mp3")!) === b.dataStore)
-        let cookies = await WebKitCookieJar().cookies(for: URL(string: "https://example.com/nested/file.mp3")!)
-        XCTAssertEqual(cookies.map(\.value), ["nested"])
-        registry.selectedID = a.id
-        XCTAssertTrue(registry.dataStore(for: URL(string: "https://example.com/nested/file.mp3")!) === a.dataStore)
-        a.dispose(removeCredentials: true)
-        b.dispose(removeCredentials: true)
+    func testMediaOperationsRemainBoundToOriginatingUUIDAcrossSelectionChanges() async throws {
+        let defaults = UserDefaults(suiteName: "media-scope-\(UUID())")!
+        let catalog = HubConnectionStore(defaults: defaults)
+        let root = try catalog.save(name: "Root", kind: .directNode, address: "https://example.com/")
+        let nested = try catalog.save(name: "Nested", kind: .directNode, address: "https://example.com/nested/")
+        let a = HubConnectionSecurity(connection: root, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
+        let b = HubConnectionSecurity(connection: nested, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
+        let registry = HubCookieScopeRegistry(defaults: defaults)
+        registry.register(a, kind: .directNode); registry.register(b, kind: .directNode)
+        defer { a.dispose(removeCredentials: true); b.dispose(removeCredentials: true) }
+        await a.saveCookies([try cookie(root, value: "root")], epoch: a.epoch)
+        await b.saveCookies([try cookie(nested, value: "nested")], epoch: b.epoch)
+        let jar = WebKitCookieJar(registry: registry)
+        let url = URL(string: "https://example.com/nested/file.mp3")!
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("media-scope-\(UUID())")
+        let library = ListenStore(fileURL: directory.appendingPathComponent("library.json"))
+        let item = try XCTUnwrap(library.add([ListenDraft(url: url, sourceID: nested.id)], placement: .end).first)
+        let downloader = ListenDownloader(store: library, cookies: jar, server: { ListenServer(base: root.url, sourceID: root.id) }, directory: directory, fetch: { request, _ in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "term_llm_web_session=nested", "Download must use the saved item owner, not the newly selected root")
+            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("owned-media-\(UUID())")
+            try Data([1, 2, 3]).write(to: temporary)
+            return (temporary, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "audio/mpeg"])!)
+        })
+        catalog.select(root.id); registry.selectedID = root.id
+        let stream = await downloader.source(for: item)
+        XCTAssertEqual(stream.cookies.map(\.value), ["nested"], "Selection must not rebind an old media item")
+        XCTAssertNil(registry.unambiguousSourceID(for: url), "Root/child URLs without operation ownership are ambiguous")
+        let unbound = await jar.cookies(for: url)
+        XCTAssertTrue(unbound.isEmpty)
+        downloader.download(item.id)
+        for _ in 0..<50 where library.item(item.id)?.download != .downloaded {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(library.item(item.id)?.download, .downloaded)
+        downloader.deleteFile(item.id)
+        b.nextEpoch() // revoke/reauth starts before asynchronous WebKit clear finishes
+        let revoked = await downloader.source(for: item)
+        XCTAssertTrue(revoked.cookies.isEmpty, "Revocation blocks media reads immediately, not only after WebKit deletion")
+        catalog.remove(nested.id)
+        let removed = await downloader.source(for: item)
+        XCTAssertTrue(removed.cookies.isEmpty, "Removed UUID must never fall back to root credentials")
+        try? FileManager.default.removeItem(at: directory)
     }
+
+    func testMissingCorruptDuplicateOrUnmatchedCatalogNeverBorrowsAmbientCookies() async throws {
+        let defaults = UserDefaults(suiteName: "catalog-scope-\(UUID())")!
+        let registry = HubCookieScopeRegistry(defaults: defaults)
+        let ambient = WKWebsiteDataStore.default()
+        let cookie = try cookie(connection("/"), value: "ambient-must-not-leak")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            ambient.httpCookieStore.setCookie(cookie) { continuation.resume() }
+        }
+        defer { ambient.httpCookieStore.delete(cookie) {} }
+        let url = URL(string: "https://example.com/media.mp3")!
+        for raw: Any? in [nil, "wrong type", Data("bad json".utf8)] {
+            defaults.set(raw, forKey: HubConnectionStore.storageKey)
+            XCTAssertNil(registry.unambiguousSourceID(for: url))
+            XCTAssertFalse(registry.dataStore(for: url) === ambient)
+            let cookies = await registry.cookies(for: url, sourceID: UUID())
+            XCTAssertTrue(cookies.isEmpty)
+        }
+        let catalog = HubConnectionStore(defaults: UserDefaults(suiteName: "valid-scope-\(UUID())")!)
+        let source = try catalog.save(name: "Other", kind: .hub, address: "https://other.example/")
+        let duplicate = HubConnectionStore.Document(connections: [source, source], selectedID: source.id)
+        defaults.set(try JSONEncoder().encode(duplicate), forKey: HubConnectionStore.storageKey)
+        XCTAssertNil(registry.connection(source.id))
+        defaults.set(try JSONEncoder().encode(HubConnectionStore.Document(connections: [source], selectedID: source.id)), forKey: HubConnectionStore.storageKey)
+        let unmatched = await registry.cookies(for: url, sourceID: source.id)
+        XCTAssertTrue(unmatched.isEmpty)
+    }
+
+    func testCookieWriteCompletionCannotOvertakeNewAuthentication() async throws {
+        let source = connection("/serial/")
+        let gate = CookieWriteGate()
+        let started = expectation(description: "old cookie submitted")
+        var writes: [String] = []
+        let security = HubConnectionSecurity(connection: source, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent(), cookieWriter: { cookie in
+            if cookie.value == "old" { started.fulfill(); await gate.wait() }
+            writes.append(cookie.value)
+        })
+        let oldEpoch = security.epoch
+        let old = Task { await security.saveCookies([try self.cookie(source, value: "old")], epoch: oldEpoch) }
+        await fulfillment(of: [started], timeout: 2)
+        security.nextEpoch()
+        let newEpoch = security.epoch
+        let new = Task { await security.saveCookies([try self.cookie(source, value: "new")], epoch: newEpoch) }
+        await Task.yield()
+        XCTAssertTrue(writes.isEmpty)
+        await gate.release()
+        let oldAccepted = try await old.value
+        let newAccepted = try await new.value
+        XCTAssertFalse(oldAccepted)
+        XCTAssertTrue(newAccepted)
+        XCTAssertEqual(writes, ["old", "new"], "A submitted stale write completes before, never after, the new cookie")
+        security.dispose(removeCredentials: true)
+    }
+
+    func testDirectAlreadyAdmittedCallbackCannotRevokeNewSourceEpoch() async throws {
+        let source = HubSourceWorkspace(connection: connection("/direct/"), bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
+        defer { source.dispose(removeCredentials: true) }
+        let admitted = source.directClient?.on_unauthorized
+        let old = source.authEpoch
+        let prepared = await source.prepareAuthentication()
+        let current = try XCTUnwrap(prepared)
+        XCTAssertNotEqual(old, current)
+        let identity = source.browserIdentity
+        let nativeEpoch = source.store.authEpoch
+        await admitted?()
+        XCTAssertEqual(source.store.authEpoch, nativeEpoch)
+        XCTAssertEqual(source.browserIdentity, identity, "Admitted old callback cannot revoke the pending new identity")
+        XCTAssertTrue(source.browserRevoked, "Explicit reauthentication keeps old chat closed until success")
+        let restoredOld = await source.authenticationSucceeded(epoch: old)
+        XCTAssertFalse(restoredOld, "Old detail/sign-in success cannot restore a newer source identity")
+    }
+}
+
+private actor CookieWriteGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async { if !released { await withCheckedContinuation { continuation = $0 } } }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }

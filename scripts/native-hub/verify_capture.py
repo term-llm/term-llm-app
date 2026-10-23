@@ -33,8 +33,12 @@ def verify(directory, simulator_udid=None, *, required_routes=REQUIRED_ROUTES,
     if stalled_index is None:
         raise ValueError("No genuine stalled HTTP navigation observed")
     after_stall = requests[stalled_index + 1:]
-    if not any(item["path"] == refresh_path and item["status"] == 200 for item in after_stall):
-        raise ValueError("No native dashboard HTTP refresh after stalled chat")
+    # A response after the slow request has completed does not prove concurrency.
+    # Stop at its first terminal response; do not accidentally accept later polls.
+    terminal = next((index for index, item in enumerate(after_stall)
+                     if item["path"] == stalled_path and isinstance(item["status"], int)), len(after_stall))
+    if not any(item["path"] == refresh_path and item["status"] == 200 for item in after_stall[:terminal]):
+        raise ValueError("No native dashboard HTTP refresh while stalled request remained pending")
     pngs = list((root / "screenshots").rglob("*.png"))
     if len(pngs) < min_pngs:
         raise ValueError(f"Need at least {min_pngs} actual journey screenshots, found {len(pngs)}")

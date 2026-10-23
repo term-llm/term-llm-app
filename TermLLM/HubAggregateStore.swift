@@ -59,7 +59,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     private var resetTask: Task<Void, Never>?
     private let relay: SourceRevocationRelay?
 
-    init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(), dataStore: WKWebsiteDataStore? = nil) {
+    init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(), dataStore: WKWebsiteDataStore? = nil, transport: (any HubTransport)? = nil) {
         self.connection = connection
         self.id = connection.id
         let security = HubConnectionSecurity(connection: connection, bearerStorage: bearerStorage, dataStore: dataStore)
@@ -67,21 +67,19 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         let relay = SourceRevocationRelay()
         self.relay = relay
         if connection.kind == .hub {
-            let client = HubClient(base_url: connection.url, cookie_source: { await security.cookies() }, cookie_sink: { cookies in
-                await relay.owner?.saveTransportCookies(cookies)
-            })
+            let client = HubClient(base_url: connection.url, cookie_source: { await security.cookies() }, cookie_sink: { _ in }, transport: transport)
             let workspace = HubWorkspace(client: client, requiresAuthentication: false, onAuthorizationRevoked: { relay.revoke() })
             hubWorkspace = workspace
             store = workspace.store
             directClient = nil
         } else {
-            let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer })
+            let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport)
             directClient = client
             hubWorkspace = nil
             store = HubStore(client: client)
-            client.on_unauthorized = { await relay.revoke() }
         }
         relay.owner = self
+        installAuthorizationContext()
         HubCookieScopeRegistry.shared.register(security, kind: connection.kind)
         observation = store.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         authObservation = store.$unauthorized.dropFirst().sink { [weak self] unauthorized in
@@ -134,37 +132,52 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         }
     }
 
-    func revokeAuthorization() {
+    private func installAuthorizationContext() {
+        let expected = authenticationEpoch
+        if let client = hubWorkspace?.client, let security {
+            hubWorkspace?.authenticationSucceeded()
+            let securityEpoch = security.epoch
+            client.scoped_cookie_importer = { [weak self] cookies, isCurrent in
+                guard let self else { throw CancellationError() }
+                try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
+            }
+        }
+        directClient?.on_unauthorized = { [weak self] in await self?.revokeAuthorization(expected: expected) }
+    }
+
+    func revokeAuthorization(expected: UInt64? = nil) {
+        guard expected == nil || expected == authenticationEpoch else { return }
         guard active, !browserRevoked else { return }
         authenticationEpoch &+= 1
-        if let directClient, let relay { directClient.on_unauthorized = { await relay.revoke() } }
         store.purgeOnUnauthorized()
         browserRevoked = true
         browserReady = false
         browserIdentity = UUID()
         guard let security else { return }
         security.nextEpoch()
+        installAuthorizationContext()
         let expected = security.epoch
         resetTask = Task { @MainActor in
             guard security.active, security.epoch == expected else { return }
             try? security.setBearer(nil)
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                security.dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
-            }
+            await security.clearData(epoch: expected)
         }
     }
 
-    private func saveTransportCookies(_ cookies: [HTTPCookie]) async {
-        let epoch = authenticationEpoch
+    private func saveTransportCookies(_ cookies: [HTTPCookie], epoch expected: UInt64, securityEpoch: UInt64,
+                                      isCurrent: @escaping @Sendable () -> Bool) async throws {
+        guard active, expected == authenticationEpoch, isCurrent() else { throw CancellationError() }
         await resetTask?.value
-        guard active, epoch == authenticationEpoch, let security else { return }
-        await security.saveCookies(cookies, epoch: security.epoch)
+        guard active, expected == authenticationEpoch, let security, isCurrent() else { throw CancellationError() }
+        guard await security.saveCookies(cookies, epoch: securityEpoch, isCurrent: isCurrent),
+              active, expected == authenticationEpoch, isCurrent() else { throw CancellationError() }
     }
 
     /// Capture before presenting system sign-in. A removed/edited identity or
     /// an intervening revoke invalidates the handoff, not a different source.
     func nativeCookieSink(epoch: UInt64) -> @MainActor ([HTTPCookie]) async throws -> Void {
-        { [weak self] cookies in
+        let securityEpoch = security?.epoch
+        return { [weak self] cookies in
             guard let self, self.active, self.authenticationEpoch == epoch, let security = self.security else { throw CancellationError() }
             await self.resetTask?.value
             guard self.active, self.authenticationEpoch == epoch else { throw CancellationError() }
@@ -175,52 +188,56 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
                     ($0.isSecure || (self.connection.url.scheme == "http" && ServerAddress.allowsLocalHTTP(host: self.connection.url.host ?? ""))) &&
                     ($0.expiresDate.map { $0 > Date() } ?? true)
             }) else { throw CancellationError() }
+            guard let securityEpoch else { throw CancellationError() }
             if self.connection.kind == .directNode {
                 try security.setBearer(nil)
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    security.dataStore.removeData(ofTypes: [WKWebsiteDataTypeLocalStorage], modifiedSince: .distantPast) { continuation.resume() }
-                }
-                let oldCookies = await security.cookies()
-                for cookie in oldCookies where cookie.name == "term_llm_token" {
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        security.dataStore.httpCookieStore.delete(cookie) { continuation.resume() }
-                    }
-                }
+                guard await security.clearData(epoch: securityEpoch) else { throw CancellationError() }
             }
-            guard self.active, self.authenticationEpoch == epoch else { throw CancellationError() }
-            await security.saveCookies(cookies, epoch: security.epoch)
+            guard self.active, self.authenticationEpoch == epoch,
+                  await security.saveCookies(cookies, epoch: securityEpoch),
+                  self.active, self.authenticationEpoch == epoch else { throw CancellationError() }
         }
     }
 
     func prepareAuthentication() async -> UInt64? {
+        guard active else { return nil }
         await resetTask?.value
         guard active else { return nil }
-        return authenticationEpoch
-    }
-
-    /// HubView already advances its concrete client callback and resumes the
-    /// shared store. Only restore this connection's browser identity here.
-    func hubDetailAuthenticationSucceeded() {
-        guard active else { return }
         authenticationEpoch &+= 1
-        browserRevoked = false
-        browserReady = true
+        // An explicit identity change closes the old protected document and
+        // native cache immediately, even if the new login is later cancelled.
+        browserRevoked = true
+        browserReady = false
         browserIdentity = UUID()
-        authenticationError = nil
+        store.purgeOnUnauthorized()
+        security?.nextEpoch()
+        do { try security?.setBearer(nil) }
+        catch { authenticationError = error.localizedDescription; return nil }
+        installAuthorizationContext()
+        let expected = authenticationEpoch
+        await security?.waitForCookies()
+        guard active, authenticationEpoch == expected else { return nil }
+        if let security { guard await security.clearData(epoch: security.epoch) else { return nil } }
+        guard active, authenticationEpoch == expected else { return nil }
+        return expected
     }
 
-    func authenticationSucceeded(epoch: UInt64) async {
-        guard active, epoch == authenticationEpoch else { return }
+    @discardableResult
+    func authenticationSucceeded(epoch: UInt64) async -> Bool {
+        guard active, epoch == authenticationEpoch else { return false }
+        await security?.waitForCookies()
+        guard active, epoch == authenticationEpoch else { return false }
         authenticationEpoch &+= 1
-        hubWorkspace?.authenticationSucceeded()
-        if let directClient, let relay {
-            directClient.on_unauthorized = { await relay.revoke() }
-        }
+        security?.nextEpoch()
+        security?.authorizeCookieReads()
+        installAuthorizationContext()
+        let current = authenticationEpoch
         browserRevoked = false
         browserReady = true
         browserIdentity = UUID()
         authenticationError = nil
         await store.resumeAfterAuthentication()
+        return active && authenticationEpoch == current && !store.unauthorized
     }
 
     func signInWithBearer(_ token: String) async {
@@ -254,6 +271,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         resetTask?.cancel()
         observation = nil
         authObservation = nil
+        hubWorkspace?.client.scoped_cookie_importer = nil
         hubWorkspace?.dispose()
         directClient?.on_unauthorized = nil
         store.purgeOnUnauthorized()

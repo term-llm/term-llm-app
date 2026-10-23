@@ -52,6 +52,8 @@ struct ListenItem: Codable, Identifiable, Equatable, Sendable {
     /// Saved automatically while streaming (not asked for), so the file is
     /// deleted again once the item is played.
     var cachedForPlayback: Bool?
+    /// Credential owner captured when added, never inferred from later selection.
+    var sourceID: UUID?
 
     init(id: UUID = UUID(), url: URL, title: String, artist: String? = nil, album: String? = nil,
          details: String? = nil, artworkURL: URL? = nil, kind: Kind = .audio, duration: TimeInterval? = nil,
@@ -105,9 +107,11 @@ struct ListenDraft: Equatable, Sendable {
     var kind: ListenItem.Kind?
     var duration: TimeInterval?
     var publishedAt: Date?
+    var sourceID: UUID?
 
     init(url: URL, title: String? = nil, artist: String? = nil, album: String? = nil, details: String? = nil,
-         artworkURL: URL? = nil, kind: ListenItem.Kind? = nil, duration: TimeInterval? = nil, publishedAt: Date? = nil) {
+         artworkURL: URL? = nil, kind: ListenItem.Kind? = nil, duration: TimeInterval? = nil, publishedAt: Date? = nil, sourceID: UUID? = nil) {
+        self.sourceID = sourceID
         self.url = url
         self.title = title
         self.artist = artist
@@ -159,6 +163,7 @@ enum ListenError: LocalizedError, Equatable {
 /// cookie; any other host gets no cookies.
 struct ListenServer: Equatable, Sendable {
     let base: URL
+    var sourceID: UUID? = nil
 
     var origin: String? { Self.origin(of: base) }
 
@@ -174,9 +179,9 @@ struct ListenServer: Equatable, Sendable {
     }
 
     /// The configured server, read where `ContentView` saves it.
-    static func current(defaults: UserDefaults = .standard) -> ListenServer? {
+    @MainActor static func current(defaults: UserDefaults = .standard) -> ListenServer? {
         guard let raw = defaults.string(forKey: "serverURL"), let url = ServerAddress.parse(raw) else { return nil }
-        return ListenServer(base: url)
+        return ListenServer(base: url, sourceID: HubCookieScopeRegistry.shared.sourceID(forServer: url))
     }
 
     /// Turns what the agent passed into a playable URL. Accepts absolute

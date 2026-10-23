@@ -185,7 +185,9 @@ final class DirectNodeClient: @unchecked Sendable {
         self.expected_host = (base_url.host ?? "").lowercased()
         self.transport = transport ?? URLSessionHubTransport()
 
-        let raw = base_url.path
+        // Use percentEncodedPath so mount_path is already percent-encoded and can
+        // be safely concatenated with other pre-encoded segments in mounted().
+        let raw = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!.percentEncodedPath
         if raw == "/" || raw.isEmpty {
             self.mount_path = ""
         } else {
@@ -243,9 +245,10 @@ final class DirectNodeClient: @unchecked Sendable {
 
     /// GET /v1/attention?kind=<kind>[&limit=<1…500>] — single-kind attention page.
     ///
-    /// `limit` is clamped to `[1, 500]`.
+    /// `limit` is clamped to `[1, 500]`.  Uses the same bounded 409-retry as
+    /// ``list_attention`` (up to 3 attempts) for consistency.
     func list_node_attention(kind: DirectAttentionKind, limit: Int? = nil) async throws -> DirectAttentionPage {
-        try await fetchAttentionOnce(kind: kind, limit: limit)
+        try await fetchAttentionWithRetry(kind: kind, limit: limit)
     }
 
     /// GET /healthz with the current bearer token; returns identity fields.
@@ -304,6 +307,14 @@ final class DirectNodeClient: @unchecked Sendable {
     // MARK: - Shared health fetch
 
     private func fetchHealthAuthenticated(useCallback: Bool) async throws -> DirectNodeHealth {
+        let authCapture: (epoch: UInt64, callback: (@Sendable () async -> Void)?)
+        if useCallback {
+            authCapture = captureAuthorization()
+        } else {
+            let snapshot = captureAuthorization()
+            authCapture = (epoch: snapshot.epoch, callback: nil)
+        }
+
         let url = mounted("/healthz")
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
@@ -322,13 +333,7 @@ final class DirectNodeClient: @unchecked Sendable {
             req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
 
-        let authCapture: (epoch: UInt64, callback: (@Sendable () async -> Void)?)
-        if useCallback {
-            authCapture = captureAuthorization()
-        } else {
-            authCapture = (epoch: 0, callback: nil)
-        }
-
+        guard authorizationIsCurrent(authCapture.epoch), !Task.isCancelled else { throw CancellationError() }
         let (data, http) = try await transport.execute(req, onUnauthorized: authCapture.callback)
 
         guard (200...299).contains(http.statusCode) else {
@@ -360,8 +365,14 @@ final class DirectNodeClient: @unchecked Sendable {
             queryPart = nil
         }
         var components = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!
-        components.path = "\(mount_path)\(pathPart)"
-        components.query = queryPart
+        // percentEncodedPath: mount_path is already percent-encoded (derived from
+        // base_url.percentEncodedPath), and pathPart may contain pre-encoded segments
+        // like %2F in session IDs.  Using the plain .path setter would re-encode %
+        // as %25 (double-encoding); .percentEncodedPath leaves existing escapes intact.
+        components.percentEncodedPath = "\(mount_path)\(pathPart)"
+        // percentEncodedQuery: query string is built from safe ASCII values only;
+        // using the plain .query setter would unnecessarily re-escape & and =.
+        components.percentEncodedQuery = queryPart
         return components.url!
     }
 
@@ -435,6 +446,7 @@ final class DirectNodeClient: @unchecked Sendable {
             request.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
 
+        guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
         let (data, http) = try await transport.execute(request,
                                                         onUnauthorized: authorization.callback)
 
@@ -705,6 +717,9 @@ extension DirectNodeClient: HubServing {
     /// - Throws: ``HubAPIError(status: 409, …)`` on snapshot conflict — caller
     ///   should reconcile authoritative session state and bounded-retry.
     func mark_attention_seen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
+        guard !item.session_id.isEmpty, item.session_id != ".", item.session_id != ".." else {
+            throw HubAPIError(status: 0, message: "Invalid session identifier for attention acknowledgement.")
+        }
         struct SeenBody: Encodable {
             let store_instance_id: String
             let through_seq: Int
@@ -834,7 +849,16 @@ private struct DirectErrorBody: Decodable {
 }
 
 private extension String {
+    /// Percent-encodes a string for use as a **single URL path segment**.
+    ///
+    /// Unlike `.urlPathAllowed`, this set additionally excludes `/` so that slashes
+    /// inside a session ID (e.g. `"sess/id"`) are encoded as `%2F` rather than
+    /// being interpreted as path separators.  `%` itself is not in `.urlPathAllowed`
+    /// so it is always encoded, preventing double-encoding when the string already
+    /// contains `%XX` sequences.
     var directNodePathEncoded: String {
-        addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? self
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
     }
 }

@@ -327,6 +327,8 @@ final class HubStore: ObservableObject {
         }
     }
 
+    var canLoadMoreAttention: Bool { attentionHasMore && attentionLimit < Self.maxAttentionLimit }
+
     func loadMoreAttention() async {
         guard !disposed, !unauthorized, attentionHasMore else { return }
         let newLimit = min(attentionLimit * 2, Self.maxAttentionLimit)

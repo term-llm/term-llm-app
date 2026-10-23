@@ -113,6 +113,32 @@ class PhoneFixtureTests(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_pending_ack_requires_real_slow_and_fresh_healthy_response(self):
+        self.assertEqual(self.request('/__control/slow/pending-asserted', {})[0], 409)
+        self.assertEqual(self.request('/__control/home/pending-check', {})[0], 200)
+        self.assertEqual(self.request('/home/api/nodes')[1]['nodes'][0]['name'], 'Home pending-check refresh')
+        # Healthy progress on its own must not claim a pending native request.
+        self.assertEqual(self.request('/__control/slow/pending-asserted', {})[0], 409)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.request, '/slow/api/nodes')
+            for _ in range(100):
+                with self.server.state_lock:
+                    started = self.server.slow_nodes_pending > 0
+                if started:
+                    break
+                threading.Event().wait(0.01)
+            self.assertTrue(started)
+            self.request('/__control/home/pending-check', {})
+            self.assertEqual(self.request('/__control/slow/pending-asserted', {})[0], 409)
+            self.request('/home/api/nodes')
+            self.assertFalse(pending.done())
+            self.assertEqual(self.request('/__control/slow/pending-asserted', {})[0], 200)
+            self.server.stopping.set()
+            try:
+                pending.result(timeout=3)
+            except Exception:
+                pass
+
     def test_request_log_contains_no_credentials_query_or_body(self):
         self.request('/work/api/nodes?secret=not-public', headers={'Authorization': 'Bearer not-public', 'Cookie': 'not-public'})
         self.request('/__control/work/healthy', {'secret': 'not-public'})

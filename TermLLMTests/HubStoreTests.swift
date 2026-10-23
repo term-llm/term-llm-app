@@ -986,6 +986,18 @@ final class HubStoreTests: XCTestCase {
 
     // MARK: - Security / session
 
+    func testAttentionLoadMoreStopsAtMaximumWithExplicitState() async {
+        client.attentionResponse = { AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 600, nodes: [], input_required: [], inbox: [], has_more: true) }
+        await store.refresh()
+        for _ in 0..<6 { await store.loadMoreAttention() }
+        XCTAssertEqual(store.attentionLimit, 500)
+        XCTAssertTrue(store.attentionHasMore)
+        XCTAssertFalse(store.canLoadMoreAttention)
+        let calls = client.listAttentionCalls
+        await store.loadMoreAttention()
+        XCTAssertEqual(client.listAttentionCalls, calls)
+    }
+
     func testLoadSecurity() async {
         client.listCredentialsResponse = {
             CredentialsResponse(credentials: [

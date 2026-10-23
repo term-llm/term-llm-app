@@ -82,6 +82,7 @@ struct ContentView: View {
             loginError = nil
             loginRequired = false
             hubRole = connections.selected?.kind == .hub ? .hub : .direct
+            revealPendingPushIfOwned()
         }
         .onChange(of: selectedWorkspace?.browserIdentity) { _, _ in
             guard !HubFixture.isEnabled else { return }
@@ -143,8 +144,8 @@ struct ContentView: View {
         .sheet(isPresented: $showingMusic) { MusicView(library: .shared).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
         .sheet(isPresented: $showingListen) { ListenView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
         .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
-        .onChange(of: push.pendingNavigation?.id) { _, id in
-            if id != nil { workspaceChosen = true; showingHub = false }
+        .onChange(of: push.pendingNavigation, initial: true) { _, _ in
+            revealPendingPushIfOwned()
         }
         .onChange(of: voiceLaunches.request, initial: true) { _, request in
             guard let request else { return }
@@ -156,6 +157,7 @@ struct ContentView: View {
         }
         .onChange(of: pushWindowID) { _, id in
             if let id, let pushActivity { push.claimNavigation(pushActivity, windowID: id) }
+            revealPendingPushIfOwned()
             if let request = voiceLaunches.request { beginVoiceLaunch(request) }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -309,7 +311,7 @@ struct ContentView: View {
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
                         scenePhase: showingHub ? .inactive : scenePhase, isSigningIn: isSigningIn,
-                        deviceTools: !isFixture && deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
+                        deviceTools: !isFixture && deviceTools.isEnabled(for: url) ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             loginRequired = true
@@ -522,6 +524,12 @@ struct ContentView: View {
         }
     }
 
+    private func revealPendingPushIfOwned() {
+        guard !isFixture, push.pendingNavigation?.canPresent(in: pushWindowID, server: address) == true else { return }
+        workspaceChosen = true
+        showingHub = false
+    }
+
     private func beginVoiceLaunch(_ id: UUID) {
         guard voiceRequest == nil, scenePhase == .active, let pushWindowID,
               voiceLaunches.claim(id, windowID: pushWindowID, isKeyScene: push.isKeyScene(pushWindowID)) else { return }
@@ -588,8 +596,7 @@ struct ContentView: View {
                     switch result {
                     case .success:
                         Task {
-                            await source.authenticationSucceeded(epoch: epoch)
-                            guard connections.selectedID == source.id else { return }
+                            guard await source.authenticationSucceeded(epoch: epoch), connections.selectedID == source.id else { return }
                             loadError = nil
                             loginError = nil
                             loginRequired = false

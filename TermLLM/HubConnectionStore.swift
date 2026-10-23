@@ -22,7 +22,7 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
 @MainActor
 final class HubConnectionStore: ObservableObject {
     static let storageKey = "phoneHub.connections.v1"
-    private struct Document: Codable {
+    struct Document: Codable {
         var connections: [HubConnection]
         var selectedID: UUID?
     }
@@ -35,30 +35,36 @@ final class HubConnectionStore: ObservableObject {
     init(defaults: UserDefaults = .standard, legacyKind: HubConnection.Kind? = nil) {
         self.defaults = defaults
         if let raw = defaults.object(forKey: Self.storageKey) {
-            guard let data = raw as? Data,
-                  let doc = try? JSONDecoder().decode(Document.self, from: data),
-                  Set(doc.connections.map(\.id)).count == doc.connections.count else {
-                persistenceError = "Saved connections could not be read. The original catalog has been preserved. Reset it explicitly to start again."
+            guard let doc = try? Self.validatedDocument(raw) else {
+                persistenceError = "Saved connections could not be read or validated. The original catalog has been preserved. Reset it explicitly to start again."
                 return
             }
-            var endpoints = Set<String>()
-            for source in doc.connections {
-                guard let url = Self.canonicalURL(source.url.absoluteString),
-                      !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      endpoints.insert(url.absoluteString).inserted else {
-                    connections = []
-                    persistenceError = "Saved connections contain invalid or duplicate endpoints. The original catalog has been preserved."
-                    return
-                }
-                connections.append(HubConnection(id: source.id, name: source.name, kind: source.kind, url: url, needsKindReview: source.needsKindReview))
-            }
-            selectedID = connections.contains { $0.id == doc.selectedID } ? doc.selectedID : connections.first?.id
+            connections = doc.connections
+            selectedID = doc.selectedID ?? connections.first?.id
         } else if let legacy = defaults.string(forKey: "serverURL"), let url = Self.canonicalURL(legacy) {
             let source = HubConnection(id: UUID(), name: url.host ?? "Connection", kind: legacyKind ?? .directNode, url: url, needsKindReview: legacyKind == nil ? true : nil)
             connections = [source]
             selectedID = source.id
         }
         persist()
+    }
+
+    /// Single, side-effect-free validation path for UI and credential readers.
+    /// A missing catalog is not permission to borrow the ambient WebKit jar.
+    static func validatedDocument(_ raw: Any?) throws -> Document {
+        guard let data = raw as? Data,
+              var doc = try? JSONDecoder().decode(Document.self, from: data),
+              Set(doc.connections.map(\.id)).count == doc.connections.count,
+              doc.selectedID == nil || doc.connections.contains(where: { $0.id == doc.selectedID }) else { throw ValidationError.corrupt }
+        var endpoints = Set<String>()
+        for index in doc.connections.indices {
+            let source = doc.connections[index]
+            guard let url = canonicalURL(source.url.absoluteString),
+                  !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  endpoints.insert(url.absoluteString).inserted else { throw ValidationError.corrupt }
+            doc.connections[index].url = url
+        }
+        return doc
     }
 
     /// The legacy app never persisted role. A bounded public probe may resolve

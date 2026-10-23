@@ -13,7 +13,7 @@ class PhoneCaptureGateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        summary = dict(result='Passed', passedTests=4, failedTests=0, skippedTests=0,
+        summary = dict(result='Passed', passedTests=len(gates.UNITS), failedTests=0, skippedTests=0,
                        devicesAndConfigurations=[dict(device=dict(deviceId='test-device'))])
         self.write('unit-test-summary.json', summary)
         self.write('test-summary.json', dict(summary, passedTests=2))
@@ -21,7 +21,9 @@ class PhoneCaptureGateTests(unittest.TestCase):
         self.write('test-tree.json', dict(testNodes=[self.suite('PhoneHubUITests', gates.TESTS)]))
         self.requests = [dict(path=path, status=200) for path in sorted(gates.ROUTES - {'/slow/api/nodes'})]
         self.requests.extend([dict(path='/slow/api/nodes', status='stalled'),
+                              dict(path='/__control/home/pending-check', status=200),
                               dict(path='/home/api/nodes', status=200),
+                              dict(path='/__control/slow/pending-asserted', status=200),
                               dict(path='/work/api/nodes', status=401),
                               dict(path='/home/api/nodes', status=200)])
         self.log()
@@ -44,6 +46,46 @@ class PhoneCaptureGateTests(unittest.TestCase):
 
     def log(self):
         (self.root / 'fixture-requests.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in self.requests))
+
+    def test_all_four_direct_node_classes_are_executed_and_required(self):
+        expected = {'DirectNodeClientTests', 'DirectNodeClientModelTests',
+                    'DirectNodeClientMountTests', 'DirectNodeClientCookieFilterTests'}
+        command = Path(__file__).with_name('capture.sh').read_text()
+        selected = command.split("NATIVE_HUB_UNIT_SUITES='")[1].split("'")[0].split()
+        self.assertTrue(expected.issubset(selected))
+        self.assertEqual(set(selected), set(gates.UNITS))
+        for missing in expected:
+            with self.subTest(missing=missing):
+                self.write('unit-test-tree.json', dict(testNodes=[
+                    self.suite(name, ['testExecuted']) for name in gates.UNITS if name != missing]))
+                with self.assertRaisesRegex(ValueError, 'absent or not executed'):
+                    gates.verify(self.root, 'test-device')
+
+    def test_completed_slow_before_healthy_progress_is_not_concurrency(self):
+        index = next(i for i, row in enumerate(self.requests) if row['status'] == 'stalled')
+        self.requests.insert(index + 1, dict(path='/slow/api/nodes', status=504))
+        self.log()
+        with self.assertRaisesRegex(ValueError, 'while stalled request remained pending'):
+            gates.verify(self.root, 'test-device')
+
+    def test_slow_completed_after_healthy_but_before_native_assertion_fails(self):
+        index = next(i for i, row in enumerate(self.requests) if row['path'].endswith('/pending-asserted'))
+        self.requests.insert(index, dict(path='/slow/api/nodes', status=504))
+        self.log()
+        with self.assertRaisesRegex(ValueError, 'native slow-request pending assertion'):
+            gates.verify(self.root, 'test-device')
+
+    def test_server_wait_without_native_pending_assertion_is_insufficient(self):
+        self.requests = [row for row in self.requests if not row['path'].endswith('/pending-asserted')]
+        self.log()
+        with self.assertRaisesRegex(ValueError, 'native slow-request pending assertion'):
+            gates.verify(self.root, 'test-device')
+
+    def test_healthy_response_before_uncached_title_is_armed_is_insufficient(self):
+        self.requests = [row for row in self.requests if not row['path'].endswith('/pending-check')]
+        self.log()
+        with self.assertRaisesRegex(ValueError, 'native slow-request pending assertion'):
+            gates.verify(self.root, 'test-device')
 
     def test_complete_evidence_passes_reused_gates(self):
         gates.verify(self.root, 'TEST-DEVICE')

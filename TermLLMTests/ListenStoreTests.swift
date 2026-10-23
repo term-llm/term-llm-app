@@ -87,6 +87,18 @@ final class ListenStoreTests: XCTestCase {
         XCTAssertEqual(item.resumePosition(), 0)
     }
 
+    func testSameMediaURLRetainsDistinctPersistentSourceOwners() throws {
+        let directory = temporaryDirectory()
+        let file = directory.appendingPathComponent("owned-media.json")
+        let store = ListenStore(fileURL: file)
+        let url = URL(string: "https://example.com/nested/media.mp3")!
+        let a = UUID(), b = UUID()
+        let items = store.add([ListenDraft(url: url, sourceID: a), ListenDraft(url: url, sourceID: b)], placement: .end)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertNotEqual(items[0].id, items[1].id)
+        XCTAssertEqual(ListenStore(fileURL: file).items.map(\.sourceID), [a, b])
+    }
+
     func testURLPolicy() throws {
         XCTAssertEqual(try ListenServer.resolve("/media/abc.mp3", server: testServer).absoluteString,
                        "https://hub.example/media/abc.mp3")

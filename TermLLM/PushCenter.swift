@@ -56,6 +56,11 @@ struct PushNavigation: Equatable {
     var windowID: String? = nil
     var isCompletion = false
     var excludedWindowIDs: Set<String> = []
+
+    func canPresent(in windowID: String?, server: URL?) -> Bool {
+        guard let windowID, self.windowID == windowID, let server else { return false }
+        return HubNavigation.isWithinMount(url, server: server)
+    }
 }
 
 enum PushError: LocalizedError, Equatable {

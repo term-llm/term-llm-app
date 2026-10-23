@@ -80,8 +80,8 @@ final class ListenDownloader {
             // The file vanished; forget it.
             store.update(item.id) { $0.download = .none; $0.localFile = nil; $0.downloadedBytes = nil }
         }
-        let sameServer = server()?.isSameOrigin(item.url) ?? false
-        return ListenSource(url: item.url, cookies: sameServer ? await cookies.cookies(for: item.url) : [],
+        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(item.url) ?? false)
+        return ListenSource(url: item.url, cookies: sameServer ? await cookies.cookies(for: item.url, sourceID: item.sourceID) : [],
                             spoken: item.kind != .music)
     }
 
@@ -209,7 +209,7 @@ final class ListenDownloader {
     }
 
     private func fetchFile(for item: ListenItem, transfer: ListenTransfer) async throws -> (name: String, bytes: Int64) {
-        let sameServer = server()?.isSameOrigin(item.url) ?? false
+        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(item.url) ?? false)
         var url = item.url
         // App Transport Security blocks plain http downloads; most hosts also
         // serve https. (Streaming plain http still works for media.)
@@ -219,7 +219,7 @@ final class ListenDownloader {
         }
         var request = URLRequest(url: url, timeoutInterval: 60)
         if sameServer {
-            HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url)).forEach {
+            HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
                 request.setValue($1, forHTTPHeaderField: $0)
             }
         }

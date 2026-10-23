@@ -117,7 +117,7 @@ final class VoiceShortcutSettings: ObservableObject {
             let probeURL = savedKind == nil ? healthURL : directHealthURL
             let rootHealth: [String: Any]?
             do {
-                rootHealth = try await healthObject(at: probeURL)
+                rootHealth = try await healthObject(at: probeURL, server: server)
             } catch {
                 // HTTP/JSON failures can mean health is mounted under the direct
                 // server's base path. A transport outage is not a route mismatch.
@@ -130,7 +130,7 @@ final class VoiceShortcutSettings: ObservableObject {
                 let endpoint = base.appendingPathComponent("api/nodes")
                 var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
                 components.queryItems = [URLQueryItem(name: "view", value: "sidebar")]
-                let nodes = try Self.decodeNodes(try await fetch(components.url!))
+                let nodes = try Self.decodeNodes(try await fetch(components.url!, server: server))
                 var ids = Set<String>()
                 for node in nodes {
                     _ = try Self.nodeURL(node, server: server)
@@ -143,7 +143,7 @@ final class VoiceShortcutSettings: ObservableObject {
                 if directHealthURL == probeURL {
                     directHealth = rootHealth
                 } else {
-                    directHealth = try await healthObject(at: directHealthURL)
+                    directHealth = try await healthObject(at: directHealthURL, server: server)
                 }
                 guard directHealth?["role"] as? String != "hub",
                       directHealth?["status"] as? String == "ok" else { throw VoiceShortcutError.invalidResponse }
@@ -245,8 +245,8 @@ final class VoiceShortcutSettings: ObservableObject {
         return components
     }
 
-    private func healthObject(at url: URL) async throws -> [String: Any] {
-        let data = try await fetch(url)
+    private func healthObject(at url: URL, server: URL) async throws -> [String: Any] {
+        let data = try await fetch(url, server: server)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw VoiceShortcutError.invalidResponse
         }
@@ -254,10 +254,10 @@ final class VoiceShortcutSettings: ObservableObject {
         return object
     }
 
-    private func fetch(_ url: URL) async throws -> Data {
+    private func fetch(_ url: URL, server: URL) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let matching = await cookies.cookies(for: url)
+        let matching = await cookies.cookies(for: url, sourceID: HubCookieScopeRegistry.shared.sourceID(forServer: server))
         for (name, value) in HTTPCookie.requestHeaderFields(with: matching) { request.setValue(value, forHTTPHeaderField: name) }
         let (data, response) = try await transport(request)
         guard response.url == url else { throw VoiceShortcutError.invalidResponse }

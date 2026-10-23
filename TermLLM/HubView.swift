@@ -62,7 +62,8 @@ struct HubView: View {
     let onAuthenticated: () -> Void
     @StateObject private var workspace: HubWorkspace
     private var ownsWorkspace = true
-    private var loginCookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?
+    private var source: HubSourceWorkspace?
+    private var onOpenNodeChat: ((URL, String) -> Void)?
     private var store: HubStore { workspace.store }
     private var client: HubClient { workspace.client }
     @State private var tab: Panel = .nodes
@@ -115,16 +116,16 @@ struct HubView: View {
 
     /// Phone home retains this workspace across detail presentation. The legacy
     /// standalone initializer above continues to own/dispose its own workspace.
-    init(server: URL, workspace: HubWorkspace,
-         cookieSink: @escaping @MainActor ([HTTPCookie]) async throws -> Void,
-         onOpenChat: @escaping (URL) -> Void, onSettings: @escaping () -> Void,
-         onAuthenticated: @escaping () -> Void) {
-        self.server = server
+    init(source: HubSourceWorkspace, workspace: HubWorkspace,
+         onOpenChat: @escaping (URL) -> Void, onOpenNodeChat: @escaping (URL, String) -> Void,
+         onSettings: @escaping () -> Void) {
+        self.server = source.connection.url
+        self.source = source
         self.onOpenChat = onOpenChat
+        self.onOpenNodeChat = onOpenNodeChat
         self.onSettings = onSettings
         self.onAuthorizationRevoked = {}
-        self.onAuthenticated = onAuthenticated
-        self.loginCookieSink = cookieSink
+        self.onAuthenticated = {}
         self.ownsWorkspace = false
         _workspace = StateObject(wrappedValue: workspace)
     }
@@ -255,7 +256,7 @@ struct HubView: View {
                     }
                 }
                 .accessibilityIdentifier("hub.node.\(node.id)")
-                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path) }
+                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path, nodeID: node.id) }
                     .disabled(!node.status.reachable || !store.nodesVerified)
                 ForEach(HubNavigation.nodeSessions(node).prefix(4), id: \.id) { session in
                     sessionButton(session, node: node)
@@ -283,11 +284,11 @@ struct HubView: View {
                 }
             }
             Section("Sessions") {
-                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path) }
+                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path, nodeID: node.id) }
                     .disabled(!node.status.reachable)
                 ForEach(HubNavigation.nodeSessions(node), id: \.id) { session in sessionButton(session, node: node) }
                 if node.sessions?.has_more == true, let path = node.sessions?.resume_path {
-                    Button("All sessions in chat") { open(path) }
+                    Button("All sessions in chat") { open(path, nodeID: node.id) }
                 }
                 if HubNavigation.nodeSessions(node).isEmpty { Text("No recent sessions") }
             }.accessibilityIdentifier("hub.sessions")
@@ -297,7 +298,7 @@ struct HubView: View {
     }
 
     private func sessionButton(_ session: HubNodeSession, node: HubNode) -> some View {
-        Button { open(session.resume_path) } label: {
+        Button { open(session.resume_path, nodeID: node.id) } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.short_title.isEmpty ? (session.number.map { "Session \($0)" } ?? session.id) : session.short_title)
                 HStack {
@@ -328,7 +329,7 @@ struct HubView: View {
         }
         Section("Needs input") {
             ForEach(store.inputRequired, id: \.hubIdentity) { item in
-                Button { open(item.resume_path) } label: {
+                Button { open(item.resume_path, nodeID: item.node_id) } label: {
                     VStack(alignment: .leading) {
                         Text(item.title.isEmpty ? item.session_id : item.title)
                         Text("\(item.node_name) · \(item.pending_interaction_count) pending" + (item.stale == true ? " · stale" : ""))
@@ -341,7 +342,7 @@ struct HubView: View {
         Section("Results to review") {
             ForEach(store.inbox, id: \.hubIdentity) { item in
                 VStack(alignment: .leading, spacing: 8) {
-                    Button { open(item.resume_path) } label: {
+                    Button { open(item.resume_path, nodeID: item.node_id) } label: {
                         VStack(alignment: .leading) {
                             Text(item.title.isEmpty ? item.session_id : item.title)
                             Text("\(item.node_name) · \(item.outcome)").font(.caption).foregroundStyle(.secondary)
@@ -354,7 +355,7 @@ struct HubView: View {
             }
             if store.inbox.isEmpty { Text("No unseen results").foregroundStyle(.secondary) }
             if store.attentionHasMore {
-                if store.attentionLimit < 500 {
+                if store.canLoadMoreAttention {
                     Button("Load more results") { Task { await store.loadMoreAttention() } }
                         .disabled(store.attentionLoading)
                         .accessibilityIdentifier("hub.loadMore")
@@ -524,11 +525,11 @@ struct HubView: View {
                             signingIn = true
                             defer { signingIn = false }
                             do {
+                                let epoch = await source?.prepareAuthentication()
+                                if source != nil, epoch == nil { throw CancellationError() }
                                 try await client.login_bearer(token: token)
                                 token = ""
-                                workspace.authenticationSucceeded()
-                                onAuthenticated()
-                                await store.resumeAfterAuthentication()
+                                _ = await completeAuthentication(epoch: epoch)
                             } catch { configurationError = error.localizedDescription }
                         }
                     }.disabled(token.isEmpty || signingIn)
@@ -564,12 +565,13 @@ struct HubView: View {
         }
     }
 
-    private func open(_ path: String) {
-        guard let url = HubNavigation.destination(path, server: server) else {
+    private func open(_ path: String, nodeID: String) {
+        guard let url = HubNavigation.chatDestination(path, server: server, nodeID: nodeID, direct: false) else {
             navigationError = "The Hub supplied an unsafe or out-of-mount destination. Navigation was blocked."
             return
         }
-        onOpenChat(url)
+        if let onOpenNodeChat { onOpenNodeChat(url, nodeID) }
+        else { onOpenChat(url) }
     }
 
     private func moveNode(_ index: Int, by offset: Int) {
@@ -583,18 +585,33 @@ struct HubView: View {
         }
     }
 
+    private func completeAuthentication(epoch: UInt64?) async -> Bool {
+        if let source {
+            guard let epoch, await source.authenticationSucceeded(epoch: epoch) else { return false }
+        } else {
+            workspace.authenticationSucceeded()
+            await store.resumeAfterAuthentication()
+        }
+        onAuthenticated()
+        return true
+    }
+
     private func signIn() {
         signingIn = true
         configurationError = nil
-        login.cookieSink = loginCookieSink
-        login.signIn(to: server) { result in
-            signingIn = false
-            switch result {
-            case .success:
-                workspace.authenticationSucceeded()
-                onAuthenticated()
-                Task { await discover(); await store.resumeAfterAuthentication() }
-            case .failure(let error): configurationError = error.localizedDescription
+        Task { @MainActor in
+            let epoch = await source?.prepareAuthentication()
+            if source != nil, epoch == nil { signingIn = false; return }
+            login.cookieSink = epoch.flatMap { source?.nativeCookieSink(epoch: $0) }
+            login.signIn(to: server) { result in
+                signingIn = false
+                switch result {
+                case .success:
+                    Task {
+                        if await completeAuthentication(epoch: epoch) { await discover() }
+                    }
+                case .failure(let error): configurationError = error.localizedDescription
+                }
             }
         }
     }

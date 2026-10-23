@@ -58,13 +58,21 @@ protocol ListenEngine: AnyObject {
 @MainActor
 protocol ListenCookieJar {
     func cookies(for url: URL) async -> [HTTPCookie]
+    func cookies(for url: URL, sourceID: UUID?) async -> [HTTPCookie]
+}
+extension ListenCookieJar {
+    func cookies(for url: URL, sourceID: UUID?) async -> [HTTPCookie] { await cookies(for: url) }
 }
 
 @MainActor
 struct WebKitCookieJar: ListenCookieJar {
+    private let registry: HubCookieScopeRegistry
+    init(registry: HubCookieScopeRegistry? = nil) { self.registry = registry ?? .shared }
     func cookies(for url: URL) async -> [HTTPCookie] {
-        let dataStore = HubCookieScopeRegistry.shared.dataStore(for: url)
-        return Self.matching(await dataStore.httpCookieStore.allCookies(), url: url)
+        return await registry.cookies(for: url, sourceID: nil)
+    }
+    func cookies(for url: URL, sourceID: UUID?) async -> [HTTPCookie] {
+        await registry.cookies(for: url, sourceID: sourceID)
     }
 
     /// RFC 6265 domain/path/secure matching, enough to pick the session cookie.
@@ -328,6 +336,7 @@ final class SystemNowPlaying: ListenNowPlaying {
     static let skipForward: TimeInterval = 30
 
     private var artworkURL: URL?
+    private var artworkSourceID: UUID?
     private var artwork: MPMediaItemArtwork?
     private var artworkTask: Task<Void, Never>?
     private let cookies: ListenCookieJar
@@ -390,17 +399,18 @@ final class SystemNowPlaying: ListenNowPlaying {
     }
 
     private func loadArtwork(for item: ListenItem) {
-        guard item.artworkURL != artworkURL else { return }
+        guard item.artworkURL != artworkURL || item.sourceID != artworkSourceID else { return }
         artworkURL = item.artworkURL
+        artworkSourceID = item.sourceID
         artwork = nil
         artworkTask?.cancel()
         guard let url = item.artworkURL else { return }
         let cookies = cookies
-        let sameServer = server()?.isSameOrigin(url) ?? false
+        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(url) ?? false)
         artworkTask = Task { [weak self] in
             var request = URLRequest(url: url, timeoutInterval: 20)
             if sameServer {
-                HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url)).forEach {
+                HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
                     request.setValue($1, forHTTPHeaderField: $0)
                 }
             }

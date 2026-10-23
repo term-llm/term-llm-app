@@ -160,14 +160,29 @@ final class PhoneHubUITests: XCTestCase {
         continueAfterFailure = false
         launch(reset: true)
         try await control("work", "healthy")
-        addConnection("Slow Hub", path: "/slow/")
         addConnection("Home Hub", path: "/home/")
         addConnection("Laptop", path: "/direct/", direct: true)
         addConnection("Work Hub", path: "/work/")
         let work = sourceID("Work Hub"), home = sourceID("Home Hub")
+        // Start Slow last: typing the other saved connections must not consume
+        // its real native request timeout before the concurrency assertion.
+        addConnection("Slow Hub", path: "/slow/")
+        let slow = sourceID("Slow Hub")
+        try await control("home", "pending-check")
+        let initialHomeRetry = app.buttons["phoneHub.retry." + home]
+        reveal(initialHomeRetry, upwards: false)
+        initialHomeRetry.tap()
         panel("nodes")
-        _ = required(app.buttons["phoneHub.node." + home + ".shared"], timeout: 10)
-        _ = required(app.buttons["phoneHub.node." + work + ".shared"], timeout: 10)
+        // A changed wire title excludes stale cached rows as progress evidence.
+        let freshHome = app.staticTexts["Home pending-check refresh"].firstMatch
+        reveal(freshHome)
+        _ = required(freshHome, timeout: 10)
+        let slowLoading = app.descendants(matching: .any)["phoneHub.nodesLoading." + slow].firstMatch
+        reveal(slowLoading, upwards: false)
+        XCTAssertTrue(slowLoading.exists, "Slow's native nodes request must still be loading, not timed out")
+        // Paired with the passing xcresult, this ordered fixture marker proves
+        // the assertion happened before Slow completed, not merely after it began.
+        try await control("slow", "pending-asserted")
         shot("06-healthy-sources-visible-during-real-pending-request")
         try await control("work", "unauthorized")
         let retry = app.buttons["phoneHub.retry." + work]

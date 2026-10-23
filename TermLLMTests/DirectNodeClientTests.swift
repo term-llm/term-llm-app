@@ -28,10 +28,13 @@ private final class DirectMockTransport: HubTransport, @unchecked Sendable {
         onUnauthorized: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
         lock.lock()
+        // Normalize header keys to lowercase for portable, case-insensitive assertions.
+        let normalizedHeaders = (request.allHTTPHeaderFields ?? [:])
+            .reduce(into: [String: String]()) { $0[$1.key.lowercased()] = $1.value }
         _requests.append(RecordedRequest(
             url: request.url!,
             method: request.httpMethod ?? "GET",
-            headers: request.allHTTPHeaderFields ?? [:],
+            headers: normalizedHeaders,
             body: request.httpBody
         ))
         lock.unlock()
@@ -81,7 +84,8 @@ private func webSessionCookie(
         .name: "term_llm_web_session", .value: "sess-tok",
         .domain: host, .path: path,
     ]
-    if secure { props[.secure] = true }
+    // HTTPCookiePropertyKey.secure expects a String ("TRUE"/"FALSE"), not a Bool.
+    if secure { props[.secure] = "TRUE" }
     if let expires { props[.expires] = expires }
     return HTTPCookie(properties: props)!
 }
@@ -250,7 +254,8 @@ final class DirectNodeClientCookieFilterTests: XCTestCase {
         secure: Bool = false, expires: Date? = Date(timeIntervalSinceNow: 3600)
     ) -> HTTPCookie {
         var props: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: path]
-        if secure { props[.secure] = true }
+        // HTTPCookiePropertyKey.secure expects a String ("TRUE"/"FALSE"), not a Bool.
+        if secure { props[.secure] = "TRUE" }
         if let e = expires { props[.expires] = e }
         return HTTPCookie(properties: props)!
     }
@@ -361,7 +366,7 @@ final class DirectNodeClientTests: XCTestCase {
         )
         let req = transport.requests[0]
         XCTAssertEqual(req.method, "POST")
-        XCTAssertEqual(req.headers["Authorization"], "Bearer tok-secret")
+        XCTAssertEqual(req.headers["authorization"], "Bearer tok-secret")
     }
 
     func testBearerInjectedOnGet() async throws {
@@ -369,7 +374,7 @@ final class DirectNodeClientTests: XCTestCase {
             jsonHTTP(emptyStatusJSON)
         }
         _ = try await client.sessions_status()
-        XCTAssertEqual(transport.requests[0].headers["Authorization"], "Bearer tok-secret",
+        XCTAssertEqual(transport.requests[0].headers["authorization"], "Bearer tok-secret",
                        "GET /v1/sessions/status must include Authorization: Bearer")
     }
 
@@ -379,7 +384,7 @@ final class DirectNodeClientTests: XCTestCase {
         }
         _ = try await client.healthz()
         XCTAssertEqual(transport.requests[0].method, "GET")
-        XCTAssertEqual(transport.requests[0].headers["Authorization"], "Bearer tok-health")
+        XCTAssertEqual(transport.requests[0].headers["authorization"], "Bearer tok-health")
     }
 
     func testHealthzNoBearerStillWorks() async throws {
@@ -399,7 +404,7 @@ final class DirectNodeClientTests: XCTestCase {
         }
         _ = try await client.sessions_status()
         XCTAssertTrue(
-            transport.requests[0].headers["Cookie"]?.contains("term_llm_web_session") == true,
+            transport.requests[0].headers["cookie"]?.contains("term_llm_web_session") == true,
             "term_llm_web_session must be forwarded"
         )
     }
@@ -413,7 +418,7 @@ final class DirectNodeClientTests: XCTestCase {
         let hubCookie = HTTPCookie(properties: props)!
         let (client, transport) = makeClient(cookies: [hubCookie]) { _ in jsonHTTP(emptyStatusJSON) }
         _ = try await client.sessions_status()
-        XCTAssertFalse(transport.requests[0].headers["Cookie"]?.contains("term_llm_hub_token") == true)
+        XCTAssertFalse(transport.requests[0].headers["cookie"]?.contains("term_llm_hub_token") == true)
     }
 
     // MARK: Origin on mutations
@@ -423,13 +428,13 @@ final class DirectNodeClientTests: XCTestCase {
         _ = try await client.mark_attention_seen(
             AttentionSeenRequest(store_instance_id: "s", session_id: "id", attention_seq: 1)
         )
-        XCTAssertEqual(transport.requests[0].headers["Origin"], "http://localhost:8767")
+        XCTAssertEqual(transport.requests[0].headers["origin"], "http://localhost:8767")
     }
 
     func testOriginNotSetOnGet() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(emptyStatusJSON) }
         _ = try await client.sessions_status()
-        XCTAssertNil(transport.requests[0].headers["Origin"])
+        XCTAssertNil(transport.requests[0].headers["origin"])
     }
 
     // MARK: Attention source header
@@ -439,7 +444,7 @@ final class DirectNodeClientTests: XCTestCase {
         _ = try await client.mark_attention_seen(
             AttentionSeenRequest(store_instance_id: "store_x", session_id: "sess-1", attention_seq: 99)
         )
-        XCTAssertEqual(transport.requests[0].headers["X-Term-LLM-Attention-Source"], "phone")
+        XCTAssertEqual(transport.requests[0].headers["x-term-llm-attention-source"], "phone")
     }
 
     func testMarkSeenPostsToCorrectPath() async throws {
@@ -482,8 +487,45 @@ final class DirectNodeClientTests: XCTestCase {
         _ = try await client.mark_attention_seen(
             AttentionSeenRequest(store_instance_id: "s", session_id: "sess/with/slashes", attention_seq: 1)
         )
-        XCTAssertFalse(transport.requests[0].url.path.contains("/v1/sessions/sess/with/slashes/"),
-                       "Slashes in session ID must be percent-encoded")
+        // url.path percent-decodes %2F back to '/', so we must check the raw absoluteString
+        // to confirm that slashes were encoded as a single path segment.
+        let raw = transport.requests[0].url.absoluteString
+        XCTAssertFalse(raw.contains("sess/with/slashes"),
+                       "Slashes in session ID must not appear unencoded in the URL")
+        XCTAssertTrue(raw.contains("sess%2Fwith%2Fslashes"),
+                      "Slashes in session ID must be percent-encoded as %2F")
+    }
+
+    // MARK: Path-segment percent-encoding
+
+    /// A session ID that already contains a percent sign must not be double-encoded
+    /// (%25 → %2525).  directNodePathEncoded uses .urlPathAllowed which does NOT
+    /// include '%', so an existing '%' in the input is always encoded once.
+    func testMarkSeenPathDoesNotDoubleEncodePercent() async throws {
+        let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
+        // Session ID contains a literal '%' (unusual but possible in opaque IDs)
+        _ = try await client.mark_attention_seen(
+            AttentionSeenRequest(store_instance_id: "s", session_id: "id%20weird", attention_seq: 1)
+        )
+        let raw = transport.requests[0].url.absoluteString
+        // The % must appear as %25 (encoded once), not %2525 (double-encoded).
+        XCTAssertTrue(raw.contains("id%2520weird"),
+                      "Literal '%' in session ID must be encoded once as %25, producing %2520weird in the URL")
+        XCTAssertFalse(raw.contains("id%20weird"),
+                       "Pre-existing '%XX' in session ID must not pass through unencoded")
+    }
+
+    /// A session ID with query-special characters (?, &, =) must be encoded so they
+    /// cannot escape the path segment into the query string.
+    func testMarkSeenPathEncodesQuerySpecialChars() async throws {
+        let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
+        _ = try await client.mark_attention_seen(
+            AttentionSeenRequest(store_instance_id: "s", session_id: "id?foo=bar&baz", attention_seq: 1)
+        )
+        let raw = transport.requests[0].url.absoluteString
+        // The '?', '=' and '&' must be percent-encoded so they stay inside the path segment.
+        XCTAssertFalse(raw.contains("id?foo=bar&baz"),
+                       "Query-special chars in session ID must be percent-encoded in the path")
     }
 
     // MARK: Attention limit clamping
@@ -568,6 +610,24 @@ final class DirectNodeClientTests: XCTestCase {
         } catch let err as HubAPIError {
             XCTAssertEqual(err.status, 409)
         }
+    }
+
+    /// list_node_attention must also exhaust its bounded 409 retry and surface the error,
+    /// consistently with list_attention (both use fetchAttentionWithRetry).
+    func testListNodeAttentionThrowsAfterMaxRetries() async throws {
+        var callCount = 0
+        let (client, transport) = makeClient { _ in
+            callCount += 1
+            return jsonHTTP(#"{"error":{"message":"conflict","type":"conflict_error"}}"#, status: 409)
+        }
+        do {
+            _ = try await client.list_node_attention(kind: .unseen, limit: nil)
+            XCTFail("Expected 409 error after retries exhausted")
+        } catch let err as HubAPIError {
+            XCTAssertEqual(err.status, 409)
+        }
+        // Must have attempted maxAttempts (3) times, no more.
+        XCTAssertEqual(transport.requests.count, 3, "bounded retry must attempt exactly 3 times")
     }
 
     func test409ThrownByMarkAttentionSeen() async throws {
@@ -749,7 +809,7 @@ final class DirectNodeClientTests: XCTestCase {
             jsonHTTP(#"{"status":"ok","version":"1.0","capabilities":["api"]}"#)
         }
         _ = try await client.validate_bearer(token: "tok")
-        XCTAssertNil(transport.requests[0].headers["Cookie"],
+        XCTAssertNil(transport.requests[0].headers["cookie"],
                      "validate_bearer must not inject ambient cookies")
     }
 
@@ -1079,4 +1139,46 @@ private actor DirectGate {
         cont?.resume()
         cont = nil
     }
+}
+
+extension DirectNodeClientTests {
+    func testMarkSeenRejectsEmptyAndDotPathSegmentsWithoutDispatch() async throws {
+        let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
+        for id in ["", ".", ".."] {
+            do {
+                _ = try await client.mark_attention_seen(AttentionSeenRequest(store_instance_id: "s", session_id: id, attention_seq: 1))
+                XCTFail("Ambiguous session segment accepted")
+            } catch let error as HubAPIError { XCTAssertEqual(error.status, 0) }
+        }
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testCredentialReadCannotMoveOldRequestIntoNewAuthEpoch() async throws {
+        for health in [false, true] {
+            let gate = DirectCredentialGate()
+            let reading = expectation(description: "direct credential read suspended")
+            let transport = DirectMockTransport { request in jsonHTTP(emptyStatusJSON, url: request.url!) }
+            let client = DirectNodeClient(base_url: URL(string: "https://node.example/direct/")!, cookie_source: {
+                reading.fulfill()
+                await gate.wait()
+                return []
+            }, bearer_source: { "fixture-token" }, transport: transport)
+            let request = Task {
+                if health { _ = try await client.node_health() }
+                else { _ = try await client.sessions_status() }
+            }
+            await fulfillment(of: [reading], timeout: 2)
+            client.on_unauthorized = {}
+            await gate.release()
+            do { try await request.value; XCTFail("Old direct request must not dispatch") }
+            catch { XCTAssertTrue(error is CancellationError) }
+            XCTAssertTrue(transport.requests.isEmpty)
+        }
+    }
+}
+private actor DirectCredentialGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async { if !released { await withCheckedContinuation { continuation = $0 } } }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }

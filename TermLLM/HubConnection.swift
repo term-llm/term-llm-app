@@ -53,7 +53,10 @@ enum HubServerRole: Equatable {
 
     static func classify(status: Int, data: Data) -> HubServerRole {
         guard status == 200, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unknown }
-        return object["role"] as? String == "hub" ? .hub : .direct
+        guard object["status"] as? String == "ok", object["error"] == nil else { return .unknown }
+        if object["role"] as? String == "hub" { return .hub }
+        guard object["role"] == nil || object["role"] as? String == "node" else { return .unknown }
+        return .direct
     }
 
     static func discover(server: URL) async -> HubServerRole {

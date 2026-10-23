@@ -58,8 +58,14 @@ final class Listen {
 
     /// Adds items; `.now` starts the first one.
     @discardableResult
-    func add(_ drafts: [ListenDraft], placement: ListenStore.Placement, download: DownloadPolicy = .auto) async throws -> [ListenItem] {
-        let added = store.add(drafts, placement: placement, after: player.currentID)
+    func add(_ drafts: [ListenDraft], placement: ListenStore.Placement, download: DownloadPolicy = .auto, origin: ListenServer? = nil) async throws -> [ListenItem] {
+        let owner = origin ?? server()
+        let bound = drafts.map { draft -> ListenDraft in
+            var draft = draft
+            if draft.sourceID == nil, let owner, HubNavigation.isWithinMount(draft.url, server: owner.base) { draft.sourceID = owner.sourceID }
+            return draft
+        }
+        let added = store.add(bound, placement: placement, after: player.currentID)
         for item in added where item.download != .downloaded {
             switch download {
             case .now: downloader.download(item.id)

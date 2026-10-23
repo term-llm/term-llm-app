@@ -91,6 +91,8 @@ class PhoneFixtureServer(ThreadingHTTPServer):
         self.stall_seconds = stall_seconds
         self.stopping = threading.Event()
         self.source_modes = {key: 'healthy' for key in SOURCES}
+        self.slow_nodes_pending = 0
+        self.pending_check_healthy_completed = False
         self.seen = set()
         super().__init__(address, Handler)
 
@@ -126,11 +128,25 @@ class Handler(legacy.Handler):
         elif mode == 'unauthorized' and (route.startswith('/api/') or route.startswith('/v1/')):
             self.json(401, dict(error=dict(type='invalid_session', message='Synthetic source sign-in required')))
         elif source == 'slow' and route in ('/api/nodes', '/api/attention', '/api/delegations'):
+            with self.server.state_lock:
+                if route == '/api/nodes':
+                    self.server.slow_nodes_pending += 1
             self.record(path, 'stalled')
-            if not self.server.stopping.wait(self.server.stall_seconds):
-                self.json(504, dict(error=dict(type='fixture_timeout', message='Synthetic slow source')))
+            try:
+                if not self.server.stopping.wait(self.server.stall_seconds):
+                    self.json(504, dict(error=dict(type='fixture_timeout', message='Synthetic slow source')))
+            finally:
+                with self.server.state_lock:
+                    if route == '/api/nodes':
+                        self.server.slow_nodes_pending -= 1
         elif source != 'direct' and route == '/api/nodes':
-            self.json(200, dict(nodes=[hub_node(source)]))
+            node = hub_node(source)
+            if source == 'home' and mode == 'pending-check':
+                node['name'] = 'Home pending-check refresh'
+            self.json(200, dict(nodes=[node]))
+            if source == 'home' and mode == 'pending-check':
+                with self.server.state_lock:
+                    self.server.pending_check_healthy_completed = True
         elif source != 'direct' and route == '/api/attention':
             self.json(200, hub_attention(source, seen))
         elif source != 'direct' and route == '/api/delegations':
@@ -168,7 +184,16 @@ class Handler(legacy.Handler):
         path = urlsplit(self.path).path
         if path.startswith('/__control/'):
             pieces = path.strip('/').split('/')
-            if len(pieces) == 3 and pieces[1] in SOURCES and pieces[2] in ('healthy', 'unauthorized'):
+            if pieces == ['__control', 'slow', 'pending-asserted']:
+                with self.server.state_lock:
+                    valid = self.server.slow_nodes_pending > 0 and self.server.pending_check_healthy_completed
+                self.json(200 if valid else 409, dict(fixture=True, pending=valid))
+            elif pieces == ['__control', 'home', 'pending-check']:
+                with self.server.state_lock:
+                    self.server.source_modes['home'] = 'pending-check'
+                    self.server.pending_check_healthy_completed = False
+                self.json(200, dict(fixture=True, state='pending-check'))
+            elif len(pieces) == 3 and pieces[1] in SOURCES and pieces[2] in ('healthy', 'unauthorized'):
                 with self.server.state_lock:
                     self.server.source_modes[pieces[1]] = pieces[2]
                 self.json(200, dict(fixture=True, state=pieces[2]))

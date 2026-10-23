@@ -16,11 +16,39 @@ def load(name):
     return module
 
 
-UNITS = ('HubConnectionStoreTests', 'HubAggregateStoreTests', 'DirectNodeClientTests', 'HubConnectionSecurityTests')
+UNITS = ('HubConnectionStoreTests', 'HubAggregateStoreTests', 'DirectNodeClientTests',
+         'DirectNodeClientModelTests', 'DirectNodeClientMountTests',
+         'DirectNodeClientCookieFilterTests', 'HubConnectionSecurityTests')
 ROUTES = {'/work/api/nodes', '/home/api/nodes', '/work/api/attention', '/home/api/attention',
           '/direct/healthz', '/direct/v1/sessions/status', '/direct/v1/attention',
           '/work/node/shared/', '/home/node/shared/', '/direct/', '/slow/api/nodes'}
 TESTS = ('testSavedConnectionsAndUnifiedViews', 'testSlowAndUnauthorizedSourcesDoNotBlockHealthySources')
+
+
+def verify_pending_progress(requests):
+    """Require a fresh native render and client-pending assertion, not server wait alone.
+
+    The XCUITest changes Home's node title, waits for that uncached title, then
+    asserts Slow's actual nodesLoading AX marker before posting pending-asserted.
+    A passing xcresult plus this ordered trace covers the client timeout gap.
+    """
+    acknowledged = [i for i, row in enumerate(requests)
+                    if row['path'] == '/__control/slow/pending-asserted' and row['status'] == 200]
+    for end in acknowledged:
+        starts = [i for i, row in enumerate(requests[:end])
+                  if row['path'] == '/slow/api/nodes' and row['status'] == 'stalled']
+        if not starts:
+            continue
+        start = starts[-1]
+        window = requests[start + 1:end]
+        if any(row['path'] == '/slow/api/nodes' and isinstance(row['status'], int) for row in window):
+            continue
+        armed = next((i for i, row in enumerate(window)
+                      if row['path'] == '/__control/home/pending-check' and row['status'] == 200), None)
+        if armed is not None and any(row['path'] == '/home/api/nodes' and row['status'] == 200
+                                     for row in window[armed + 1:]):
+            return
+    raise ValueError('No fresh healthy render with native slow-request pending assertion')
 
 
 def verify(root, device):
@@ -40,6 +68,7 @@ def verify(root, device):
         stalled_path='/slow/api/nodes', refresh_path='/home/api/nodes',
         min_pngs=10, video_filename='phone-hub-demo-fixture.mp4')
     requests = [json.loads(line) for line in (root / 'fixture-requests.jsonl').read_text().splitlines()]
+    verify_pending_progress(requests)
     denied = next((i for i, request in enumerate(requests) if request['path'] == '/work/api/nodes' and request['status'] == 401), None)
     if denied is None:
         raise ValueError('No actual single-source 401 observed')
