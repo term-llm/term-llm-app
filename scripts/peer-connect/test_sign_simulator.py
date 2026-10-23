@@ -86,6 +86,13 @@ class SigningPolicyTests(unittest.TestCase):
             order = []
             def command(args, **kwargs):
                 path = args[-1]
+                if '--verify' in args:
+                    if path in stock:
+                        # Mirrors the real Apple SDK-copy failure: code remains
+                        # signed, but Xcode stripped upstream sealed resources.
+                        self.assertIn('--ignore-resources', args)
+                    else:
+                        self.assertNotIn('--ignore-resources', args)
                 if '--sign' in args:
                     order.append(path)
                     self.assertNotIn('--deep', args)
@@ -105,6 +112,8 @@ class SigningPolicyTests(unittest.TestCase):
             self.assertEqual(len(provenance['products']), 7)
             runner_record = next(r for r in provenance['products'] if r['path'] == 'TermLLMUITests-Runner.app')
             self.assertEqual(runner_record['action'], 'preserved-xcode-code')
+            self.assertFalse(runner_record['resource_envelope_validated'])
+            self.assertIn('resource envelopes not validated', provenance['preserved_validation'])
             self.assertEqual(runner_record['before']['entitlements'], runner_record['entitlements'])
             self.assertEqual(runner_record['before']['signature_details'], runner_record['signature_details'])
             self.assertEqual(runner_record['before']['binary_sha256'], runner_record['binary_sha256'])
