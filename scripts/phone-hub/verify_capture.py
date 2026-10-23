@@ -18,7 +18,8 @@ def load(name):
 
 UNITS = ('HubConnectionStoreTests', 'HubAggregateStoreTests', 'DirectNodeClientTests',
          'DirectNodeClientModelTests', 'DirectNodeClientMountTests',
-         'DirectNodeClientCookieFilterTests', 'HubConnectionSecurityTests')
+         'DirectNodeClientCookieFilterTests', 'HubConnectionSecurityTests',
+         'ListenToolsTests', 'ListenPlayerTests', 'ListenStoreTests', 'ListenMediaTransportTests')
 ROUTES = {'/work/api/nodes', '/home/api/nodes', '/work/api/attention', '/home/api/attention',
           '/direct/healthz', '/direct/v1/sessions/status', '/direct/v1/attention',
           '/work/node/shared/', '/home/node/shared/', '/direct/', '/slow/api/nodes'}

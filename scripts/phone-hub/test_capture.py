@@ -61,6 +61,19 @@ class PhoneCaptureGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'absent or not executed'):
                     gates.verify(self.root, 'test-device')
 
+    def test_listen_regressions_are_executed_and_required(self):
+        expected = {'ListenToolsTests', 'ListenPlayerTests', 'ListenStoreTests', 'ListenMediaTransportTests'}
+        command = Path(__file__).with_name('capture.sh').read_text()
+        selected = command.split("NATIVE_HUB_UNIT_SUITES='")[1].split("'")[0].split()
+        self.assertTrue(expected.issubset(selected))
+        self.assertTrue(expected.issubset(gates.UNITS))
+        for missing in expected:
+            with self.subTest(missing=missing):
+                self.write('unit-test-tree.json', dict(testNodes=[
+                    self.suite(name, ['testExecuted']) for name in gates.UNITS if name != missing]))
+                with self.assertRaisesRegex(ValueError, 'absent or not executed'):
+                    gates.verify(self.root, 'test-device')
+
     def test_completed_slow_before_healthy_progress_is_not_concurrency(self):
         index = next(i for i, row in enumerate(self.requests) if row['status'] == 'stalled')
         self.requests.insert(index + 1, dict(path='/slow/api/nodes', status=504))

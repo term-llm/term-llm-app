@@ -19,6 +19,33 @@ final class ListenToolsTests: XCTestCase {
         }
     }
 
+    func testSourceRegistryRetainsProviderAfterFactoryReturns() async throws {
+        let listen = makeListen()
+        let settings = DeviceToolsSettings(defaults: isolatedDefaults(),
+                                           registry: DeviceToolRegistry(tools: []), listen: listen)
+        let source = HubConnection(id: UUID(), name: "Owner", kind: .hub,
+                                   url: URL(string: "https://owner.example/phone/")!)
+        let other = HubConnection(id: UUID(), name: "Other", kind: .directNode,
+                                  url: URL(string: "https://other.example/node/")!)
+        let registry = settings.registry(for: source)
+        _ = settings.registry(for: other)
+        XCTAssertTrue(registry === settings.registry(for: source), "uses the cached provider/registry pair")
+        await settle()
+
+        // Invoke the actual factory-returned closures after its local provider
+        // has gone out of scope, not a separately retained ListenTools instance.
+        let list = try XCTUnwrap(registry.tool(named: "media_list"))
+        let empty = try await list.call([:])
+        XCTAssertEqual(try JSONValue.decode(Data(empty.text.utf8))["total"], 0)
+        let add = try XCTUnwrap(registry.tool(named: "media_add"))
+        _ = try await add.call(["url": "/phone/media/owned.mp3", "download": "never"])
+        let item = try XCTUnwrap(listen.store.items.first)
+        XCTAssertEqual(item.url, URL(string: "https://owner.example/phone/media/owned.mp3"))
+        XCTAssertEqual(item.sourceID, source.id, "must not inherit the latest registry or selected server")
+        let populated = try await list.call([:])
+        XCTAssertEqual(try JSONValue.decode(Data(populated.text.utf8))["total"], 1)
+    }
+
     func testToolNamesAndSchemas() {
         let listen = makeListen()
         XCTAssertEqual(listen.tools.map(\.name),

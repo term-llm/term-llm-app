@@ -11,22 +11,25 @@ final class DeviceToolsSettings: ObservableObject {
     static let serversKey = "deviceTools.webMCPServers"
 
     let registry: DeviceToolRegistry
-    private var sourceRegistries: [UUID: DeviceToolRegistry] = [:]
+    private var sourceRegistries: [UUID: (registry: DeviceToolRegistry, provider: ListenTools)] = [:]
+    private let listen: Listen?
     @Published private(set) var enabledServers: Set<String>
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard,
-         registry: DeviceToolRegistry = BuiltInDeviceTools.standardRegistry()) {
+         registry: DeviceToolRegistry = BuiltInDeviceTools.standardRegistry(), listen: Listen? = nil) {
         self.defaults = defaults
         self.registry = registry
+        self.listen = listen
         self.enabledServers = Set(defaults.stringArray(forKey: Self.serversKey) ?? [])
     }
 
     func registry(for source: HubConnection) -> DeviceToolRegistry {
-        if let cached = sourceRegistries[source.id] { return cached }
-        let tools = ListenTools(listen: .shared, source: ListenServer(base: source.url, sourceID: source.id)).tools
-        let scoped = DeviceToolRegistry(tools: registry.tools.filter { !$0.name.hasPrefix("media_") } + tools)
-        sourceRegistries[source.id] = scoped
+        if let cached = sourceRegistries[source.id] { return cached.registry }
+        // Tool closures weakly capture the provider; retain it for the cached registry lifetime.
+        let provider = ListenTools(listen: listen ?? .shared, source: ListenServer(base: source.url, sourceID: source.id))
+        let scoped = DeviceToolRegistry(tools: registry.tools.filter { !$0.name.hasPrefix("media_") } + provider.tools)
+        sourceRegistries[source.id] = (scoped, provider)
         return scoped
     }
 

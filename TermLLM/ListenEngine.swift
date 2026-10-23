@@ -194,7 +194,8 @@ final class AVListenEngine: ListenEngine {
         spoken = source.spoken
         isRemote = !source.isLocal
         var options: [String: Any] = [:]
-        if !source.cookies.isEmpty { options[AVURLAssetHTTPCookiesKey] = source.cookies }
+        // An explicit empty list must not fall back to AVFoundation's default cookies.
+        options[AVURLAssetHTTPCookiesKey] = source.cookies
         let asset = AVURLAsset(url: source.url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .timeDomain
@@ -341,10 +342,12 @@ final class SystemNowPlaying: ListenNowPlaying {
     private var artworkTask: Task<Void, Never>?
     private let cookies: ListenCookieJar
     private let server: () -> ListenServer?
+    private let session: URLSession
 
-    init(cookies: ListenCookieJar, server: @escaping () -> ListenServer?) {
+    init(cookies: ListenCookieJar, server: @escaping () -> ListenServer?, session: URLSession = ListenMediaSession.shared) {
         self.cookies = cookies
         self.server = server
+        self.session = session
     }
 
     func connect(_ commands: ListenRemoteCommands) {
@@ -406,15 +409,17 @@ final class SystemNowPlaying: ListenNowPlaying {
         artworkTask?.cancel()
         guard let url = item.artworkURL else { return }
         let cookies = cookies
+        let session = session
         let sameServer = item.sourceID != nil || (server()?.isSameOrigin(url) ?? false)
         artworkTask = Task { [weak self] in
             var request = URLRequest(url: url, timeoutInterval: 20)
+            request.httpShouldHandleCookies = false
             if sameServer {
                 HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
                     request.setValue($1, forHTTPHeaderField: $0)
                 }
             }
-            guard let (data, _) = try? await URLSession.shared.data(for: request),
+            guard let (data, _) = try? await session.data(for: request),
                   let image = UIImage(data: data), !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.artworkURL == url else { return }

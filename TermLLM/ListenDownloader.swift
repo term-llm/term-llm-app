@@ -218,6 +218,7 @@ final class ListenDownloader {
             url = components.url ?? url
         }
         var request = URLRequest(url: url, timeoutInterval: 60)
+        request.httpShouldHandleCookies = false
         if sameServer {
             HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
                 request.setValue($1, forHTTPHeaderField: $0)
@@ -268,12 +269,14 @@ final class ListenDownloader {
 /// Lets the downloader read progress from a download in flight.
 final class ListenTransfer: @unchecked Sendable {
     let lowPriority: Bool
+    private let session: URLSession
     private let lock = NSLock()
     private var task: URLSessionTask?
     private var reported: (received: Int64, expected: Int64?) = (0, nil)
 
-    init(lowPriority: Bool = false) {
+    init(lowPriority: Bool = false, session: URLSession = ListenMediaSession.shared) {
         self.lowPriority = lowPriority
+        self.session = session
     }
 
     var snapshot: (received: Int64, expected: Int64?) {
@@ -295,12 +298,43 @@ final class ListenTransfer: @unchecked Sendable {
     }
 
     @Sendable static func fetch(_ request: URLRequest, _ transfer: ListenTransfer) async throws -> (URL, URLResponse) {
-        try await URLSession.shared.download(for: request, delegate: Watcher(transfer: transfer))
+        var request = request
+        request.httpShouldHandleCookies = false
+        return try await transfer.session.download(for: request, delegate: Watcher(transfer: transfer))
     }
 
-    private final class Watcher: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private final class Watcher: ListenMediaSession.Delegate, @unchecked Sendable {
         let transfer: ListenTransfer
         init(transfer: ListenTransfer) { self.transfer = transfer }
         func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) { transfer.attach(task) }
+    }
+}
+
+/// HTTP media carries only the scoped headers supplied by Listen, never the
+/// process-wide cookie jar or saved URL credentials. Shared by downloads and artwork.
+enum ListenMediaSession {
+    static let shared = makeSession()
+
+    static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
+        return URLSession(configuration: configuration, delegate: Delegate(), delegateQueue: nil)
+    }
+
+    class Delegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            // A redirect can leave the credential owner's mount even on the same
+            // host. Follow public redirects, but don't forward scoped credentials.
+            var redirected = request
+            redirected.httpShouldHandleCookies = false
+            redirected.setValue(nil, forHTTPHeaderField: "Cookie")
+            redirected.setValue(nil, forHTTPHeaderField: "Authorization")
+            completionHandler(redirected)
+        }
     }
 }

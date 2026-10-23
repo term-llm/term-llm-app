@@ -13,6 +13,7 @@ It does not depend on the deferred WebRTC branch, SDK or remote demo services.
 - Each source owns its WebKit website data and authentication. A changed endpoint/kind is a new trust identity; a name change is not.
 - Isolated storage may require a fresh sign-in after migrating the old URL. URL migration does not imply automatic copying of ambient browser credentials.
 - Listen items capture their originating source UUID when queued; later selection changes cannot substitute a different connection's cookies. Missing/corrupt catalogs, removed sources and media with unknown ownership fail closed for credentials. Previously queued unowned protected media may need to be added again from its signed-in source; public URLs do not gain credentials through URL matching alone.
+- Download/artwork sessions disable automatic cookies and ambient cookie/credential storage. Public redirects remain supported but drop Cookie/Authorization headers, including same-host redirects that could leave the owning mount. Protected media endpoints must not rely on forwarding authentication through a redirect.
 
 ## Slice 2: unified native views
 
@@ -33,7 +34,7 @@ The original `scripts/native-hub/capture.sh`, fixture HTML/logging helpers, simu
 The new workflow `.github/workflows/phone-hub.yml` checks out the exact PR head and runs:
 
 1. Existing Python fixture/provenance regressions plus the new multi-source fixture/gate tests.
-2. Actual Xcode app build and all seven requested XCTest classes: `HubConnectionStoreTests`, `HubAggregateStoreTests`, `HubConnectionSecurityTests`, plus `DirectNodeClientTests`, `DirectNodeClientModelTests`, `DirectNodeClientMountTests`, and `DirectNodeClientCookieFilterTests` (all four Direct Node classes, not only the main class).
+2. Actual Xcode app build and all eleven requested XCTest classes: `HubConnectionStoreTests`, `HubAggregateStoreTests`, `HubConnectionSecurityTests`; `DirectNodeClientTests`, `DirectNodeClientModelTests`, `DirectNodeClientMountTests`, `DirectNodeClientCookieFilterTests` (all four Direct Node classes); and `ListenToolsTests`, `ListenPlayerTests`, `ListenStoreTests`, `ListenMediaTransportTests` for media source ownership, provider lifetime and ambient-cookie denial.
 3. Actual `PhoneHubUITests` on the same simulator being recorded: user-added Work/Home Hubs plus a Laptop Direct Node, native unified views, correct Hub/direct chat routes, saved-catalog process relaunch, a genuinely pending source HTTP request, and one-source 401 isolation. For pending-source progress, the test waits for an uncached healthy node-title update, then asserts Slow's native `nodesLoading` marker before acknowledging it to the fixture. The gate rejects a slow response completing before that assertion; server-side waiting alone does not establish that the native client remains pending.
 
 The test flag `TERMLLM_PHONE_HUB_FIXTURE_URL=http://localhost:8767/` works only in Debug simulator builds. `TERMLLM_PHONE_HUB_FIXTURE_RESET=1` clears the isolated fixture catalog for the first launch; a relaunch with `0` tests persistence. Fixture storage/auth are isolated from production. Every screen is labelled **DEMO FIXTURE · LOCAL**. The fixture uses synthetic identifiers and static chat HTML; it is not a model, a real remote agent, or a passkey provider.

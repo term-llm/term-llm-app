@@ -390,3 +390,155 @@ private final class FakeListenAudioSession: ListenAudioSession {
         if !activationErrors.isEmpty { throw activationErrors.removeFirst() }
     }
 }
+
+/// Exercises the real Foundation transport, not just the downloader's Fetch seam.
+@MainActor
+final class ListenMediaTransportTests: XCTestCase {
+    func testMediaSessionHasNoAmbientCredentialStores() {
+        let session = ListenMediaSession.makeSession()
+        defer { session.invalidateAndCancel() }
+        XCTAssertFalse(session.configuration.httpShouldSetCookies)
+        XCTAssertNil(session.configuration.httpCookieStorage)
+        XCTAssertNil(session.configuration.urlCredentialStorage)
+    }
+
+    func testArtworkTransportIgnoresAmbientCookiesAndPreservesExplicitHeaders() async throws {
+        let fixture = MediaTransportFixture()
+        defer { fixture.cleanUp() }
+        for explicit in [false, true] {
+            var request = URLRequest(url: fixture.url)
+            request.httpShouldHandleCookies = false
+            if explicit { request.setValue("scoped=owner", forHTTPHeaderField: "Cookie") }
+            let (data, response) = try await fixture.session.data(for: request)
+            XCTAssertEqual(data, Data("media".utf8), "public media still loads without credentials")
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            let received = try XCTUnwrap(MediaTransportProtocol.requests(for: fixture.url).last)
+            XCTAssertEqual(received.value(forHTTPHeaderField: "Cookie"), explicit ? "scoped=owner" : nil)
+            XCTAssertNil(received.value(forHTTPHeaderField: "Authorization"))
+        }
+        XCTAssertEqual(HTTPCookieStorage.shared.cookies(for: fixture.url)?.map(\.value), ["ambient"],
+                       "Set-Cookie from media must not modify the ambient store")
+    }
+
+    func testDownloaderUsesIsolatedTransportWithEmptyAndExplicitScopedCookies() async throws {
+        let fixture = MediaTransportFixture()
+        defer { fixture.cleanUp() }
+        for explicit in [false, true] {
+            let directory = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let jar = FakeCookieJar()
+            if explicit {
+                jar.cookies = [HTTPCookie(properties: [.name: "scoped", .value: "owner",
+                                                       .domain: fixture.url.host!, .path: "/"])!]
+            }
+            let listen = makeListen(cookies: jar, directory: directory, fetch: { request, _ in
+                // Keep the real consumer's request and execute its production
+                // download transport with only the URLProtocol registration changed.
+                try await ListenTransfer.fetch(request, ListenTransfer(session: fixture.session))
+            })
+            let items = try await listen.add([ListenDraft(url: fixture.url, sourceID: UUID())],
+                                             placement: .end, download: .now)
+            for _ in 0..<100 where listen.downloader.activeCount > 0 {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let item = try XCTUnwrap(listen.store.item(items[0].id))
+            XCTAssertEqual(item.download, .downloaded, item.downloadError ?? "download must finish")
+            let received = try XCTUnwrap(MediaTransportProtocol.requests(for: fixture.url).last)
+            XCTAssertFalse(received.httpShouldHandleCookies)
+            XCTAssertEqual(received.value(forHTTPHeaderField: "Cookie"), explicit ? "scoped=owner" : nil)
+            XCTAssertNil(received.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(jar.requested, [fixture.url])
+        }
+    }
+
+    func testNowPlayingArtworkUsesScopedCookiesOnly() async throws {
+        let fixture = MediaTransportFixture()
+        defer { fixture.cleanUp() }
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let jar = FakeCookieJar()
+        let nowPlaying = SystemNowPlaying(cookies: jar, server: { nil }, session: fixture.session)
+        defer { nowPlaying.clear() }
+        for explicit in [false, true] {
+            jar.cookies = explicit ? [HTTPCookie(properties: [.name: "scoped", .value: "owner",
+                                                             .domain: fixture.url.host!, .path: "/"])!] : []
+            let item = ListenStore(fileURL: directory.appending(path: "library.json"))
+                .add([ListenDraft(url: fixture.url, artworkURL: fixture.url, sourceID: UUID())], placement: .end)[0]
+            let previous = MediaTransportProtocol.requests(for: fixture.url).count
+            nowPlaying.show(item, position: 0, duration: nil, rate: 1, playing: false)
+            for _ in 0..<100 where MediaTransportProtocol.requests(for: fixture.url).count == previous {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(MediaTransportProtocol.requests(for: fixture.url).count, previous + 1)
+            let received = try XCTUnwrap(MediaTransportProtocol.requests(for: fixture.url).last)
+            XCTAssertFalse(received.httpShouldHandleCookies)
+            XCTAssertEqual(received.value(forHTTPHeaderField: "Cookie"), explicit ? "scoped=owner" : nil)
+            XCTAssertNil(received.value(forHTTPHeaderField: "Authorization"))
+        }
+    }
+
+    func testMediaRedirectDropsScopedCredentialsEvenWithinSameHost() throws {
+        let session = ListenMediaSession.makeSession()
+        defer { session.invalidateAndCancel() }
+        let original = URL(string: "https://hub.example/owner/media.mp3")!
+        for target in ["https://hub.example/other/file.mp3", "https://cdn.example/file.mp3"] {
+            var request = URLRequest(url: URL(string: target)!)
+            request.setValue("scoped=owner", forHTTPHeaderField: "Cookie")
+            request.setValue("Bearer owner", forHTTPHeaderField: "Authorization")
+            let response = HTTPURLResponse(url: original, statusCode: 302, httpVersion: nil, headerFields: nil)!
+            let task = session.dataTask(with: original)
+            let targetURL = request.url
+            ListenMediaSession.Delegate().urlSession(session, task: task,
+                                                     willPerformHTTPRedirection: response, newRequest: request) { redirected in
+                XCTAssertEqual(redirected?.url, targetURL, "public redirects still follow")
+                XCTAssertEqual(redirected?.httpShouldHandleCookies, false)
+                XCTAssertNil(redirected?.value(forHTTPHeaderField: "Cookie"))
+                XCTAssertNil(redirected?.value(forHTTPHeaderField: "Authorization"))
+            }
+            task.cancel()
+        }
+    }
+}
+
+private final class MediaTransportFixture: @unchecked Sendable {
+    let url = URL(string: "https://\(UUID().uuidString.lowercased()).media.example/media.mp3")!
+    let session = ListenMediaSession.makeSession(protocolClasses: [MediaTransportProtocol.self])
+    private let credential = URLCredential(user: "ambient", password: "secret", persistence: .forSession)
+    private let space: URLProtectionSpace
+    private let cookie: HTTPCookie
+
+    init() {
+        cookie = HTTPCookie(properties: [.name: "session", .value: "ambient", .domain: url.host!, .path: "/"])!
+        space = URLProtectionSpace(host: url.host!, port: 443, protocol: "https", realm: nil,
+                                   authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        HTTPCookieStorage.shared.setCookie(cookie)
+        URLCredentialStorage.shared.setDefaultCredential(credential, for: space)
+    }
+
+    func cleanUp() {
+        session.invalidateAndCancel()
+        HTTPCookieStorage.shared.deleteCookie(cookie)
+        URLCredentialStorage.shared.remove(credential, for: space)
+        MediaTransportProtocol.removeRequests(for: url)
+    }
+}
+
+private final class MediaTransportProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var recorded: [URL: [URLRequest]] = [:]
+
+    static func requests(for url: URL) -> [URLRequest] { lock.withLock { recorded[url] ?? [] } }
+    static func removeRequests(for url: URL) { lock.withLock { recorded[url] = nil } }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".media.example") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.lock.withLock { Self.recorded[url, default: []].append(request) }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "audio/mpeg", "Set-Cookie": "session=response; Path=/"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("media".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
