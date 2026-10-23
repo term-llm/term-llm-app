@@ -19,6 +19,15 @@ protocol PeerFrameChannel: AnyObject {
 
 // MARK: - Body stream
 
+/// What a ``PeerBodyStream`` observer sees.  `.end` is reported when the
+/// stream finishes without error (including a locally cancelled consumer),
+/// so observers must decide completeness from content, not from `.end`.
+enum PeerBodyEvent: Sendable {
+    case chunk(Data)
+    case end
+    case failed
+}
+
 /// Async sequence of body chunks that reports consumption back to the
 /// multiplexer so per-stream buffering stays bounded.
 struct PeerBodyStream: AsyncSequence, Sendable {
@@ -26,20 +35,46 @@ struct PeerBodyStream: AsyncSequence, Sendable {
 
     fileprivate let stream: AsyncThrowingStream<Data, Error>
     fileprivate let consumed: @Sendable (Int) -> Void
+    fileprivate var observer: (@Sendable (PeerBodyEvent) -> Void)? = nil
 
     struct AsyncIterator: AsyncIteratorProtocol {
         fileprivate var base: AsyncThrowingStream<Data, Error>.AsyncIterator
         fileprivate let consumed: @Sendable (Int) -> Void
+        fileprivate let observer: (@Sendable (PeerBodyEvent) -> Void)?
 
         mutating func next() async throws -> Data? {
-            let chunk = try await base.next()
-            if let chunk { consumed(chunk.count) }
+            let chunk: Data?
+            do {
+                chunk = try await base.next()
+            } catch {
+                observer?(.failed)
+                throw error
+            }
+            if let chunk {
+                consumed(chunk.count)
+                observer?(.chunk(chunk))
+            } else {
+                observer?(.end)
+            }
             return chunk
         }
     }
 
     func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: stream.makeAsyncIterator(), consumed: consumed)
+        AsyncIterator(base: stream.makeAsyncIterator(), consumed: consumed, observer: observer)
+    }
+
+    /// Same stream, additionally reporting each chunk as the CONSUMER reads
+    /// it (no extra buffering, so per-stream bounds are unchanged).  Used only
+    /// by the DEBUG capture recorder; observers must not retain raw bytes.
+    func observing(_ observe: @escaping @Sendable (PeerBodyEvent) -> Void) -> PeerBodyStream {
+        var copy = self
+        let previous = observer
+        copy.observer = { event in
+            previous?(event)
+            observe(event)
+        }
+        return copy
     }
 
     /// Construct a stream from a prepared list (tests / synthetic responses).
@@ -328,23 +363,26 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     private func sendRequest(_ data: Data, id: String, owner: StreamState) async throws {
         while true {
             try await waitForBufferSpace(id: id, owner: owner)
-            sendLock.lock()
-            defer { sendLock.unlock() }
-            let verdict: Int = lock.withLock {
-                if closed { return 2 }
-                guard streams[id] === owner, !Task.isCancelled else { return 2 }
-                if channel.bufferedAmount > limits.sendHighWaterBytes { return 1 }  // refilled: wait again
-                owner.requestSent = true
-                return 0
+            // Synchronous critical section (never held across an await).
+            // sendLock is RECURSIVE on purpose: channel.send may synchronously
+            // deliver inbound frames (re-entrant SDK/test callbacks) that call
+            // fail() -> sendLock on this same thread.
+            let verdict: Int = sendLock.withLock {
+                let v: Int = lock.withLock {
+                    if closed { return 2 }
+                    guard streams[id] === owner, !Task.isCancelled else { return 2 }
+                    if channel.bufferedAmount > limits.sendHighWaterBytes { return 1 }  // refilled: wait again
+                    owner.requestSent = true
+                    return 0
+                }
+                guard v == 0 else { return v }
+                return channel.send(data) ? 0 : 3
             }
             switch verdict {
-            case 0:
-                guard channel.send(data) else { throw PeerWireError.channelClosed }
-                return
-            case 1:
-                continue
-            default:
-                throw PeerWireError.cancelled
+            case 0: return
+            case 1: continue
+            case 3: throw PeerWireError.channelClosed
+            default: throw PeerWireError.cancelled
             }
         }
     }

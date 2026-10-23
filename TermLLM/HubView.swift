@@ -95,17 +95,25 @@ struct HubView: View {
 
     init(server: URL, onOpenChat: @escaping (URL) -> Void, onSettings: @escaping () -> Void,
          requiresAuthentication: Bool = false,
-         onAuthorizationRevoked: @escaping () -> Void = {}, onAuthenticated: @escaping () -> Void = {}) {
+         onAuthorizationRevoked: @escaping () -> Void = {}, onAuthenticated: @escaping () -> Void = {},
+         transport: (any HubTransport)? = nil) {
         self.server = server
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings
         self.onAuthorizationRevoked = onAuthorizationRevoked
         self.onAuthenticated = onAuthenticated
-        let client = HubClient(base_url: server, cookie_source: {
-            await Self.cookies()
-        }, cookie_sink: { cookies in
-            await Self.saveCookies(cookies)
-        })
+        let client: HubClient
+        if let transport {
+            // Paired peer: the DataChannel session is the authentication.
+            // Never read or write WebKit cookies on this path.
+            client = HubClient(base_url: server, cookie_source: { [] }, transport: transport)
+        } else {
+            client = HubClient(base_url: server, cookie_source: {
+                await Self.cookies()
+            }, cookie_sink: { cookies in
+                await Self.saveCookies(cookies)
+            })
+        }
         _workspace = StateObject(wrappedValue: HubWorkspace(client: client, requiresAuthentication: requiresAuthentication, onAuthorizationRevoked: onAuthorizationRevoked))
     }
 

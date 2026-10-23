@@ -130,6 +130,13 @@ struct PeerSessionStats: Sendable, Equatable {
     var localCandidateType: String?
     var remoteCandidateType: String?
     var localProtocol: String?
+    /// As reported by libwebrtc for the selected pair (nil when absent);
+    /// never defaulted, so evidence validators can fail on missing data.
+    var selectedPairState: String?
+    var selectedPairNominated: Bool?
+    /// RTCIceCandidateStats.relayProtocol (relay candidates only).
+    var localRelayProtocol: String?
+    var remoteRelayProtocol: String?
     /// Seconds (RTCIceCandidatePairStats.currentRoundTripTime).
     var currentRoundTripTime: Double?
     var availableOutgoingBitrate: Double?
@@ -161,6 +168,8 @@ struct PeerSessionStats: Sendable, Equatable {
         }
         if let pair {
             stats.selectedPairID = pair.id
+            stats.selectedPairState = pair.values["state"] as? String
+            stats.selectedPairNominated = bool(pair.values["nominated"])
             stats.currentRoundTripTime = double(pair.values["currentRoundTripTime"])
             stats.availableOutgoingBitrate = double(pair.values["availableOutgoingBitrate"])
             stats.bytesSent = uint(pair.values["bytesSent"])
@@ -168,9 +177,11 @@ struct PeerSessionStats: Sendable, Equatable {
             if let l = pair.values["localCandidateId"] as? String, let local = byID[l] {
                 stats.localCandidateType = local.values["candidateType"] as? String
                 stats.localProtocol = local.values["protocol"] as? String
+                stats.localRelayProtocol = local.values["relayProtocol"] as? String
             }
             if let r = pair.values["remoteCandidateId"] as? String, let remote = byID[r] {
                 stats.remoteCandidateType = remote.values["candidateType"] as? String
+                stats.remoteRelayProtocol = remote.values["relayProtocol"] as? String
             }
         }
         for dc in entries where dc.type == "data-channel" {

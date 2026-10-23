@@ -38,9 +38,13 @@ final class PeerHubLink: @unchecked Sendable {
     /// Chat web UI: an owned, pair-only `http://localhost:<port>` bridge.  The
     /// caller installs `endpoint.capabilityCookie` (HttpOnly WK cookie) before
     /// loading `endpoint.url(forPath: <same Hub mount path>)`.
-    func makeChatBridge(listener: PeerLoopbackListening) throws -> PeerLoopbackBridge {
+    /// `forwarder` may wrap ``multiplexer`` (DEBUG capture observation only);
+    /// it must forward to this link's multiplexer, never another upstream.
+    func makeChatBridge(listener: PeerLoopbackListening,
+                        forwarder: PeerHTTPForwarding? = nil) throws -> PeerLoopbackBridge {
         guard authorization.check() else { throw PeerLoopbackBridgeError.unauthorized }
-        let bridge = PeerLoopbackBridge(forwarder: multiplexer, authorization: authorization, listener: listener)
+        let bridge = PeerLoopbackBridge(forwarder: forwarder ?? multiplexer, authorization: authorization,
+                                        listener: listener)
         lock.withLock { bridges.append(bridge) }
         return bridge
     }

@@ -33,6 +33,7 @@ struct ContentView: View {
     @StateObject private var deviceTools = DeviceToolsSettings.shared
     @StateObject private var voiceLaunches = VoiceLaunchCenter.shared
     @StateObject private var push = PushCenter.shared
+    @StateObject private var peer = PeerConnectionModel()
     @State private var pushWindowID: String?
     @State private var pushActivity: NSUserActivity?
     @State private var voiceRequest: VoiceBrowserLaunch?
@@ -46,7 +47,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let address {
+            if peer.isPresenting {
+                PeerRootView(model: peer)
+            } else if let address {
                 browser(address)
             } else {
                 setup
@@ -63,7 +66,22 @@ struct ContentView: View {
         }
         .tint(.cyan)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if HubFixture.isEnabled {
+            if let capture = peer.capture {
+                // DEBUG simulator capture only (peer-ci-interface.md).
+                VStack(spacing: 4) {
+                    Text(capture.label)
+                        .font(.caption.bold())
+                        .accessibilityIdentifier("peer.captureLabel")
+                    if !peer.isPresenting {
+                        Button("Open pairing link") { peer.openCapturePairLink() }
+                            .font(.caption)
+                            .accessibilityIdentifier("peer.capture.openPairLink")
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(6)
+                .background(.yellow.opacity(0.3))
+            } else if HubFixture.isEnabled {
                 Text("DEMO FIXTURE · LOCAL")
                     .font(.caption.bold())
                     .frame(maxWidth: .infinity)
@@ -80,6 +98,7 @@ struct ContentView: View {
         })
         .sheet(isPresented: $showingSettings) { settings }
         .onOpenURL { link in
+            if peer.handle(link) { return }
             guard !HubFixture.isEnabled, let server = HubConnectionImport.server(from: link) else { return }
             importedServer = server
         }

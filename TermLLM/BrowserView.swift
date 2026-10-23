@@ -135,12 +135,15 @@ struct BrowserView: UIViewRepresentable {
     var nativeDestination: HubBrowserDestination? = nil
     /// Native visibility overrides the page's own foreground/attendance claims.
     var isContentVisible = true
+    /// Owned store for a paired peer bridge (non-persistent, holds only its
+    /// HttpOnly capability cookie).  nil keeps the existing default/fixture store.
+    var websiteDataStore: WKWebsiteDataStore? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = HubFixture.isEnabled ? HubFixture.websiteDataStore : .default()
+        configuration.websiteDataStore = websiteDataStore ?? (HubFixture.isEnabled ? HubFixture.websiteDataStore : .default())
         configuration.allowsInlineMediaPlayback = true
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)

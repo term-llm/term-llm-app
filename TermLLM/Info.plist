@@ -34,6 +34,12 @@
 			<key>CFBundleURLSchemes</key>
 			<array><string>termllm</string></array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.termllm.app.peer-pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>term-llm-pair</string></array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
