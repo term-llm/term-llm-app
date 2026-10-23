@@ -80,7 +80,9 @@ final class NativeHubUITests: XCTestCase {
         let offline = app.buttons["hub.node.offline"].firstMatch
         reveal(offline)
         offline.tap()
-        required(app.staticTexts["disconnected"].firstMatch)
+        // SwiftUI LabeledContent exposes the value as a combined accessibility
+        // label (confirmed in the failed run's hierarchy), not a standalone text.
+        required(app.staticTexts["Status, disconnected"].firstMatch)
         let offlineNewChat = required(app.buttons["New conversation"].firstMatch)
         XCTAssertFalse(offlineNewChat.isEnabled, "Disconnected nodes must not offer an enabled chat launch")
         capture("04-offline-node-native-details")
