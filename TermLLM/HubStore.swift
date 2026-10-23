@@ -107,6 +107,11 @@ final class HubStore: ObservableObject {
 
     // MARK: - Computed
 
+    /// Current auth epoch. UI/client may capture this at request start and
+    /// compare on completion to detect whether a purge+reauth cycle occurred
+    /// while a request was in flight.
+    var authEpoch: Int { epoch }
+
     var activeSessionCount: Int {
         guard nodesVerified else { return 0 }
         return nodes.reduce(0) { $0 + ($1.sessions?.active_count ?? 0) }
@@ -152,6 +157,11 @@ final class HubStore: ObservableObject {
     private var nodesSeq: UInt64 = 0
     private var attentionSeq: UInt64 = 0
     private var delegationsSeq: UInt64 = 0
+
+    /// Registration load token — bumped on every `loadRegistrationInfo` call
+    /// and on `clearRegistrationInfo`. Old load's defer/result is discarded
+    /// when its captured token mismatches (e.g. clear + reload within epoch).
+    private var registrationToken: UInt64 = 0
 
     private var orderVersion = 0
     private var orderSaves = 0
@@ -211,16 +221,41 @@ final class HubStore: ObservableObject {
         }
     }
 
-    /// Resume after the user re-authenticates.
+    /// Resume after the user re-authenticates. Advances epoch so that any
+    /// in-flight tasks or mutation completions from the previous session
+    /// cannot write into the new workspace. Resets **all** busy flags since
+    /// old defers are now epoch-gated no-ops and will not clean them up.
     func resumeAfterAuthentication() async {
         guard !disposed else { return }
+        epoch &+= 1
+        cancelPanelTasks()
+        pollTask?.cancel()
+        pollTask = nil
+
+        // New epoch owns all flags — reset everything old defers will skip.
         unauthorized = false
         recentAuthRequired = false
         nodeError = nil
+        attentionError = nil
+        delegationError = nil
+        resolverWarning = nil
         securityStatus = nil
+        nodeOperation = .idle
+        nodeOperationResult = nil
+        clearingAttention = false
+        attentionClearStatus = nil
+        markingSeen = []
+        securityLoading = false
+        securityOperation = nil
+        registrationLoading = false
+        registrationError = nil
+        orderLock = false
+        orderSaves = 0
+        nodesLoading = false
+        attentionLoading = false
+        delegationsLoading = false
+        refreshing = false
         initialLoading = true
-        pollTask?.cancel()
-        pollTask = nil
         start()
     }
 
@@ -243,7 +278,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, !clearingAttention, attentionVerified else { return }
         clearingAttention = true
         attentionClearStatus = nil
-        defer { if !unauthorized { clearingAttention = false } }
+        defer { if e == epoch { clearingAttention = false } }
         do {
             let result = try await client.clear_attention()
             guard epochCurrent(e) else { return }
@@ -272,7 +307,7 @@ final class HubStore: ObservableObject {
               attentionVerified else { return }
         markingSeen.insert(key)
         attentionClearStatus = nil
-        defer { markingSeen.remove(key) }
+        defer { if e == epoch { markingSeen.remove(key) } }
         do {
             _ = try await client.mark_attention_seen(AttentionSeenRequest(
                 store_instance_id: storeID,
@@ -308,7 +343,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, nodeOperation == .idle else { return }
         nodeOperation = .testing
         nodeOperationResult = "Testing…"
-        defer { if !disposed { nodeOperation = .idle } }
+        defer { if e == epoch { nodeOperation = .idle } }
         do {
             let response = try await client.test_node(form)
             guard epochCurrent(e) else { return }
@@ -334,7 +369,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, nodeOperation == .idle else { return false }
         nodeOperation = .adding
         nodeOperationResult = "Adding…"
-        defer { if !disposed { nodeOperation = .idle } }
+        defer { if e == epoch { nodeOperation = .idle } }
         let warning: String?
         do {
             let response = try await client.add_node(form)
@@ -363,7 +398,7 @@ final class HubStore: ObservableObject {
         let e = epoch
         guard !disposed, !unauthorized, nodeOperation == .idle else { return }
         nodeOperation = .removing
-        defer { if !disposed { nodeOperation = .idle } }
+        defer { if e == epoch { nodeOperation = .idle } }
         do {
             _ = try await client.remove_node(id: id)
         } catch {
@@ -397,14 +432,14 @@ final class HubStore: ObservableObject {
         nodes = nodes.sorted { (rankMap[$0.id] ?? Int.max) < (rankMap[$1.id] ?? Int.max) }
 
         orderSaves += 1
-        defer { orderLock = false }
+        defer { if e == epoch { orderLock = false } }
 
         // Minimal diff against previous order.
         var first = 0
         while first < previousIDs.count, first < orderedIDs.count,
               previousIDs[first] == orderedIDs[first] { first += 1 }
         guard first < orderedIDs.count else {
-            orderSaves = max(orderSaves - 1, 0)
+            if e == epoch { orderSaves = max(orderSaves - 1, 0) }
             return
         }
         var lastPrev = previousIDs.count - 1
@@ -417,12 +452,12 @@ final class HubStore: ObservableObject {
             _ = try await client.reorder_nodes(node_ids: moved)
             // Success: the next routine poll (orderSaves == 0) will accept
             // server order as authoritative.
-            orderSaves = max(orderSaves - 1, 0)
+            if e == epoch { orderSaves = max(orderSaves - 1, 0) }
         } catch {
             // Rollback: clear orderSaves BEFORE the reconciliation fetch so
             // showNodes accepts the server's authoritative order instead of
             // re-sorting to match the failed optimistic order.
-            orderSaves = max(orderSaves - 1, 0)
+            if e == epoch { orderSaves = max(orderSaves - 1, 0) }
             if authPurgeIfNeeded(error) {
                 throw HubStoreError.reorderFailed("Authorization expired.")
             }
@@ -442,15 +477,17 @@ final class HubStore: ObservableObject {
     func loadRegistrationInfo() async {
         let e = epoch
         guard !disposed, !unauthorized, !registrationLoading else { return }
+        registrationToken &+= 1
+        let tok = registrationToken
         registrationLoading = true
         registrationError = nil
-        defer { if !unauthorized { registrationLoading = false } }
+        defer { if e == epoch, tok == registrationToken { registrationLoading = false } }
         do {
             let info = try await client.registration_info()
-            guard epochCurrent(e) else { return }
+            guard epochCurrent(e), tok == registrationToken else { return }
             registrationInfo = info
         } catch {
-            guard epochCurrent(e) else { return }
+            guard epochCurrent(e), tok == registrationToken else { return }
             if !(error is CancellationError) {
                 registrationError = "Could not load registration settings: \(errorMessage(error))"
             }
@@ -458,6 +495,7 @@ final class HubStore: ObservableObject {
     }
 
     func clearRegistrationInfo() {
+        registrationToken &+= 1
         registrationInfo = nil
         registrationError = nil
         registrationLoading = false
@@ -471,7 +509,7 @@ final class HubStore: ObservableObject {
         securityLoading = true
         securityStatus = nil
         recentAuthRequired = false
-        defer { if !unauthorized { securityLoading = false } }
+        defer { if e == epoch { securityLoading = false } }
         do {
             let sessResponse: HubSessionResponse
             let credResponse: CredentialsResponse
@@ -500,7 +538,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, securityOperation == nil else { return }
         securityOperation = "rename"
         securityStatus = nil
-        defer { if !unauthorized { securityOperation = nil } }
+        defer { if e == epoch { securityOperation = nil } }
         do {
             _ = try await client.rename_credential(record_id: recordID, display_name: displayName)
             guard epochCurrent(e) else { return }
@@ -522,7 +560,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, securityOperation == nil else { return }
         securityOperation = "remove"
         securityStatus = nil
-        defer { if !unauthorized { securityOperation = nil } }
+        defer { if e == epoch { securityOperation = nil } }
         do {
             _ = try await client.remove_credential(record_id: recordID)
             guard epochCurrent(e) else { return }
@@ -548,7 +586,7 @@ final class HubStore: ObservableObject {
         guard !disposed, !unauthorized, securityOperation == nil else { return }
         securityOperation = "revoke"
         securityStatus = nil
-        defer { if !unauthorized { securityOperation = nil } }
+        defer { if e == epoch { securityOperation = nil } }
         do {
             let result = try await client.revoke_other_sessions()
             guard epochCurrent(e) else { return }
@@ -567,6 +605,7 @@ final class HubStore: ObservableObject {
         securityOperation = "logout"
         do {
             let result = try await client.logout()
+            guard epochCurrent(e) else { return nil }
             performUnauthorizedPurge()
             return result.redirect
         } catch {

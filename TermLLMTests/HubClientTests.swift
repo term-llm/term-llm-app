@@ -1,6 +1,61 @@
 import XCTest
 @testable import TermLLM
 
+// MARK: - Cookie recorder
+
+/// Thread-safe cookie recorder that replaces UnsafeMutablePointer<[[HTTPCookie]]>
+/// for capturing sunk cookies.  The reference is captured by the sink closure,
+/// which may outlive the test method frame — unlike a stack pointer.
+private final class CookieRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _batches: [[HTTPCookie]] = []
+
+    var batches: [[HTTPCookie]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _batches
+    }
+
+    var count: Int { batches.count }
+
+    func append(_ cookies: [HTTPCookie]) {
+        lock.lock()
+        _batches.append(cookies)
+        lock.unlock()
+    }
+}
+
+// Mutable state shared with Foundation/Network delegate queues in tests.
+private final class HubTestBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+    func set(_ value: Value) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private actor HubRequestGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 // MARK: - Mock transport
 
 /// Closure-based mock transport that records requests and returns canned responses.
@@ -462,14 +517,14 @@ final class HubClientTests: XCTestCase {
     private func makeClient(
         base: String = "https://hub.example.com/",
         cookies: [HTTPCookie] = [],
-        sunkCookies: UnsafeMutablePointer<[[HTTPCookie]]>? = nil,
+        recorder: CookieRecorder? = nil,
         handler: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     ) -> (HubClient, MockTransport) {
         let transport = MockTransport(handler: handler)
         let client = HubClient(
             base_url: URL(string: base)!,
             cookie_source: { cookies },
-            cookie_sink: { cookies in sunkCookies?.pointee.append(cookies) },
+            cookie_sink: { cookies in recorder?.append(cookies) },
             transport: transport
         )
         return (client, transport)
@@ -560,7 +615,7 @@ final class HubClientTests: XCTestCase {
 
     // MARK: Error handling
 
-    func testNon2xxThrowsHubAPIError() async {
+    func testNon2xxThrowsHubAPIError() async throws {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Forbidden\",\"type\":\"auth\"}}", status: 403)
         }
@@ -574,7 +629,7 @@ final class HubClientTests: XCTestCase {
         }
     }
 
-    func testPlainTextErrorFallback() async {
+    func testPlainTextErrorFallback() async throws {
         let (client, _) = makeClient { _ in
             let http = HTTPURLResponse(url: URL(string: "https://hub.example.com/api/nodes")!,
                                         statusCode: 500, httpVersion: nil, headerFields: nil)!
@@ -589,7 +644,7 @@ final class HubClientTests: XCTestCase {
         }
     }
 
-    func testEmptyResponseThrows() async {
+    func testEmptyResponseThrows() async throws {
         let (client, _) = makeClient { _ in
             let http = HTTPURLResponse(url: URL(string: "https://hub.example.com/api/nodes")!,
                                         statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -644,30 +699,30 @@ final class HubClientTests: XCTestCase {
     // MARK: Set-Cookie sink
 
     func testResponseSetCookieSunkForHubAuthCookies() async throws {
-        var sunk: [[HTTPCookie]] = []
-        let (client, _) = makeClient(sunkCookies: &sunk) { _ in
+        let rec = CookieRecorder()
+        let (client, _) = makeClient(recorder: rec) { _ in
             jsonResponse("{\"nodes\":[]}", headers: [
                 "Set-Cookie": "term_llm_hub_session=abc123; Path=/; HttpOnly"
             ])
         }
         _ = try await client.list_nodes()
-        XCTAssertEqual(sunk.count, 1)
-        XCTAssertEqual(sunk[0].first?.name, "term_llm_hub_session")
+        XCTAssertEqual(rec.count, 1)
+        XCTAssertEqual(rec.batches[0].first?.name, "term_llm_hub_session")
     }
 
     func testResponseSetCookieNotSunkForNonAuthCookies() async throws {
-        var sunk: [[HTTPCookie]] = []
-        let (client, _) = makeClient(sunkCookies: &sunk) { _ in
+        let rec = CookieRecorder()
+        let (client, _) = makeClient(recorder: rec) { _ in
             jsonResponse("{\"nodes\":[]}", headers: [
                 "Set-Cookie": "tracking=xyz; Path=/"
             ])
         }
         _ = try await client.list_nodes()
-        XCTAssertEqual(sunk.count, 0, "Non-auth cookies must not be sunk")
+        XCTAssertEqual(rec.count, 0, "Non-auth cookies must not be sunk")
     }
 
     func testResponseSetCookieNotSunkForWrongPath() async throws {
-        var sunk: [[HTTPCookie]] = []
+        let rec = CookieRecorder()
         let transport = MockTransport { _ in
             jsonResponse("{\"nodes\":[]}", headers: [
                 "Set-Cookie": "term_llm_hub_session=abc; Path=/other/"
@@ -676,11 +731,11 @@ final class HubClientTests: XCTestCase {
         let client = HubClient(
             base_url: URL(string: "https://hub.example.com/hub/")!,
             cookie_source: { [] },
-            cookie_sink: { cookies in sunk.append(cookies) },
+            cookie_sink: { cookies in rec.append(cookies) },
             transport: transport
         )
         _ = try await client.list_nodes()
-        XCTAssertEqual(sunk.count, 0, "Auth cookie at wrong path must not be sunk")
+        XCTAssertEqual(rec.count, 0, "Auth cookie at wrong path must not be sunk")
     }
 
     // MARK: Discover
@@ -752,7 +807,7 @@ final class HubClientTests: XCTestCase {
         }
     }
 
-    func testDiscoverNonHubPageThrows() async {
+    func testDiscoverNonHubPageThrows() async throws {
         let (client, _) = makeClient { _ in htmlResponse("<html><body>Not a hub</body></html>") }
         do {
             _ = try await client.discover()
@@ -773,7 +828,7 @@ final class HubClientTests: XCTestCase {
         XCTAssertEqual(transport.requests[0].method, "GET")
     }
 
-    func testLoginBearerRejectsInvalidToken() async {
+    func testLoginBearerRejectsInvalidToken() async throws {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"bad token\"}}", status: 401)
         }
@@ -786,17 +841,17 @@ final class HubClientTests: XCTestCase {
     }
 
     func testLoginBearerSinksCookie() async throws {
-        var sunk: [[HTTPCookie]] = []
+        let rec = CookieRecorder()
         let transport = MockTransport { _ in jsonResponse("{\"nodes\":[]}") }
         let client = HubClient(
             base_url: URL(string: "https://hub.example.com/hub/")!,
             cookie_source: { [] },
-            cookie_sink: { cookies in sunk.append(cookies) },
+            cookie_sink: { cookies in rec.append(cookies) },
             transport: transport
         )
         try await client.login_bearer(token: "tok123")
-        XCTAssertEqual(sunk.count, 1)
-        let cookie = sunk[0].first
+        XCTAssertEqual(rec.count, 1)
+        let cookie = rec.batches[0].first
         XCTAssertEqual(cookie?.name, "term_llm_hub_token")
         XCTAssertEqual(cookie?.value, "tok123")
         XCTAssertEqual(cookie?.path, "/hub/")
@@ -1027,5 +1082,262 @@ final class HubClientMountedPathTests: XCTestCase {
         let c = HubClient(base_url: URL(string: "http://localhost:8080/")!, cookie_source: { [] })
         XCTAssertEqual(c.origin, "http://localhost:8080")
         XCTAssertFalse(c.is_https)
+    }
+}
+
+// MARK: - Delegate direct-invocation tests
+
+/// Tests that directly invoke HubSessionDelegate.urlSession(_:dataTask:didReceive:completionHandler:)
+/// to prove the completionHandler is not called until the async on_unauthorized callback completes.
+/// MockTransport cannot prove this — it calls the callback sequentially after the response returns.
+/// These tests exercise the actual delegate code path.
+extension HubClientTests {
+
+    /// Prove: completionHandler waits for the on_unauthorized callback to finish.
+    /// We create a delegate whose callback sleeps briefly, then assert the
+    /// completionHandler was NOT called before the callback completed.
+    func testCompletionHandlerWaitsForCallback() async throws {
+        // Timeline: callback start → delay → callback end → completionHandler
+        let callbackCompleted = expectation(description: "callback completed")
+        let completionCalled = expectation(description: "completionHandler called")
+
+        var callbackEndTime: CFAbsoluteTime = 0
+        var completionCallTime: CFAbsoluteTime = 0
+
+        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
+            // Simulate an async purge that takes measurable time
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            callbackEndTime = CFAbsoluteTimeGetCurrent()
+            callbackCompleted.fulfill()
+        })
+
+        // Build a fake 401 HTTPURLResponse to trigger the unauthorized path
+        let url = URL(string: "https://hub.example.com/api/nodes")!
+        let response = HTTPURLResponse(url: url, statusCode: 401, httpVersion: nil, headerFields: nil)!
+
+        // We need a real URLSession + task to pass to the delegate method.
+        // Create a dummy task via an ephemeral session.
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let dummyRequest = URLRequest(url: url)
+        let task = session.dataTask(with: dummyRequest)
+
+        // Invoke the delegate method directly
+        delegate.urlSession(session, dataTask: task, didReceive: response) { _ in
+            completionCallTime = CFAbsoluteTimeGetCurrent()
+            completionCalled.fulfill()
+        }
+
+        await fulfillment(of: [callbackCompleted, completionCalled], timeout: 5, enforceOrder: true)
+        XCTAssertTrue(delegate.didFireUnauthorized)
+        XCTAssertGreaterThan(completionCallTime, 0)
+        XCTAssertGreaterThan(callbackEndTime, 0)
+        // completionHandler must have been called AFTER callback finished
+        XCTAssertGreaterThanOrEqual(completionCallTime, callbackEndTime,
+            "completionHandler must not fire before on_unauthorized callback finishes")
+    }
+
+    /// Prove: on 200 OK, completionHandler fires immediately with no callback.
+    func testCompletionHandlerFiresImmediatelyOnSuccess() {
+        let completionCalled = expectation(description: "completionHandler called")
+        var callbackFired = false
+
+        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
+            callbackFired = true
+        })
+
+        let url = URL(string: "https://hub.example.com/api/nodes")!
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let task = session.dataTask(with: URLRequest(url: url))
+
+        delegate.urlSession(session, dataTask: task, didReceive: response) { disposition in
+            XCTAssertEqual(disposition, .allow)
+            completionCalled.fulfill()
+        }
+
+        wait(for: [completionCalled], timeout: 1)
+        XCTAssertFalse(callbackFired)
+        XCTAssertFalse(delegate.didFireUnauthorized)
+    }
+
+    /// Prove: 403 also triggers the unauthorized path (not just 401).
+    func testCompletionHandlerWaitsOn403() async throws {
+        let callbackDone = expectation(description: "callback done")
+        let completionDone = expectation(description: "completion done")
+
+        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
+            try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+            callbackDone.fulfill()
+        })
+
+        let url = URL(string: "https://hub.example.com/api/nodes")!
+        let response = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: nil)!
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let task = session.dataTask(with: URLRequest(url: url))
+
+        delegate.urlSession(session, dataTask: task, didReceive: response) { _ in
+            completionDone.fulfill()
+        }
+
+        await fulfillment(of: [callbackDone, completionDone], timeout: 5, enforceOrder: true)
+        XCTAssertTrue(delegate.didFireUnauthorized)
+    }
+}
+
+// MARK: - Real transport 401 stalled-body test
+
+/// Exercises URLSessionHubTransport against a real loopback TCP listener that
+/// sends HTTP 401 headers with Content-Length but never sends the body.
+/// Proves on_unauthorized fires at header time, before the body download
+/// would complete (it never will).  Uses Network.framework NWListener on
+/// loopback only — no shared service, no external connections.
+///
+/// **Platform limitation**: Network.framework requires Apple platforms.
+/// This test is a no-op on Linux.
+#if canImport(Network)
+import Network
+
+extension HubClientTests {
+
+    /// Spin up a loopback-only TCP listener that accepts one connection,
+    /// sends a minimal HTTP/1.1 401 response with a large Content-Length
+    /// but never sends the body, then holds the connection open.
+    func testOnUnauthorizedFiresBeforeBodyOnRealTransport() async throws {
+        try await assertHeaderTimeRevocation(discovery: false)
+    }
+
+    func testDiscoveryPurgesBeforeStalledLoginPageBody() async throws {
+        try await assertHeaderTimeRevocation(discovery: true)
+    }
+
+    private func assertHeaderTimeRevocation(discovery: Bool) async throws {
+        // Set up loopback listener on a random port
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let listener = try NWListener(using: parameters)
+
+        let listenerReady = expectation(description: "listener ready")
+        let listenerPort = HubTestBox<UInt16>(0)
+        let acceptedConnection = HubTestBox<NWConnection?>(nil)
+
+        listener.stateUpdateHandler = { state in
+            if case .ready = state, let port = listener.port {
+                listenerPort.set(port.rawValue)
+                listenerReady.fulfill()
+            }
+        }
+
+        // When a connection arrives, send 401 headers then stall
+        let connectionReceived = expectation(description: "connection received")
+        listener.newConnectionHandler = { conn in
+            acceptedConnection.set(conn)
+            conn.start(queue: .global())
+            // Wait for the request data, then send 401 headers only
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
+                let headers = [
+                    "HTTP/1.1 401 Unauthorized\r\n",
+                    "Content-Type: application/json\r\n",
+                    "Content-Length: 65536\r\n",  // Claim large body
+                    "\r\n",
+                    // NO body follows — connection stays open
+                ].joined()
+                conn.send(content: headers.data(using: .utf8),
+                         completion: .contentProcessed({ _ in
+                    connectionReceived.fulfill()
+                    // Keep conn alive — never close, never send body
+                }))
+            }
+        }
+
+        listener.start(queue: .global())
+        await fulfillment(of: [listenerReady], timeout: 5)
+        XCTAssertGreaterThan(listenerPort.value, 0)
+
+        defer { acceptedConnection.value?.cancel(); listener.cancel() }
+
+        // localhost is the app's explicit simulator HTTP ATS exception.
+        let base = URL(string: "http://localhost:\(listenerPort.value)/")!
+        let callbackFired = expectation(description: "on_unauthorized fired")
+
+        let transport = URLSessionHubTransport()
+        let client = HubClient(
+            base_url: base,
+            cookie_source: { [] },
+            transport: transport
+        )
+        client.on_unauthorized = {
+            callbackFired.fulfill()
+        }
+
+        // Fire the request in a task we can cancel after callback proves the point
+        let requestFinished = HubTestBox(false)
+        let requestTask = Task {
+            do {
+                if discovery { _ = try await client.discover() }
+                else { _ = try await client.list_nodes() }
+            } catch { /* cancellation during cleanup */ }
+            requestFinished.set(true)
+        }
+        defer { requestTask.cancel() }
+
+        // Callback must arrive while the response body is still pending.
+        await fulfillment(of: [callbackFired, connectionReceived], timeout: 10)
+        XCTAssertFalse(requestFinished.value, "The server has not sent the advertised body")
+
+        requestTask.cancel()
+        await requestTask.value
+    }
+}
+
+#endif
+
+extension HubClientTests {
+    @MainActor
+    func testDelayedOld401CannotRevokeNewAuthenticationOrReplaceItsCookies() async {
+        let gate = HubRequestGate()
+        let started = expectation(description: "old request started")
+        let cookies = CookieRecorder()
+        let transport = MockTransport { request in
+            started.fulfill()
+            await gate.wait()
+            return jsonResponse("{\"error\":{\"message\":\"old session expired\"}}", url: request.url!, status: 401,
+                                headers: ["Set-Cookie": "term_llm_hub_session=old; Path=/; Secure; HttpOnly"])
+        }
+        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] },
+                               cookie_sink: { cookies.append($0) }, transport: transport)
+        var revocations = 0
+        let workspace = HubWorkspace(client: client, requiresAuthentication: false) { revocations += 1 }
+        defer { workspace.dispose() }
+        // Also retain the raw callback: it may already be queued on MainActor
+        // when a new sign-in succeeds, past the client's first admission check.
+        let previouslyAdmitted = client.on_unauthorized
+        let request = Task { try? await client.list_nodes() }
+        await fulfillment(of: [started], timeout: 2)
+        workspace.authenticationSucceeded()
+        await gate.release()
+        _ = await request.value
+        await previouslyAdmitted?()
+        XCTAssertFalse(workspace.store.unauthorized)
+        XCTAssertEqual(revocations, 0)
+        XCTAssertEqual(cookies.count, 0, "An old response must not replace a newer session cookie")
+        // Current-session revocation must still work.
+        await client.on_unauthorized?()
+        XCTAssertTrue(workspace.store.unauthorized)
+        XCTAssertEqual(revocations, 1)
+    }
+
+    @MainActor
+    func testDisposedWorkspaceIgnoresAlreadyQueuedRevocation() async {
+        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] })
+        var revocations = 0
+        let workspace = HubWorkspace(client: client, requiresAuthentication: false) { revocations += 1 }
+        let callback = client.on_unauthorized
+        workspace.dispose()
+        await callback?()
+        XCTAssertEqual(revocations, 0)
+        XCTAssertFalse(workspace.store.unauthorized)
     }
 }

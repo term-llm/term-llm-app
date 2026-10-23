@@ -5,11 +5,12 @@ import Combine
 /// Retains the transport, its revocation callback and its store as one identity.
 /// SwiftUI may reconstruct HubView values without replacing this StateObject.
 @MainActor
-private final class HubWorkspace: ObservableObject {
+final class HubWorkspace: ObservableObject {
     let client: HubClient
     let store: HubStore
     private var observation: AnyCancellable?
     private var isActive = true
+    private var authorizationEpoch: UInt64 = 0
     private let onAuthorizationRevoked: @MainActor () -> Void
 
     init(client: HubClient, requiresAuthentication: Bool, onAuthorizationRevoked: @escaping @MainActor () -> Void) {
@@ -18,18 +19,33 @@ private final class HubWorkspace: ObservableObject {
         let store = HubStore(client: client)
         self.store = store
         if requiresAuthentication { store.purgeOnUnauthorized() }
-        client.on_unauthorized = { [weak self] in await self?.revokeAuthorization() }
+        installAuthorizationCallback()
         observation = store.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
-    private func revokeAuthorization() {
+    private func installAuthorizationCallback() {
+        let epoch = authorizationEpoch
+        client.on_unauthorized = { [weak self] in await self?.revokeAuthorization(epoch: epoch) }
+    }
+
+    /// Called only after a successful native session/token import. Old request
+    /// callbacks must be rejected again on MainActor, not just before an await.
+    func authenticationSucceeded() {
         guard isActive else { return }
+        authorizationEpoch &+= 1
+        installAuthorizationCallback()
+    }
+
+    private func revokeAuthorization(epoch: UInt64) {
+        guard isActive, epoch == authorizationEpoch else { return }
         store.purgeOnUnauthorized()
         onAuthorizationRevoked()
     }
 
     func dispose() {
         isActive = false
+        authorizationEpoch &+= 1
+        client.on_unauthorized = nil
         store.dispose()
     }
 }
@@ -490,6 +506,7 @@ struct HubView: View {
                             do {
                                 try await client.login_bearer(token: token)
                                 token = ""
+                                workspace.authenticationSucceeded()
                                 onAuthenticated()
                                 await store.resumeAfterAuthentication()
                             } catch { configurationError = error.localizedDescription }
@@ -553,6 +570,7 @@ struct HubView: View {
             signingIn = false
             switch result {
             case .success:
+                workspace.authenticationSucceeded()
                 onAuthenticated()
                 Task { await discover(); await store.resumeAfterAuthentication() }
             case .failure(let error): configurationError = error.localizedDescription

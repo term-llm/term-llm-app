@@ -417,13 +417,152 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testNodeOperationDeferCleansUpAfterAuthPurge() async {
-        // If auth purge happens during a mutation, defer still resets busy flag.
+        // If auth purge happens during a mutation, purge resets busy flag.
+        // Defer skips (epoch changed) but purge already set .idle.
         client.testNodeResponse = {
             throw authError()
         }
         await store.testNode(NodeFormData(name: "X", url: "https://x.test", token: "t"))
         XCTAssertTrue(store.unauthorized)
-        XCTAssertEqual(store.nodeOperation, .idle, "defer must reset to idle")
+        XCTAssertEqual(store.nodeOperation, .idle, "purge must reset to idle")
+    }
+
+    func testDelayedLogoutAfterReauthDoesNotPurgeNewSession() async {
+        // Scenario: signOut starts (slow logout), user reauths quickly on
+        // another path, old logout response arrives — must NOT purge new session.
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        await store.refresh()
+
+        // Slow logout that completes after reauth.
+        client.logoutResponse = {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return RedirectResponse(ok: true, redirect: "/login")
+        }
+
+        let logoutTask = Task { await self.store.signOut() }
+        // Give logout time to start the network call.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // User reauths — this advances epoch.
+        client.nodesResponse = { NodesResponse(nodes: [makeNode(id: "fresh")], resolver_error: nil) }
+        await store.resumeAfterAuthentication()
+        // Let the new session populate.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // Old logout completes.
+        _ = await logoutTask.value
+        store.dispose()
+
+        // New session must NOT have been purged by the old logout.
+        XCTAssertFalse(store.unauthorized,
+                       "Delayed old logout must not purge new session after reauth")
+    }
+
+    func testOldMutationDeferCannotClearNewOperation() async {
+        // Old testNode in-flight during purge+reauth. NEW testNode blocks
+        // (via gate) so it's still .testing when OLD completes. Old defer
+        // must NOT reset .idle — it's a different epoch.
+        let okStatus = HubNodeStatus(
+            reachable: true, state: "ok", latency_ms: 1, version: "1",
+            agent: "a", capabilities: nil, details: nil, error: nil)
+
+        // Gate: new testNode blocks here until we release it.
+        var releaseNew: CheckedContinuation<Void, Never>?
+
+        client.testNodeResponse = {
+            // OLD call — slow.
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return TestNodeResponse(status: okStatus)
+        }
+
+        // Start old testNode.
+        let oldTest = Task { await self.store.testNode(
+            NodeFormData(name: "Old", url: "https://old.test", token: "t")) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // Purge + reauth (advances epoch, resets nodeOperation).
+        store.purgeOnUnauthorized()
+        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        await store.resumeAfterAuthentication()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // New testNode: blocks on gate so it stays .testing.
+        client.testNodeResponse = {
+            await withCheckedContinuation { cont in
+                releaseNew = cont
+            }
+            return TestNodeResponse(status: okStatus)
+        }
+        let newTest = Task { await self.store.testNode(
+            NodeFormData(name: "New", url: "https://new.test", token: "t")) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // Wait for old to finish — its defer fires now.
+        await oldTest.value
+
+        // New is still in-flight (.testing). Old defer must NOT have reset it.
+        XCTAssertEqual(store.nodeOperation, .testing,
+                       "Old defer must not clear new operation to .idle")
+
+        // Release new testNode to complete.
+        releaseNew?.resume()
+        await newTest.value
+        XCTAssertEqual(store.nodeOperation, .idle)
+    }
+
+    func testResumeResetsBusyFlagsForNewOperations() async {
+        // If an operation was in-flight when resume happens (without prior
+        // purge), resume must reset busy flags so new operations aren't blocked.
+        client.testNodeResponse = {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            return TestNodeResponse(status: HubNodeStatus(
+                reachable: true, state: "ok", latency_ms: 1, version: "1",
+                agent: "a", capabilities: nil, details: nil, error: nil))
+        }
+
+        // Start a slow testNode.
+        let oldOp = Task { await self.store.testNode(
+            NodeFormData(name: "Slow", url: "https://slow.test", token: "t")) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(store.nodeOperation, .testing)
+
+        // Resume (no prior purge) — resets all busy flags.
+        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        await store.resumeAfterAuthentication()
+        XCTAssertEqual(store.nodeOperation, .idle,
+                       "resume must reset nodeOperation so new ops can start")
+        XCTAssertFalse(store.securityLoading)
+        XCTAssertNil(store.securityOperation)
+        XCTAssertFalse(store.clearingAttention)
+
+        // New operation must be able to start.
+        client.testNodeResponse = {
+            TestNodeResponse(status: HubNodeStatus(
+                reachable: true, state: "ok", latency_ms: 1, version: "1",
+                agent: "a", capabilities: nil, details: nil, error: nil))
+        }
+        await store.testNode(NodeFormData(name: "New", url: "https://new.test", token: "t"))
+        XCTAssertEqual(store.nodeOperation, .idle)
+        XCTAssertTrue(store.nodeOperationResult!.contains("✓"))
+
+        await oldOp.value
+        store.dispose()
+    }
+
+    // MARK: - authEpoch exposure
+
+    func testAuthEpochAdvancesOnPurge() {
+        let before = store.authEpoch
+        store.purgeOnUnauthorized()
+        XCTAssertGreaterThan(store.authEpoch, before)
+    }
+
+    func testAuthEpochAdvancesOnResume() async {
+        store.purgeOnUnauthorized()
+        let afterPurge = store.authEpoch
+        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        await store.resumeAfterAuthentication()
+        XCTAssertGreaterThan(store.authEpoch, afterPurge)
     }
 
     // MARK: - Attention limit sent to client
@@ -735,7 +874,7 @@ final class HubStoreTests: XCTestCase {
         XCTAssertEqual(client.reorderNodesCalls.first, ["c", "b"])
     }
 
-    func testReorder404ThrowsChangedElsewhere() async {
+    func testReorder404ThrowsChangedElsewhere() async throws {
         client.nodesResponse = {
             NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolver_error: nil)
         }
@@ -800,6 +939,44 @@ final class HubStoreTests: XCTestCase {
         await store.loadRegistrationInfo()
         store.clearRegistrationInfo()
         XCTAssertNil(store.registrationInfo)
+    }
+
+    func testOldRegistrationLoadDoesNotStompNewLoad() async {
+        // Scenario: slow load in-flight, clearRegistrationInfo called,
+        // new load starts. Old defer/result must not overwrite new state.
+        var callCount = 0
+        client.registrationInfoResponse = {
+            callCount += 1
+            if callCount == 1 {
+                // Old load — slow, returns stale info.
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return RegistrationInfoResponse(enabled: false, token_configured: nil,
+                                                can_persist_nodes: nil, registration_token: nil)
+            } else {
+                // New load — fast, returns fresh info.
+                return RegistrationInfoResponse(enabled: true, token_configured: true,
+                                                can_persist_nodes: true, registration_token: "fresh")
+            }
+        }
+
+        // Start slow old load.
+        let oldLoad = Task { await self.store.loadRegistrationInfo() }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // Clear + new load (bumps registration token).
+        store.clearRegistrationInfo()
+        await store.loadRegistrationInfo()
+
+        // New load completed with fresh data.
+        XCTAssertEqual(store.registrationInfo?.registration_token, "fresh")
+        XCTAssertFalse(store.registrationLoading)
+
+        // Old load finishes — must not overwrite.
+        await oldLoad.value
+        XCTAssertEqual(store.registrationInfo?.registration_token, "fresh",
+                       "Old load must not overwrite new registration info")
+        XCTAssertFalse(store.registrationLoading,
+                       "Old defer must not stomp new registrationLoading")
     }
 
     // MARK: - Security / session

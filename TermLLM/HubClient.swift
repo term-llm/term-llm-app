@@ -448,7 +448,40 @@ final class HubClient: @unchecked Sendable {
     /// Fired at header time on 401/403, **before** the response body is
     /// downloaded (body may stall indefinitely).  HubStore hooks this to
     /// purge cached display state immediately.
-    var on_unauthorized: (@Sendable () async -> Void)?
+    private let authorizationCallbackLock = NSLock()
+    private var authorizationCallback: (@Sendable () async -> Void)?
+    private var authorizationEpoch: UInt64 = 0
+    var on_unauthorized: (@Sendable () async -> Void)? {
+        get {
+            authorizationCallbackLock.lock()
+            defer { authorizationCallbackLock.unlock() }
+            return authorizationCallback
+        }
+        set {
+            authorizationCallbackLock.lock()
+            authorizationCallback = newValue
+            authorizationEpoch &+= 1
+            authorizationCallbackLock.unlock()
+        }
+    }
+
+    private func captureAuthorization() -> (epoch: UInt64, callback: (@Sendable () async -> Void)?) {
+        authorizationCallbackLock.lock()
+        let epoch = authorizationEpoch
+        let callback = authorizationCallback
+        authorizationCallbackLock.unlock()
+        guard let callback else { return (epoch, nil) }
+        return (epoch, { [weak self] in
+            guard self?.authorizationIsCurrent(epoch) == true else { return }
+            await callback()
+        })
+    }
+
+    private func authorizationIsCurrent(_ epoch: UInt64) -> Bool {
+        authorizationCallbackLock.lock()
+        defer { authorizationCallbackLock.unlock() }
+        return authorizationEpoch == epoch
+    }
 
     /// Default request timeout in seconds.
     static let defaultTimeout: TimeInterval = 30
@@ -499,6 +532,9 @@ final class HubClient: @unchecked Sendable {
     ///
     /// Throws ``HubAPIError`` for other non-2xx or unparseable responses.
     func discover() async throws -> HubDiscoveryResult {
+        // Snapshot the current auth epoch's callback before any suspension.
+        // A later sign-in replaces it; an old request must not revoke new auth.
+        let authorization = captureAuthorization()
         let url = mounted("/")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -512,13 +548,14 @@ final class HubClient: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        // Discover does NOT fire on_unauthorized at header time because we
-        // need the 401 body to parse bearer login config.  We handle 401
-        // manually after the body arrives.
-        let (data, http) = try await transport.execute(request, onUnauthorized: nil)
+        // Purge private state at header time even when the login page body
+        // stalls. The delegate still permits reading its configuration body.
+        let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
 
         // Process response Set-Cookie through scoped sink
-        await sinkResponseCookies(from: http, for: url)
+        if authorizationIsCurrent(authorization.epoch) {
+            await sinkResponseCookies(from: http, for: url)
+        }
 
         // 3xx: blocked redirect
         if (300...399).contains(http.statusCode) {
@@ -531,7 +568,6 @@ final class HubClient: @unchecked Sendable {
 
         // 401: might be bearer login page with HTML config, or passkey redirect
         if http.statusCode == 401 {
-            await on_unauthorized?()
             if let html = String(data: data, encoding: .utf8),
                let config = try? Self.parseDataHubConfig(html: html) {
                 return .page(config)
@@ -544,7 +580,6 @@ final class HubClient: @unchecked Sendable {
         }
 
         if http.statusCode == 403 {
-            await on_unauthorized?()
             throw HubAPIError(status: 403, message: "Hub root returned HTTP 403.")
         }
 
@@ -892,6 +927,7 @@ final class HubClient: @unchecked Sendable {
         body: (any Encodable)? = nil,
         rawBody: Data? = nil
     ) async throws -> Data {
+        let authorization = captureAuthorization()
         let url = mounted(path)
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
@@ -921,11 +957,13 @@ final class HubClient: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, http) = try await transport.execute(request, onUnauthorized: on_unauthorized)
+        let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
 
         // Process response Set-Cookie headers through scoped cookie_sink.
         // No ambient jar — the only cookie persistence is through this sink.
-        await sinkResponseCookies(from: http, for: url)
+        if authorizationIsCurrent(authorization.epoch) {
+            await sinkResponseCookies(from: http, for: url)
+        }
 
         if !(200...299).contains(http.statusCode) {
             let parsed = try? JSONDecoder().decode(HubErrorBody.self, from: data)
