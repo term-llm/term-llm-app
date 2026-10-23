@@ -1085,105 +1085,43 @@ final class HubClientMountedPathTests: XCTestCase {
     }
 }
 
-// MARK: - Delegate direct-invocation tests
+// MARK: - Header processing order
 
-/// Tests that directly invoke HubSessionDelegate.urlSession(_:dataTask:didReceive:completionHandler:)
-/// to prove the completionHandler is not called until the async on_unauthorized callback completes.
-/// MockTransport cannot prove this — it calls the callback sequentially after the response returns.
-/// These tests exercise the actual delegate code path.
 extension HubClientTests {
-
-    /// Prove: completionHandler waits for the on_unauthorized callback to finish.
-    /// We create a delegate whose callback sleeps briefly, then assert the
-    /// completionHandler was NOT called before the callback completed.
-    func testCompletionHandlerWaitsForCallback() async throws {
-        // Timeline: callback start → delay → callback end → completionHandler
-        let callbackCompleted = expectation(description: "callback completed")
-        let completionCalled = expectation(description: "completionHandler called")
-
-        var callbackEndTime: CFAbsoluteTime = 0
-        var completionCallTime: CFAbsoluteTime = 0
-
-        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
-            // Simulate an async purge that takes measurable time
-            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
-            callbackEndTime = CFAbsoluteTimeGetCurrent()
-            callbackCompleted.fulfill()
-        })
-
-        // Build a fake 401 HTTPURLResponse to trigger the unauthorized path
-        let url = URL(string: "https://hub.example.com/api/nodes")!
-        let response = HTTPURLResponse(url: url, statusCode: 401, httpVersion: nil, headerFields: nil)!
-
-        // We need a real URLSession + task to pass to the delegate method.
-        // Create a dummy task via an ephemeral session.
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let dummyRequest = URLRequest(url: url)
-        let task = session.dataTask(with: dummyRequest)
-
-        // Invoke the delegate method directly
-        delegate.urlSession(session, dataTask: task, didReceive: response) { _ in
-            completionCallTime = CFAbsoluteTimeGetCurrent()
-            completionCalled.fulfill()
-        }
-
-        await fulfillment(of: [callbackCompleted, completionCalled], timeout: 5, enforceOrder: true)
-        XCTAssertTrue(delegate.didFireUnauthorized)
-        XCTAssertGreaterThan(completionCallTime, 0)
-        XCTAssertGreaterThan(callbackEndTime, 0)
-        // completionHandler must have been called AFTER callback finished
-        XCTAssertGreaterThanOrEqual(completionCallTime, callbackEndTime,
-            "completionHandler must not fire before on_unauthorized callback finishes")
+    func testHeaderProcessingWaitsFor401Purge() async {
+        await assertHeaderProcessingAwaitsPurge(status: 401)
     }
 
-    /// Prove: on 200 OK, completionHandler fires immediately with no callback.
-    func testCompletionHandlerFiresImmediatelyOnSuccess() {
-        let completionCalled = expectation(description: "completionHandler called")
-        var callbackFired = false
-
-        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
-            callbackFired = true
-        })
-
-        let url = URL(string: "https://hub.example.com/api/nodes")!
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let task = session.dataTask(with: URLRequest(url: url))
-
-        delegate.urlSession(session, dataTask: task, didReceive: response) { disposition in
-            XCTAssertEqual(disposition, .allow)
-            completionCalled.fulfill()
-        }
-
-        wait(for: [completionCalled], timeout: 1)
-        XCTAssertFalse(callbackFired)
-        XCTAssertFalse(delegate.didFireUnauthorized)
+    func testHeaderProcessingWaitsFor403Purge() async {
+        await assertHeaderProcessingAwaitsPurge(status: 403)
     }
 
-    /// Prove: 403 also triggers the unauthorized path (not just 401).
-    func testCompletionHandlerWaitsOn403() async throws {
-        let callbackDone = expectation(description: "callback done")
-        let completionDone = expectation(description: "completion done")
-
-        let delegate = HubClient.HubSessionDelegate(onUnauthorized: {
-            try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
-            callbackDone.fulfill()
-        })
-
-        let url = URL(string: "https://hub.example.com/api/nodes")!
-        let response = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: nil)!
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let task = session.dataTask(with: URLRequest(url: url))
-
-        delegate.urlSession(session, dataTask: task, didReceive: response) { _ in
-            completionDone.fulfill()
+    private func assertHeaderProcessingAwaitsPurge(status: Int) async {
+        let callbackStarted = expectation(description: "purge started")
+        let gate = HubRequestGate()
+        let processingFinished = HubTestBox(false)
+        let response = HTTPURLResponse(url: URL(string: "https://hub.example.com/api/nodes")!,
+                                       statusCode: status, httpVersion: nil, headerFields: nil)!
+        let processing = Task {
+            await URLSessionHubTransport.processHeaders(response, onUnauthorized: {
+                callbackStarted.fulfill()
+                await gate.wait()
+            })
+            processingFinished.set(true)
         }
+        await fulfillment(of: [callbackStarted], timeout: 2)
+        XCTAssertFalse(processingFinished.value, "Body processing must wait for the purge")
+        await gate.release()
+        await processing.value
+        XCTAssertTrue(processingFinished.value)
+    }
 
-        await fulfillment(of: [callbackDone, completionDone], timeout: 5, enforceOrder: true)
-        XCTAssertTrue(delegate.didFireUnauthorized)
+    func testSuccessfulHeadersDoNotInvokeUnauthorizedCallback() async {
+        let called = HubTestBox(false)
+        let response = HTTPURLResponse(url: URL(string: "https://hub.example.com/api/nodes")!,
+                                       statusCode: 200, httpVersion: nil, headerFields: nil)!
+        await URLSessionHubTransport.processHeaders(response, onUnauthorized: { called.set(true) })
+        XCTAssertFalse(called.value)
     }
 }
 

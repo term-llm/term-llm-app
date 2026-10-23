@@ -219,7 +219,13 @@ struct ContentView: View {
                         hubDestination = HubBrowserDestination(url: destination)
                         showingHub = false
                     }, onSettings: openSettings, requiresAuthentication: hubBrowserRevoked,
-                            onAuthorizationRevoked: revokeHubBrowser, onAuthenticated: restoreHubBrowser)
+                            onAuthorizationRevoked: { [identity = hubPresentation] in
+                                guard identity == hubPresentation else { return }
+                                revokeHubBrowser()
+                            }, onAuthenticated: { [identity = hubPresentation] in
+                                guard identity == hubPresentation else { return }
+                                restoreHubBrowser()
+                            })
                     .id(url.absoluteString + hubPresentation.uuidString)
                 }
             }
@@ -465,6 +471,9 @@ struct ContentView: View {
     private func restoreHubBrowser() {
         hubBrowserRevoked = false
         hubDestination = nil
+        // All sign-in paths (including Settings/voice recovery) replace the
+        // Hub owner, invalidating callbacks held by its previous client.
+        hubPresentation = UUID()
         authenticatedCount += 1
     }
 
@@ -478,8 +487,7 @@ struct ContentView: View {
             switch result {
             case .success:
                 loadError = nil
-                hubBrowserRevoked = false
-                authenticatedCount += 1
+                restoreHubBrowser()
             case .failure(let error):
                 loginError = error.localizedDescription
             }

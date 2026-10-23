@@ -383,23 +383,45 @@ protocol HubTransport: Sendable {
     ) async throws -> (Data, HTTPURLResponse)
 }
 
-/// Production transport using ephemeral URLSession with delegate-based
-/// redirect blocking and header-time 401/403 callback.
+/// Production transport obtains HTTP headers before consuming any body bytes.
+/// The task delegate is used only to refuse redirects, not for data callbacks.
 struct URLSessionHubTransport: HubTransport {
+    static let maximumResponseBytes = 8 * 1024 * 1024
+
+    static func processHeaders(_ response: HTTPURLResponse,
+                               onUnauthorized: (@Sendable () async -> Void)?) async {
+        if response.statusCode == 401 || response.statusCode == 403 {
+            await onUnauthorized?()
+        }
+    }
+
     func execute(
         _ request: URLRequest,
         onUnauthorized: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
-        let delegate = HubClient.HubSessionDelegate(onUnauthorized: onUnauthorized)
+        let delegate = HubClient.HubSessionDelegate()
         let session = HubClient.ephemeralSession(delegate: delegate)
-        defer { session.finishTasksAndInvalidate() }
-        let (data, response) = try await session.data(for: request, delegate: delegate)
+        // Also cancels a still-open stream on cancellation or size-limit failure.
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
         guard let http = response as? HTTPURLResponse else {
             throw HubAPIError(status: 0, message: "Hub returned a non-HTTP response.")
         }
-        // Safety net: if delegate pathway didn't fire (e.g. cached response)
-        if (http.statusCode == 401 || http.statusCode == 403) && !delegate.didFireUnauthorized {
-            await onUnauthorized?()
+        // AsyncBytes returns the response at header time. Purge is awaited
+        // before iteration, including when a 401 advertises a stalled body.
+        await Self.processHeaders(http, onUnauthorized: onUnauthorized)
+        try Task.checkCancellation()
+        guard http.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
+            throw HubAPIError(status: http.statusCode, message: "Hub response exceeds the 8 MiB safety limit.")
+        }
+        var data = Data()
+        data.reserveCapacity(Int(max(0, http.expectedContentLength)))
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard data.count < Self.maximumResponseBytes else {
+                throw HubAPIError(status: http.statusCode, message: "Hub response exceeds the 8 MiB safety limit.")
+            }
+            data.append(byte)
         }
         return (data, http)
     }
@@ -415,7 +437,7 @@ struct URLSessionHubTransport: HubTransport {
 /// | Cookie jar | `URLSessionConfiguration.ephemeral`, `httpShouldSetCookies = false`, `httpCookieAcceptPolicy = .never`, `httpCookieStorage = nil`, `urlCredentialStorage = nil` |
 /// | Redirects | Blocked via `URLSessionTaskDelegate` returning `nil` |
 /// | Origin | Set on every mutation (POST / PATCH / DELETE) |
-/// | 401/403 purge | `URLSessionDataDelegate` **awaits** `on_unauthorized`, then calls `completionHandler(.allow)` — purge completes before body download continues |
+/// | 401/403 purge | `URLSession.bytes(for:)` returns headers first; scoped `on_unauthorized` is awaited before body iteration |
 /// | Response cookies | `Set-Cookie` headers are parsed, filtered to hub auth scope, and sunk to WK via `cookie_sink` — no ambient jar |
 /// | Timeout | Bounded at 30 s per request |
 /// | Cookie scope | Auth cookies restricted to exact host + configured mount path; no sibling-root leakage, no `/foo` matching `/foobar` |
@@ -840,44 +862,13 @@ final class HubClient: @unchecked Sendable {
         config.httpCookieStorage = nil
         config.urlCredentialStorage = nil
         config.timeoutIntervalForRequest = defaultTimeout
+        config.timeoutIntervalForResource = defaultTimeout
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
-    /// URLSession delegate that blocks redirects and fires `on_unauthorized`
-    /// at header-receive time.  The callback is **awaited** before
-    /// `completionHandler(.allow)` is called, so the purge completes before
-    /// the body download continues (the body may stall indefinitely).
-    final class HubSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-        private(set) var didFireUnauthorized = false
-        private let onUnauthorized: (@Sendable () async -> Void)?
-
-        init(onUnauthorized: (@Sendable () async -> Void)?) {
-            self.onUnauthorized = onUnauthorized
-            super.init()
-        }
-
-        func urlSession(
-            _ session: URLSession,
-            dataTask: URLSessionDataTask,
-            didReceive response: URLResponse,
-            completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
-        ) {
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 401 || http.statusCode == 403,
-                  let callback = onUnauthorized else {
-                completionHandler(.allow)
-                return
-            }
-            didFireUnauthorized = true
-            // Await the purge, then allow body to arrive so the caller can
-            // read error details.  The critical invariant is that the purge
-            // has finished before the body download begins.
-            Task {
-                await callback()
-                completionHandler(.allow)
-            }
-        }
-
+    /// Redirect refusal only. Header processing happens explicitly after
+    /// URLSession.bytes returns, not through async task data-delegate callbacks.
+    final class HubSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(
             _ session: URLSession,
             task: URLSessionTask,

@@ -620,22 +620,27 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testPollCoalescesWithInFlightRead() async {
-        // Start a slow nodes fetch via start(). A poll arriving while it's
-        // still running should not launch a second one.
+        let started = expectation(description: "initial nodes request started")
         var nodesFetchCount = 0
+        var releases: [CheckedContinuation<Void, Never>] = []
         client.nodesResponse = {
             nodesFetchCount += 1
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            if nodesFetchCount == 1 { started.fulfill() }
+            // Hold every request until cleanup: elapsed wall time must never
+            // accidentally finish the initial request and permit a valid poll.
+            await withCheckedContinuation { releases.append($0) }
             return NodesResponse(nodes: [makeNode()], resolver_error: nil)
         }
-        // Short poll so it fires while nodes is still in-flight.
         store = HubStore(client: client, pollInterval: 0.05)
+        defer {
+            store.dispose()
+            for release in releases { release.resume() }
+        }
         store.start()
-        // Wait long enough for the initial fetch plus one poll cycle.
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        store.dispose()
-        // The slow nodes fetch should have run once; the poll should have
-        // coalesced (task was still non-nil).
+        await fulfillment(of: [started], timeout: 2)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertGreaterThan(client.listAttentionCalls, 1, "Other panels must continue polling")
+        XCTAssertTrue(store.nodesLoading, "The initial nodes request is still held open")
         XCTAssertEqual(nodesFetchCount, 1, "Poll should coalesce with in-flight read")
     }
 
@@ -1019,6 +1024,21 @@ final class HubStoreTests: XCTestCase {
         await store.renameCredential(recordID: "r1", displayName: "New")
         XCTAssertEqual(store.securityStatus, "Passkey renamed.")
         XCTAssertNil(store.securityOperation)
+    }
+
+    func testSecurityMutationRefreshFailureIsNotHiddenBySuccess() async {
+        client.sessionResponse = { throw serverError("Security refresh unavailable") }
+        await store.renameCredential(recordID: "r1", displayName: "New")
+        XCTAssertEqual(store.securityStatus, "Security refresh unavailable")
+        XCTAssertNil(store.securityOperation)
+        XCTAssertEqual(client.sessionCalls, 1)
+    }
+
+    func testExplicitSecurityRefreshClearsPreviousSuccess() async {
+        await store.renameCredential(recordID: "r1", displayName: "New")
+        XCTAssertEqual(store.securityStatus, "Passkey renamed.")
+        await store.loadSecurity()
+        XCTAssertNil(store.securityStatus)
     }
 
     func testRemoveCredentialSuccess() async {

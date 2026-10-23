@@ -454,6 +454,7 @@ final class HubStore: ObservableObject {
             // server order as authoritative.
             if e == epoch { orderSaves = max(orderSaves - 1, 0) }
         } catch {
+            guard epochCurrent(e) else { return }
             // Rollback: clear orderSaves BEFORE the reconciliation fetch so
             // showNodes accepts the server's authoritative order instead of
             // re-sorting to match the failed optimistic order.
@@ -503,11 +504,11 @@ final class HubStore: ObservableObject {
 
     // MARK: - Security / session
 
-    func loadSecurity() async {
+    func loadSecurity(preservingStatus: Bool = false) async {
         let e = epoch
         guard !disposed, !unauthorized, !securityLoading else { return }
         securityLoading = true
-        securityStatus = nil
+        if !preservingStatus { securityStatus = nil }
         recentAuthRequired = false
         defer { if e == epoch { securityLoading = false } }
         do {
@@ -543,7 +544,7 @@ final class HubStore: ObservableObject {
             _ = try await client.rename_credential(record_id: recordID, display_name: displayName)
             guard epochCurrent(e) else { return }
             securityStatus = "Passkey renamed."
-            await loadSecurity()
+            await loadSecurity(preservingStatus: true)
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
@@ -565,7 +566,7 @@ final class HubStore: ObservableObject {
             _ = try await client.remove_credential(record_id: recordID)
             guard epochCurrent(e) else { return }
             securityStatus = "Passkey removed."
-            await loadSecurity()
+            await loadSecurity(preservingStatus: true)
         } catch {
             guard epochCurrent(e) else { return }
             if isAuthError(error) {
@@ -591,7 +592,7 @@ final class HubStore: ObservableObject {
             let result = try await client.revoke_other_sessions()
             guard epochCurrent(e) else { return }
             securityStatus = "Revoked \(result.revoked) other session\(result.revoked == 1 ? "" : "s")."
-            await loadSecurity()
+            await loadSecurity(preservingStatus: true)
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
