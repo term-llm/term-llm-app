@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from contract import ContractError, evidence, inputs, prompt, require
 from media import screenshots as check_screenshots, video as check_video
+from sign_simulator import build_entitlements, sign_products
 
 
 class Capture:
@@ -122,12 +123,32 @@ class Capture:
         # Boot may return nonzero if already booted; bootstatus is the real gate.
         subprocess.run(["xcrun", "simctl", "boot", udid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.run(["xcrun", "simctl", "bootstatus", udid, "-b"])
+        simulator_entitlements = self.private / "simulator.entitlements"
+        build_entitlements(simulator_entitlements)
         args = ["-project", "TermLLM.xcodeproj", "-scheme", "TermLLM", "-configuration", "Debug", "-sdk", "iphonesimulator",
                 "-destination", f"platform=iOS Simulator,id={udid}", "-derivedDataPath", str(self.private / "DerivedData"),
-                "-parallel-testing-enabled", "NO", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "CODE_SIGN_IDENTITY=", "DEVELOPMENT_TEAM="]
+                "-parallel-testing-enabled", "NO", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGNING_REQUIRED=YES", "CODE_SIGN_IDENTITY=-",
+                "CODE_SIGN_STYLE=Manual", "DEVELOPMENT_TEAM=", "PROVISIONING_PROFILE=", "PROVISIONING_PROFILE_SPECIFIER=",
+                "AppIdentifierPrefix=SIMULATOR.", f"CODE_SIGN_ENTITLEMENTS={simulator_entitlements}"]
         self.run(["xcodebuild", "build-for-testing", *args], "build.log")
         app = self.private / "DerivedData/Build/Products/Debug-iphonesimulator/TermLLM.app"
         require(app.is_dir(), "Real compiled app not found")
+        signing = dict(schema_version=1, purpose="SIMULATOR ONLY · AD-HOC · NO APPLE PROFILE",
+                       osstatus_measured=False, verification="pending")
+        try:
+            sign_products(app.parent, self.private, signing)
+            signing["verification"] = "passed"
+        except ContractError as error:
+            signing["verification"] = "failed"
+            signing["failure_gate"] = str(error)
+            raise
+        except subprocess.CalledProcessError as error:
+            signing["verification"] = "failed"
+            signing["diagnostic"] = self.redact((error.stderr or b"").decode(errors="replace")[:16000])
+            raise ContractError("Simulator ad-hoc signing/verification failed; see simulator-signing.json") from None
+        finally:
+            (self.artifacts / "simulator-signing.json").write_text(json.dumps(signing, indent=2) + "\n")
+        self.manifest["simulator_signing"] = "ad-hoc-isolated-namespace-verified"
         self.manifest["app_binary_sha256"] = hashlib.sha256((app / "TermLLM").read_bytes()).hexdigest()
         # This is an actual recorded SIMULATOR install, not an App Store install.
         install_video = self.private / "simulator-install.mp4"
