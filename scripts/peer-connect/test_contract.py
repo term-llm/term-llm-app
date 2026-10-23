@@ -118,6 +118,17 @@ class AdapterTests(unittest.TestCase):
         for secret in ("private-sdp", "private-token", "private-address"):
             self.assertNotIn(secret, text)
 
+    def test_failure_hierarchy_log_is_retained_with_runtime_secrets_redacted(self):
+        capture = Capture.__new__(Capture)
+        capture.sensitive = ["private-psk", "private-cap", "private-turn-credential"]
+        raw = ("PEER_CAPTURE_MISSING_UI_HIERARCHY_BEGIN\nScrollView identifier: peer.approval\n"
+               "private-psk private-cap private-turn-credential\nPEER_CAPTURE_MISSING_UI_HIERARCHY_END")
+        clean = capture.redact(raw)
+        self.assertIn("ScrollView identifier: peer.approval", clean)
+        self.assertEqual(clean.count("[REDACTED]"), 3)
+        for secret in capture.sensitive:
+            self.assertNotIn(secret, clean)
+
     def test_raw_xcresult_is_quarantined_if_secret_found(self):
         with tempfile.TemporaryDirectory() as temp:
             capture = Capture.__new__(Capture)

@@ -6,8 +6,28 @@ final class PeerConnectionUITests: XCTestCase {
     private var app: XCUIApplication!
 
     @MainActor
-    private func required(_ element: XCUIElement, timeout: TimeInterval = 60) -> XCUIElement {
-        XCTAssertTrue(element.waitForExistence(timeout: timeout), "Required real peer UI element missing")
+    private func required(_ element: XCUIElement, timeout: TimeInterval = 60,
+                          file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let found = element.waitForExistence(timeout: timeout)
+        if !found {
+            // RAW private test output only. capture.py redacts runtime secrets
+            // before publishing the log; never attach this to an assertion or
+            // bypass raw-xcresult quarantine. Bound whole lines so truncation
+            // cannot leave a partial capability that evades exact redaction.
+            var remaining = 12_000
+            var diagnostic = ""
+            for entry in app.debugDescription.split(separator: "\n", omittingEmptySubsequences: false).prefix(100) {
+                let count = entry.utf8.count + 1
+                guard count <= remaining else {
+                    diagnostic += "[hierarchy truncated at line boundary]\n"
+                    break
+                }
+                diagnostic += String(entry) + "\n"
+                remaining -= count
+            }
+            print("PEER_CAPTURE_MISSING_UI_HIERARCHY_BEGIN\n" + diagnostic + "PEER_CAPTURE_MISSING_UI_HIERARCHY_END")
+        }
+        XCTAssertTrue(found, "Required real peer UI element missing", file: file, line: line)
         return element
     }
 
@@ -52,7 +72,7 @@ final class PeerConnectionUITests: XCTestCase {
         _ = required(app.staticTexts["peer.captureLabel"])
         shot(mode + "-01-native-launch")
         required(app.buttons["peer.capture.openPairLink"]).tap()
-        _ = required(app.otherElements["peer.approval"].firstMatch, timeout: 120)
+        _ = required(app.descendants(matching: .any).matching(identifier: "peer.approval").firstMatch, timeout: 120)
         shot(mode + "-02-real-pairing-approval")
         required(app.buttons["peer.approve"]).tap()
         _ = required(app.staticTexts["peer.connected"], timeout: 120)
