@@ -171,7 +171,6 @@ struct HubView: View {
             }
             .navigationTitle("Hub")
             .navigationBarTitleDisplayMode(.inline)
-            .accessibilityIdentifier("hub.dashboard")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
