@@ -22,6 +22,9 @@ enum HubAuthMode: String, Sendable, Equatable {
 /// - An **epoch** counter guards auth purge and disposal. It is bumped *only*
 ///   on auth purge or dispose — never on routine polls or manual refreshes.
 ///   Late responses from a previous epoch are silently dropped.
+/// - Per-panel **sequence counters** prevent stale overwrites when a refresh
+///   cancels an in-flight task and launches a replacement. The old task's
+///   response and completion are discarded if its captured seq is outdated.
 /// - Polls coalesce: if panel tasks are already running, the poll cycle skips.
 ///   Manual refresh cancels and replaces each panel task.
 /// - Mutations use `defer` for busy-flag cleanup so flags never get stuck,
@@ -394,16 +397,16 @@ final class HubStore: ObservableObject {
         nodes = nodes.sorted { (rankMap[$0.id] ?? Int.max) < (rankMap[$1.id] ?? Int.max) }
 
         orderSaves += 1
-        defer {
-            orderSaves -= 1
-            orderLock = false
-        }
+        defer { orderLock = false }
 
         // Minimal diff against previous order.
         var first = 0
         while first < previousIDs.count, first < orderedIDs.count,
               previousIDs[first] == orderedIDs[first] { first += 1 }
-        guard first < orderedIDs.count else { return }
+        guard first < orderedIDs.count else {
+            orderSaves = max(orderSaves - 1, 0)
+            return
+        }
         var lastPrev = previousIDs.count - 1
         var lastNew = orderedIDs.count - 1
         while lastPrev > first, lastNew > first,
@@ -412,7 +415,14 @@ final class HubStore: ObservableObject {
 
         do {
             _ = try await client.reorder_nodes(node_ids: moved)
+            // Success: the next routine poll (orderSaves == 0) will accept
+            // server order as authoritative.
+            orderSaves = max(orderSaves - 1, 0)
         } catch {
+            // Rollback: clear orderSaves BEFORE the reconciliation fetch so
+            // showNodes accepts the server's authoritative order instead of
+            // re-sorting to match the failed optimistic order.
+            orderSaves = max(orderSaves - 1, 0)
             if authPurgeIfNeeded(error) {
                 throw HubStoreError.reorderFailed("Authorization expired.")
             }

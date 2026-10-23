@@ -390,7 +390,7 @@ struct URLSessionHubTransport: HubTransport {
         _ request: URLRequest,
         onUnauthorized: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
-        let delegate = HubSessionDelegate(onUnauthorized: onUnauthorized)
+        let delegate = HubClient.HubSessionDelegate(onUnauthorized: onUnauthorized)
         let session = HubClient.ephemeralSession(delegate: delegate)
         defer { session.finishTasksAndInvalidate() }
         let (data, response) = try await session.data(for: request, delegate: delegate)

@@ -759,6 +759,33 @@ final class HubStoreTests: XCTestCase {
         XCTAssertEqual(client.reorderNodesCalls.count, 1)
     }
 
+    func testReorderRollbackRestoresServerOrder() async {
+        // Server has [a, b, c]. We optimistically reorder to [c, b, a] but
+        // the server rejects it. The rollback fetch must show [a, b, c] —
+        // NOT preserve the failed optimistic [c, b, a].
+        let serverOrder = ["a", "b", "c"]
+        client.nodesResponse = {
+            NodesResponse(nodes: serverOrder.map { makeNode(id: $0) }, resolver_error: nil)
+        }
+        await store.refresh()
+        XCTAssertEqual(store.nodes.map(\.id), ["a", "b", "c"])
+
+        client.reorderNodesResponse = { throw serverError("conflict") }
+        // The rollback fetch returns the original server order.
+        // (nodesResponse already returns [a, b, c].)
+
+        do {
+            try await store.reorderNodes(orderedIDs: ["c", "b", "a"])
+            XCTFail("Expected reorderFailed error")
+        } catch {
+            // Expected.
+        }
+        // After rollback fetch, nodes must be in the server's authoritative
+        // order, not the failed optimistic order.
+        XCTAssertEqual(store.nodes.map(\.id), ["a", "b", "c"],
+                       "Rollback must restore server order, not preserve failed optimistic order")
+    }
+
     // MARK: - Registration
 
     func testLoadRegistrationInfo() async {
