@@ -58,6 +58,7 @@ struct HubView: View {
     let onSettings: () -> Void
     let onAuthorizationRevoked: () -> Void
     let onAuthenticated: () -> Void
+    private let usesPeerTransport: Bool
     @StateObject private var workspace: HubWorkspace
     private var store: HubStore { workspace.store }
     private var client: HubClient { workspace.client }
@@ -102,6 +103,7 @@ struct HubView: View {
         self.onSettings = onSettings
         self.onAuthorizationRevoked = onAuthorizationRevoked
         self.onAuthenticated = onAuthenticated
+        self.usesPeerTransport = transport != nil
         let client: HubClient
         if let transport {
             // Paired peer: the DataChannel session is the authentication.
@@ -444,7 +446,13 @@ struct HubView: View {
     }
 
     @ViewBuilder private var securityPanel: some View {
-        if configuration?.passkeyAuth == false {
+        if usesPeerTransport {
+            Section("Paired device") {
+                Text("This connection is authenticated by your approved device identity. Passkey and registration administration are not included in its permissions.")
+                Button("Disconnect", role: .destructive) { onAuthorizationRevoked() }
+                    .accessibilityIdentifier("hub.signOut")
+            }
+        } else if configuration?.passkeyAuth == false {
             Section("Authentication") {
                 Text(configuration?.authMode == "bearer" ? "This Hub uses a token, not passkeys." : "This Hub does not require sign-in.")
                 if configuration?.authMode == "bearer" {

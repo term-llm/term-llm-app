@@ -138,6 +138,9 @@ struct BrowserView: UIViewRepresentable {
     /// Owned store for a paired peer bridge (non-persistent, holds only its
     /// HttpOnly capability cookie).  nil keeps the existing default/fixture store.
     var websiteDataStore: WKWebsiteDataStore? = nil
+    /// A paired text-only transport does not grant camera/microphone access.
+    /// Direct-server voice retains its existing permission behavior.
+    var allowsMediaCapture = true
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -623,6 +626,10 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            guard parent.allowsMediaCapture else {
+                decisionHandler(.deny)
+                return
+            }
             guard type == .microphone, isHubOrigin(origin) else {
                 decisionHandler(.prompt)
                 return

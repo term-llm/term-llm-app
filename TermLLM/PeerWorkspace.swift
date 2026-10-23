@@ -410,7 +410,8 @@ struct PeerWorkspaceView: View {
                                 onLoginRequired: {}, onRevealControls: {},
                                 nativeDestination: model.chatDestination,
                                 isContentVisible: !model.showingHub,
-                                websiteDataStore: connection.dataStore)
+                                websiteDataStore: connection.dataStore,
+                                allowsMediaCapture: false)
                         .opacity(model.showingHub ? 0 : 1)
                         .allowsHitTesting(!model.showingHub)
                         .accessibilityHidden(model.showingHub)
@@ -424,6 +425,7 @@ struct PeerWorkspaceView: View {
                 }
                 if model.showingHub {
                     HubView(server: connection.hubURL, onOpenChat: { model.openChat($0) }, onSettings: {},
+                            onAuthorizationRevoked: { model.disconnect() },
                             transport: connection.hubTransport())
                         .id(connection.id)
                 }
