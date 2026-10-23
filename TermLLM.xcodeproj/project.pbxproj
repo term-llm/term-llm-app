@@ -91,6 +91,7 @@
 		000000000000000000000531 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000532 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000533 /* NotificationReviewRegressionTests.swift */; };
+		000000000000000000000700 /* NativeHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000701 /* NativeHubUITests.swift */; };
 		000000000000000000000820 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000800 /* HubClient.swift */; };
 		000000000000000000000821 /* HubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000801 /* HubStore.swift */; };
 		000000000000000000000822 /* HubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000802 /* HubView.swift */; };
@@ -99,7 +100,17 @@
 		000000000000000000000825 /* HubClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000805 /* HubClientTests.swift */; };
 		000000000000000000000826 /* HubStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000806 /* HubStoreTests.swift */; };
 		000000000000000000000827 /* HubNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000807 /* HubNavigationTests.swift */; };
-		000000000000000000000700 /* NativeHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000701 /* NativeHubUITests.swift */; };
+		0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */; };
+		182D89182D17BAE1087A6D03 /* HubCookieScopeRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9D71BAC8F7FF2161C7259C /* HubCookieScopeRegistry.swift */; };
+		19A6D3E3F8A79E718425112C /* HubConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */; };
+		3AF4906EC6C114D388E8B6CA /* HubConnectionSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */; };
+		69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */; };
+		73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */; };
+		759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */; };
+		7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */; };
+		9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */; };
+		ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */; };
+		FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -213,8 +224,8 @@
 		000000000000000000000421 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		000000000000000000000422 /* TermLLMNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TermLLMNotificationService.entitlements; sourceTree = "<group>"; };
 		000000000000000000000430 /* PushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTests.swift; sourceTree = "<group>"; };
-		000000000000000000000440 /* TermLLMNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TermLLMNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000431 /* PushLiveE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLiveE2ETests.swift; sourceTree = "<group>"; };
+		000000000000000000000440 /* TermLLMNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TermLLMNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000501 /* PushDeliveryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushDeliveryStore.swift; sourceTree = "<group>"; };
 		000000000000000000000502 /* PushMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushMetadata.swift; sourceTree = "<group>"; };
 		000000000000000000000503 /* PushWindowRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushWindowRegistry.swift; sourceTree = "<group>"; };
@@ -224,6 +235,8 @@
 		000000000000000000000520 /* ProducerFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ProducerFixtures; sourceTree = "<group>"; };
 		000000000000000000000530 /* PushConsentJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushConsentJournal.swift; sourceTree = "<group>"; };
 		000000000000000000000533 /* NotificationReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReviewRegressionTests.swift; sourceTree = "<group>"; };
+		000000000000000000000701 /* NativeHubUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHubUITests.swift; sourceTree = "<group>"; };
+		000000000000000000000702 /* TermLLMUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermLLMUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000800 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
 		000000000000000000000801 /* HubStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubStore.swift; sourceTree = "<group>"; };
 		000000000000000000000802 /* HubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubView.swift; sourceTree = "<group>"; };
@@ -232,8 +245,17 @@
 		000000000000000000000805 /* HubClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClientTests.swift; sourceTree = "<group>"; };
 		000000000000000000000806 /* HubStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubStoreTests.swift; sourceTree = "<group>"; };
 		000000000000000000000807 /* HubNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubNavigationTests.swift; sourceTree = "<group>"; };
-		000000000000000000000701 /* NativeHubUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHubUITests.swift; sourceTree = "<group>"; };
-		000000000000000000000702 /* TermLLMUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermLLMUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionSecurity.swift; sourceTree = "<group>"; };
+		0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStore.swift; sourceTree = "<group>"; };
+		44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubUITests.swift; sourceTree = "<group>"; };
+		630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClientTests.swift; sourceTree = "<group>"; };
+		693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionSecurityTests.swift; sourceTree = "<group>"; };
+		74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStore.swift; sourceTree = "<group>"; };
+		BA9D71BAC8F7FF2161C7259C /* HubCookieScopeRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubCookieScopeRegistry.swift; sourceTree = "<group>"; };
+		C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClient.swift; sourceTree = "<group>"; };
+		D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStoreTests.swift; sourceTree = "<group>"; };
+		E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStoreTests.swift; sourceTree = "<group>"; };
+		FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -261,7 +283,8 @@
 		000000000000000000000706 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = ();
+			files = (
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -343,6 +366,12 @@
 				000000000000000000000044 /* Assets.xcassets */,
 				000000000000000000000300 /* PrivacyInfo.xcprivacy */,
 				000000000000000000000403 /* TermLLM.entitlements */,
+				74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */,
+				006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */,
+				BA9D71BAC8F7FF2161C7259C /* HubCookieScopeRegistry.swift */,
+				0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */,
+				C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */,
+				FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -379,6 +408,10 @@
 				000000000000000000000533 /* NotificationReviewRegressionTests.swift */,
 				000000000000000000000520 /* ProducerFixtures */,
 				000000000000000000000431 /* PushLiveE2ETests.swift */,
+				D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */,
+				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
+				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
+				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
 			);
 			path = TermLLMTests;
 			sourceTree = "<group>";
@@ -408,7 +441,10 @@
 		};
 		000000000000000000000703 /* TermLLMUITests */ = {
 			isa = PBXGroup;
-			children = (000000000000000000000701 /* NativeHubUITests.swift */,);
+			children = (
+				000000000000000000000701 /* NativeHubUITests.swift */,
+				44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */,
+			);
 			path = TermLLMUITests;
 			sourceTree = "<group>";
 		};
@@ -472,9 +508,16 @@
 		000000000000000000000704 /* TermLLMUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 000000000000000000000708 /* Build configuration list for PBXNativeTarget "TermLLMUITests" */;
-			buildPhases = (000000000000000000000705 /* Sources */, 000000000000000000000706 /* Frameworks */, 000000000000000000000707 /* Resources */,);
-			buildRules = ();
-			dependencies = (000000000000000000000709 /* PBXTargetDependency */,);
+			buildPhases = (
+				000000000000000000000705 /* Sources */,
+				000000000000000000000706 /* Frameworks */,
+				000000000000000000000707 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				000000000000000000000709 /* PBXTargetDependency */,
+			);
 			name = TermLLMUITests;
 			productName = TermLLMUITests;
 			productReference = 000000000000000000000702 /* TermLLMUITests.xctest */;
@@ -537,7 +580,8 @@
 		000000000000000000000707 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = ();
+			files = (
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
@@ -600,6 +644,12 @@
 				0000000000000000000000D7 /* MusicView.swift in Sources */,
 				0000000000000000000000D8 /* PlaylistDetailView.swift in Sources */,
 				0000000000000000000000D9 /* MusicSearchView.swift in Sources */,
+				19A6D3E3F8A79E718425112C /* HubConnectionStore.swift in Sources */,
+				3AF4906EC6C114D388E8B6CA /* HubConnectionSecurity.swift in Sources */,
+				182D89182D17BAE1087A6D03 /* HubCookieScopeRegistry.swift in Sources */,
+				ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */,
+				0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */,
+				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -635,6 +685,10 @@
 				000000000000000000000518 /* NotificationLifecycleTests.swift in Sources */,
 				000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */,
 				00000000000000000000045C /* PushLiveE2ETests.swift in Sources */,
+				759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */,
+				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
+				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
+				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -655,7 +709,10 @@
 		000000000000000000000705 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (000000000000000000000700 /* NativeHubUITests.swift in Sources */,);
+			files = (
+				000000000000000000000700 /* NativeHubUITests.swift in Sources */,
+				9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
@@ -685,10 +742,10 @@
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_TESTABILITY = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -890,7 +947,10 @@
 		};
 		000000000000000000000708 /* Build configuration list for PBXNativeTarget "TermLLMUITests" */ = {
 			isa = XCConfigurationList;
-			buildConfigurations = (00000000000000000000070B /* Debug */, 00000000000000000000070C /* Release */,);
+			buildConfigurations = (
+				00000000000000000000070B /* Debug */,
+				00000000000000000000070C /* Release */,
+			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};

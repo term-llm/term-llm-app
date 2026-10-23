@@ -63,7 +63,8 @@ protocol ListenCookieJar {
 @MainActor
 struct WebKitCookieJar: ListenCookieJar {
     func cookies(for url: URL) async -> [HTTPCookie] {
-        Self.matching(await WKWebsiteDataStore.default().httpCookieStore.allCookies(), url: url)
+        let dataStore = HubCookieScopeRegistry.shared.dataStore(for: url)
+        return Self.matching(await dataStore.httpCookieStore.allCookies(), url: url)
     }
 
     /// RFC 6265 domain/path/secure matching, enough to pick the session cookie.

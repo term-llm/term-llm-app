@@ -38,6 +38,8 @@ final class HubWorkspace: ObservableObject {
 
     private func revokeAuthorization(epoch: UInt64) {
         guard isActive, epoch == authorizationEpoch else { return }
+        authorizationEpoch &+= 1
+        installAuthorizationCallback()
         store.purgeOnUnauthorized()
         onAuthorizationRevoked()
     }
@@ -59,6 +61,8 @@ struct HubView: View {
     let onAuthorizationRevoked: () -> Void
     let onAuthenticated: () -> Void
     @StateObject private var workspace: HubWorkspace
+    private var ownsWorkspace = true
+    private var loginCookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?
     private var store: HubStore { workspace.store }
     private var client: HubClient { workspace.client }
     @State private var tab: Panel = .nodes
@@ -107,6 +111,22 @@ struct HubView: View {
             await Self.saveCookies(cookies)
         })
         _workspace = StateObject(wrappedValue: HubWorkspace(client: client, requiresAuthentication: requiresAuthentication, onAuthorizationRevoked: onAuthorizationRevoked))
+    }
+
+    /// Phone home retains this workspace across detail presentation. The legacy
+    /// standalone initializer above continues to own/dispose its own workspace.
+    init(server: URL, workspace: HubWorkspace,
+         cookieSink: @escaping @MainActor ([HTTPCookie]) async throws -> Void,
+         onOpenChat: @escaping (URL) -> Void, onSettings: @escaping () -> Void,
+         onAuthenticated: @escaping () -> Void) {
+        self.server = server
+        self.onOpenChat = onOpenChat
+        self.onSettings = onSettings
+        self.onAuthorizationRevoked = {}
+        self.onAuthenticated = onAuthenticated
+        self.loginCookieSink = cookieSink
+        self.ownsWorkspace = false
+        _workspace = StateObject(wrappedValue: workspace)
     }
 
     @MainActor private static func cookies() async -> [HTTPCookie] {
@@ -196,7 +216,7 @@ struct HubView: View {
                 }
             } message: { Text("Remove this saved node from the Hub? The node itself is not stopped.") }
         }
-        .onDisappear { workspace.dispose() }
+        .onDisappear { if ownsWorkspace { workspace.dispose() } }
         .onChange(of: store.unauthorized) { _, unauthorized in
             if unauthorized { onAuthorizationRevoked() }
         }
@@ -566,6 +586,7 @@ struct HubView: View {
     private func signIn() {
         signingIn = true
         configurationError = nil
+        login.cookieSink = loginCookieSink
         login.signIn(to: server) { result in
             signingIn = false
             switch result {

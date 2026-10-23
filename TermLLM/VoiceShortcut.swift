@@ -113,16 +113,18 @@ final class VoiceShortcutSettings: ObservableObject {
             health.fragment = nil
             guard let healthURL = health.url else { throw VoiceShortcutError.invalidServer }
             let directHealthURL = try Self.canonicalServerURL(server).appendingPathComponent("healthz")
+            let savedKind = HubCookieScopeRegistry.shared.kind(for: server)
+            let probeURL = savedKind == nil ? healthURL : directHealthURL
             let rootHealth: [String: Any]?
             do {
-                rootHealth = try await healthObject(at: healthURL)
+                rootHealth = try await healthObject(at: probeURL)
             } catch {
                 // HTTP/JSON failures can mean health is mounted under the direct
                 // server's base path. A transport outage is not a route mismatch.
                 if error is URLError || Task.isCancelled || directHealthURL == healthURL { throw error }
                 rootHealth = nil
             }
-            if rootHealth?["role"] as? String == "hub" {
+            if savedKind == .hub || (savedKind == nil && rootHealth?["role"] as? String == "hub") {
                 result.mode = .hub
                 let base = try Self.hubBase(for: server)
                 let endpoint = base.appendingPathComponent("api/nodes")
@@ -138,7 +140,7 @@ final class VoiceShortcutSettings: ObservableObject {
                 result.selectedNodeID = nodes.contains(where: { $0.id == previousSelection }) ? previousSelection : nil
             } else {
                 let directHealth: [String: Any]?
-                if directHealthURL == healthURL {
+                if directHealthURL == probeURL {
                     directHealth = rootHealth
                 } else {
                     directHealth = try await healthObject(at: directHealthURL)

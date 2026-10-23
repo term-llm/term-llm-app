@@ -7,7 +7,10 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverURL", store: HubFixture.defaults) private var serverURL = ""
     @AppStorage(AppControlsBar.hintAcknowledgedKey, store: HubFixture.defaults) private var appControlsHintAcknowledged = false
+    @StateObject private var connections = HubConnectionStore(defaults: HubFixture.defaults)
+    @StateObject private var aggregate = HubAggregateStore()
     @State private var draftURL = ""
+    @State private var connectionKind: HubConnection.Kind = .hub
     @State private var showingSettings = false
     @State private var loading = false
     @State private var canGoBack = false
@@ -21,7 +24,7 @@ struct ContentView: View {
     @State private var showingMusic = false
     @State private var showingListen = false
     @State private var showingPlayer = false
-    @State private var showingHub = false
+    @State private var showingHub = !HubFixture.isEnabled
     @State private var workspaceChosen = false
     @State private var hubRole: HubServerRole = .unknown
     @State private var hubPresentation = UUID()
@@ -44,16 +47,56 @@ struct ContentView: View {
         ServerAddress.parse(draftURL)?.absoluteString != serverURL
     }
 
+    private var selectedWorkspace: HubSourceWorkspace? { connections.selectedID.flatMap { aggregate.source($0) } }
+    private var isFixture: Bool { HubFixture.isEnabled || PhoneHubFixture.isEnabled }
+    private var browserIsRevoked: Bool { hubBrowserRevoked || (!HubFixture.isEnabled && selectedWorkspace?.browserRevoked == true) }
+    private var browserAuthenticationScript: String? {
+        guard connections.selected?.kind == .directNode, let source = selectedWorkspace,
+              let token = source.security?.bearer else { return nil }
+        return HubConnectionSecurity.directBearerScript(token: token, server: source.connection.url)
+    }
+    private var phoneHome: some View {
+        PhoneHubView(connections: connections, aggregate: aggregate, onOpenChat: openPhoneChat, onSettings: openSettings)
+    }
+
     var body: some View {
         Group {
             if let address {
                 browser(address)
-            } else {
+            } else if HubFixture.isEnabled {
                 setup
+            } else {
+                phoneHome
+            }
+        }
+        .onChange(of: connections.connections, initial: true) { _, sources in
+            guard !HubFixture.isEnabled else { return }
+            aggregate.synchronize(sources.filter { $0.needsKindReview != true })
+        }
+        .onChange(of: connections.selectedID, initial: true) { _, id in
+            HubCookieScopeRegistry.shared.selectedID = id
+            guard !HubFixture.isEnabled else { return }
+            if hubDestination?.sourceID != id { hubDestination = nil; workspaceChosen = false }
+            hubBrowserRevoked = false
+            loadError = nil
+            loginError = nil
+            loginRequired = false
+            hubRole = connections.selected?.kind == .hub ? .hub : .direct
+        }
+        .onChange(of: selectedWorkspace?.browserIdentity) { _, _ in
+            guard !HubFixture.isEnabled else { return }
+            loadError = nil
+            loginError = nil
+            loginRequired = false
+            canGoBack = false
+            loading = false
+            if selectedWorkspace?.browserRevoked == true {
+                hubDestination = nil
+                if let request = voiceRequest { finishVoiceLaunch(request.id, "Connection authorization changed. Sign in again before starting voice.") }
             }
         }
         .task(id: address) {
-            guard let server = address else { return }
+            guard HubFixture.isEnabled, let server = address else { return }
             let role = await HubServerRole.discover(server: server)
             guard !Task.isCancelled, address == server else { return }
             hubRole = role
@@ -63,24 +106,26 @@ struct ContentView: View {
         }
         .tint(.cyan)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if HubFixture.isEnabled {
+            if isFixture {
                 Text("DEMO FIXTURE · LOCAL")
                     .font(.caption.bold())
                     .frame(maxWidth: .infinity)
                     .padding(6)
                     .background(.orange.opacity(0.25))
-                    .accessibilityIdentifier("hub.fixtureBanner")
+                    .accessibilityIdentifier(PhoneHubFixture.isEnabled ? "phoneHub.fixtureBanner" : "hub.fixtureBanner")
             }
         }
         .background(NativeSceneReader { scene in
-            guard !HubFixture.isEnabled else { return }
+            guard !isFixture else { return }
             let id = PushCenter.windowID(for: scene)
             push.registerWindow(id, scene: scene)
             pushWindowID = id
         })
-        .sheet(isPresented: $showingSettings) { settings }
+        .sheet(isPresented: $showingSettings) {
+            settings.safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
+        }
         .onOpenURL { link in
-            guard !HubFixture.isEnabled, let server = HubConnectionImport.server(from: link) else { return }
+            guard !isFixture, let server = HubConnectionImport.server(from: link) else { return }
             importedServer = server
         }
         .alert("Connect to Hub?", isPresented: Binding(
@@ -95,9 +140,9 @@ struct ContentView: View {
         } message: {
             Text("Only connect to a server you trust. Sign-in is separate.\n" + (importedServer?.absoluteString ?? ""))
         }
-        .sheet(isPresented: $showingMusic) { MusicView(library: .shared) }
-        .sheet(isPresented: $showingListen) { ListenView(listen: listen) }
-        .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen) }
+        .sheet(isPresented: $showingMusic) { MusicView(library: .shared).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
+        .sheet(isPresented: $showingListen) { ListenView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
+        .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
         .onChange(of: push.pendingNavigation?.id) { _, id in
             if id != nil { workspaceChosen = true; showingHub = false }
         }
@@ -196,10 +241,13 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack {
                 Button { workspaceChosen = true; hubPresentation = UUID(); showingHub = true } label: { Label("Hub", systemImage: "square.grid.2x2") }
-                    .accessibilityIdentifier("hub.open")
+                    .accessibilityIdentifier(HubFixture.isEnabled ? "hub.open" : "phoneHub.returnHome")
                 Spacer()
-                Button { workspaceChosen = true; showingHub = false } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-                    .accessibilityIdentifier("hub.chat")
+                Button {
+                    if HubFixture.isEnabled { workspaceChosen = true; showingHub = false }
+                    else if let id = connections.selectedID { openPhoneChat(id, url) }
+                } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                    .accessibilityIdentifier(HubFixture.isEnabled ? "hub.chat" : "phoneHub.chat")
                 Spacer()
                 Button("Settings", systemImage: "gearshape", action: openSettings)
             }
@@ -213,6 +261,9 @@ struct ContentView: View {
                     .allowsHitTesting(!showingHub)
                     .accessibilityHidden(showingHub)
                 if showingHub {
+                    if !HubFixture.isEnabled {
+                        phoneHome
+                    } else {
                     HubView(server: url, onOpenChat: { destination in
                         loadError = nil
                         loginRequired = false
@@ -227,6 +278,7 @@ struct ContentView: View {
                                 restoreHubBrowser()
                             })
                     .id(url.absoluteString + hubPresentation.uuidString)
+                    }
                 }
             }
             if listen.player.showsBar {
@@ -239,28 +291,44 @@ struct ContentView: View {
     }
 
     private func page(_ url: URL) -> some View {
-        ZStack(alignment: .top) {
-            if hubBrowserRevoked {
+        let source = selectedWorkspace
+        let browserIdentity = source?.browserIdentity
+        return ZStack(alignment: .top) {
+            if !HubFixture.isEnabled && !workspaceChosen {
+                Color.clear
+            } else if browserIsRevoked {
                 recoveryScreen("Hub sign-in required", symbol: "lock.shield", message: "The previous private browser workspace was closed after authorization changed.") {
                     Button("Back to Hub") { showingHub = true }.buttonStyle(.borderedProminent)
                     Button("Settings", action: openSettings).buttonStyle(.bordered)
                 }
+            } else if !HubFixture.isEnabled && source?.browserReady != true {
+                ProgressView("Preparing connection…")
             } else {
             BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
                         scenePhase: showingHub ? .inactive : scenePhase, isSigningIn: isSigningIn,
-                        deviceTools: !HubFixture.isEnabled && deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
+                        deviceTools: !isFixture && deviceTools.isEnabled(for: url) ? deviceTools.registry : nil,
                         onLoginRequired: {
+                            guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             loginRequired = true
                             if hubRole == .direct && !showingHub { signIn(to: url) }
                         }, onRevealControls: revealControls,
                         voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
-                        push: HubFixture.isEnabled ? nil : push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
+                        push: isFixture ? nil : push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
                         onPushNavigationHandled: push.navigationHandled,
                         onPushWindowReady: { pushWindowID = $0 }, nativeDestination: hubDestination,
-                        isContentVisible: !showingHub)
+                        isContentVisible: !showingHub,
+                        websiteDataStore: HubFixture.isEnabled ? nil : selectedWorkspace?.security?.dataStore,
+                        authenticationScript: browserAuthenticationScript,
+                        connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
+                        onAuthorizationRevoked: {
+                            guard !HubFixture.isEnabled, let source, source.isActive,
+                                  source.browserIdentity == browserIdentity else { return }
+                            source.revokeAuthorization()
+                        })
+                .id(HubFixture.isEnabled ? "legacy" : (selectedWorkspace?.id.uuidString ?? "none") + (selectedWorkspace?.browserIdentity.uuidString ?? ""))
                 .ignoresSafeArea(edges: .bottom)
                 .accessibilityAction(named: "App controls", revealControls)
             }
@@ -339,9 +407,32 @@ struct ContentView: View {
         showingControls = true
     }
 
+    private func openPhoneChat(_ sourceID: UUID, _ destination: URL) {
+        aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
+        guard let source = aggregate.source(sourceID), source.isActive, !source.browserRevoked else { return }
+        Task { @MainActor in
+            await source.prepareBrowserAuthentication()
+            guard source.isActive, !source.browserRevoked,
+                  aggregate.source(sourceID) === source else { return }
+            // The selected URL mirror is committed before the destination. All
+            // existing Listen/Push/Voice/device-tool paths observe this source.
+            connections.select(sourceID)
+            serverURL = source.connection.url.absoluteString
+            hubRole = source.connection.kind == .hub ? .hub : .direct
+            hubBrowserRevoked = false
+            loadError = nil
+            loginError = nil
+            loginRequired = false
+            hubDestination = HubBrowserDestination(url: destination, sourceID: sourceID)
+            workspaceChosen = true
+            showingHub = false
+        }
+    }
+
     private func openSettings() {
         showingControls = false
         draftURL = serverURL
+        connectionKind = connections.selected?.kind ?? .hub
         showingSettings = true
         Task { await push.refreshAuthorization() }
     }
@@ -350,6 +441,11 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 Section("Server") {
+                    if !HubFixture.isEnabled {
+                        Picker("Connection kind", selection: $connectionKind) {
+                            ForEach(HubConnection.Kind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
+                        }.pickerStyle(.segmented)
+                    }
                     addressField
                     if ServerAddress.parse(draftURL) == nil {
                         Text("Enter a valid server URL to continue.")
@@ -482,6 +578,34 @@ struct ContentView: View {
         isSigningIn = true
         loginRequired = false
         loginError = nil
+        if !HubFixture.isEnabled, let source = selectedWorkspace, source.connection.url == url {
+            Task { @MainActor in
+                guard let epoch = await source.prepareAuthentication() else { isSigningIn = false; return }
+                nativeLogin.cookieSink = source.nativeCookieSink(epoch: epoch)
+                nativeLogin.signIn(to: url) { result in
+                    isSigningIn = false
+                    guard source.isActive, source.authEpoch == epoch else { return }
+                    switch result {
+                    case .success:
+                        Task {
+                            await source.authenticationSucceeded(epoch: epoch)
+                            guard connections.selectedID == source.id else { return }
+                            loadError = nil
+                            loginError = nil
+                            loginRequired = false
+                            hubBrowserRevoked = false
+                            authenticatedCount += 1
+                        }
+                    case .failure(let error):
+                        source.authenticationError = error.localizedDescription
+                        if connections.selectedID == source.id { loginError = error.localizedDescription }
+                    }
+                }
+            }
+            return
+        }
+        guard HubFixture.isEnabled else { isSigningIn = false; return }
+        nativeLogin.cookieSink = nil
         nativeLogin.signIn(to: url) { result in
             isSigningIn = false
             switch result {
@@ -495,6 +619,23 @@ struct ContentView: View {
     }
 
     private func saveAddress() {
+        if !HubFixture.isEnabled {
+            do {
+                let source = try connections.save(id: connections.selectedID, name: connections.selected?.name ?? "Connection", kind: connectionKind, address: draftURL)
+                connections.select(source.id)
+                serverURL = source.url.absoluteString
+                aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
+                showingHub = true
+                showingSettings = false
+                hubDestination = nil
+                workspaceChosen = false
+                hubBrowserRevoked = false
+                loadError = nil
+                loginError = nil
+                loginRequired = false
+            } catch { loginError = error.localizedDescription }
+            return
+        }
         guard let url = ServerAddress.parse(draftURL),
               !HubFixture.isEnabled || url == HubFixture.server else { return }
         let changed = serverURL != url.absoluteString

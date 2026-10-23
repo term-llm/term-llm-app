@@ -14,6 +14,7 @@ enum HubFixture {
 
     static var isEnabled: Bool { server != nil }
     static let defaults: UserDefaults = {
+        if PhoneHubFixture.isEnabled { return PhoneHubFixture.defaults }
         guard isEnabled else { return .standard }
         let name = "com.termllm.app.native-hub-fixture"
         let defaults = UserDefaults(suiteName: name)!
@@ -42,6 +43,7 @@ enum HubConnectionImport {
 struct HubBrowserDestination: Equatable {
     let id = UUID()
     let url: URL
+    var sourceID: UUID? = nil
 }
 
 /// Public, bounded role discovery never treats a timeout/auth failure as a Hub.

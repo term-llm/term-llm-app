@@ -7,13 +7,13 @@ import sys
 SUITES = ("HubClientTests", "HubStoreTests", "HubPasskeyTests")
 
 
-def verify_units(directory):
+def verify_units(directory, suites=SUITES, *, summary_file="unit-test-summary.json", tree_file="unit-test-tree.json"):
     root = Path(directory)
-    summary = json.loads((root / "unit-test-summary.json").read_text())
-    if (summary.get("result") != "Passed" or summary.get("passedTests", 0) < len(SUITES)
+    summary = json.loads((root / summary_file).read_text())
+    if (summary.get("result") != "Passed" or summary.get("passedTests", 0) < len(suites)
             or summary.get("failedTests", 0) != 0 or summary.get("skippedTests", 0) != 0):
         raise ValueError("Expected executed, passing, non-skipped Hub unit regressions")
-    tree = json.loads((root / "unit-test-tree.json").read_text())
+    tree = json.loads((root / tree_file).read_text())
     def nodes(value):
         for node in value:
             yield node
@@ -21,7 +21,7 @@ def verify_units(directory):
 
     all_nodes = list(nodes(tree.get("testNodes", [])))
     missing = []
-    for suite in SUITES:
+    for suite in suites:
         matches = [node for node in all_nodes if node.get("name") == suite
                    and node.get("nodeType") == "Test Suite" and node.get("result") == "Passed"]
         if not any(any(child.get("nodeType") == "Test Case" and child.get("result") == "Passed"
@@ -29,11 +29,11 @@ def verify_units(directory):
             missing.append(suite)
     if missing:
         raise ValueError(f"Requested unit suites absent or not executed in xcresult: {missing}")
-    print("Validated xcresult unit-suite execution metadata: " + ", ".join(SUITES))
+    print("Validated xcresult unit-suite execution metadata: " + ", ".join(suites))
 
 
 if __name__ == "__main__":
     try:
-        verify_units(sys.argv[1])
+        verify_units(sys.argv[1], tuple(sys.argv[2:]) or SUITES)
     except (ValueError, OSError, json.JSONDecodeError) as error:
         raise SystemExit(str(error))

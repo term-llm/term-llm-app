@@ -1253,6 +1253,29 @@ extension HubClientTests {
 
 extension HubClientTests {
     @MainActor
+    func testLateBearerCandidateCannotImportIntoReplacedAuthorizationEpoch() async {
+        let gate = HubRequestGate()
+        let started = expectation(description: "bearer candidate started")
+        let cookies = CookieRecorder()
+        let transport = MockTransport { request in
+            started.fulfill()
+            await gate.wait()
+            return jsonResponse("{\"nodes\":[]}", url: request.url!)
+        }
+        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] },
+                               cookie_sink: { cookies.append($0) }, transport: transport)
+        let workspace = HubWorkspace(client: client, requiresAuthentication: false) {}
+        defer { workspace.dispose() }
+        let login = Task { try await client.login_bearer(token: "candidate") }
+        await fulfillment(of: [started], timeout: 2)
+        workspace.authenticationSucceeded()
+        await gate.release()
+        do { try await login.value; XCTFail("Old candidate must not overwrite a new identity") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(cookies.count, 0)
+    }
+
+    @MainActor
     func testDelayedOld401CannotRevokeNewAuthenticationOrReplaceItsCookies() async {
         let gate = HubRequestGate()
         let started = expectation(description: "old request started")

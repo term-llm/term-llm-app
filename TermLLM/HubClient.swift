@@ -789,6 +789,7 @@ final class HubClient: @unchecked Sendable {
     /// The token is never placed in a query string.  No token is stored
     /// outside WK's cookie jar.
     func login_bearer(token: String) async throws {
+        let authorization = captureAuthorization()
         let url = mounted("/api/nodes")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -823,6 +824,7 @@ final class HubClient: @unchecked Sendable {
         guard let cookie else {
             throw HubAPIError(status: 0, message: "Failed to construct auth cookie.")
         }
+        guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
         await cookie_sink([cookie])
     }
 
