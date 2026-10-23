@@ -77,10 +77,21 @@ final class NativeHubUITests: XCTestCase {
             guard attempt < panels.count else { break }
             let earlier = validFrame ? frame.minX < viewport.minX :
                 targetIndex < (panels.firstIndex(of: selectedPanel) ?? 0)
-            // Swipe the explicitly identified panel strip, never offscreen coordinates
-            // or the vertically scrolling page. This also returns to Nodes
-            // after Security has scrolled it off the left edge.
-            if earlier { strip.swipeRight() } else { strip.swipeLeft() }
+            // Measured strip AX frame: y=133.33...247.67; actual buttons:
+            // y=205.33...239.67. The default swipe at y=190.5 hit the nav bar.
+            // Drag through the measured button row, inside the visible viewport.
+            guard validFrame && frame.midY > viewport.minY && frame.midY < viewport.maxY else {
+                XCTFail("Native panel row has no visible gesture position", file: file, line: line)
+                return
+            }
+            let left = viewport.minX + viewport.width * 0.25
+            let right = viewport.minX + viewport.width * 0.75
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let from = origin.withOffset(CGVector(dx: (earlier ? left : right) - app.frame.minX,
+                                                  dy: frame.midY - app.frame.minY))
+            let to = origin.withOffset(CGVector(dx: (earlier ? right : left) - app.frame.minX,
+                                                dy: frame.midY - app.frame.minY))
+            from.press(forDuration: 0.05, thenDragTo: to)
         }
         let hierarchy = XCTAttachment(string: app.debugDescription)
         hierarchy.name = "panel-reveal-failure-\(identifier)-hierarchy"
