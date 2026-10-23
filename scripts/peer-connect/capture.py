@@ -133,7 +133,7 @@ class Capture:
         self.run(["xcodebuild", "build-for-testing", *args], "build.log")
         app = self.private / "DerivedData/Build/Products/Debug-iphonesimulator/TermLLM.app"
         require(app.is_dir(), "Real compiled app not found")
-        signing = dict(schema_version=1, purpose="SIMULATOR ONLY · AD-HOC · NO APPLE PROFILE",
+        signing = dict(schema_version=1, purpose="SIMULATOR ONLY · XCODE SIGNATURES PRESERVED · NO APPLE PROFILE",
                        osstatus_measured=False, verification="pending")
         try:
             sign_products(app.parent, self.private, signing)
@@ -145,10 +145,10 @@ class Capture:
         except subprocess.CalledProcessError as error:
             signing["verification"] = "failed"
             signing["diagnostic"] = self.redact((error.stderr or b"").decode(errors="replace")[:16000])
-            raise ContractError("Simulator ad-hoc signing/verification failed; see simulator-signing.json") from None
+            raise ContractError("Xcode simulator signature verification failed; see simulator-signing.json") from None
         finally:
             (self.artifacts / "simulator-signing.json").write_text(json.dumps(signing, indent=2) + "\n")
-        self.manifest["simulator_signing"] = "ad-hoc-isolated-namespace-verified"
+        self.manifest["simulator_signing"] = "xcode-signatures-preserved-linked-entitlements-verified"
         self.manifest["app_binary_sha256"] = hashlib.sha256((app / "TermLLM").read_bytes()).hexdigest()
         # This is an actual recorded SIMULATOR install, not an App Store install.
         install_video = self.private / "simulator-install.mp4"
@@ -190,9 +190,13 @@ class Capture:
         raw = self.private / f"{mode}-simulator-launch.raw.log"
         output = self.artifacts / f"{mode}-simulator-launch.log"
         try:
-            predicate = ('process == "SpringBoard" OR process == "runningboardd" OR '
-                         'process == "amfid" OR process == "launchd_sim" OR '
-                         'process == "TermLLMUITests-Runner"')
+            predicate = ('process == "TermLLM" OR process == "TermLLMUITests-Runner" OR '
+                         'eventMessage CONTAINS[c] "com.termllm.app" OR eventMessage CONTAINS[c] "TermLLM" OR '
+                         '((process == "SpringBoard" OR process == "runningboardd" OR process == "amfid" OR '
+                         'process == "launchd_sim") AND (eventMessage CONTAINS[c] "denied" OR '
+                         'eventMessage CONTAINS[c] "deny" OR eventMessage CONTAINS[c] "signature" OR '
+                         'eventMessage CONTAINS[c] "entitlement" OR eventMessage CONTAINS[c] "spawn failed" OR '
+                         'eventMessage CONTAINS[c] "error 162"))')
             with raw.open("wb") as stream:
                 try:
                     subprocess.run(["xcrun", "simctl", "spawn", udid, "log", "show", "--last", "3m",
@@ -203,14 +207,26 @@ class Capture:
             # Redact BEFORE selecting whole lines: no partial secret is created
             # by truncation. Bound artifact to 64KiB/200 lines, not an env dump.
             clean = self.redact(raw.read_text(errors="replace"))
+            primary, secondary = [], []
+            for index, line in enumerate(clean.splitlines()):
+                lower = line.lower()
+                if any(term in lower for term in ("termllm", "com.termllm.app", "sbrequestdenied", "spawn failed", "error 162")):
+                    primary.append((index, line))
+                elif any(term in lower for term in ("denied", "deny", "signature", "entitlement", "security")):
+                    secondary.append((index, line))
             lines, used = [], 0
-            for line in reversed(clean.splitlines()):
-                size = len(line.encode()) + 1
-                if size + used > 65536 or len(lines) >= 200:
-                    break
-                lines.append(line)
-                used += size
-            output.write_text("Simulator diagnostic only; launch cause unconfirmed.\n" + "\n".join(reversed(lines)) + "\n")
+            # Reserve space for target-app/launch-denial entries FIRST. Recent
+            # generic RunningBoard/security noise cannot evict the actual failure.
+            for bucket in (primary, secondary):
+                for index, line in reversed(bucket):
+                    size = len(line.encode()) + 1
+                    if size + used > 65536 or len(lines) >= 200:
+                        continue
+                    lines.append((index, line))
+                    used += size
+            lines.sort()
+            body = "\n".join(line for _, line in lines) or "No matching target-app/deny/security entries in bounded query."
+            output.write_text("Simulator diagnostic only; launch cause unconfirmed.\n" + body + "\n")
         except Exception:
             output.write_text("Simulator launch diagnostics unavailable; private error details withheld.\n")
 

@@ -141,12 +141,18 @@ class AdapterTests(unittest.TestCase):
             capture.sensitive = ["private-launch-capability"]
             def logs(args, **kwargs):
                 self.assertEqual(kwargs["timeout"], 15)
-                kwargs["stdout"].write(("old entry\n" * 300 + "SBRequestDenied private-launch-capability\n").encode())
+                self.assertIn('eventMessage CONTAINS[c] "com.termllm.app"', args[-1])
+                kwargs["stdout"].write(("TermLLM com.termllm.app spawn failed private-launch-capability\n"
+                    + "runningboardd unrelated process noise\n" * 300
+                    + "amfid unrelated signature detail\n" * 300
+                    + "SBRequestDenied private-launch-capability\n").encode())
                 return subprocess.CompletedProcess(args, 0)
             with patch("capture.subprocess.run", side_effect=logs):
                 capture.launch_diagnostics("direct", "test-simulator")
             result = (capture.artifacts / "direct-simulator-launch.log").read_text()
             self.assertIn("SBRequestDenied [REDACTED]", result)
+            self.assertIn("TermLLM com.termllm.app spawn failed [REDACTED]", result)
+            self.assertNotIn("unrelated process noise", result)
             self.assertNotIn(capture.sensitive[0], result)
             self.assertLessEqual(len(result.splitlines()), 201)
             self.assertLess(len(result.encode()), 65600)

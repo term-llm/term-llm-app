@@ -53,7 +53,7 @@ class SigningPolicyTests(unittest.TestCase):
         fat += struct.pack('>5I', 0x1000007, 0, offset + len(image), len(image), 0)
         self.assertEqual(len(embedded_entitlements(fat + image + image)), 2)
 
-    def test_only_owned_app_and_nse_signed_runner_and_sdk_preserved(self):
+    def test_all_xcode_signatures_and_plists_preserved_readonly(self):
         with tempfile.TemporaryDirectory() as temp:
             # Exercise canonical path handling (/var vs /private/var on macOS).
             actual = Path(temp) / 'actual'
@@ -81,39 +81,42 @@ class SigningPolicyTests(unittest.TestCase):
             library.write_bytes(b'test-library-placeholder')
             paths = [p.resolve() for p, _ in fixtures] + [library.resolve()]
             signatures = {str(p): {'stock-xcode-test-marker': True} for p in paths}
-            stock = {str(p): dict(signatures[str(p)]) for p in paths if p not in (app.resolve(), extension.resolve())}
+            signatures[str(app.resolve())] = {}  # Normal Xcode physical .xcent.
+            stock = {str(p): dict(signatures[str(p)]) for p in paths}
+            infos = {p: (p / 'Info.plist').read_bytes() for p, _ in fixtures}
             runner_info = (runner / 'Info.plist').read_bytes()
-            order = []
             def command(args, **kwargs):
                 path = args[-1]
+                self.assertNotIn('--sign', args)
+                self.assertNotIn('--force', args)
                 if '--verify' in args:
-                    if path in stock:
-                        # Mirrors the real Apple SDK-copy failure: code remains
-                        # signed, but Xcode stripped upstream sealed resources.
+                    if Path(path).suffix in ('.framework', '.dylib'):
                         self.assertIn('--ignore-resources', args)
                     else:
                         self.assertNotIn('--ignore-resources', args)
-                if '--sign' in args:
-                    order.append(path)
-                    self.assertNotIn('--deep', args)
-                    signatures[path] = plistlib.loads(Path(args[args.index('--entitlements') + 1]).read_bytes())
                 output = plistlib.dumps(signatures[path]) if '--entitlements' in args and '--display' in args else b''
                 details = str(signatures[path]).encode() if '--verbose=4' in args else b''
                 return subprocess.CompletedProcess(args, 0, stdout=output, stderr=details)
             provenance = {}
             with patch('sign_simulator.subprocess.run', side_effect=command):
                 sign_products(products, private, provenance)
-            self.assertEqual(order, [str(extension.resolve()), str(app.resolve())])
             for path, signature in stock.items():
                 self.assertEqual(signatures[path], signature)
             self.assertEqual((runner / 'Info.plist').read_bytes(), runner_info)
-            self.assertEqual(plistlib.loads((app / 'Info.plist').read_bytes())['TermLLMKeychainAccessGroup'], SHARED_GROUP)
+            for path, original in infos.items():
+                self.assertEqual((path / 'Info.plist').read_bytes(), original)
+            self.assertEqual(plistlib.loads((app / 'Info.plist').read_bytes())['TermLLMKeychainAccessGroup'], 'unexpanded.shared')
             self.assertFalse(provenance['osstatus_measured'])
             self.assertEqual(len(provenance['products']), 7)
             runner_record = next(r for r in provenance['products'] if r['path'] == 'TermLLMUITests-Runner.app')
             self.assertEqual(runner_record['action'], 'preserved-xcode-code')
-            self.assertFalse(runner_record['resource_envelope_validated'])
-            self.assertIn('resource envelopes not validated', provenance['preserved_validation'])
+            self.assertTrue(runner_record['resource_envelope_validated'])
+            self.assertIn('resource ignore ONLY', provenance['preserved_validation'])
+            self.assertEqual(provenance['signing_scope'], 'none-read-only-verification')
+            main_record = next(r for r in provenance['products'] if r['path'] == 'TermLLM.app')
+            self.assertEqual(main_record['entitlements'], {})
+            self.assertTrue(main_record['resource_envelope_validated'])
+            self.assertEqual(main_record['linked_entitlements'][0]['application-identifier'], 'SIMULATOR.com.termllm.app')
             self.assertEqual(runner_record['before']['entitlements'], runner_record['entitlements'])
             self.assertEqual(runner_record['before']['signature_details'], runner_record['signature_details'])
             self.assertEqual(runner_record['before']['binary_sha256'], runner_record['binary_sha256'])

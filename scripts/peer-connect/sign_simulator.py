@@ -1,8 +1,8 @@
-"""Ad-hoc simulator signing only: no Apple identity, profile or memory keychain.
+"""Read-only simulator signature and linked-entitlement verification.
 
-Xcode must link simulator __TEXT,__entitlements (keychain checks use these).
-Post-build codesign changes ONLY our main app and notification extension.
-Xcode runner, XCTest/SDK frameworks, libraries and test bundles are preserved.
+Xcode owns ALL signatures and Info.plists, including main app/NSE. Simulator
+Keychain identity uses the linked __TEXT,__entitlements section. This module
+never executes codesign --sign or mutates any built product.
 """
 import hashlib
 import plistlib
@@ -81,11 +81,12 @@ def signature_state(path):
     binary = path / info.get("CFBundleExecutable", "") if path.is_dir() else path
     return dict(entitlements=actual,
                 signature_details=(detail.stdout + detail.stderr).decode(errors="replace")[:12000],
-                binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None)
+                binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None,
+                info_plist_sha256=hashlib.sha256(info_path.read_bytes()).hexdigest() if info_path and info_path.is_file() else None)
 
 
 def sign_products(products, private, provenance):
-    """Sign only owned app/NSE; leave all Xcode runner/SDK code untouched."""
+    """Historical entry-point name; performs NO post-build signing or mutation."""
     products = products.resolve()
     require(not any(products.rglob("embedded.mobileprovision")), "Simulator capture must not use provisioning profiles")
     app = products / "TermLLM.app"
@@ -95,60 +96,34 @@ def sign_products(products, private, provenance):
     bundles = [p for p in products.rglob("*") if p.is_dir() and p.suffix in (".app", ".appex", ".xctest", ".framework")]
     libraries = [p for p in products.rglob("*.dylib") if p.is_file()]
     paths = sorted(bundles + libraries, key=str)
-    owned = [app]
-    for path in (app / "PlugIns").glob("*.appex"):
-        info = plistlib.loads((path / "Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") == "com.termllm.app.NotificationService":
-            owned.append(path)
-    preserved = [p for p in paths if p not in owned]
-    prior = {}
-    for path in paths:
-        require(path.resolve().is_relative_to(products), "Refusing to modify code outside simulator products")
-        prior[path] = signature_state(path)
-        if path in preserved:
-            # Xcode's SDK copy phase strips Headers/Modules from Apple's
-            # signed test frameworks. Preserve that output; validate executable
-            # signatures, not the now-inapplicable upstream resource envelope.
-            subprocess.run(["codesign", "--verify", "--strict", "--ignore-resources", str(path)], check=True, capture_output=True)
-    # Record runner/SDK proof before any change, even if a subsequent gate fails.
-    provenance["preserved_before"] = [dict(path=str(p.relative_to(products)), **prior[p]) for p in preserved]
     records = []
-    for index, path in enumerate(sorted(owned, key=lambda p: -len(p.parts))):
-        info_path = path / "Info.plist"
-        info = plistlib.loads(info_path.read_bytes())
-        privileges = entitlements(info["CFBundleIdentifier"])
-        if "TermLLMKeychainAccessGroup" in info:
-            info["TermLLMKeychainAccessGroup"] = SHARED_GROUP
-            info_path.write_bytes(plistlib.dumps(info))
-        entitlement_file = private / f"simulator-sign-{index}.plist"
-        entitlement_file.write_bytes(plistlib.dumps(privileges))
-        # No --deep signing: nested Xcode/Apple code must remain untouched.
-        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", "--generate-entitlement-der",
-                        "--entitlements", str(entitlement_file), str(path)], check=True, capture_output=True)
-        subprocess.run(["codesign", "--verify", "--strict", str(path)], check=True, capture_output=True)
-        final = signature_state(path)
-        record = dict(path=str(path.relative_to(products)), action="resigned-owned-only",
-                      before=prior[path], **final, requested_entitlements=privileges, verified=True)
-        records.append(record)
-        provenance["products"] = list(records)
-        require(final["entitlements"] == privileges, "Actual owned-app signature entitlements differ from simulator policy")
-        if path == app:
-            linked = embedded_entitlements((path / info["CFBundleExecutable"]).read_bytes())
-            for item in linked:
-                require(item.get("application-identifier") == privileges["application-identifier"], "Linked simulator application identifier mismatch")
-                require(item.get("keychain-access-groups") == privileges["keychain-access-groups"], "Linked simulator keychain groups mismatch")
-            record["linked_entitlements"] = linked
-    for path in preserved:
+    provenance.update(signing_scope="none-read-only-verification", products=records)
+    for path in paths:
+        require(path.resolve().is_relative_to(products), "Refusing to inspect code outside simulator products")
+        prior = signature_state(path)
+        # ONLY SDK frameworks/libraries may have upstream resource envelopes
+        # invalidated by Xcode's normal stripping/copy phase (c8d5680). App,
+        # NSE, runner and .xctest resources receive strict validation unchanged.
+        sdk_copy = path.suffix in (".framework", ".dylib")
+        args = ["codesign", "--verify", "--strict"]
+        if sdk_copy:
+            args.append("--ignore-resources")
+        subprocess.run([*args, str(path)], check=True, capture_output=True)
         final = signature_state(path)
         record = dict(path=str(path.relative_to(products)), action="preserved-xcode-code",
-                      before=prior[path], **final, verified=False)
+                      before=prior, **final, verified=True,
+                      resource_envelope_validated=not sdk_copy)
         records.append(record)
-        provenance["products"] = list(records)
-        require(final == prior[path], "Xcode runner or nested SDK code changed during owned-app signing")
-        subprocess.run(["codesign", "--verify", "--strict", "--ignore-resources", str(path)], check=True, capture_output=True)
-        record["verified"] = True
-        record["resource_envelope_validated"] = False
+        require(final == prior, "Xcode-generated signature, executable or Info.plist changed during verification")
+        if path == app:
+            expected = entitlements(app_info["CFBundleIdentifier"])
+            linked = embedded_entitlements((app / app_info["CFBundleExecutable"]).read_bytes())
+            record["linked_entitlements"] = linked
+            for item in linked:
+                require(item.get("application-identifier") == expected["application-identifier"], "Linked simulator application identifier mismatch")
+                require(item.get("keychain-access-groups") == expected["keychain-access-groups"], "Linked simulator keychain groups mismatch")
+            # Physical entitlements are recorded, never replaced with the
+            # simulated application-identifier/keychain payload. Empty is normal.
     provenance.update(namespace=PREFIX, shared_keychain_group=SHARED_GROUP,
-                       preserved_validation="executable-signatures-and-unchanged-hashes; Xcode-copied resource envelopes not validated",
-                      signing_scope="main-app-and-owned-notification-extension-only",
-                      apple_identity=False, provisioning_profile=False, osstatus_measured=False, products=records)
+                      preserved_validation="strict signatures/resources; resource ignore ONLY on preserved SDK frameworks/libraries",
+                      apple_identity=False, provisioning_profile=False, osstatus_measured=False)
