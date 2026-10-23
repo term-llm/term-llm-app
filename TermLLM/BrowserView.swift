@@ -141,6 +141,8 @@ struct BrowserView: UIViewRepresentable {
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
+        context.coordinator.diagnostics.attach(view)
+        context.coordinator.diagnostics.setActive(scenePhase == .active)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
@@ -178,6 +180,7 @@ struct BrowserView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate {
+        let diagnostics = PageResponsivenessMonitor()
         var parent: BrowserView
         var loadedURL: URL?
         var rejectedHTTPResponse = false
@@ -209,6 +212,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func tearDown() {
+            diagnostics.stop()
             MainActor.assumeIsolated { pushBridge?.documentCommitted() }
             controlsPull.reset()
             voiceTask?.cancel()
@@ -226,6 +230,7 @@ struct BrowserView: UIViewRepresentable {
 
         func update(_ view: WKWebView, parent: BrowserView) {
             self.parent = parent
+            diagnostics.setActive(parent.scenePhase == .active)
             if let scene = view.window?.windowScene {
                 registerPushScene(scene)
             }
@@ -325,6 +330,10 @@ struct BrowserView: UIViewRepresentable {
             pushBridge = nil
             if let center {
                 let bridge = MainActor.assumeIsolated { NativePushBridge(serverURL: url, center: center) }
+                bridge.diagnosticsContext = { [weak diagnostics = self.diagnostics] in
+                    guard let diagnostics else { return (UUID(), UUID()) }
+                    return (diagnostics.browserID, diagnostics.state.document)
+                }
                 bridge.install(into: controller)
                 pushBridge = bridge
             }
@@ -426,6 +435,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            diagnostics.terminated()
             if voiceTask != nil {
                 cancelVoiceLaunch(error: "The voice page stopped unexpectedly. Run the shortcut again after recovery.")
             }
@@ -447,6 +457,7 @@ struct BrowserView: UIViewRepresentable {
                 return
             }
             lastAutomaticRecovery = now
+            diagnostics.record(.recoveryRequested)
             // Use a fresh GET, not reload(), to avoid replaying a submitted form.
             // WKWebView.url includes the current SPA route after pushState.
             let target = view.url.flatMap { candidate in
@@ -466,6 +477,10 @@ struct BrowserView: UIViewRepresentable {
             bridge = nil
             if let registry {
                 let bridge = WebMCPBridge(serverURL: url, registry: registry, device: UIDevice.current.model)
+                bridge.diagnosticsContext = { [weak diagnostics = self.diagnostics] in
+                    guard let diagnostics else { return (UUID(), UUID()) }
+                    return (diagnostics.browserID, diagnostics.state.document)
+                }
                 bridge.install(into: controller)
                 self.bridge = bridge
             }
@@ -488,6 +503,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            diagnostics.navigationStarted()
             // A provisional load may fail, be cancelled or become a download.
             // The still-live document keeps its binding until actual commit.
             rejectedHTTPResponse = false
@@ -497,6 +513,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            diagnostics.committed()
             MainActor.assumeIsolated {
                 let owner: String?
                 if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }
@@ -506,6 +523,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            diagnostics.navigationEnded(failed: false)
             if let scene = webView.window?.windowScene {
                 registerPushScene(scene)
             }
@@ -523,6 +541,7 @@ struct BrowserView: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
+            diagnostics.navigationEnded(failed: true)
             rejectedHTTPResponse = true
             parent.loading = false
             switch recovery {
@@ -545,6 +564,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         private func fail(_ error: Error) {
+            diagnostics.navigationEnded(failed: true)
             // WebKit may report cancellation after we intentionally reject an HTTP error page.
             if rejectedHTTPResponse { return }
             parent.loading = false

@@ -91,6 +91,11 @@
 		000000000000000000000531 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000532 /* PushConsentJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000530 /* PushConsentJournal.swift */; };
 		000000000000000000000534 /* NotificationReviewRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000533 /* NotificationReviewRegressionTests.swift */; };
+		000000000000000000000610 /* FlightRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000600 /* FlightRecorder.swift */; };
+		000000000000000000000611 /* ResponsivenessDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000601 /* ResponsivenessDiagnostics.swift */; };
+		000000000000000000000612 /* FlightDiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000602 /* FlightDiagnosticsView.swift */; };
+		000000000000000000000613 /* FlightRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000603 /* FlightRecorderTests.swift */; };
+		000000000000000000000614 /* ResponsivenessDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000604 /* ResponsivenessDiagnosticsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -208,6 +213,11 @@
 		000000000000000000000520 /* ProducerFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ProducerFixtures; sourceTree = "<group>"; };
 		000000000000000000000530 /* PushConsentJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushConsentJournal.swift; sourceTree = "<group>"; };
 		000000000000000000000533 /* NotificationReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReviewRegressionTests.swift; sourceTree = "<group>"; };
+		000000000000000000000600 /* FlightRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlightRecorder.swift; sourceTree = "<group>"; };
+		000000000000000000000601 /* ResponsivenessDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponsivenessDiagnostics.swift; sourceTree = "<group>"; };
+		000000000000000000000602 /* FlightDiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlightDiagnosticsView.swift; sourceTree = "<group>"; };
+		000000000000000000000603 /* FlightRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlightRecorderTests.swift; sourceTree = "<group>"; };
+		000000000000000000000604 /* ResponsivenessDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponsivenessDiagnosticsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +269,9 @@
 		000000000000000000000004 /* TermLLM */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000602 /* FlightDiagnosticsView.swift */,
+				000000000000000000000601 /* ResponsivenessDiagnostics.swift */,
+				000000000000000000000600 /* FlightRecorder.swift */,
 				000000000000000000000040 /* TermLLMApp.swift */,
 				000000000000000000000400 /* AppDelegate.swift */,
 				000000000000000000000041 /* ContentView.swift */,
@@ -311,6 +324,8 @@
 		000000000000000000000005 /* TermLLMTests */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000604 /* ResponsivenessDiagnosticsTests.swift */,
+				000000000000000000000603 /* FlightRecorderTests.swift */,
 				000000000000000000000045 /* ServerAddressTests.swift */,
 				000000000000000000000351 /* AppControlsTests.swift */,
 				000000000000000000000341 /* VoiceShortcutTests.swift */,
@@ -481,6 +496,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				000000000000000000000612 /* FlightDiagnosticsView.swift in Sources */,
+				000000000000000000000611 /* ResponsivenessDiagnostics.swift in Sources */,
+				000000000000000000000610 /* FlightRecorder.swift in Sources */,
 				000000000000000000000080 /* TermLLMApp.swift in Sources */,
 				000000000000000000000450 /* AppDelegate.swift in Sources */,
 				000000000000000000000081 /* ContentView.swift in Sources */,
@@ -536,6 +554,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				000000000000000000000614 /* ResponsivenessDiagnosticsTests.swift in Sources */,
+				000000000000000000000613 /* FlightRecorderTests.swift in Sources */,
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
 				000000000000000000000353 /* AppControlsTests.swift in Sources */,
 				000000000000000000000343 /* VoiceShortcutTests.swift in Sources */,

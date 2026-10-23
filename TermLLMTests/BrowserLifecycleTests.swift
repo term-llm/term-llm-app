@@ -7,6 +7,24 @@ import XCTest
 // private WebKit process-killing API is needed to simulate termination.
 @MainActor
 final class BrowserLifecycleTests: XCTestCase {
+    func testDiagnosticDocumentChangesOnlyOnCommitWithoutIssuingNavigation() {
+        let state = State()
+        let coordinator = coordinator(browser(state))
+        let view = webView()
+        let initial = coordinator.diagnostics.state.document
+        coordinator.webView(view, didStartProvisionalNavigation: nil)
+        XCTAssertEqual(coordinator.diagnostics.state.document, initial)
+        coordinator.webView(view, didFailProvisionalNavigation: nil,
+                            withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        XCTAssertEqual(coordinator.diagnostics.state.document, initial)
+        coordinator.webView(view, didCommit: nil)
+        XCTAssertNotEqual(coordinator.diagnostics.state.document, initial)
+        coordinator.webView(view, didFinish: nil)
+        XCTAssertTrue(view.requests.isEmpty, "Diagnostics must not reload or navigate")
+        XCTAssertEqual(view.reloads, 0)
+        coordinator.tearDown()
+    }
+
     private let server = URL(string: "https://example.com/ui/")!
 
     private final class State {

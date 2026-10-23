@@ -46,6 +46,80 @@ For live voice, the app declares iOS background audio so an active WebKit microp
 
 The web UI (including the hub and its live voice controls) is shown as-is, with no permanent native bar or button. Pull down from within the top of the visible web page to reveal floating Back, Reload, Music, Listen, and Settings controls, even when the page is scrolled. A compact first-use coachmark explains the gesture: **Try it** reveals the controls and **Got it** dismisses the hint. Learning/dismissing it is remembered across launches. The controls stay open until used or explicitly closed; each target is at least 44 points. A successful pull gives a light haptic. The overlay does not resize/reload the web page; when hidden it intercepts no page touches. VoiceOver's **App controls** action and browser back-swipe remain available. If the server returns an HTTP error or fails to load, a native recovery screen keeps Retry and Settings visible. An authentication-required response offers passkey sign-in instead. Native hub navigation and a native voice transport are future work.
 
+## Freeze diagnostics (local flight recorder)
+
+Open **Settings → Diagnostics → Freeze diagnostics** from the native app controls,
+recovery screen, or initial server setup screen. **Refresh report** reads local
+history; **Prepare export → Share diagnostics file** explicitly hands a bounded
+file to the iOS share sheet. The on-screen preview is limited to 24,000 characters;
+the export contains the full retained report. Neither action needs a responding
+WKWebView, server, or notification enrollment. There is no automatic upload or relay change.
+Settings still runs on the native main thread: it cannot open during an ongoing
+native main-thread freeze, only once that thread responds again.
+
+The recorder stores structured event times, fixed event/bridge categories,
+random locally generated run/browser/document/operation correlation IDs, and
+bounded timing durations. The export header includes the exporting app version,
+build and OS version; these describe the current export, not earlier runs.
+Bridge starts and replies are paired without recording
+method/tool names, arguments, results, or error messages. No chat text, audio,
+cookies, tokens, full URLs (or even hosts/paths), notification routing identities,
+or document-supplied IDs enter the recording API. This does not change the
+notification consent, read/attention, ownership or termination-recovery policy.
+Timing and random correlation IDs can still reveal usage patterns: review an
+export before sharing it.
+
+A utility-queue native watchdog checks main-thread responsiveness once a second,
+with at most one outstanding main-queue ping. Each browser separately probes a
+constant JavaScript expression, with **one outstanding evaluation total per
+browser**, even after timeout, navigation or suspension. A timed-out evaluation
+is never treated as cancelled: subsequent probes wait for its actual callback.
+A stale document callback can release that transport slot but cannot recover a
+new document's suspected stall. If WebKit never calls back, probing that browser
+remains unavailable until it is recreated; this deliberately favors bounded work
+over piling up evaluations. Native and page suspected stalls are distinct events.
+The page monitor runs from a main-thread timer, so it cannot independently
+attribute page stalls while the native main thread is blocked.
+
+The initial thresholds are five seconds outstanding, with three seconds of grace
+after becoming active or document changes. Both monitors pause while inactive
+or backgrounded; the page monitor also pauses during navigation. Background time
+and pre-suspend evidence are not
+charged to a new foreground interval. Timer gaps over three seconds get fresh
+grace rather than claiming that suspended time was a freeze. Recovery duration
+is the outstanding probe's measured time in the current active interval (not
+necessarily the exact time the user first noticed a freeze). Suspected heartbeat
+stalls **never reload the page**. Web-content process termination continues to
+use the existing guarded, rate-limited recovery behavior.
+
+Writes and report/export disk reads run off-main on a serial utility queue.
+Defaults are **512 retained events, 256 KiB of encoded history, seven days of
+wall-clock history, and 128 pending events**; bursts are coalesced over 250 ms.
+Admission drops are counted in the report. Counts/bytes remain bounded even
+when clocks change; implausibly future-dated records are discarded after a
+backward wall-clock jump. Retention is applied on startup and subsequent
+writes/report/export, not by a service while the app is stopped. Durations are
+finite, nonnegative and capped at 24 hours.
+
+History survives ordinary relaunches in private `Application Support/FreezeDiagnostics`,
+excluded from backup, not the notification app group. It uses
+atomic replacement and file protection until first device unlock. Export adds at
+most one replaceable report (history limit plus a small fixed-format header), not
+an accumulating archive. The old export is removed at next launch, or once its
+age exceeds retention during an active storage operation; copies explicitly shared
+outside the app are outside its retention control. Recording is best-effort:
+pending events may be lost on force-quit/crash, storage failure or overload; the
+report is not a crash detector, watchdog termination report, stack trace, or proof
+of a particular freeze cause. Only public Apple APIs are used. There are no
+release-mode artificial stalls or diagnostic network/test services.
+
+The existing macOS simulator CI includes `FlightRecorderTests` and
+`ResponsivenessDiagnosticsTests`, alongside browser lifecycle regressions. These
+use temporary directories and simulated clock transitions, not sleeps, live
+servers or private WebKit termination APIs. Physical-device validation is still
+needed for scheduling overhead, lock/unlock and long suspension, native share
+sheet behavior, and actual freeze scenarios.
+
 ## Voice shortcut and Action button
 
 Open the app's **Settings → Voice Shortcut**. Discovery uses the existing server sign-in. For a hub, choose the **Agent** to call; for a direct server, no extra selection is needed. The destination is remembered per server. **Test Live Conversation** runs the same launch flow as the shortcut.

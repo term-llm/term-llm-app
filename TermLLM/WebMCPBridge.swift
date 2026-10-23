@@ -7,6 +7,8 @@ import WebKit
 /// Tool calls travel page → native through a reply-capable message handler
 /// that only answers the configured server's origin in the main frame.
 final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
+    var diagnosticsContext: (() -> (UUID, UUID))?
+
     static let handlerName = "termllmDeviceTools"
 
     let serverURL: URL
@@ -48,6 +50,12 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
+        let call = BridgeFlightCall(bridge: .deviceTools, context: diagnosticsContext?())
+        let originalReply = replyHandler
+        let replyHandler: (Any?, String?) -> Void = { value, error in
+            call.finish(succeeded: error == nil)
+            originalReply(value, error)
+        }
         let origin = message.frameInfo.securityOrigin
         let frameOrigin = Self.originString(scheme: origin.protocol, host: origin.host, port: origin.port)
         let body = message.body

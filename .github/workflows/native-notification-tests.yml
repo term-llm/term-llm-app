@@ -41,7 +41,7 @@ jobs:
           udid="$(python3 scripts/select-ios-simulator.py)"
           printf 'SIMULATOR_UDID=%s\n' "$udid" >> "$GITHUB_ENV"
           xcodebuild -version
-      - name: Build and run isolated notification regressions without signing
+      - name: Build and run isolated native regressions without signing
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +65,8 @@ jobs:
             -only-testing:TermLLMTests/NotificationReviewRegressionTests \
             -only-testing:TermLLMTests/BrowserLifecycleTests \
             -only-testing:TermLLMTests/VoiceShortcutTests \
+            -only-testing:TermLLMTests/FlightRecorderTests \
+            -only-testing:TermLLMTests/ResponsivenessDiagnosticsTests \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
             2>&1 | tee "$RUNNER_TEMP/notification-xcodebuild.log"
       - name: Preserve failure diagnostics

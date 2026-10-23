@@ -116,6 +116,8 @@ struct ContentView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                    Button("Settings", action: openSettings)
+                        .accessibilityIdentifier("setupSettings")
                     Text("Use an HTTPS URL to connect to your own server.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -287,6 +289,10 @@ struct ContentView: View {
                 }
                 notificationsSection
                 deviceToolsSection
+                Section("Diagnostics") {
+                    NavigationLink("Freeze diagnostics") { FlightDiagnosticsView() }
+                        .accessibilityIdentifier("freezeDiagnosticsSettings")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
