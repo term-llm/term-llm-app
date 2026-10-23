@@ -85,6 +85,21 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             evidence(raw, public, NONCE, "relay")
 
+    def test_native_selected_pair_details_are_preserved_not_synthesized(self):
+        public, _ = configuration()
+        raw = observed("relay")
+        for name in ("before_chat", "after_chat"):
+            raw[name].update(state="succeeded", nominated=True, local_relay_protocol="udp")
+        clean = evidence(raw, public, NONCE, "relay")
+        self.assertTrue(clean["after_chat"]["nominated"])
+        self.assertEqual(clean["after_chat"]["local_relay_protocol"], "udp")
+        self.assertNotIn("remote_relay_protocol", clean["after_chat"])
+        for change in (dict(state="failed"), dict(nominated=False), dict(local_relay_protocol="private-address")):
+            invalid = copy.deepcopy(raw)
+            invalid["after_chat"].update(change)
+            with self.assertRaises(ContractError):
+                evidence(invalid, public, NONCE, "relay")
+
     def test_sse_must_match_specific_completed_response(self):
         public, _ = configuration()
         for change in (dict(completed=False), dict(sse_response_id="wrong"), dict(text_delta_count=0), dict(sse_event_count=1), dict(prompt_sha256="0" * 64)):

@@ -78,6 +78,10 @@ final class PeerConnectionUITests: XCTestCase {
         // Native instrumentation samples actual RTC stats before this specific
         // chat request, not before aggregate Hub polling or an invented reply.
         required(app.buttons["peer.capture.beforeChat"]).tap()
+        // PeerWorkspace samples libwebrtc asynchronously. Do not race the
+        // request against its before-chat snapshot. This is the actual native
+        // completion status, not a fixed delay or a synthesized counter.
+        _ = required(app.staticTexts["Stats sampled"].firstMatch)
         composer.tap()
         composer.typeText(prompt)
         let send = required(app.webViews.buttons["Send message"].firstMatch)

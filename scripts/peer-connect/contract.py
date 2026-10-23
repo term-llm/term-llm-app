@@ -107,6 +107,19 @@ def evidence(raw, public, nonce, mode):
         for key in counters:
             require(type(sample.get(key)) is int and sample[key] >= 0, "Actual transport counters required")
         samples[name] = {key: sample[key] for key in ("selected_pair_id", "local_type", "remote_type", "protocol", *counters)}
+        # The native SDK now exports these actual RTC fields when reported.
+        # Preserve them rather than dropping relay/protocol proof from artifacts;
+        # absent values remain absent (never synthesize nominated/succeeded).
+        if "state" in sample:
+            require(sample["state"] == "succeeded", "Selected ICE pair is not succeeded")
+            samples[name]["state"] = sample["state"]
+        if "nominated" in sample:
+            require(sample["nominated"] is True, "Selected ICE pair is not nominated")
+            samples[name]["nominated"] = sample["nominated"]
+        for key in ("local_relay_protocol", "remote_relay_protocol"):
+            if key in sample:
+                require(sample[key] in ("udp", "tcp", "tls"), "Invalid reported relay protocol")
+                samples[name][key] = sample[key]
     require(samples["before_chat"]["selected_pair_id"] == samples["after_chat"]["selected_pair_id"], "ICE pair changed during measured request; rerun for unambiguous deltas")
     for key in counters:
         require(samples["after_chat"][key] > samples["before_chat"][key], "Chat must increase selected-pair AND DataChannel byte/message counters")
