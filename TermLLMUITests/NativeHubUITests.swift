@@ -52,8 +52,7 @@ final class NativeHubUITests: XCTestCase {
             return
         }
         let button = required(app.buttons[identifier].firstMatch, file: file, line: line)
-        let strip = required(app.scrollViews.containing(.button, identifier: identifier).firstMatch,
-                             file: file, line: line)
+        let strip = required(app.scrollViews["hub.panelStrip"], file: file, line: line)
         for attempt in 0...panels.count {
             let viewport = strip.frame.intersection(app.frame)
             let frame = button.frame
@@ -77,7 +76,7 @@ final class NativeHubUITests: XCTestCase {
             guard attempt < panels.count else { break }
             let earlier = validFrame ? frame.minX < viewport.minX :
                 targetIndex < (panels.firstIndex(of: selectedPanel) ?? 0)
-            // Swipe the actual ancestor ScrollView, never offscreen coordinates
+            // Swipe the explicitly identified panel strip, never offscreen coordinates
             // or the vertically scrolling page. This also returns to Nodes
             // after Security has scrolled it off the left edge.
             if earlier { strip.swipeRight() } else { strip.swipeLeft() }
