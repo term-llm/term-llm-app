@@ -140,6 +140,7 @@ struct HubView: View {
                         }
                     }.padding(.horizontal).padding(.vertical, 8)
                 }
+                .accessibilityIdentifier("hub.panelStrip")
                 if store.unauthorized {
                     authentication
                 } else {
