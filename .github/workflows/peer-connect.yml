@@ -1,0 +1,90 @@
+name: Peer connect actual simulator capture
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_nonce:
+        description: Public nonce bound to the parent's short-lived demo session
+        required: true
+        type: string
+  pull_request:
+    types: [opened, synchronize, labeled]
+    paths:
+      - 'TermLLM/**'
+      - 'Shared/**'
+      - 'TermLLM.xcodeproj/**'
+      - 'TermLLMUITests/PeerConnectionUITests.swift'
+      - 'scripts/peer-connect/**'
+      - '.github/workflows/peer-connect.yml'
+      - 'docs/PEER-CAPTURE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-typecheck:
+    # Always run the secret-free SDK compile gate on matching PR updates.
+    # No simulator runtime, pairing, remote host, or baseline UITest dependency.
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Typecheck actual app and peer sources against checksum-pinned WebRTC
+        run: bash scripts/peer-connect/typecheck_sdk.sh
+      - name: Preserve SDK typecheck provenance and licenses
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: peer-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/peer-sdk-artifacts/
+          retention-days: 3
+          if-no-files-found: error
+
+  capture:
+    needs: sdk-typecheck
+    concurrency:
+      group: peer-demo-owned-remote
+      cancel-in-progress: false
+    # Internal private PR + explicit maintainer-applied approval label ONLY.
+    # No pull_request_target; forks never receive temporary demo secrets.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == 'SamSaffron/term-llm-app' &&
+       contains(github.event.pull_request.labels.*.name, 'peer-demo-approved') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'peer-demo-approved'))
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out exact approved source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify required interface adapter and evidence gates
+        run: python3 -m unittest discover -s scripts/peer-connect -p 'test_*.py' -v
+      - name: Actual simulator install, pairing, real transport and video
+        env:
+          PEER_CI_CONFIG_JSON: ${{ vars.PEER_CI_CONFIG_JSON }}
+          PEER_CI_SESSION_JSON: ${{ secrets.PEER_CI_SESSION_JSON }}
+          PEER_CI_SSH_KEY: ${{ secrets.PEER_CI_SSH_KEY }}
+          # For approved PR runs the parent sets the public nonce variable.
+          PEER_RUN_NONCE: ${{ inputs.run_nonce || vars.PEER_CI_RUN_NONCE }}
+        run: python3 scripts/peer-connect/capture.py
+      - name: Preserve only sanitized private evidence (never runtime inputs)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: peer-connect-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/peer-connect-artifacts/
+          retention-days: 3
+          if-no-files-found: error
