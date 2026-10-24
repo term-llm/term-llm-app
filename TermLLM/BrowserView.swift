@@ -135,12 +135,23 @@ struct BrowserView: UIViewRepresentable {
     var nativeDestination: HubBrowserDestination? = nil
     /// Native visibility overrides the page's own foreground/attendance claims.
     var isContentVisible = true
+    var websiteDataStore: WKWebsiteDataStore? = nil
+    var authenticationScript: String? = nil
+    /// Isolated source pages may never commit an ancestor/sibling same-origin
+    /// document: direct frontend token storage is origin-wide, not path-wide.
+    var connectionMount: URL? = nil
+    var onAuthorizationRevoked: () -> Void = {}
+    /// Committed main document only; provisional destinations are not retained context.
+    var onDocumentCommitted: (URL) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = HubFixture.isEnabled ? HubFixture.websiteDataStore : .default()
+        configuration.websiteDataStore = websiteDataStore ?? (HubFixture.isEnabled ? HubFixture.websiteDataStore : .default())
+        if let authenticationScript {
+            configuration.userContentController.addUserScript(WKUserScript(source: authenticationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         configuration.allowsInlineMediaPlayback = true
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
@@ -231,6 +242,12 @@ struct BrowserView: UIViewRepresentable {
         private var nativeDestinationID: UUID?
 
         func update(_ view: WKWebView, parent: BrowserView) {
+            if self.parent.isContentVisible && !parent.isContentVisible {
+                // Keep the document alive when returning to the native Hub, but
+                // do not let its hidden focused input cover the native screens.
+                // This is a native responder handoff, not JS or a navigation.
+                view.endEditing(true)
+            }
             self.parent = parent
             let destination = parent.nativeDestination
             let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
@@ -523,6 +540,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            if let url = webView.url { parent.onDocumentCommitted(url) }
             MainActor.assumeIsolated {
                 let owner: String?
                 if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }
@@ -543,6 +561,12 @@ struct BrowserView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            if let mount = parent.connectionMount,
+               let destination = navigationResponse.response.url,
+               !HubNavigation.isWithinMount(destination, server: mount) {
+                decisionHandler(.cancel)
+                return
+            }
             guard navigationResponse.isForMainFrame,
                   let response = navigationResponse.response as? HTTPURLResponse,
                   let recovery = BrowserView.recovery(for: response) else {
@@ -551,6 +575,7 @@ struct BrowserView: UIViewRepresentable {
             }
             rejectedHTTPResponse = true
             parent.loading = false
+            if response.statusCode == 401 || response.statusCode == 403 { parent.onAuthorizationRevoked() }
             switch recovery {
             case .signIn:
                 parent.loginRequired = true
@@ -585,6 +610,15 @@ struct BrowserView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            if let mount = parent.connectionMount, !HubNavigation.isWithinMount(destination, server: mount) {
+                // Never load a sibling/ancestor into this credential's origin
+                // storage. An explicit external link may leave in Safari.
+                if navigationAction.navigationType == .linkActivated, navigationAction.targetFrame?.isMainFrame != false {
+                    UIApplication.shared.open(destination)
+                }
+                decisionHandler(.cancel)
+                return
+            }
             if isLoginRoute(destination) {
                 decisionHandler(.cancel)
                 parent.onLoginRequired()
@@ -605,7 +639,9 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let url = navigationAction.request.url {
-                if isLoginRoute(url) {
+                if let mount = parent.connectionMount, !HubNavigation.isWithinMount(url, server: mount) {
+                    UIApplication.shared.open(url)
+                } else if isLoginRoute(url) {
                     parent.onLoginRequired()
                 } else if url.scheme == parent.url.scheme, url.host == parent.url.host, url.port == parent.url.port {
                     webView.load(navigationAction.request)

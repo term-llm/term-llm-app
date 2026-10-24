@@ -1,0 +1,97 @@
+{
+  "result": "PASS",
+  "concepts": [
+    {
+      "concept": 1,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    },
+    {
+      "concept": 2,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    },
+    {
+      "concept": 3,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    },
+    {
+      "concept": 4,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    },
+    {
+      "concept": 5,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    },
+    {
+      "concept": 6,
+      "result": "PASS",
+      "checks": [
+        "all four destinations",
+        "browse without stopping audio",
+        "persistent pause",
+        "confirmed playback handoff",
+        "music track controls",
+        "podcast seek/speed/queue",
+        "saved listening position",
+        "retained chat draft",
+        "one app Settings path"
+      ]
+    }
+  ],
+  "geometry": "Stable across destinations, idle/playing, and sync",
+  "note": "Prototype state only; no real audio sessions are started"
+}

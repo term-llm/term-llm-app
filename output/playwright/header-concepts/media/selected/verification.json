@@ -1,0 +1,15 @@
+{
+  "result": "PASS",
+  "concept": 5,
+  "checks": [
+    "Agents terminology",
+    "one app header on browsing screens",
+    "only the agent-owned header in Chat",
+    "no blank header spacer",
+    "anchored bottom tabs",
+    "retained chat draft",
+    "independent persistent playback",
+    "idle player absent"
+  ],
+  "note": "Prototype only; agent header is illustrative web content, not a pixel-exact capture of a live agent"
+}

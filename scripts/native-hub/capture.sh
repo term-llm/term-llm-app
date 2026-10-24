@@ -3,7 +3,10 @@
 set -euo pipefail
 : "${SIMULATOR_UDID:?Select an available simulator with scripts/select-ios-simulator.py}"
 : "${RUNNER_TEMP:?Set RUNNER_TEMP to a disposable output directory}"
-export ARTIFACT_DIR="$RUNNER_TEMP/native-hub-artifacts"
+export ARTIFACT_DIR="$RUNNER_TEMP/${NATIVE_HUB_ARTIFACT_SUBDIR:-native-hub-artifacts}"
+fixture_port="${NATIVE_HUB_FIXTURE_PORT:-8766}"
+fixture_server="${NATIVE_HUB_FIXTURE_SERVER:-scripts/native-hub/fixture_server.py}"
+video_name="${NATIVE_HUB_VIDEO_NAME:-native-hub-demo-fixture.mp4}"
 # Never reuse old media/results or silently overwrite evidence from a prior run.
 if [[ -e "$ARTIFACT_DIR" ]]; then
   printf 'Artifact directory already exists; use a fresh RUNNER_TEMP: %s\n' "$ARTIFACT_DIR" >&2
@@ -52,15 +55,15 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-python3 -u scripts/native-hub/fixture_server.py --port 8766 \
+python3 -u "$fixture_server" --port "$fixture_port" \
   --request-log "$ARTIFACT_DIR/fixture-requests.jsonl" > "$ARTIFACT_DIR/fixture-server.log" 2>&1 &
 fixture_pid=$!
 for ((i=0; i<50; i++)); do
-  curl --fail --silent http://localhost:8766/__health > /dev/null && break
+  curl --fail --silent "http://localhost:$fixture_port/__health" > /dev/null && break
   kill -0 "$fixture_pid"
   sleep 0.2
 done
-curl --fail --silent http://localhost:8766/__health > /dev/null
+curl --fail --silent "http://localhost:$fixture_port/__health" > /dev/null
 
 xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
@@ -79,36 +82,37 @@ build_args=(
 xcodebuild build-for-testing "${build_args[@]}" 2>&1 | tee "$ARTIFACT_DIR/build.log"
 
 # Focused unit regressions run first: keep compilation/units out of the video.
+unit_names="${NATIVE_HUB_UNIT_SUITES:-HubClientTests HubClientModelTests HubClientHTMLParsingTests HubClientCookieFilterTests HubClientAuthCookieTests HubClientMountedPathTests HubNavigationTests HubStoreTests HubPasskeyTests}"
+read -r -a unit_suites <<< "$unit_names"
+unit_args=()
+for suite in "${unit_suites[@]}"; do unit_args+=("-only-testing:TermLLMTests/$suite"); done
 xcodebuild test-without-building "${build_args[@]}" \
   -resultBundlePath "$ARTIFACT_DIR/NativeHubUnits.xcresult" \
-  -only-testing:TermLLMTests/HubClientTests \
-  -only-testing:TermLLMTests/HubClientModelTests \
-  -only-testing:TermLLMTests/HubClientHTMLParsingTests \
-  -only-testing:TermLLMTests/HubClientCookieFilterTests \
-  -only-testing:TermLLMTests/HubClientAuthCookieTests \
-  -only-testing:TermLLMTests/HubClientMountedPathTests \
-  -only-testing:TermLLMTests/HubNavigationTests \
-  -only-testing:TermLLMTests/HubStoreTests \
-  -only-testing:TermLLMTests/HubPasskeyTests \
+  "${unit_args[@]}" \
   2>&1 | tee "$ARTIFACT_DIR/unit-test.log"
 xcrun xcresulttool get test-results summary --path "$ARTIFACT_DIR/NativeHubUnits.xcresult" > "$ARTIFACT_DIR/unit-test-summary.json"
 xcrun xcresulttool get test-results tests --path "$ARTIFACT_DIR/NativeHubUnits.xcresult" > "$ARTIFACT_DIR/unit-test-tree.json"
-python3 scripts/native-hub/verify_units.py "$ARTIFACT_DIR"
+if [[ -n "${NATIVE_HUB_UNIT_SUITES:-}" ]]; then
+  python3 scripts/native-hub/verify_units.py "$ARTIFACT_DIR" "${unit_suites[@]}"
+else
+  python3 scripts/native-hub/verify_units.py "$ARTIFACT_DIR"
+fi
 
 # Record the SAME device used by XCUITest. No simulator clones/parallel workers.
-xcrun simctl io "$SIMULATOR_UDID" recordVideo --codec=h264 "$ARTIFACT_DIR/native-hub-demo-fixture.mp4" \
+xcrun simctl io "$SIMULATOR_UDID" recordVideo --codec=h264 "$ARTIFACT_DIR/$video_name" \
   > "$ARTIFACT_DIR/record-video.log" 2>&1 &
 record_pid=$!
 sleep 2
 kill -0 "$record_pid"
 xcodebuild test-without-building "${build_args[@]}" \
   -resultBundlePath "$ARTIFACT_DIR/NativeHub.xcresult" \
-  -only-testing:TermLLMUITests/NativeHubUITests \
+  "-only-testing:TermLLMUITests/${NATIVE_HUB_UI_SUITE:-NativeHubUITests}" \
   2>&1 | tee "$ARTIFACT_DIR/test.log"
 kill -0 "$record_pid" # Recording must remain alive for the entire UI journey.
 stop_recording
 
 xcrun xcresulttool get test-results summary --path "$ARTIFACT_DIR/NativeHub.xcresult" > "$ARTIFACT_DIR/test-summary.json"
+xcrun xcresulttool get test-results tests --path "$ARTIFACT_DIR/NativeHub.xcresult" > "$ARTIFACT_DIR/test-tree.json"
 xcrun xcresulttool export attachments --path "$ARTIFACT_DIR/NativeHub.xcresult" \
   --output-path "$ARTIFACT_DIR/screenshots" > "$ARTIFACT_DIR/export-attachments.log" 2>&1
-python3 scripts/native-hub/verify_capture.py "$ARTIFACT_DIR"
+python3 "${NATIVE_HUB_CAPTURE_VERIFIER:-scripts/native-hub/verify_capture.py}" "$ARTIFACT_DIR"

@@ -44,6 +44,30 @@ final class HubNavigationTests: XCTestCase {
         XCTAssertEqual(HubServerRole.classify(status: 200, data: Data("not JSON".utf8)), .unknown)
     }
 
+    func testLegacyDiscoveryRequiresHealthyRecognizedDirectShape() {
+        for json in ["{}", "{\"error\":\"offline\"}", "{\"status\":\"failed\"}", "{\"status\":\"ok\",\"role\":\"other\"}"] {
+            XCTAssertEqual(HubServerRole.classify(status: 200, data: Data(json.utf8)), .unknown, json)
+        }
+        XCTAssertEqual(HubServerRole.classify(status: 200, data: Data(#"{"status":"ok"}"#.utf8)), .direct)
+    }
+    func testNodeActionCannotNavigateToAnotherKnownNode() {
+        let server = URL(string: "https://example.com/work/")!
+        for path in ["/work/node/B/?new=1", "/work/node/B/chat/7", "/work/node/B/"] {
+            XCTAssertNil(HubNavigation.chatDestination(path, server: server, nodeID: "A", direct: false))
+        }
+    }
+    func testPrepopulatedPendingNavigationWaitsForOwningWindowAndMount() {
+        let server = URL(string: "https://example.com/work/")!
+        var pending = PushNavigation(id: UUID(), url: URL(string: "https://example.com/work/node/A/chat/7")!, windowID: "owner")
+        XCTAssertFalse(pending.canPresent(in: nil, server: server))
+        XCTAssertFalse(pending.canPresent(in: "sibling", server: server))
+        XCTAssertTrue(pending.canPresent(in: "owner", server: server), "Attaching the owning window must reveal an already pending event")
+        pending.windowID = "reassigned"
+        XCTAssertFalse(pending.canPresent(in: "owner", server: server))
+        XCTAssertTrue(pending.canPresent(in: "reassigned", server: server))
+        XCTAssertFalse(pending.canPresent(in: "reassigned", server: URL(string: "https://example.com/home/")!))
+    }
+
     func testFixtureCannotBeEnabledForArbitraryRemoteServer() {
         // The test runner never needs private credentials or a public service.
         if let fixture = HubFixture.server {

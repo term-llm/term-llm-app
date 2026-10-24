@@ -19,8 +19,11 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
             .first(where: \.isKeyWindow) ?? UIWindow()
     }
 
+    var cookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?
+
     func signIn(to server: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         guard session == nil else { return }
+        let cookieSink = self.cookieSink
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             completion(.failure(LoginError.invalidResponse))
@@ -48,7 +51,7 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
                     return
                 }
                 do {
-                    try await self.redeem(code, verifier: verifier, server: server)
+                    try await self.redeem(code, verifier: verifier, server: server, cookieSink: cookieSink)
                     completion(.success(()))
                 } catch {
                     completion(.failure(error))
@@ -81,7 +84,8 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
         return components.url!
     }
 
-    private func redeem(_ code: String, verifier: String, server: URL) async throws {
+    private func redeem(_ code: String, verifier: String, server: URL,
+                        cookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?) async throws {
         let url = endpoint(server, "api/auth/native/redeem")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -99,12 +103,19 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
         let headers = http.allHeaderFields.reduce(into: [String: String]()) { output, item in
             if let key = item.key as? String, let value = item.value as? String { output[key] = value }
         }
+        let mount = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let authPath = mount.isEmpty ? "/" : "/" + mount + "/"
         guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url).first(where: {
             ["term_llm_web_session", "term_llm_hub_session"].contains($0.name) &&
                 $0.domain == server.host && $0.isHTTPOnly &&
+                $0.path == authPath &&
                 ($0.isSecure || (server.scheme == "http" && ServerAddress.allowsLocalHTTP(host: server.host!)))
         }) else {
             throw LoginError.invalidResponse
+        }
+        if let cookieSink {
+            try await cookieSink([cookie])
+            return
         }
         await withCheckedContinuation { continuation in
             WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie) {

@@ -22,6 +22,39 @@ enum HubNavigation {
         return origin?.url
     }
 
+    static func isWithinMount(_ url: URL, server: URL) -> Bool {
+        guard url.scheme?.lowercased() == server.scheme?.lowercased(),
+              url.host?.lowercased() == server.host?.lowercased(),
+              (url.port ?? (url.scheme == "https" ? 443 : 80)) == (server.port ?? (server.scheme == "https" ? 443 : 80)),
+              url.user == nil, url.password == nil,
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return destination(parts.percentEncodedPath, server: server) != nil
+    }
+
+    /// Only real chat routes, not arbitrary same-origin API/auth paths. Hub
+    /// node IDs are untrusted too; never derive a destination from node.url.
+    static func chatDestination(_ path: String, server: URL, nodeID: String?, direct: Bool) -> URL? {
+        guard let url = destination(path, server: server),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.fragment == nil else { return nil }
+        let mount = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var root = mount.isEmpty ? "/" : "/" + mount + "/"
+        if !direct {
+            guard let nodeID, !nodeID.isEmpty, nodeID != ".", nodeID != "..",
+                  nodeID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }) else { return nil }
+            root += "node/" + nodeID + "/"
+        }
+        if parts.path == root {
+            guard parts.query == nil || parts.query == "new=1" else { return nil }
+            return url
+        }
+        guard parts.query == nil, parts.path.hasPrefix(root + "chat/") else { return nil }
+        let selector = String(parts.path.dropFirst((root + "chat/").count))
+        guard !selector.isEmpty, selector != ".", selector != "..",
+              selector.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { return nil }
+        return url
+    }
+
     static func nodeSessions(_ node: HubNode) -> [HubNodeSession] {
         var seen = Set<String>()
         return ((node.sessions?.active ?? []) + (node.sessions?.recent ?? [])).filter { seen.insert($0.id).inserted }

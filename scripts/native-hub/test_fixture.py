@@ -121,7 +121,15 @@ class CaptureGateTests(unittest.TestCase):
         log = self.root / "fixture-requests.jsonl"
         entries = log.read_text().splitlines()
         log.write_text("\n".join(entries[:-1]))
-        with self.assertRaisesRegex(ValueError, "after stalled chat"):
+        with self.assertRaisesRegex(ValueError, "while stalled request remained pending"):
+            verify(self.root)
+
+    def test_refresh_after_stalled_response_completes_is_not_concurrency(self):
+        log = self.root / "fixture-requests.jsonl"
+        entries = [json.loads(line) for line in log.read_text().splitlines()]
+        entries.insert(len(entries) - 1, dict(path="/node/stalled/chat/3", status=504))
+        log.write_text("\n".join(json.dumps(entry) for entry in entries))
+        with self.assertRaisesRegex(ValueError, "while stalled request remained pending"):
             verify(self.root)
 
     def test_missing_http_or_video_or_screenshot_fails(self):

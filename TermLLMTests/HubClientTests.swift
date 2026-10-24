@@ -348,7 +348,7 @@ final class HubClientCookieFilterTests: XCTestCase {
         var props: [HTTPCookiePropertyKey: Any] = [
             .name: name, .value: value, .domain: domain, .path: path,
         ]
-        if secure { props[.secure] = true }
+        if secure { props[.secure] = "TRUE" }
         if let expires { props[.expires] = expires }
         return HTTPCookie(properties: props)!
     }
@@ -1253,6 +1253,29 @@ extension HubClientTests {
 
 extension HubClientTests {
     @MainActor
+    func testLateBearerCandidateCannotImportIntoReplacedAuthorizationEpoch() async {
+        let gate = HubRequestGate()
+        let started = expectation(description: "bearer candidate started")
+        let cookies = CookieRecorder()
+        let transport = MockTransport { request in
+            started.fulfill()
+            await gate.wait()
+            return jsonResponse("{\"nodes\":[]}", url: request.url!)
+        }
+        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] },
+                               cookie_sink: { cookies.append($0) }, transport: transport)
+        let workspace = HubWorkspace(client: client, requiresAuthentication: false) {}
+        defer { workspace.dispose() }
+        let login = Task { try await client.login_bearer(token: "candidate") }
+        await fulfillment(of: [started], timeout: 2)
+        workspace.authenticationSucceeded()
+        await gate.release()
+        do { try await login.value; XCTFail("Old candidate must not overwrite a new identity") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(cookies.count, 0)
+    }
+
+    @MainActor
     func testDelayedOld401CannotRevokeNewAuthenticationOrReplaceItsCookies() async {
         let gate = HubRequestGate()
         let started = expectation(description: "old request started")
@@ -1468,3 +1491,105 @@ extension HubClientTests {
     }
 }
 #endif
+
+extension HubClientTests {
+    @MainActor
+    func testRequestCookieEpochIsCheckedAfterActorHopIncludingExpiredDeletes() async throws {
+        for value in ["old; Path=/; Secure; HttpOnly", "old; Path=/; Secure; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT"] {
+            let gate = HubRequestGate()
+            let admitted = expectation(description: "cookie importer admitted")
+            let recorder = CookieRecorder()
+            let transport = MockTransport { request in
+                jsonResponse("{\"nodes\":[]}", url: request.url!, headers: ["Set-Cookie": "term_llm_hub_session=" + value])
+            }
+            let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: { [] }, transport: transport)
+            client.scoped_cookie_importer = { cookies, isCurrent in
+                admitted.fulfill()
+                await gate.wait() // admitted on transport executor, then delayed before MainActor
+                try await MainActor.run {
+                    guard isCurrent() else { throw CancellationError() }
+                    recorder.append(cookies)
+                }
+            }
+            let request = Task { try await client.list_nodes() }
+            await fulfillment(of: [admitted], timeout: 2)
+            client.on_unauthorized = {} // another auth identity wins while actor admission waits
+            await gate.release()
+            do { _ = try await request.value; XCTFail("Stale import must fail") }
+            catch { XCTAssertTrue(error is CancellationError) }
+            XCTAssertEqual(recorder.count, 0, "Neither stale Set-Cookie nor expired-cookie deletion may reach the new identity")
+        }
+    }
+
+    @MainActor
+    func testBearerLoginChecksEpochAgainAfterSuspendedImporterReturns() async throws {
+        let gate = HubRequestGate()
+        let admitted = expectation(description: "bearer cookie import suspended")
+        let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: { [] }, transport: MockTransport { request in
+            jsonResponse("{\"nodes\":[]}", url: request.url!)
+        })
+        client.scoped_cookie_importer = { _, _ in
+            admitted.fulfill()
+            await gate.wait() // deliberately returns without checking: client must also reject completion
+        }
+        let login = Task { try await client.login_bearer(token: "fixture-only") }
+        await fulfillment(of: [admitted], timeout: 2)
+        client.on_unauthorized = {}
+        await gate.release()
+        do { try await login.value; XCTFail("A stale login must not report success") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+}
+
+extension HubClientTests {
+    @MainActor
+    func testProductionSourceImporterRejectsOldContextAfterActorAdmissionAndReauth() async throws {
+        let gate = HubRequestGate()
+        let admitted = expectation(description: "old source importer queued")
+        let connection = HubConnection(id: UUID(), name: "Gated Hub", kind: .hub, url: URL(string: "https://hub.example/")!)
+        let source = HubSourceWorkspace(connection: connection, bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent(), transport: MockTransport { request in
+            jsonResponse("{\"nodes\":[]}", url: request.url!, headers: ["Set-Cookie": "term_llm_hub_session=stale; Path=/; Secure; HttpOnly"])
+        })
+        defer { source.dispose(removeCredentials: true) }
+        let client = try XCTUnwrap(source.hubWorkspace?.client)
+        let original = try XCTUnwrap(client.scoped_cookie_importer)
+        client.scoped_cookie_importer = { cookies, isCurrent in
+            admitted.fulfill()
+            await gate.wait()
+            try await original(cookies, isCurrent)
+        }
+        let request = Task { try await client.list_nodes() }
+        await fulfillment(of: [admitted], timeout: 2)
+        let oldEpoch = source.authEpoch
+        _ = await source.prepareAuthentication()
+        await gate.release()
+        do { _ = try await request.value; XCTFail("Old source importer must fail closed") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let cookies = await source.security?.cookies()
+        XCTAssertTrue(cookies?.isEmpty == true)
+        let accepted = await source.authenticationSucceeded(epoch: oldEpoch)
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(source.browserRevoked, "A stale detail success must not reopen protected chat")
+    }
+}
+
+extension HubClientTests {
+    @MainActor
+    func testOldRequestCannotDispatchUsingCredentialsReadAfterIdentityChanged() async throws {
+        let gate = HubRequestGate()
+        let reading = expectation(description: "credential read suspended")
+        let transport = MockTransport { request in jsonResponse("{\"nodes\":[]}", url: request.url!) }
+        let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: {
+            reading.fulfill()
+            await gate.wait()
+            return []
+        }, transport: transport)
+        let request = Task { try await client.list_nodes() }
+        await fulfillment(of: [reading], timeout: 2)
+        client.on_unauthorized = {}
+        await gate.release()
+        do { _ = try await request.value; XCTFail("Stale request must not dispatch") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+}

@@ -637,16 +637,45 @@ final class HubClient: @unchecked Sendable {
         }
     }
 
-    private func captureAuthorization() -> (epoch: UInt64, callback: (@Sendable () async -> Void)?) {
+    /// Installed by the source owner as one immutable auth-generation closure.
+    /// The request snapshot carries it across response delivery and actor hops.
+    typealias CookieImporter = @Sendable ([HTTPCookie], @escaping @Sendable () -> Bool) async throws -> Void
+    private var cookieImporter: CookieImporter?
+    var scoped_cookie_importer: CookieImporter? {
+        get { authorizationCallbackLock.lock(); defer { authorizationCallbackLock.unlock() }; return cookieImporter }
+        set {
+            authorizationCallbackLock.lock()
+            cookieImporter = newValue
+            authorizationEpoch &+= 1
+            authorizationCallbackLock.unlock()
+        }
+    }
+    private struct Authorization {
+        let epoch: UInt64
+        let callback: (@Sendable () async -> Void)?
+        let importer: CookieImporter?
+    }
+    private func captureAuthorization() -> Authorization {
         authorizationCallbackLock.lock()
         let epoch = authorizationEpoch
         let callback = authorizationCallback
+        let importer = cookieImporter
         authorizationCallbackLock.unlock()
-        guard let callback else { return (epoch, nil) }
-        return (epoch, { [weak self] in
-            guard self?.authorizationIsCurrent(epoch) == true else { return }
-            await callback()
-        })
+        let guarded: (@Sendable () async -> Void)?
+        if let callback {
+            guarded = { @Sendable [weak self] in
+                guard self?.authorizationIsCurrent(epoch) == true else { return }
+                await callback()
+            }
+        } else { guarded = nil }
+        return Authorization(epoch: epoch, callback: guarded, importer: importer)
+    }
+    private func importCookies(_ cookies: [HTTPCookie], authorization: Authorization) async throws {
+        let isCurrent: @Sendable () -> Bool = { [weak self] in self?.authorizationIsCurrent(authorization.epoch) == true }
+        guard isCurrent(), !Task.isCancelled else { throw CancellationError() }
+        if let importer = authorization.importer { try await importer(cookies, isCurrent) }
+        else { await cookie_sink(cookies) }
+        guard isCurrent(), !Task.isCancelled else { throw CancellationError() }
     }
 
     private func authorizationIsCurrent(_ epoch: UInt64) -> Bool {
@@ -720,13 +749,14 @@ final class HubClient: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
+        guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
         // Purge when the SDK exposes the response, even if the rest of the
         // login page body stalls. Bare headers may remain SDK-buffered.
         let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
 
         // Process response Set-Cookie through scoped sink
         if authorizationIsCurrent(authorization.epoch) {
-            await sinkResponseCookies(from: http, for: url)
+            try await sinkResponseCookies(from: http, for: url, authorization: authorization)
         }
 
         // 3xx: blocked redirect
@@ -789,6 +819,7 @@ final class HubClient: @unchecked Sendable {
     /// The token is never placed in a query string.  No token is stored
     /// outside WK's cookie jar.
     func login_bearer(token: String) async throws {
+        let authorization = captureAuthorization()
         let url = mounted("/api/nodes")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -823,7 +854,8 @@ final class HubClient: @unchecked Sendable {
         guard let cookie else {
             throw HubAPIError(status: 0, message: "Failed to construct auth cookie.")
         }
-        await cookie_sink([cookie])
+        guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
+        try await importCookies([cookie], authorization: authorization)
     }
 
     /// Clear local auth cookies for this Hub's host and mount path.  Used for
@@ -831,6 +863,7 @@ final class HubClient: @unchecked Sendable {
     /// Removes `term_llm_hub_token` and `term_llm_hub_session` by sinking
     /// expired replacements scoped to exact host + mount path.
     func clear_local_auth() async {
+        let authorization = captureAuthorization()
         let cookiePath = mount_path.isEmpty ? "/" : mount_path + "/"
         let host = expected_host
         guard !host.isEmpty else { return }
@@ -851,7 +884,7 @@ final class HubClient: @unchecked Sendable {
             }
         }
         if !expired.isEmpty {
-            await cookie_sink(expired)
+            try? await importCookies(expired, authorization: authorization)
         }
     }
 
@@ -1082,12 +1115,13 @@ final class HubClient: @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
+        guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
         let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
 
         // Process response Set-Cookie headers through scoped cookie_sink.
         // No ambient jar — the only cookie persistence is through this sink.
         if authorizationIsCurrent(authorization.epoch) {
-            await sinkResponseCookies(from: http, for: url)
+            try await sinkResponseCookies(from: http, for: url, authorization: authorization)
         }
 
         if !(200...299).contains(http.statusCode) {
@@ -1110,7 +1144,7 @@ final class HubClient: @unchecked Sendable {
 
     /// Parse Set-Cookie headers from the response, filter to hub auth scope
     /// (exact host, exact mount path, HTTPS secure), and sink to WK.
-    private func sinkResponseCookies(from http: HTTPURLResponse, for url: URL) async {
+    private func sinkResponseCookies(from http: HTTPURLResponse, for url: URL, authorization: Authorization) async throws {
         let headers = http.allHeaderFields.reduce(into: [String: String]()) { out, pair in
             if let key = pair.key as? String, let val = pair.value as? String {
                 out[key] = val
@@ -1133,7 +1167,7 @@ final class HubClient: @unchecked Sendable {
             return true
         }
         if !accepted.isEmpty {
-            await cookie_sink(accepted)
+            try await importCookies(accepted, authorization: authorization)
         }
     }
 }

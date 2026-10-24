@@ -56,6 +56,11 @@ struct PushNavigation: Equatable {
     var windowID: String? = nil
     var isCompletion = false
     var excludedWindowIDs: Set<String> = []
+
+    func canPresent(in windowID: String?, server: URL?) -> Bool {
+        guard let windowID, self.windowID == windowID, let server else { return false }
+        return HubNavigation.isWithinMount(url, server: server)
+    }
 }
 
 enum PushError: LocalizedError, Equatable {
@@ -185,6 +190,8 @@ final class PushCenter: NSObject, ObservableObject {
     @Published private(set) var changeCount = 0
     @Published private(set) var pendingNavigation: PushNavigation?
     @Published var storageIssue: String?
+    /// Badge failures are independent of durable push consent/storage failures.
+    @Published private(set) var badgeIssue: String?
     @Published var pendingCleanupCount = 0
     @Published var navigationIssue: String?
     let deliveries: PushDeliveryStore
@@ -213,6 +220,13 @@ final class PushCenter: NSObject, ObservableObject {
     private var tokenWaiters: [CheckedContinuation<String, Error>] = []
     private var tokenTimeoutTask: Task<Void, Never>?
     private var enrollmentGeneration: UInt64 = 0
+    private let badgeSetter: @MainActor (Int) async throws -> Void
+    private var attentionBadgeCount: Int?
+    private var explicitlyClearedBadge = false
+    private var desiredBadgeCount: Int?
+    private var appliedBadgeCount: Int?
+    private var badgeRevision: UInt64 = 0
+    private var badgeTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard,
          identities: PushIdentityStore = PushIdentityStore(),
@@ -222,7 +236,11 @@ final class PushCenter: NSObject, ObservableObject {
          environment: PushEnvironment = .current,
          tokenTimeout: Duration = .seconds(20),
          deliveries: PushDeliveryStore = PushDeliveryStore(),
-         inbox: PushNotificationInbox = SystemPushNotificationInbox()) {
+         inbox: PushNotificationInbox = SystemPushNotificationInbox(),
+         badgeSetter: @escaping @MainActor (Int) async throws -> Void = { count in
+             try await UNUserNotificationCenter.current().setBadgeCount(count)
+         }) {
+        self.badgeSetter = badgeSetter
         self.deliveries = deliveries
         self.inbox = inbox
         self.defaults = defaults
@@ -295,9 +313,58 @@ final class PushCenter: NSObject, ObservableObject {
     /// Re-reads iOS permission (e.g. after returning from Settings).
     func refreshAuthorization() async {
         let status = await authorizer.status()
-        guard status != authorization else { return }
-        authorization = status
-        notifyChange()
+        if status != authorization {
+            authorization = status
+            notifyChange()
+        }
+        // Also retry a failed badge write when returning from Settings, even
+        // when authorization itself has not changed.
+        reconcileAttentionBadge()
+    }
+
+    /// App-wide verified Attention total, not a per-scene or push-payload count.
+    /// Unknown totals preserve the last verified value (and an existing OS
+    /// badge on initial load). Polling never requests notification permission.
+    func updateAttentionBadge(count: Int?) {
+        if let count { attentionBadgeCount = max(0, count) }
+        reconcileAttentionBadge()
+    }
+
+    private func reconcileAttentionBadge() {
+        if let count = attentionBadgeCount {
+            desiredBadgeCount = enabled && isAuthorized ? count : 0
+        } else if explicitlyClearedBadge {
+            desiredBadgeCount = 0
+        } else {
+            // Neither a verified total nor an explicit off action: no guessed
+            // zero, including during the initial authorization refresh.
+            return
+        }
+        badgeRevision &+= 1
+        guard badgeTask == nil, desiredBadgeCount != appliedBadgeCount else { return }
+        badgeTask = Task { await drainAttentionBadge() }
+    }
+
+    private func drainAttentionBadge() async {
+        defer { badgeTask = nil }
+        // Only one setter may be in flight. Re-read the latest target after
+        // each completion so a slow positive write cannot overtake zero/off.
+        while let count = desiredBadgeCount, count != appliedBadgeCount {
+            let revision = badgeRevision
+            // A throwing OS write may have partially succeeded; do not trust
+            // an older successful value to deduplicate the next attempt.
+            appliedBadgeCount = nil
+            do {
+                try await badgeSetter(count)
+                appliedBadgeCount = count
+                badgeIssue = nil
+            } catch {
+                badgeIssue = "The app icon badge could not be updated: \(error.localizedDescription)"
+                // No busy retry loop. A newer update or foreground refresh
+                // retries, including when its target count is unchanged.
+                if revision == badgeRevision { return }
+            }
+        }
     }
 
     func didRegister(deviceToken data: Data) {
@@ -325,6 +392,8 @@ final class PushCenter: NSObject, ObservableObject {
             enrollmentGeneration &+= 1
             let persisted = persistConsent(enabled: false, optOuts: optOuts)
             enabled = false
+            explicitlyClearedBadge = true
+            reconcileAttentionBadge()
             defaults.set(false, forKey: Self.enabledKey)
             for key in records.keys { records[key]?.retired = true }
             persistRecords()
@@ -362,6 +431,7 @@ final class PushCenter: NSObject, ObservableObject {
         }
         let changed = status != authorization || !wasEnabled
         authorization = status
+        reconcileAttentionBadge()
         if isAuthorized { registerForRemote() }
         if changed { notifyChange() }
         return true

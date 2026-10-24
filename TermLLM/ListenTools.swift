@@ -6,8 +6,10 @@ import Foundation
 @MainActor
 final class ListenTools {
     private unowned let listen: Listen
+    private let source: ListenServer?
 
-    init(listen: Listen) {
+    init(listen: Listen, source: ListenServer? = nil) {
+        self.source = source
         self.listen = listen
     }
 
@@ -75,7 +77,7 @@ final class ListenTools {
 
     private func add(_ args: Arguments) async throws -> JSONValue {
         let entries = try args.objects("items") ?? [args]
-        let server = listen.server()
+        let server = source ?? listen.server()
         let drafts = try entries.enumerated().map { index, entry in
             let label = entries.count > 1 ? "items[\(index)]." : ""
             guard let raw = try entry.optionalString("url") else {
@@ -100,14 +102,15 @@ final class ListenTools {
                 },
                 kind: try kind(entry, label: label),
                 duration: try entry.double("duration_seconds"),
-                publishedAt: try entry.optionalString("published_at").flatMap(Self.date)
+                publishedAt: try entry.optionalString("published_at").flatMap(Self.date),
+                sourceID: server.flatMap { HubNavigation.isWithinMount(url, server: $0.base) ? $0.sourceID : nil }
             )
         }
         let placement = try choice(args, "position", ListenStore.Placement.self, default: .end)
         let download = try choice(args, "download", Listen.DownloadPolicy.self, default: .auto)
         var result: [String: JSONValue] = [:]
         do {
-            let added = try await listen.add(drafts, placement: placement, download: download)
+            let added = try await listen.add(drafts, placement: placement, download: download, origin: server)
             result["added"] = .array(added.map(Self.item))
         } catch {
             throw DeviceToolError(message: "Added, but playback failed: \(error.localizedDescription)")
