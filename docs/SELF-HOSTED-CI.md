@@ -46,6 +46,29 @@ Verify **Settings → Actions → Runners** shows `term-llm-macbook` online with
 
 Native checks use unsigned simulator builds and unique temporary build/result directories, then clean them up. Failures remain visible in streamed job logs; no xcresult or recording is uploaded. No CI-wide simulator shutdown or erase is performed, so developer simulators are not deliberately reset.
 
+## Menu-bar status (SwiftBar)
+
+SwiftBar is installed in `~/Applications/SwiftBar.app`. The `term-llm-ci.1m.py` plugin shows:
+
+- **CI 🟢**: GitHub reports the runner online and idle.
+- **CI 🟠**: online and busy running a job.
+- **CI 🔴**: offline or missing from the repository runner list.
+- **CI ⚠️**: GitHub status unavailable (network/authentication problem), not a claim that the runner stopped.
+
+The menu includes local LaunchAgent status, five recent repository runs with links, runner diagnostics, and start/stop service controls. Stop requires confirmation because it may interrupt work. Recent runs are repository-wide history and can include old hosted runs; they are not all necessarily jobs executed by this Mac. Polling is read-only, once per minute, using your existing `gh` login; it never dispatches workflows or registers runners. No tokens are saved in the plugin.
+
+Enable **Launch at Login** in SwiftBar settings to bring the menu back after login. This is separate from the runner's own LaunchAgent: quitting SwiftBar does not stop CI.
+
+To reinstall/update the plugin from this checkout:
+
+```sh
+bash scripts/swiftbar/install-plugin.sh
+```
+
+The installer preserves any existing SwiftBar plugin-folder preference and copies only this plugin. With no configured folder, it uses `~/Library/Application Support/SwiftBar/Plugins`. The plugin uses Python 3.9+ and the installed GitHub CLI, with no third-party Python packages. It does not change GitHub billing settings.
+
+Offline tests: `python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v`.
+
 ## Daily workflow
 
 1. Keep the Mac awake, online, and logged in with the runner active. For a foreground session, `caffeinate -i ./run.sh` can prevent idle system sleep while the agent runs (it does not make closed-lid operation reliable).
