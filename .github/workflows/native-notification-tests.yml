@@ -1,16 +1,7 @@
-name: Native notification simulator checks
+name: Native notification checks (manual macOS)
 
+# Opt-in only: automatic CI stays on Linux to bound GitHub Actions spend.
 on:
-  pull_request:
-    paths:
-      - 'Shared/**'
-      - 'TermLLM/**'
-      - 'TermLLMNotificationService/**'
-      - 'TermLLMTests/**'
-      - 'TermLLM.xcodeproj/**'
-      - 'scripts/select-ios-simulator.py'
-      - 'scripts/test_select_ios_simulator.py'
-      - '.github/workflows/native-notification-tests.yml'
   workflow_dispatch:
 
 permissions:

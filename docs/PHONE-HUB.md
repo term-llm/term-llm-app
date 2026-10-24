@@ -31,7 +31,16 @@ Hub Manage/Security remains per-Hub. Direct Nodes are not given invented Hub reg
 
 The original `scripts/native-hub/capture.sh`, fixture HTML/logging helpers, simulator selector, unit-execution checks and finalized-media checks are reused with explicit parameters. Their default behavior remains the original native Hub journey.
 
-The new workflow `.github/workflows/phone-hub.yml` checks out the exact PR head and runs:
+The GitHub journey workflow was removed to reduce Actions spend. Automatic CI runs only the portable Python checks on Linux. To run the full capture locally on a Mac with Xcode 26.2 and an installed iPhone simulator:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer
+export SIMULATOR_UDID="$(python3 scripts/select-ios-simulator.py)"
+export RUNNER_TEMP="$(mktemp -d)"
+bash scripts/phone-hub/capture.sh
+```
+
+The local verification pipeline covers:
 
 1. Existing Python fixture/provenance regressions plus the new multi-source fixture/gate tests.
 2. Actual Xcode app build and all eleven requested XCTest classes: `HubConnectionStoreTests`, `HubAggregateStoreTests`, `HubConnectionSecurityTests`; `DirectNodeClientTests`, `DirectNodeClientModelTests`, `DirectNodeClientMountTests`, `DirectNodeClientCookieFilterTests` (all four Direct Node classes); and `ListenToolsTests`, `ListenPlayerTests`, `ListenStoreTests`, `ListenMediaTransportTests` for media source ownership, provider lifetime and ambient-cookie denial.
@@ -41,6 +50,6 @@ The test flag `TERMLLM_PHONE_HUB_FIXTURE_URL=http://localhost:8767/` works only 
 
 The test server binds loopback only and is stopped by the capture runner. It deliberately returns identical node/session identifiers from different sources and private, unreachable display-only node URLs. Request logs retain only method/path/status/time, never headers, cookies, queries or bodies. Fixture-only control endpoints can revoke one synthetic source without affecting the others. No CI credentials, public listener or external deployment is needed.
 
-Artifacts remain private: exact-source/CI manifest, xcresults, unit/UI summaries and trees, API route log, screenshots, and the continuous simulator recording. A successful build or a video file alone is insufficient: the gate requires actually executed non-skipped tests, each requested suite, both UI journeys, expected HTTP routes, a healthy refresh after another source’s 401, screenshots and a finalized MP4.
+Artifacts stay local in `$RUNNER_TEMP/phone-hub-artifacts/` (no CI upload): exact-source manifest, xcresults, unit/UI summaries and trees, API route log, screenshots, and the continuous simulator recording. A successful build or a video file alone is insufficient: the gate requires actually executed non-skipped tests, each requested suite, both UI journeys, expected HTTP routes, a healthy refresh after another source’s 401, screenshots and a finalized MP4.
 
 Local fixture tests are not an iOS runtime claim. Physical-device secure storage, real passkey ceremonies, APNs delivery, background playback and live voice still require their respective device/integration verification.

@@ -196,7 +196,7 @@ APNs send, service/config/state change, deployment, push or PR was performed her
 
 The shared TermLLM scheme builds the app plus embedded extension and the XCTest
 bundle. `.github/workflows/native-notification-tests.yml` adds a narrowly scoped
-PR/workflow-dispatch macOS simulator job, read-only contents permission, pinned
+manual-only workflow-dispatch macOS simulator job (no PR trigger), read-only contents permission, pinned
 checkout without persisted credentials, no secrets or signing, and a 30-minute
 job bound. It chooses an already available iPhone/iOS >=17 deterministically from
 `xcrun simctl` JSON; it never provisions a runtime/device. `xcodebuild test` uses

@@ -6,7 +6,7 @@ This pipeline runs **the real iOS SwiftUI app with XCUITest** on `macos-15` usin
 
 Every app screen and the local chat HTML display **DEMO FIXTURE · LOCAL**. The Python server is a loopback-only, read-only **Hub protocol fixture**, not an upstream Hub process. Native Hub requests use the real `HubClient`/URLSession transport. Node health, attention, session lists, and security records are synthetic. The chat document is static labelled HTTP HTML, **not** the upstream chat frontend or an LLM response. The stalled chat route really leaves its HTTP request unanswered for 90 seconds; returning to Hub must not depend on that request completing.
 
-The desired end-to-end product journey—`tl contain … → install app → gain access`—is **not** proven here. No actual distribution/install link, contain invocation, hosted redirect service, remote tunnel, pairing ceremony, passkey registration, APNs, or production authentication is exercised. CI installs the simulator build through Xcode and the user-facing test connects on first run to `http://localhost:8766/`. No service is deployed.
+The desired end-to-end product journey—`tl contain … → install app → gain access`—is **not** proven here. No actual distribution/install link, contain invocation, hosted redirect service, remote tunnel, pairing ceremony, passkey registration, APNs, or production authentication is exercised. The local capture runner installs the simulator build through Xcode and the user-facing test connects on first run to `http://localhost:8766/`. No service is deployed.
 
 ### Protocol provenance
 
@@ -33,7 +33,7 @@ Nodes: **Demo Dev** (active and completed sessions), **Demo Stalled** (health re
 
 ## Running and obtaining media
 
-Native-code PR changes automatically trigger `.github/workflows/native-hub.yml`. `workflow_dispatch` can target a branch **once GitHub has registered this workflow on the default branch**; it is not a way to bypass that GitHub requirement. The workflow has only `contents: read`, SHA-pinned checkout/upload actions, no persisted checkout credentials, and no secrets.
+Simulator capture is local-only: `.github/workflows/native-hub.yml` was removed to reduce GitHub Actions spend. CI runs only portable fixture/helper checks on Linux; it does not run this journey or upload recordings.
 
 On a Mac with the stated Xcode/runtime already installed:
 
@@ -51,7 +51,7 @@ gh run download RUN_ID --repo SamSaffron/term-llm-app \
   --name native-hub-RUN_ID-RUN_ATTEMPT --dir native-hub-capture
 ```
 
-Artifacts remain in the **private repository**, retained for seven days. Outputs:
+Historical CI artifacts had a seven-day retention limit. New captures stay in the local `$RUNNER_TEMP/native-hub-artifacts/` directory; no automatic upload occurs. Outputs:
 
 - `native-hub-demo-fixture.mp4`: continuous actual simulator recording during the XCUITest run;
 - `screenshots/**/*.png`: first-run, entered connection, native dashboard, inspected screens, chat and stalled-chat recovery attachments; names/attachment associations are in the exported xcresult attachment manifest;
@@ -64,6 +64,6 @@ Use the actual downloaded PNG/MP4 paths with `show_media` to display the capture
 
 ## Pass/fail and verification limits
 
-`xcodebuild` failures propagate through `pipefail`. All three requested unit suites must appear in xcresult with passing, non-skipped execution. The selected UI suite must execute and pass with zero failures/skips; zero tests is a failure. Artifact validation additionally requires real HTTP coverage of native APIs and canonical normal/stalled chat routes, including a native dashboard refresh **after** the stalled navigation, at least eight PNGs, and a structurally finalized MP4 containing `ftyp`, `mdat`, and `moov` boxes. Screenshots alone **cannot** make CI green. The EXIT trap stops/finalizes video, terminates the fixture, exports available failure attachments and writes provenance even on test failure; upload runs with `always()`.
+`xcodebuild` failures propagate through `pipefail`. All three requested unit suites must appear in xcresult with passing, non-skipped execution. The selected UI suite must execute and pass with zero failures/skips; zero tests is a failure. Artifact validation additionally requires real HTTP coverage of native APIs and canonical normal/stalled chat routes, including a native dashboard refresh **after** the stalled navigation, at least eight PNGs, and a structurally finalized MP4 containing `ftyp`, `mdat`, and `moov` boxes. Screenshots alone **cannot** pass the capture gate. The EXIT trap stops/finalizes video, terminates the fixture, exports available failure attachments and writes provenance even on test failure; outputs remain local.
 
-Linux verification: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/native-hub -p 'test_*.py' -v`, `bash -n scripts/native-hub/capture.sh`, workflow YAML/pin checks and `git diff --check`. Linux cannot compile UIKit/XCUITest or produce simulator evidence. A successful macOS workflow run remains necessary before claiming that this integrated journey passed or that real media exists.
+Linux verification: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/native-hub -p 'test_*.py' -v`, `bash -n scripts/native-hub/capture.sh`, workflow YAML/pin checks and `git diff --check`. Linux cannot compile UIKit/XCUITest or produce simulator evidence. A successful local macOS capture run remains necessary before claiming that this integrated journey passed or that real media exists.

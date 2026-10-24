@@ -35,7 +35,13 @@ Each HTTP request uses an ephemeral URLSession, manual exact-host/mount-scoped W
 
 A credential-free `termllm://connect?server=<percent-encoded-HTTPS-Hub-root>` link opens a native confirmation/review form. It never automatically connects or signs in, and rejects embedded credentials, query tokens, duplicate fields, and localhost pairing addresses. Custom links work only after the app is installed; this is **not** an install/deferred-link service. Universal links need an owned HTTPS landing domain, Associated Domains entitlement, its AASA file, and a genuinely phone-reachable Hub route. A cheap redirect cannot make a contain workspace’s localhost URL reachable. See [contain-to-app onboarding prerequisites](docs/CONTAIN-APP-ONBOARDING.md). No redirector, public service, or tunnel was deployed here.
 
-Simulator CI uses a real loopback HTTP **protocol fixture**, not production Hub state. Only Debug simulator builds accept `TERMLLM_NATIVE_HUB_FIXTURE_URL=http://localhost:8766/`. Onboarding still runs; defaults and WebKit cookies are isolated, push/device-tool enrollment is disabled, and every captured screen says **DEMO FIXTURE · LOCAL**. The fixture does not prove real passkey ceremonies, node reachability, push delivery, or voice. See [capture documentation](docs/NATIVE-HUB-CAPTURE.md).
+Local simulator captures use a real loopback HTTP **protocol fixture**, not production Hub state. Only Debug simulator builds accept `TERMLLM_NATIVE_HUB_FIXTURE_URL=http://localhost:8766/`. Onboarding still runs; defaults and WebKit cookies are isolated, push/device-tool enrollment is disabled, and every captured screen says **DEMO FIXTURE · LOCAL**. The fixture does not prove real passkey ceremonies, node reachability, push delivery, or voice. See [capture documentation](docs/NATIVE-HUB-CAPTURE.md).
+
+## CI budget policy
+
+Automatic pull-request checks run in a single, path-filtered Linux job (`Lightweight checks / checks`): offline Python fixture/helper tests, notification contract/JavaScript checks, and the Go push-relay build/tests. Superseded runs are cancelled; the job has a 10-minute limit and uploads no artifacts. There are no automatic macOS builds, simulator user journeys, or video captures.
+
+The **Native notification checks (manual macOS)** workflow is available through **Actions → Run workflow** when native compilation/XCTest coverage is needed; it is not triggered by pull requests. Linux checks do **not** compile the iOS app or replace native/device testing. Hub capture scripts remain available for local Mac use only; their GitHub workflows have been removed. If branch protection requires the retired `capture`, `test`, or `simulator` checks, replace those requirements with `Lightweight checks / checks` so PRs do not wait for jobs that no longer run.
 
 ## Guided demo
 
