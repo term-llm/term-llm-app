@@ -39,9 +39,15 @@ Local simulator captures use a real loopback HTTP **protocol fixture**, not prod
 
 ## CI budget policy
 
-Automatic pull-request checks run in a single, path-filtered Linux job (`Lightweight checks / checks`): offline Python fixture/helper tests, notification contract/JavaScript checks, and the Go push-relay build/tests. Superseded runs are cancelled; the job has a 10-minute limit and uploads no artifacts. There are no automatic macOS builds, simulator user journeys, or video captures.
+All CI jobs target the repository-scoped MacBook runner labelled `[self-hosted, macOS, ARM64, term-llm-local]`. **There is no GitHub-hosted fallback.** If the Mac is asleep, offline, or its runner is stopped, checks queue rather than consume hosted runner minutes. Workflows use installed tools and do not use Actions caches or upload artifacts.
 
-The **Native notification checks (manual macOS)** workflow is available through **Actions → Run workflow** when native compilation/XCTest coverage is needed; it is not triggered by pull requests. Linux checks do **not** compile the iOS app or replace native/device testing. Hub capture scripts remain available for local Mac use only; their GitHub workflows have been removed. If branch protection requires the retired `capture`, `test`, or `simulator` checks, replace those requirements with `Lightweight checks / checks` so PRs do not wait for jobs that no longer run.
+Automatic trusted, same-repository pull-request checks run in one path-filtered job (`Lightweight checks / checks`): Python fixture/helper tests, notification contract/JavaScript checks, and Go push-relay build/tests. Superseded runs are cancelled; the job has a 10-minute limit. No simulator user journeys or video captures run in CI.
+
+**Native notification checks (manual local Mac)** remains available through **Actions → Run workflow** for unsigned app/extension compilation and focused simulator XCTest coverage, also on this Mac. Portable checks alone do **not** compile the iOS app. Hub capture scripts remain local-only.
+
+See [MacBook runner setup and daily workflow](docs/SELF-HOSTED-CI.md). Changes must be pushed before GitHub uses this configuration; registering a runner alone does not reroute old hosted workflows. Existing GitHub artifact/cache storage is not deleted by this change. Review repository Actions billing/budgets separately for a hard spending limit.
+
+If branch protection requires retired `capture`, `test`, or `simulator` checks, update those requirements. Avoid requiring a path-filtered workflow without accounting for docs-only PRs: GitHub may otherwise wait indefinitely for a skipped workflow.
 
 ## Guided demo
 

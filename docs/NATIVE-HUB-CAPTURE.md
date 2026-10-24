@@ -33,7 +33,7 @@ Nodes: **Demo Dev** (active and completed sessions), **Demo Stalled** (health re
 
 ## Running and obtaining media
 
-Simulator capture is local-only: `.github/workflows/native-hub.yml` was removed to reduce GitHub Actions spend. CI runs only portable fixture/helper checks on Linux; it does not run this journey or upload recordings.
+Simulator capture is local-only: `.github/workflows/native-hub.yml` was removed to reduce GitHub Actions spend. CI runs portable fixture/helper checks on the self-hosted MacBook; it does not run this journey or upload recordings.
 
 On a Mac with the stated Xcode/runtime already installed:
 

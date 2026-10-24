@@ -1,6 +1,6 @@
-name: Native notification checks (manual macOS)
+name: Native notification checks (manual local Mac)
 
-# Opt-in only: automatic CI stays on Linux to bound GitHub Actions spend.
+# Opt-in only and self-hosted: never consume GitHub-hosted runner minutes.
 on:
   workflow_dispatch:
 
@@ -13,17 +13,20 @@ concurrency:
 
 jobs:
   simulator:
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, ARM64, term-llm-local]
     timeout-minutes: 30
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      # Existing app MapKit APIs require the iOS 26 SDK; use the runner's installed Xcode.
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Use installed MacBook tools and selected Xcode
+        run: |
+          source scripts/ci/bootstrap-macos.sh
+          printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
+          printf 'NATIVE_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-native.XXXXXX")" >> "$GITHUB_ENV"
       - name: Select an existing available iPhone simulator
         shell: bash
         run: |
@@ -42,8 +45,8 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/NotificationDerivedData" \
-            -resultBundlePath "$RUNNER_TEMP/NotificationTests.xcresult" \
+            -derivedDataPath "$NATIVE_TEST_DIR/DerivedData" \
+            -resultBundlePath "$NATIVE_TEST_DIR/Tests.xcresult" \
             -parallel-testing-enabled NO \
             -maximum-concurrent-test-simulator-destinations 1 \
             -only-testing:TermLLMTests/WebPushCryptoTests \
@@ -57,14 +60,12 @@ jobs:
             -only-testing:TermLLMTests/BrowserLifecycleTests \
             -only-testing:TermLLMTests/VoiceShortcutTests \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
-            2>&1 | tee "$RUNNER_TEMP/notification-xcodebuild.log"
-      - name: Preserve failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: notification-simulator-failure
-          path: |
-            ${{ runner.temp }}/NotificationTests.xcresult
-            ${{ runner.temp }}/notification-xcodebuild.log
-          if-no-files-found: ignore
-          retention-days: 7
+            2>&1 | tee "$NATIVE_TEST_DIR/xcodebuild.log"
+      # Keep logs in the job output; do not incur GitHub artifact storage charges.
+      - name: Clean temporary native build results
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-native.* ]]; then
+            rm -rf -- "$NATIVE_TEST_DIR"
+          fi

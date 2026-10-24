@@ -31,7 +31,7 @@ Hub Manage/Security remains per-Hub. Direct Nodes are not given invented Hub reg
 
 The original `scripts/native-hub/capture.sh`, fixture HTML/logging helpers, simulator selector, unit-execution checks and finalized-media checks are reused with explicit parameters. Their default behavior remains the original native Hub journey.
 
-The GitHub journey workflow was removed to reduce Actions spend. Automatic CI runs only the portable Python checks on Linux. To run the full capture locally on a Mac with Xcode 26.2 and an installed iPhone simulator:
+The GitHub journey workflow was removed to reduce Actions spend. Automatic CI runs portable checks on the self-hosted MacBook; it does not run this journey. To run the full capture locally on a Mac with Xcode 26.2 and an installed iPhone simulator:
 
 ```sh
 export DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer
