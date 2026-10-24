@@ -51,6 +51,21 @@ class PhoneFixtureTests(unittest.TestCase):
             self.assertEqual(node['proxy_path'], '/' + source + '/node/shared/')
             self.assertTrue(node['sessions']['recent'][0]['resume_path'].startswith('/' + source + '/'))
 
+    def test_offline_control_changes_node_reachability_not_hub_health(self):
+        self.assertEqual(self.request('/__control/work/offline', {})[0], 200)
+        _, data = self.request('/work/api/nodes')
+        self.assertFalse(data['nodes'][0]['status']['reachable'])
+        self.assertEqual(data['nodes'][0]['status']['state'], 'offline')
+        self.assertEqual(self.request('/work/healthz')[1]['role'], 'hub')
+        self.assertEqual(self.request('/__control/work/healthy', {})[0], 200)
+        self.assertTrue(self.request('/work/api/nodes')[1]['nodes'][0]['status']['reachable'])
+
+    def test_hub_new_chat_routes_serve_fixture_html(self):
+        for source in ('work', 'home'):
+            with urllib.request.urlopen(self.root + '/' + source + '/node/shared/', timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn((fixture.TITLES[source] + ' fixture chat').encode(), response.read())
+
     def test_duplicate_remote_identifiers_have_distinct_source_markers(self):
         _, work = self.request('/work/api/attention')
         _, home = self.request('/home/api/attention')

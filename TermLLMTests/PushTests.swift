@@ -183,6 +183,7 @@ final class PushCenterTests: XCTestCase {
     private var temporaryDirectory: URL!
     private var deliveries: PushDeliveryStore!
     private var authorizer: FakeAuthorizer!
+    private var badgeSink: FakeBadgeSink!
     private var storage: InMemoryPushStorage!
     private var relayRequests: [URLRequest] = []
     private var relayResponse: (Int, String) = (200, #"{"endpoint":"https://relay.example/v1/push/TOKEN"}"#)
@@ -198,6 +199,7 @@ final class PushCenterTests: XCTestCase {
         defaults = UserDefaults(suiteName: suite)
         defaults.set("https://relay.example", forKey: PushCenter.relayOverrideKey)
         authorizer = FakeAuthorizer()
+        badgeSink = FakeBadgeSink()
         storage = InMemoryPushStorage()
         relayRequests = []
         registrations = 0
@@ -225,7 +227,8 @@ final class PushCenterTests: XCTestCase {
                 let token = token
                 Task { @MainActor in centerRef?.didRegister(deviceToken: token) }
             },
-            environment: .development, tokenTimeout: timeout, deliveries: deliveries, inbox: FakePushInbox())
+            environment: .development, tokenTimeout: timeout, deliveries: deliveries, inbox: FakePushInbox(),
+            badgeSetter: { [badgeSink = badgeSink!] count in try await badgeSink.set(count) })
         centerRef = center
         center.isActive = { true }
         center.activateScene = { _, _, _ in }
@@ -233,6 +236,150 @@ final class PushCenterTests: XCTestCase {
     }
 
     private let serverKey = P256.Signing.PrivateKey().publicKey.x963Representation.base64URLEncodedString()
+
+    func testAttentionBadgeWritesAuthorizedPositiveAndVerifiedZero() async {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        center.updateAttentionBadge(count: 12)
+        await waitForBadge { self.badgeSink.badge == 12 }
+        center.updateAttentionBadge(count: 0)
+        await waitForBadge { self.badgeSink.badge == 0 }
+        XCTAssertEqual(badgeSink.attempts, [12, 0])
+        XCTAssertNil(center.badgeIssue)
+    }
+
+    func testAttentionBadgeSupportsProvisionalAndEphemeralWithoutRequestingPermission() async {
+        let center = makeCenter()
+        authorizer.current = .provisional
+        await center.setEnabled(true)
+        center.updateAttentionBadge(count: 3)
+        await waitForBadge { self.badgeSink.badge == 3 }
+        authorizer.current = .ephemeral
+        await center.refreshAuthorization()
+        center.updateAttentionBadge(count: 4)
+        await waitForBadge { self.badgeSink.badge == 4 }
+        XCTAssertEqual(badgeSink.attempts, [3, 4])
+        XCTAssertEqual(authorizer.requests, 0)
+    }
+
+    func testAttentionBadgeOffAndDeniedNeverWritePositive() async {
+        let center = makeCenter()
+        center.updateAttentionBadge(count: 8)
+        await waitForBadge { self.badgeSink.badge == 0 }
+        authorizer.current = .denied
+        await center.setEnabled(true)
+        center.updateAttentionBadge(count: 9)
+        await center.refreshAuthorization()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(badgeSink.attempts, [0])
+        XCTAssertEqual(authorizer.requests, 0)
+
+        authorizer.current = .authorized
+        await center.refreshAuthorization()
+        await waitForBadge { self.badgeSink.badge == 9 }
+        authorizer.current = .denied
+        await center.refreshAuthorization()
+        await waitForBadge { self.badgeSink.badge == 0 }
+        XCTAssertEqual(badgeSink.attempts, [0, 9, 0])
+    }
+
+    func testAttentionBadgeUnknownInitialTotalLeavesExistingBadgeAlone() async {
+        let center = makeCenter()
+        center.updateAttentionBadge(count: nil)
+        await center.refreshAuthorization()
+        await center.setEnabled(true)
+        center.updateAttentionBadge(count: nil)
+        await center.refreshAuthorization()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(badgeSink.badge, 99)
+        XCTAssertTrue(badgeSink.attempts.isEmpty)
+        XCTAssertEqual(authorizer.requests, 1, "only the explicit Enable requests permission")
+
+        center.updateAttentionBadge(count: 5)
+        await waitForBadge { self.badgeSink.badge == 5 }
+        center.updateAttentionBadge(count: nil)
+        await center.refreshAuthorization()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(badgeSink.attempts, [5], "temporary unknown totals preserve the verified badge")
+    }
+
+    func testAttentionBadgeExplicitOffClearsWithoutAnySuppliedCount() async {
+        let center = makeCenter()
+        await center.setEnabled(false)
+        await waitForBadge { self.badgeSink.badge == 0 }
+        XCTAssertEqual(badgeSink.attempts, [0])
+        XCTAssertEqual(authorizer.requests, 0)
+    }
+
+    func testAttentionBadgeCoalescesDuplicatesAndIntermediateCounts() async {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        badgeSink.pauseNextWrite = true
+        center.updateAttentionBadge(count: 6)
+        await waitForBadge { self.badgeSink.pendingWrite != nil }
+        center.updateAttentionBadge(count: 6)
+        center.updateAttentionBadge(count: 7)
+        center.updateAttentionBadge(count: 8)
+        XCTAssertEqual(badgeSink.attempts, [6], "only one OS write may be in flight")
+        badgeSink.resumeWrite()
+        await waitForBadge { self.badgeSink.badge == 8 }
+        center.updateAttentionBadge(count: 8)
+        await center.refreshAuthorization()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(badgeSink.attempts, [6, 8])
+    }
+
+    func testAttentionBadgeOlderPositiveFollowedByZeroEndsAtZero() async {
+        await assertOlderAttentionBadgeIsCleared(turnOff: false)
+    }
+
+    func testAttentionBadgeOlderPositiveFollowedByOffEndsAtZero() async {
+        await assertOlderAttentionBadgeIsCleared(turnOff: true)
+    }
+
+    private func assertOlderAttentionBadgeIsCleared(turnOff: Bool) async {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        badgeSink.pauseNextWrite = true
+        center.updateAttentionBadge(count: 11)
+        await waitForBadge { self.badgeSink.pendingWrite != nil }
+        if turnOff { await center.setEnabled(false) }
+        else { center.updateAttentionBadge(count: 0) }
+        XCTAssertEqual(badgeSink.attempts, [11], "clear must wait for the stale writer")
+        badgeSink.resumeWrite()
+        await waitForBadge { self.badgeSink.badge == 0 }
+        XCTAssertEqual(badgeSink.attempts, [11, 0])
+    }
+
+    func testAttentionBadgeFailureRetriesSameCountAndForegroundRefresh() async {
+        let center = makeCenter()
+        await center.setEnabled(true)
+        center.storageIssue = "existing storage issue"
+        badgeSink.failNextWrite = true
+        center.updateAttentionBadge(count: 5)
+        await waitForBadge { center.badgeIssue != nil }
+        XCTAssertEqual(badgeSink.attempts, [5])
+        XCTAssertEqual(center.storageIssue, "existing storage issue")
+        center.updateAttentionBadge(count: 5)
+        await waitForBadge { self.badgeSink.badge == 5 && center.badgeIssue == nil }
+
+        badgeSink.failNextWrite = true
+        center.updateAttentionBadge(count: 0)
+        await waitForBadge { center.badgeIssue != nil }
+        await center.refreshAuthorization()
+        await waitForBadge { self.badgeSink.badge == 0 && center.badgeIssue == nil }
+        XCTAssertEqual(badgeSink.attempts, [5, 5, 0, 0])
+        XCTAssertEqual(center.storageIssue, "existing storage issue")
+    }
+
+    private func waitForBadge(file: StaticString = #filePath, line: UInt = #line,
+                              _ condition: @MainActor () -> Bool) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(condition(), "badge writer did not reach expected state", file: file, line: line)
+    }
 
     func testPermissionFollowsAppSwitchIOSAndPerNodeOptOut() async {
         let center = makeCenter()
@@ -682,6 +829,34 @@ final class PushCenterTests: XCTestCase {
 }
 
 // MARK: - Test support
+
+@MainActor
+private final class FakeBadgeSink {
+    var badge = 99 // Model an existing OS badge from before this app launch.
+    var attempts: [Int] = []
+    var pauseNextWrite = false
+    var failNextWrite = false
+    var pendingWrite: CheckedContinuation<Void, Never>?
+
+    func set(_ count: Int) async throws {
+        attempts.append(count)
+        if pauseNextWrite {
+            pauseNextWrite = false
+            await withCheckedContinuation { pendingWrite = $0 }
+        }
+        if failNextWrite {
+            failNextWrite = false
+            throw NSError(domain: "FakeBadgeSink", code: 1)
+        }
+        badge = count
+    }
+
+    func resumeWrite() {
+        let pending = pendingWrite
+        pendingWrite = nil
+        pending?.resume()
+    }
+}
 
 private final class FakeAuthorizer: PushAuthorizer {
     var current: UNAuthorizationStatus = .notDetermined

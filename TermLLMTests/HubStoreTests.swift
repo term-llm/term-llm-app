@@ -266,6 +266,50 @@ final class HubStoreTests: XCTestCase {
         XCTAssertEqual(store.authMode, .passkey)
     }
 
+    func testIdenticalRefreshDoesNotRepublishCollections() async {
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.attentionResponse = {
+            AttentionResponse(total_running: 1, total_input_required: 1, total_unseen: 1,
+                              nodes: [makeAttentionNode()], input_required: [makeInputRequired()],
+                              inbox: [makeInboxItem()], has_more: false)
+        }
+        client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
+        await store.refresh()
+        var publications = 0
+        let observations = [
+            store.$nodes.dropFirst().sink { _ in publications += 1 },
+            store.$attentionNodes.dropFirst().sink { _ in publications += 1 },
+            store.$inputRequired.dropFirst().sink { _ in publications += 1 },
+            store.$inbox.dropFirst().sink { _ in publications += 1 },
+            store.$delegations.dropFirst().sink { _ in publications += 1 }
+        ]
+        await store.refresh()
+        XCTAssertEqual(publications, 0, "Unchanged snapshots should not invalidate existing rows")
+        withExtendedLifetime(observations) {}
+    }
+
+    func testNodeDeltasPreserveIDsAndAcceptEditsAddsRemovalsAndServerOrder() async {
+        let a = makeNode(id: "a"), b = makeNode(id: "b")
+        client.nodesResponse = { NodesResponse(nodes: [a, b], resolver_error: nil) }
+        await store.refresh()
+        var publications = 0
+        let observation = store.$nodes.dropFirst().sink { _ in publications += 1 }
+        let renamed = makeNode(id: "a", name: "Updated")
+        client.nodesResponse = { NodesResponse(nodes: [renamed, b], resolver_error: nil) }
+        await store.refresh()
+        XCTAssertEqual(store.nodes.map(\.id), ["a", "b"])
+        XCTAssertEqual(store.nodes.first?.name, "Updated")
+        XCTAssertEqual(publications, 1)
+        let c = makeNode(id: "c")
+        client.nodesResponse = { NodesResponse(nodes: [c, renamed], resolver_error: nil) }
+        await store.refresh()
+        XCTAssertEqual(store.nodes.map(\.id), ["c", "a"])
+        XCTAssertEqual(publications, 2)
+        await store.refresh()
+        XCTAssertEqual(publications, 2)
+        withExtendedLifetime(observation) {}
+    }
+
     // MARK: - Refresh populates all sections
 
     func testRefreshPopulatesAllSections() async {

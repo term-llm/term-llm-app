@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TermLLM
 
@@ -34,6 +35,117 @@ final class HubAggregateStoreTests: XCTestCase {
     private func drain() async {
         for _ in 0..<30 { await Task.yield() }
     }
+    func testAttentionBadgeUsesServerTotalsNotTheLoadedWindow() async throws {
+        let connection = connection("work")
+        let client = MockHubClient()
+        client.attentionResponse = {
+            AttentionResponse(total_running: 12, total_input_required: 3, total_unseen: 50,
+                              nodes: [], input_required: [], inbox: [], has_more: true)
+        }
+        let aggregate = HubAggregateStore { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999))
+        }
+        aggregate.synchronize([connection])
+        XCTAssertNil(aggregate.attentionBadgeCount, "Loading is not evidence for clearing a saved system badge")
+        await aggregate.refreshAndWait()
+        XCTAssertEqual(aggregate.attentionBadgeCount, 53)
+        XCTAssertTrue(aggregate.attention.isEmpty, "The badge uses totals, even when the loaded window differs")
+        client.attentionResponse = { throw URLError(.notConnectedToInternet) }
+        await aggregate.refreshAndWait()
+        XCTAssertEqual(aggregate.attentionBadgeCount, 53, "Offline refresh retains last verified totals")
+        try XCTUnwrap(aggregate.sources.first).store.purgeOnUnauthorized()
+        XCTAssertEqual(aggregate.attentionBadgeCount, 0, "Revoked sources do not contribute private attention")
+        aggregate.synchronize([])
+        XCTAssertEqual(aggregate.attentionBadgeCount, 0)
+    }
+
+    func testAttentionBadgeAggregatesSourcesAndSafelyBoundsServerCounts() async {
+        let work = connection("work"), home = connection("home")
+        let aggregate = HubAggregateStore { connection in
+            let client = MockHubClient()
+            client.attentionResponse = { self.attention(connection) }
+            return HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999))
+        }
+        aggregate.synchronize([work, home])
+        await aggregate.refreshAndWait()
+        XCTAssertEqual(aggregate.attentionBadgeCount, 4)
+        aggregate.source(work.id)?.store.purgeOnUnauthorized()
+        XCTAssertEqual(aggregate.attentionBadgeCount, 2)
+        aggregate.synchronize([])
+        let large = MockHubClient()
+        large.attentionResponse = {
+            AttentionResponse(total_running: 0, total_input_required: Int.max, total_unseen: Int.max,
+                              nodes: [], input_required: [], inbox: [], has_more: false)
+        }
+        let bounded = HubAggregateStore { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: large, pollInterval: 999))
+        }
+        bounded.synchronize([work])
+        await bounded.refreshAndWait()
+        XCTAssertEqual(bounded.attentionBadgeCount, Int.max)
+        bounded.synchronize([])
+    }
+
+    func testChatContextIsSourceAndBrowserIdentityScoped() throws {
+        let work = connection("work"), home = connection("home")
+        let browserID = UUID()
+        let destination = URL(string: "https://example.com/work/node/shared/chat/7")!
+        let context = try XCTUnwrap(ChatTabContext.resolve(connection: work, browserIdentity: browserID,
+                                                          url: destination, agents: nodes(work).nodes))
+        XCTAssertEqual(context.agentID, "shared")
+        XCTAssertEqual(context.agentName, "Shared")
+        XCTAssertEqual(context.url, destination)
+        XCTAssertTrue(context.belongs(to: work, browserIdentity: browserID))
+        XCTAssertFalse(context.belongs(to: home, browserIdentity: browserID), "Colliding remote IDs do not share Chat context")
+        XCTAssertFalse(context.belongs(to: work, browserIdentity: UUID()), "Revoked browser identities are not resumable")
+        let replacement = HubConnection(id: UUID(), name: work.name, kind: work.kind, url: work.url)
+        XCTAssertFalse(context.belongs(to: replacement, browserIdentity: browserID))
+    }
+
+    func testDirectChatContextAndServerRootDoNotGuessAnotherAgent() throws {
+        let direct = connection("direct", kind: .directNode)
+        let context = try XCTUnwrap(ChatTabContext.resolve(connection: direct, browserIdentity: UUID(),
+                                                          url: direct.url.appendingPathComponent("chat/7"), agents: nodes(direct).nodes))
+        XCTAssertEqual(context.agentName, "Shared")
+        let hub = connection("work")
+        let root = try XCTUnwrap(ChatTabContext.resolve(connection: hub, browserIdentity: UUID(),
+                                                       url: hub.url, agents: nodes(hub).nodes))
+        XCTAssertNil(root.agentID, "A server root is not permission to pick the first agent")
+        XCTAssertEqual(root.agentName, hub.name)
+    }
+
+    func testChatContextRejectsForeignAndNonChatDocuments() {
+        let work = connection("work")
+        for address in ["https://elsewhere.example/work/node/shared/chat/7", "https://example.com/home/node/shared/chat/7",
+                        "https://example.com/work/api/nodes", "https://example.com/work/auth/login", "https://example.com/work/node/shared/chat/7?token=secret"] {
+            XCTAssertNil(ChatTabContext.resolve(connection: work, browserIdentity: UUID(),
+                                               url: URL(string: address)!, agents: nodes(work).nodes), address)
+        }
+    }
+
+    func testSynchronizingUnchangedCatalogDoesNotRepublishOrReplaceSources() async throws {
+        let connection = connection("work")
+        let aggregate = HubAggregateStore { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: MockHubClient(), pollInterval: 999))
+        }
+        aggregate.synchronize([connection])
+        await aggregate.refreshAndWait()
+        let source = try XCTUnwrap(aggregate.sources.first)
+        var publications = 0
+        let observation = aggregate.objectWillChange.sink { _ in publications += 1 }
+        aggregate.synchronize([connection])
+        XCTAssertEqual(publications, 0)
+        XCTAssertTrue(aggregate.sources.first === source)
+        var renamed = connection
+        renamed.name = "Renamed"
+        aggregate.synchronize([renamed])
+        XCTAssertTrue(aggregate.sources.first === source)
+        XCTAssertEqual(source.connection.name, "Renamed")
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(observation) {}
+        aggregate.synchronize([])
+    }
+
     func testTwoHubsAndDirectKeepCollidingIdentitiesAndSourceMountsDistinct() async throws {
         let connections = [connection("work"), connection("home"), connection("direct", kind: .directNode)]
         var clients: [UUID: MockHubClient] = [:]
@@ -45,7 +157,7 @@ final class HubAggregateStoreTests: XCTestCase {
             return HubSourceWorkspace(connection: connection, store: HubStore(client: client))
         }
         aggregate.synchronize(connections)
-        for source in aggregate.sources { await source.store.refresh() }
+        await aggregate.refreshAndWait()
         XCTAssertEqual(aggregate.nodes.count, 3)
         XCTAssertEqual(Set(aggregate.nodes.map(\.id)).count, 3)
         XCTAssertEqual(aggregate.sessions.count, 3, "Active/recent dedupe is within one source/node, not global")

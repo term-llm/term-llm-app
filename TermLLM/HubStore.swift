@@ -808,14 +808,14 @@ final class HubStore: ObservableObject {
         do {
             let data = try await client.list_attention(limit: limit)
             guard epochCurrent(e), attentionSeq == seq else { return }
-            attentionNodes = data.nodes
-            inputRequired = data.input_required
-            inbox = data.inbox
-            totalInputRequired = data.total_input_required
-            totalUnseen = data.total_unseen
-            attentionHasMore = data.has_more
-            attentionVerified = true
-            attentionError = nil
+            if attentionNodes != data.nodes { attentionNodes = data.nodes }
+            if inputRequired != data.input_required { inputRequired = data.input_required }
+            if inbox != data.inbox { inbox = data.inbox }
+            if totalInputRequired != data.total_input_required { totalInputRequired = data.total_input_required }
+            if totalUnseen != data.total_unseen { totalUnseen = data.total_unseen }
+            if attentionHasMore != data.has_more { attentionHasMore = data.has_more }
+            if !attentionVerified { attentionVerified = true }
+            if attentionError != nil { attentionError = nil }
             lastAttentionRefresh = clock()
         } catch {
             guard epochCurrent(e), attentionSeq == seq else { return }
@@ -829,9 +829,9 @@ final class HubStore: ObservableObject {
         do {
             let data = try await client.list_delegations()
             guard epochCurrent(e), delegationsSeq == seq else { return }
-            delegations = data.delegations
-            delegationsVerified = true
-            delegationError = nil
+            if delegations != data.delegations { delegations = data.delegations }
+            if !delegationsVerified { delegationsVerified = true }
+            if delegationError != nil { delegationError = nil }
             lastDelegationsRefresh = clock()
         } catch {
             guard epochCurrent(e), delegationsSeq == seq else { return }
@@ -845,21 +845,25 @@ final class HubStore: ObservableObject {
 
     private func acceptNodes(_ incoming: [HubNode], resolverError: String?, orderVersion orderVer: Int) {
         showNodes(incoming, orderVersion: orderVer)
-        nodesVerified = true
-        resolverWarning = resolverError
-        nodeError = nil
+        if !nodesVerified { nodesVerified = true }
+        if resolverWarning != resolverError { resolverWarning = resolverError }
+        if nodeError != nil { nodeError = nil }
         lastNodesRefresh = clock()
 
         let ids = Set(incoming.map(\.id))
         if !attentionVerified {
-            attentionNodes = attentionNodes.filter { ids.contains($0.node_id) }
-            inputRequired = inputRequired.filter { ids.contains($0.node_id) }
-            inbox = inbox.filter { ids.contains($0.node_id) }
+            let filteredAttentionNodes = attentionNodes.filter { ids.contains($0.node_id) }
+            if attentionNodes != filteredAttentionNodes { attentionNodes = filteredAttentionNodes }
+            let filteredInputRequired = inputRequired.filter { ids.contains($0.node_id) }
+            if inputRequired != filteredInputRequired { inputRequired = filteredInputRequired }
+            let filteredInbox = inbox.filter { ids.contains($0.node_id) }
+            if inbox != filteredInbox { inbox = filteredInbox }
         }
         if !delegationsVerified {
-            delegations = delegations.filter {
+            let filtered = delegations.filter {
                 ids.contains($0.origin_node) && ids.contains($0.target_node)
             }
+            if delegations != filtered { delegations = filtered }
         }
     }
 
@@ -869,7 +873,9 @@ final class HubStore: ObservableObject {
             let shown = Dictionary(uniqueKeysWithValues: nodes.enumerated().map { ($1.id, $0) })
             listed.sort { (shown[$0.id] ?? shown.count) < (shown[$1.id] ?? shown.count) }
         }
-        nodes = listed
+        // Stable row IDs let SwiftUI diff actual additions/removals/changes;
+        // an identical poll must not invalidate the collection at all.
+        if nodes != listed { nodes = listed }
     }
 }
 

@@ -10,8 +10,8 @@ struct ContentView: View {
     @StateObject private var connections = HubConnectionStore(defaults: HubFixture.defaults)
     @StateObject private var aggregate = HubAggregateStore()
     @State private var draftURL = ""
-    @State private var connectionKind: HubConnection.Kind = .hub
     @State private var showingSettings = false
+    @State private var voiceSettingsSourceID: UUID?
     @State private var loading = false
     @State private var canGoBack = false
     @State private var loadError: String?
@@ -25,12 +25,18 @@ struct ContentView: View {
     @State private var showingListen = false
     @State private var showingPlayer = false
     @State private var showingHub = !HubFixture.isEnabled
+    @State private var selectedTab: AppTab = .agents
+    @State private var visitedTabs: Set<AppTab> = [.agents]
+    @State private var playbackShelfState = MediaPlaybackShelf.State()
+    @State private var retainedChat: ChatTabContext?
+    @State private var pendingChat: ChatTabContext?
     @State private var workspaceChosen = false
     @State private var hubRole: HubServerRole = .unknown
     @State private var hubPresentation = UUID()
     @State private var hubDestination: HubBrowserDestination?
     @State private var hubBrowserRevoked = false
     @State private var importedServer: URL?
+    @State private var pendingConnectionURL: URL?
     @State private var authenticatedCount = 0
     @State private var nativeLogin = NativeLogin()
     @StateObject private var deviceTools = DeviceToolsSettings.shared
@@ -43,10 +49,6 @@ struct ContentView: View {
     private let listen = Listen.shared
 
     private var address: URL? { ServerAddress.parse(serverURL) }
-    private var hasPendingServerEdit: Bool {
-        ServerAddress.parse(draftURL)?.absoluteString != serverURL
-    }
-
     private var selectedWorkspace: HubSourceWorkspace? { connections.selectedID.flatMap { aggregate.source($0) } }
     private var isFixture: Bool { HubFixture.isEnabled || PhoneHubFixture.isEnabled }
     private var browserIsRevoked: Bool { hubBrowserRevoked || (!HubFixture.isEnabled && selectedWorkspace?.browserRevoked == true) }
@@ -55,34 +57,74 @@ struct ContentView: View {
               let token = source.security?.bearer else { return nil }
         return HubConnectionSecurity.directBearerScript(token: token, server: source.connection.url)
     }
+    private enum AppTab: String, CaseIterable {
+        case agents, chat, music, podcasts
+        var title: String { rawValue.capitalized }
+        var symbol: String {
+            switch self {
+            case .agents: "square.grid.2x2"
+            case .chat: "bubble.left.and.bubble.right"
+            case .music: "music.note"
+            case .podcasts: "dot.radiowaves.left.and.right"
+            }
+        }
+    }
+    private var chatIsVisible: Bool { HubFixture.isEnabled ? !showingHub : selectedTab == .chat }
     private var phoneHome: some View {
-        PhoneHubView(connections: connections, aggregate: aggregate, onOpenChat: openPhoneChat, onSettings: openSettings)
+        PhoneHubView(connections: connections, aggregate: aggregate, pendingConnectionURL: $pendingConnectionURL,
+                     isVisible: selectedTab == .agents, onOpenChat: openPhoneChat, onSettings: openSettings)
     }
 
     var body: some View {
-        Group {
-            if let address {
-                browser(address)
-            } else if HubFixture.isEnabled {
-                setup
-            } else {
-                phoneHome
+        VStack(spacing: 0) {
+            Group {
+                if HubFixture.isEnabled {
+                    if let address {
+                        legacyBrowser(address)
+                    } else {
+                        setup
+                    }
+                } else {
+                    appShell(address)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if isFixture {
+                Text("DEMO FIXTURE · LOCAL")
+                    .font(.caption.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(6)
+                    .background(.orange.opacity(0.25))
+                    .accessibilityIdentifier(PhoneHubFixture.isEnabled ? "phoneHub.fixtureBanner" : "hub.fixtureBanner")
             }
         }
         .onChange(of: connections.connections, initial: true) { _, sources in
             guard !HubFixture.isEnabled else { return }
             aggregate.synchronize(sources.filter { $0.needsKindReview != true })
+            if !isFixture { push.updateAttentionBadge(count: aggregate.attentionBadgeCount) }
+        }
+        .onChange(of: aggregate.attentionBadgeCount) { _, count in
+            guard !isFixture else { return }
+            push.updateAttentionBadge(count: count)
         }
         .onChange(of: connections.selectedID, initial: true) { _, id in
             HubCookieScopeRegistry.shared.selectedID = id
             guard !HubFixture.isEnabled else { return }
-            if hubDestination?.sourceID != id { hubDestination = nil; workspaceChosen = false }
+            if hubDestination?.sourceID != id {
+                hubDestination = nil
+                workspaceChosen = false
+                retainedChat = nil
+                pendingChat = nil
+            }
             hubBrowserRevoked = false
             loadError = nil
             loginError = nil
             loginRequired = false
             hubRole = connections.selected?.kind == .hub ? .hub : .direct
             revealPendingPushIfOwned()
+        }
+        .onChange(of: loadError) { _, error in
+            if error != nil { pendingChat = nil }
         }
         .onChange(of: selectedWorkspace?.browserIdentity) { _, _ in
             guard !HubFixture.isEnabled else { return }
@@ -93,6 +135,8 @@ struct ContentView: View {
             loading = false
             if selectedWorkspace?.browserRevoked == true {
                 hubDestination = nil
+                retainedChat = nil
+                pendingChat = nil
                 if let request = voiceRequest { finishVoiceLaunch(request.id, "Connection authorization changed. Sign in again before starting voice.") }
             }
         }
@@ -105,17 +149,7 @@ struct ContentView: View {
                 showingHub = true
             }
         }
-        .tint(.cyan)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isFixture {
-                Text("DEMO FIXTURE · LOCAL")
-                    .font(.caption.bold())
-                    .frame(maxWidth: .infinity)
-                    .padding(6)
-                    .background(.orange.opacity(0.25))
-                    .accessibilityIdentifier(PhoneHubFixture.isEnabled ? "phoneHub.fixtureBanner" : "hub.fixtureBanner")
-            }
-        }
+        .tint(.blue)
         .background(NativeSceneReader { scene in
             guard !isFixture else { return }
             let id = PushCenter.windowID(for: scene)
@@ -123,27 +157,29 @@ struct ContentView: View {
             pushWindowID = id
         })
         .sheet(isPresented: $showingSettings) {
-            settings.safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
+            settings.safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
         }
         .onOpenURL { link in
             guard !isFixture, let server = HubConnectionImport.server(from: link) else { return }
             importedServer = server
         }
-        .alert("Connect to Hub?", isPresented: Binding(
+        .alert("Add connection?", isPresented: Binding(
             get: { importedServer != nil }, set: { if !$0 { importedServer = nil } }
         )) {
             Button("Review connection") {
-                draftURL = importedServer?.absoluteString ?? ""
+                pendingConnectionURL = importedServer
                 importedServer = nil
-                showingSettings = true
+                showingSettings = false
+                showingHub = true
+                selectTab(.agents)
             }
             Button("Cancel", role: .cancel) { importedServer = nil }
         } message: {
             Text("Only connect to a server you trust. Sign-in is separate.\n" + (importedServer?.absoluteString ?? ""))
         }
-        .sheet(isPresented: $showingMusic) { MusicView(library: .shared).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
-        .sheet(isPresented: $showingListen) { ListenView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
-        .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen).safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() } }
+        .sheet(isPresented: $showingMusic) { MusicView(library: .shared).safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() } }
+        .sheet(isPresented: $showingListen) { ListenView(listen: listen).safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() } }
+        .sheet(isPresented: $showingPlayer) { ListenPlayerView(listen: listen).safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() } }
         .onChange(of: push.pendingNavigation, initial: true) { _, _ in
             revealPendingPushIfOwned()
         }
@@ -175,9 +211,17 @@ struct ContentView: View {
             set: { if !$0 { voiceLaunchError = nil; push.navigationIssue = nil } }
         )) {
             Button("OK", role: .cancel) { voiceLaunchError = nil; push.navigationIssue = nil }
-            Button("Settings") {
-                voiceLaunchError = nil; push.navigationIssue = nil
-                openSettings()
+            if push.navigationIssue != nil {
+                Button("Notification settings") {
+                    voiceLaunchError = nil; push.navigationIssue = nil
+                    openSettings()
+                }
+            } else if let id = connections.selectedID {
+                Button("Voice settings") {
+                    voiceLaunchError = nil
+                    voiceSettingsSourceID = id
+                    openSettings()
+                }
             }
         } message: {
             Text(push.navigationIssue ?? voiceLaunchError ?? "")
@@ -196,13 +240,13 @@ struct ContentView: View {
                     Text("Connect to your term-llm web server")
                         .foregroundStyle(.secondary)
                     addressField
-                    Button("Connect", action: saveAddress)
+                    Button("Connect", action: saveFixtureAddress)
                         .buttonStyle(.borderedProminent)
                         .disabled(ServerAddress.parse(draftURL) == nil)
                         .accessibilityIdentifier("serverConnect")
                     Button("Try demo") {
                         draftURL = ServerAddress.demo
-                        saveAddress()
+                        saveFixtureAddress()
                     }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("tryDemo")
@@ -231,41 +275,168 @@ struct ContentView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .submitLabel(.go)
-            .onSubmit(saveAddress)
+            .onSubmit(saveFixtureAddress)
             .padding(12)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityIdentifier("serverAddress")
     }
 
-    /// The web page with the Listen mini player under it. The bar is native,
-    /// so it (and playback) survives page loads; hiding it leaves playback on.
-    private func browser(_ url: URL) -> some View {
+    /// Native tabs own navigation appearance; each destination keeps a stable
+    /// identity so switching tabs does not replace the retained browser document.
+    @ViewBuilder private func appShell(_ url: URL?) -> some View {
+        if #available(iOS 26.1, *) {
+            nativeTabs(url)
+                .tabViewBottomAccessory(isEnabled: playbackShelfState.visibleSource(for: shelfPlayback) != nil) {
+                    playbackShelf(usesSystemBackground: true)
+                }
+        } else {
+            nativeTabs(url)
+        }
+    }
+
+    private func nativeTabs(_ url: URL?) -> some View {
+        TabView(selection: $selectedTab) {
+            tabContent {
+                phoneHome
+            }
+            .tag(AppTab.agents)
+            .tabItem { tabLabel(.agents) }
+
+            tabContent {
+                ZStack {
+                    if let url, workspaceChosen {
+                        page(url)
+                    } else {
+                        emptyChat
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .tag(AppTab.chat)
+            .tabItem { tabLabel(.chat) }
+
+            tabContent {
+                if visitedTabs.contains(.music) {
+                    MusicView(library: .shared, embedded: true, isActive: selectedTab == .music)
+                }
+            }
+            .tag(AppTab.music)
+            .tabItem { tabLabel(.music) }
+
+            tabContent {
+                if visitedTabs.contains(.podcasts) {
+                    NavigationStack {
+                        ListenView(listen: listen, embedded: true, isActive: selectedTab == .podcasts)
+                    }
+                }
+            }
+            .tag(AppTab.podcasts)
+            .tabItem { tabLabel(.podcasts) }
+        }
+        .onChange(of: selectedTab) { _, tab in selectTab(tab) }
+        .onChange(of: shelfPlayback, initial: true) { _, playback in
+            playbackShelfState.update(playback)
+        }
+    }
+
+    private func tabLabel(_ tab: AppTab) -> some View {
+        Label(tab.title, systemImage: tab.symbol)
+            .accessibilityIdentifier("appTab." + tab.rawValue)
+    }
+
+    @ViewBuilder private func tabContent<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 26.1, *) {
+            ZStack { content() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ZStack { content() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .bottom, spacing: 0) { playbackShelf() }
+        }
+    }
+
+    private var shelfPlayback: MediaPlaybackShelf.Playback {
+        let music = MusicLibrary.shared.player
+        return .init(podcastID: listen.player.currentID, podcastVisible: listen.player.showsBar,
+                     podcastPlaying: listen.player.isPlaying, musicID: music.nowPlaying?.id,
+                     musicPlaying: music.isPlaying)
+    }
+
+    private func playbackShelf(usesSystemBackground: Bool = false) -> some View {
+        MediaPlaybackShelf(listen: listen, music: MusicLibrary.shared.player,
+                           state: $playbackShelfState, usesSystemBackground: usesSystemBackground,
+                           onOpenPodcastPlayer: { showingPlayer = true },
+                           onOpenMusic: { selectTab(.music) })
+    }
+
+    private var emptyChat: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                ContentUnavailableView {
+                    Label("Choose an agent", systemImage: "bubble.left.and.bubble.right")
+                        .accessibilityIdentifier("chat.empty")
+                } description: {
+                    Text("Open a conversation from Agents. Your page and draft stay here.")
+                } actions: {
+                    Button("Browse agents") { selectTab(.agents) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("chat.chooseAgent")
+                }
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private func selectTab(_ tab: AppTab) {
+        visitedTabs.insert(tab)
+        selectedTab = tab
+        showingControls = false
+        if tab == .agents { showingHub = true }
+        if tab == .chat { showingHub = false }
+    }
+
+    private func makeChatContext(for url: URL, source: HubSourceWorkspace? = nil) -> ChatTabContext? {
+        guard let source = source ?? selectedWorkspace, source.isActive, !source.browserRevoked else { return nil }
+        return ChatTabContext.resolve(connection: source.connection, browserIdentity: source.browserIdentity,
+                                      url: url, agents: source.store.nodes)
+    }
+
+    private func browserCommitted(_ url: URL, sourceID: UUID, browserIdentity: UUID) {
+        guard let source = aggregate.source(sourceID), source === selectedWorkspace,
+              source.isActive, !source.browserRevoked, source.browserIdentity == browserIdentity else { return }
+        // The first WebView load can briefly commit the source root before the
+        // explicit agent destination. Do not relabel that request as another agent.
+        if let pendingChat, pendingChat.agentID != nil, url == source.connection.url { return }
+        retainedChat = makeChatContext(for: url, source: source)
+        pendingChat = nil
+    }
+
+    /// Keep the original standalone Hub protocol fixture out of the production
+    /// tab shell so its established authentication/administration tests remain valid.
+    private func legacyBrowser(_ url: URL) -> some View {
         VStack(spacing: 0) {
             HStack {
-                Button { workspaceChosen = true; hubPresentation = UUID(); showingHub = true } label: { Label("Hub", systemImage: "square.grid.2x2") }
-                    .accessibilityIdentifier(HubFixture.isEnabled ? "hub.open" : "phoneHub.returnHome")
-                Spacer()
                 Button {
-                    if HubFixture.isEnabled { workspaceChosen = true; showingHub = false }
-                    else if let id = connections.selectedID { openPhoneChat(id, url) }
-                } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-                    .accessibilityIdentifier(HubFixture.isEnabled ? "hub.chat" : "phoneHub.chat")
+                    workspaceChosen = true
+                    hubPresentation = UUID()
+                    showingHub = true
+                    showingControls = false
+                } label: { Label("Hub", systemImage: "square.grid.2x2") }
+                .accessibilityIdentifier("hub.open")
+                Spacer()
+                Button("Chat") { workspaceChosen = true; showingHub = false }
+                    .accessibilityIdentifier("hub.chat")
                 Spacer()
                 Button("Settings", systemImage: "gearshape", action: openSettings)
             }
-            .buttonStyle(.borderless)
-            .padding(.horizontal)
-            .frame(minHeight: 48)
-            .background(.bar)
+            .buttonStyle(.borderless).padding(.horizontal).frame(minHeight: 48).background(.bar)
             ZStack {
                 page(url)
                     .opacity(showingHub ? 0 : 1)
                     .allowsHitTesting(!showingHub)
                     .accessibilityHidden(showingHub)
                 if showingHub {
-                    if !HubFixture.isEnabled {
-                        phoneHome
-                    } else {
                     HubView(server: url, onOpenChat: { destination in
                         loadError = nil
                         loginRequired = false
@@ -280,7 +451,6 @@ struct ContentView: View {
                                 restoreHubBrowser()
                             })
                     .id(url.absoluteString + hubPresentation.uuidString)
-                    }
                 }
             }
             if listen.player.showsBar {
@@ -300,8 +470,11 @@ struct ContentView: View {
                 Color.clear
             } else if browserIsRevoked {
                 recoveryScreen("Hub sign-in required", symbol: "lock.shield", message: "The previous private browser workspace was closed after authorization changed.") {
-                    Button("Back to Hub") { showingHub = true }.buttonStyle(.borderedProminent)
-                    Button("Settings", action: openSettings).buttonStyle(.bordered)
+                    Button(HubFixture.isEnabled ? "Back to Hub" : "Choose an agent") {
+                        showingHub = true
+                        if !HubFixture.isEnabled { selectTab(.agents) }
+                    }.buttonStyle(.borderedProminent)
+                    if HubFixture.isEnabled { Button("Settings", action: openSettings).buttonStyle(.bordered) }
                 }
             } else if !HubFixture.isEnabled && source?.browserReady != true {
                 ProgressView("Preparing connection…")
@@ -310,18 +483,18 @@ struct ContentView: View {
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
-                        scenePhase: showingHub ? .inactive : scenePhase, isSigningIn: isSigningIn,
+                        scenePhase: chatIsVisible ? scenePhase : .inactive, isSigningIn: isSigningIn,
                         deviceTools: !isFixture && deviceTools.isEnabled(for: url) ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             loginRequired = true
-                            if hubRole == .direct && !showingHub { signIn(to: url) }
+                            if hubRole == .direct && chatIsVisible { signIn(to: url) }
                         }, onRevealControls: revealControls,
                         voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
                         push: isFixture ? nil : push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
                         onPushNavigationHandled: push.navigationHandled,
                         onPushWindowReady: { pushWindowID = $0 }, nativeDestination: hubDestination,
-                        isContentVisible: !showingHub,
+                        isContentVisible: chatIsVisible,
                         websiteDataStore: HubFixture.isEnabled ? nil : selectedWorkspace?.security?.dataStore,
                         authenticationScript: browserAuthenticationScript,
                         connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
@@ -329,9 +502,12 @@ struct ContentView: View {
                             guard !HubFixture.isEnabled, let source, source.isActive,
                                   source.browserIdentity == browserIdentity else { return }
                             source.revokeAuthorization()
+                        }, onDocumentCommitted: { destination in
+                            guard !HubFixture.isEnabled, let source, let browserIdentity else { return }
+                            browserCommitted(destination, sourceID: source.id, browserIdentity: browserIdentity)
                         })
                 .id(HubFixture.isEnabled ? "legacy" : (selectedWorkspace?.id.uuidString ?? "none") + (selectedWorkspace?.browserIdentity.uuidString ?? ""))
-                .ignoresSafeArea(edges: .bottom)
+                .ignoresSafeArea(edges: HubFixture.isEnabled ? .bottom : [])
                 .accessibilityAction(named: "App controls", revealControls)
             }
 
@@ -343,16 +519,18 @@ struct ContentView: View {
                     }
                     Button("Retry") { self.loadError = nil; reloadCount += 1 }
                         .buttonStyle(.borderedProminent)
-                    Button("Settings", action: openSettings)
-                        .buttonStyle(.bordered)
+                    if HubFixture.isEnabled {
+                        Button("Settings", action: openSettings).buttonStyle(.bordered)
+                    }
                 }
             } else if loginRequired || loginError != nil {
                 recoveryScreen("Sign-in needed", symbol: "person.crop.circle.badge.exclamationmark",
                                message: loginError ?? "Sign in to continue to this server.") {
                     Button("Sign in with passkey") { signIn(to: url) }
                         .buttonStyle(.borderedProminent)
-                    Button("Settings", action: openSettings)
-                        .buttonStyle(.bordered)
+                    if HubFixture.isEnabled {
+                        Button("Settings", action: openSettings).buttonStyle(.bordered)
+                    }
                 }
             }
 
@@ -368,7 +546,8 @@ struct ContentView: View {
             if appControlsAvailable {
                 AppControlsBar(isExpanded: $showingControls,
                                hintAcknowledged: $appControlsHintAcknowledged,
-                               canGoBack: canGoBack, onAction: handleAppControl)
+                               canGoBack: canGoBack, showsSettings: HubFixture.isEnabled,
+                               showsMediaActions: HubFixture.isEnabled, onAction: handleAppControl)
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
             }
@@ -383,10 +562,11 @@ struct ContentView: View {
         switch action {
         case .back: backCount += 1
         case .reload: reloadCount += 1
-        case .music: showingMusic = true
+        case .music:
+            if HubFixture.isEnabled { showingMusic = true } else { selectTab(.music) }
         case .listen:
             listen.player.showBar()
-            showingListen = true
+            if HubFixture.isEnabled { showingListen = true } else { selectTab(.podcasts) }
         case .settings: openSettings()
         }
     }
@@ -426,15 +606,15 @@ struct ContentView: View {
             loginError = nil
             loginRequired = false
             hubDestination = HubBrowserDestination(url: destination, sourceID: sourceID)
+            pendingChat = makeChatContext(for: destination, source: source)
             workspaceChosen = true
             showingHub = false
+            selectTab(.chat)
         }
     }
 
     private func openSettings() {
         showingControls = false
-        draftURL = serverURL
-        connectionKind = connections.selected?.kind ?? .hub
         showingSettings = true
         Task { await push.refreshAuthorization() }
     }
@@ -442,92 +622,101 @@ struct ContentView: View {
     private var settings: some View {
         NavigationStack {
             Form {
-                Section("Server") {
-                    if !HubFixture.isEnabled {
-                        Picker("Connection kind", selection: $connectionKind) {
-                            ForEach(HubConnection.Kind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
-                        }.pickerStyle(.segmented)
-                    }
-                    addressField
-                    if ServerAddress.parse(draftURL) == nil {
-                        Text("Enter a valid server URL to continue.")
-                            .foregroundStyle(.red)
-                            .font(.footnote)
-                    } else if hasPendingServerEdit {
-                        Text("Tap Done to connect to this server.")
-                            .foregroundStyle(.secondary)
-                            .font(.footnote)
-                    }
-                    if let address {
-                        Button("Sign in with passkey") {
-                            showingSettings = false
-                            signIn(to: address)
-                        }
-                        .disabled(hasPendingServerEdit)
-                        ShareLink("Open in Safari", item: address)
-                            .disabled(hasPendingServerEdit)
-                    }
-                }
-                if let address {
-                    VoiceShortcutSection(server: address) {
-                        showingSettings = false
-                        voiceLaunches.requestLaunch()
-                    }
-                    .disabled(hasPendingServerEdit)
-                }
+                voiceAndDeviceSections
                 notificationsSection
-                deviceToolsSection
+                if let issue = push.badgeIssue {
+                    Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
+                }
+                Section {
+                    Text("Manage connections and sign-in in Agents → Connections.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        draftURL = serverURL
-                        showingSettings = false
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", action: saveAddress)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showingSettings = false }
                         .fontWeight(.semibold)
-                        .disabled(ServerAddress.parse(draftURL) == nil)
+                        .accessibilityIdentifier("settings.done")
                 }
             }
         }
     }
 
-    /// Per-server opt-in for sharing device tools with the web page (WebMCP).
-    @ViewBuilder private var deviceToolsSection: some View {
-        if let address {
-            Section {
-                Toggle(isOn: Binding(
-                    get: { deviceTools.isEnabled(for: address) },
-                    set: { deviceTools.setEnabled($0, for: address) }
+    private var voiceSettingsSource: HubSourceWorkspace? {
+        voiceSettingsSourceID.flatMap { aggregate.source($0) } ?? selectedWorkspace ?? aggregate.sources.first
+    }
+
+    /// App-level settings own these controls. Choosing their permission scope
+    /// must not select a browser workspace or navigate the retained chat.
+    @ViewBuilder private var voiceAndDeviceSections: some View {
+        Section {
+            if let source = voiceSettingsSource {
+                Picker("Connection", selection: Binding(
+                    get: { voiceSettingsSource?.id },
+                    set: { voiceSettingsSourceID = $0 }
                 )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Share device tools with this server")
-                        Text(address.host() ?? address.absoluteString)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    ForEach(aggregate.sources) { source in
+                        Text(source.connection.name).tag(Optional(source.id))
                     }
                 }
-                .disabled(hasPendingServerEdit)
-                .accessibilityIdentifier("deviceToolsToggle")
-                if deviceTools.isEnabled(for: address) {
-                    LabeledContent("Tools", value: deviceTools.registry.tools.map(\.name).joined(separator: ", "))
-                }
-            } header: {
-                Text("Device tools")
-            } footer: {
-                Text("Lets the agent use tools on this \(UIDevice.current.model) while you chat here. They appear in term-llm's MCP servers list, where you can turn them off per conversation. Nothing listens on the network. Remembered per server.")
+                .accessibilityIdentifier("settings.toolsConnection")
+                Text(source.connection.url.absoluteString)
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Add a connection in Agents → Connections to configure voice and device sharing.")
+                    .foregroundStyle(.secondary)
             }
+        } header: {
+            Text("Voice & device tools")
+        } footer: {
+            if voiceSettingsSource != nil {
+                Text("Choose which server may use these features. Changing this setting does not switch your chat.")
+            }
+        }
+        if let source = voiceSettingsSource {
+            VoiceShortcutSection(server: source.connection.url) {
+                connections.select(source.id)
+                showingSettings = false
+                voiceLaunches.requestLaunch()
+            }
+            deviceToolsSection(for: source.connection.url)
+        }
+    }
+
+    /// Per-server opt-in for sharing device tools with the web page (WebMCP).
+    private func deviceToolsSection(for address: URL) -> some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { deviceTools.isEnabled(for: address) },
+                set: { deviceTools.setEnabled($0, for: address) }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Share device tools with this server")
+                    Text(address.host() ?? address.absoluteString)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("deviceToolsToggle")
+            if deviceTools.isEnabled(for: address) {
+                LabeledContent("Tools", value: deviceTools.registry.tools.map(\.name).joined(separator: ", "))
+            }
+        } header: {
+            Text("Device tools")
+        } footer: {
+            Text("Lets the agent use tools on this \(UIDevice.current.model) while you chat here. They appear in term-llm's MCP servers list, where you can turn them off per conversation. Nothing listens on the network. Remembered per server.")
         }
     }
 
     private func revealPendingPushIfOwned() {
         guard !isFixture, push.pendingNavigation?.canPresent(in: pushWindowID, server: address) == true else { return }
         workspaceChosen = true
+        showingSettings = false
         showingHub = false
+        if let destination = push.pendingNavigation?.url { pendingChat = makeChatContext(for: destination) }
+        selectTab(.chat)
     }
 
     private func beginVoiceLaunch(_ id: UUID) {
@@ -535,7 +724,7 @@ struct ContentView: View {
               voiceLaunches.claim(id, windowID: pushWindowID, isKeyScene: push.isKeyScene(pushWindowID)) else { return }
         do {
             guard let address else {
-                throw VoiceLaunchFailure(message: "Connect to a server in Settings first.")
+                throw VoiceLaunchFailure(message: "Add a connection in Agents → Connections first.")
             }
             let destination = try VoiceShortcutSettings.shared.destination(for: address)
             workspaceChosen = true
@@ -546,6 +735,8 @@ struct ContentView: View {
             showingPlayer = false
             voiceLaunchError = nil
             voiceRequest = VoiceBrowserLaunch(id: id, url: destination)
+            pendingChat = makeChatContext(for: destination)
+            if !HubFixture.isEnabled { selectTab(.chat) }
         } catch {
             voiceLaunchError = error.localizedDescription
             voiceLaunches.finish()
@@ -625,26 +816,11 @@ struct ContentView: View {
         }
     }
 
-    private func saveAddress() {
-        if !HubFixture.isEnabled {
-            do {
-                let source = try connections.save(id: connections.selectedID, name: connections.selected?.name ?? "Connection", kind: connectionKind, address: draftURL)
-                connections.select(source.id)
-                serverURL = source.url.absoluteString
-                aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
-                showingHub = true
-                showingSettings = false
-                hubDestination = nil
-                workspaceChosen = false
-                hubBrowserRevoked = false
-                loadError = nil
-                loginError = nil
-                loginRequired = false
-            } catch { loginError = error.localizedDescription }
-            return
-        }
-        guard let url = ServerAddress.parse(draftURL),
-              !HubFixture.isEnabled || url == HubFixture.server else { return }
+    // Only the legacy simulator fixture uses this standalone setup screen.
+    // Real connection changes are owned exclusively by the phone Hub editor.
+    private func saveFixtureAddress() {
+        guard HubFixture.isEnabled, let url = ServerAddress.parse(draftURL),
+              url == HubFixture.server else { return }
         let changed = serverURL != url.absoluteString
         if changed, let request = voiceRequest {
             finishVoiceLaunch(request.id, nil)

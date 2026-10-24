@@ -69,6 +69,26 @@ final class BrowserLifecycleTests: XCTestCase {
         return view
     }
 
+    func testRetainedChatContextIsReportedOnlyForCommittedDocuments() {
+        let state = State()
+        var commits: [URL] = []
+        var parent = browser(state)
+        parent.onDocumentCommitted = { commits.append($0) }
+        let coordinator = coordinator(parent)
+        let view = webView(server.appendingPathComponent("chat/7"))
+        coordinator.webView(view, didStartProvisionalNavigation: nil)
+        coordinator.webView(view, didFailProvisionalNavigation: nil,
+                            withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet))
+        XCTAssertTrue(commits.isEmpty)
+        coordinator.webView(view, didCommit: nil)
+        XCTAssertEqual(commits, [view.url!])
+        view.currentURL = server.appendingPathComponent("chat/8")
+        coordinator.webView(view, didStartProvisionalNavigation: nil)
+        XCTAssertEqual(commits.count, 1, "Attempted URLs must not replace the retained document context")
+        coordinator.webView(view, didCommit: nil)
+        XCTAssertEqual(commits.last, view.url)
+    }
+
     func testProvisionalFailureCancelAndDownloadKeepNativeDocumentGenerationUntilCommit() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

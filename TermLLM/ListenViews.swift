@@ -1,13 +1,225 @@
 import SwiftUI
 
+// MARK: - Playback shelf
+
+/// A shared shelf for persistent tabs. The players remain independent: this
+/// only chooses which controls to show and never starts or stops audio itself.
+struct MediaPlaybackShelf: View {
+    let listen: Listen
+    let music: MusicPlayer
+    @Binding var state: State
+    var usesSystemBackground = false
+    var onOpenPodcastPlayer: () -> Void
+    var onOpenMusic: () -> Void
+
+    enum Source: Equatable {
+        case podcasts, music
+    }
+
+    /// Value-only inputs keep shelf decisions testable without media permissions.
+    struct Playback: Equatable {
+        var podcastID: UUID?
+        var podcastVisible: Bool
+        var podcastPlaying: Bool
+        var musicID: String?
+        var musicPlaying: Bool
+    }
+
+    /// Owned by the persistent tab container, including on systems where each
+    /// tab hosts its own shelf. Re-mounting a host is not a new playback event.
+    struct State {
+        private(set) var preferredSource: Source?
+        private(set) var dismissedMusicID: String?
+        private var lastPlayback: Playback?
+
+        init() {}
+
+        mutating func update(_ playback: Playback) {
+            guard lastPlayback != playback else { return }
+            let previous = lastPlayback
+            if playback.musicID != nil && previous?.musicID != playback.musicID {
+                dismissedMusicID = nil
+                preferredSource = .music
+            }
+            if playback.podcastID != nil && previous?.podcastID != playback.podcastID {
+                preferredSource = .podcasts
+            }
+            if playback.musicPlaying && previous?.musicPlaying != true {
+                dismissedMusicID = nil
+                preferredSource = .music
+            }
+            if playback.podcastVisible && previous?.podcastVisible == false {
+                preferredSource = .podcasts
+            }
+            if playback.podcastPlaying && previous?.podcastPlaying != true {
+                preferredSource = .podcasts
+            }
+            lastPlayback = playback
+        }
+
+        mutating func dismiss(_ source: Source, playback: Playback) {
+            // Pin the dismissed source: never replace it with an older paused
+            // item from the other player. Only a new selection/start unpins it.
+            preferredSource = source
+            if source == .music { dismissedMusicID = playback.musicID }
+            lastPlayback = playback
+        }
+
+        func visibleSource(for playback: Playback) -> Source? {
+            MediaPlaybackShelf.visibleSource(
+                podcastVisible: playback.podcastID != nil && playback.podcastVisible,
+                podcastPlaying: playback.podcastPlaying,
+                musicAvailable: playback.musicID != nil && playback.musicID != dismissedMusicID,
+                musicPlaying: playback.musicPlaying, preferred: preferredSource)
+        }
+    }
+
+    /// Playing beats paused. A preferred but hidden source must not fall back
+    /// to an older paused source when its controls are dismissed.
+    static func visibleSource(podcastVisible: Bool, podcastPlaying: Bool,
+                              musicAvailable: Bool, musicPlaying: Bool,
+                              preferred: Source? = nil) -> Source? {
+        if podcastVisible && podcastPlaying { return .podcasts }
+        if musicAvailable && musicPlaying { return .music }
+        if preferred == .music { return musicAvailable ? .music : nil }
+        if preferred == .podcasts { return podcastVisible ? .podcasts : nil }
+        if podcastVisible { return .podcasts }
+        return musicAvailable ? .music : nil
+    }
+
+    private var playback: Playback {
+        Playback(podcastID: listen.player.currentID,
+                 podcastVisible: listen.player.showsBar,
+                 podcastPlaying: listen.player.isPlaying,
+                 musicID: music.nowPlaying?.id, musicPlaying: music.isPlaying)
+    }
+
+    var body: some View {
+        Group {
+            if let source = state.visibleSource(for: playback) {
+                switch source {
+                case .podcasts:
+                    MiniPlayerBar(listen: listen, usesSystemBackground: usesSystemBackground,
+                                  onDismiss: { dismiss(.podcasts) }, onOpen: onOpenPodcastPlayer)
+                case .music:
+                    MusicMiniPlayerBar(player: music, usesSystemBackground: usesSystemBackground,
+                                       onDismiss: { dismiss(.music) }, onOpen: onOpenMusic)
+                }
+            }
+        }
+        .onChange(of: playback, initial: true) { _, playback in
+            state.update(playback)
+        }
+    }
+
+    private func dismiss(_ source: Source) {
+        withAnimation(.snappy) {
+            state.dismiss(source, playback: playback)
+            if source == .podcasts { listen.player.hideBar() }
+        }
+    }
+}
+
+private struct MusicMiniPlayerBar: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var compactLayout = false
+    let player: MusicPlayer
+    var usesSystemBackground = false
+    var onDismiss: () -> Void
+    var onOpen: () -> Void
+
+    var body: some View {
+        if let track = player.nowPlaying {
+            HStack(spacing: 0) {
+                Button(action: onOpen) {
+                    HStack(spacing: 12) {
+                        ArtworkView(url: track.artworkURL, size: 42, highlighted: player.isPlaying)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(track.subtitle.isEmpty ? "Music" : track.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Music: \(track.title)")
+                .accessibilityHint("Opens Music")
+                .accessibilityIdentifier("musicMiniPlayerOpen")
+                Button { Task { await player.togglePlayPause() } } label: {
+                    Group {
+                        if player.status == .loading {
+                            ProgressView()
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                    }
+                    .font(.title3)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel(player.isPlaying ? "Pause Music" : "Play Music")
+                .accessibilityIdentifier("musicMiniPlayerPlayPause")
+                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                    Button { Task { try? await player.next() } } label: {
+                        Image(systemName: "forward.end.fill")
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Next Song")
+                }
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Hide Music player")
+                .accessibilityHint("Hides the panel without stopping playback.")
+                .accessibilityIdentifier("musicMiniPlayerClose")
+            }
+            .buttonStyle(.plain)
+            .font(.body.weight(.medium))
+            .padding(.leading, 14)
+            .padding(.trailing, 4)
+            .padding(.vertical, 4)
+            .background {
+                if !usesSystemBackground {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
+                }
+            }
+            .shadow(color: usesSystemBackground ? .clear : .black.opacity(0.15), radius: 12, y: 4)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
+            .accessibilityElement(children: .contain)
+            .accessibilityAction(named: "Open Music", onOpen)
+            .accessibilityAction(named: "Next Song") { Task { try? await player.next() } }
+            .accessibilityIdentifier("musicMiniPlayer")
+            .onGeometryChange(for: Bool.self) { $0.size.width < 360 } action: { compactLayout = $0 }
+            .musicNotices(player)
+        }
+    }
+}
+
 // MARK: - Mini player
 
 /// The persistent mini player above the web page. It lives outside the web
-/// view, so playback and the bar survive page loads. Tap ✕ to stop and close
-/// it (the item keeps its place in Up Next); swipe down to hide it while
-/// playback carries on with the lock screen controls.
+/// view, so playback and the bar survive page loads. Standalone, ✕ stops and
+/// closes it; the shared shelf supplies a hide-only dismissal instead. Swiping
+/// down hides either presentation while playback carries on.
 struct MiniPlayerBar: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var compactLayout = false
     let listen: Listen
+    var usesSystemBackground = false
+    var onDismiss: (() -> Void)? = nil
     var onOpen: () -> Void
 
     @State private var drag: CGFloat = 0
@@ -22,6 +234,7 @@ struct MiniPlayerBar: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
                                 .lineLimit(1)
                             subtitleView(item)
                         }
@@ -31,10 +244,12 @@ struct MiniPlayerBar: View {
                 }
                 .accessibilityLabel("Now playing: \(item.title)")
                 .accessibilityHint("Opens the player")
-                Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: {
-                    Image(systemName: "gobackward.15").frame(width: 40, height: 44).contentShape(Rectangle())
+                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                    Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: {
+                        Image(systemName: "gobackward.15").frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Back 15 seconds")
                 }
-                .accessibilityLabel("Back 15 seconds")
                 Button { Task { await player.togglePlayPause() } } label: {
                     Group {
                         if player.status == .loading || player.buffering {
@@ -45,29 +260,37 @@ struct MiniPlayerBar: View {
                         }
                     }
                     .font(.title3)
-                    .frame(width: 40, height: 44)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-                Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: {
-                    Image(systemName: "goforward.30").frame(width: 40, height: 44).contentShape(Rectangle())
+                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                    Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: {
+                        Image(systemName: "goforward.30").frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Forward 30 seconds")
                 }
-                .accessibilityLabel("Forward 30 seconds")
-                Button { withAnimation(.snappy) { player.stop() } } label: {
+                Button {
+                    withAnimation(.snappy) {
+                        if let onDismiss { onDismiss() } else { player.stop() }
+                    }
+                } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                         .frame(width: 26, height: 26)
                         .background(.secondary.opacity(0.15), in: Circle())
-                        .frame(width: 40, height: 44)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
-                .accessibilityLabel("Close player")
-                .accessibilityHint("Stops playback. The episode keeps its place in Up Next.")
+                .accessibilityLabel(onDismiss == nil ? "Close player" : "Hide Podcast player")
+                .accessibilityHint(onDismiss == nil
+                    ? "Stops playback. The episode keeps its place in Up Next."
+                    : "Hides the panel without stopping playback.")
                 .accessibilityIdentifier("miniPlayerClose")
             }
             .buttonStyle(.plain)
-            .font(.system(size: 18, weight: .medium))
+            .font(.body.weight(.medium))
             .padding(.leading, 14)
             .padding(.trailing, 4)
             .padding(.vertical, 4)
@@ -83,9 +306,13 @@ struct MiniPlayerBar: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
                 }
             }
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background {
+                if !usesSystemBackground {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+            .shadow(color: usesSystemBackground ? .clear : .black.opacity(0.15), radius: 12, y: 4)
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
             .offset(y: max(0, drag))
@@ -94,7 +321,7 @@ struct MiniPlayerBar: View {
                     .onChanged { drag = $0.translation.height }
                     .onEnded { value in
                         if value.translation.height > 40 {
-                            withAnimation(.snappy) { player.hideBar() }
+                            withAnimation(.snappy) { hide() }
                         } else if value.translation.height < -40 {
                             onOpen()
                         }
@@ -103,9 +330,16 @@ struct MiniPlayerBar: View {
             )
             .accessibilityElement(children: .contain)
             .accessibilityAction(named: "Open player", onOpen)
-            .accessibilityAction(named: "Hide player, keep playing") { player.hideBar() }
+            .accessibilityAction(named: "Hide player, keep playing", hide)
+            .accessibilityAction(named: "Back 15 seconds") { Task { await player.skip(by: -SystemNowPlaying.skipBack) } }
+            .accessibilityAction(named: "Forward 30 seconds") { Task { await player.skip(by: SystemNowPlaying.skipForward) } }
             .accessibilityIdentifier("miniPlayer")
+            .onGeometryChange(for: Bool.self) { $0.size.width < 360 } action: { compactLayout = $0 }
         }
+    }
+
+    private func hide() {
+        if let onDismiss { onDismiss() } else { player.hideBar() }
     }
 
     private func fraction(_ time: TimeInterval?) -> CGFloat? {
@@ -264,7 +498,10 @@ struct ListenPlayerView: View {
 /// Up Next and history. Tap to play, drag to reorder, swipe for more.
 struct ListenView: View {
     let listen: Listen
+    /// Embedded destinations use their parent's navigation stack and omit Done.
     var embedded = false
+    /// Hide native chrome while this persistent destination is inactive.
+    var isActive: Bool = true
 
     @Environment(\.dismiss) private var dismiss
     @State private var failure: String?
@@ -336,7 +573,9 @@ struct ListenView: View {
                 }
             }
         }
-        .navigationTitle("Listen")
+        .accessibilityIdentifier(embedded ? "podcastsScreen" : "listenScreen")
+        .navigationTitle(embedded ? "Podcasts" : "Listen")
+        .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
         }

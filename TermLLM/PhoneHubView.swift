@@ -4,116 +4,211 @@ import SwiftUI
 struct PhoneHubView: View {
     @ObservedObject var connections: HubConnectionStore
     @ObservedObject var aggregate: HubAggregateStore
+    @Binding var pendingConnectionURL: URL?
+    let isVisible: Bool
     let onOpenChat: (UUID, URL) -> Void
     let onSettings: () -> Void
     @State private var panel: Panel = .nodes
+    @State private var showOfflineNodes = false
     @State private var editor: Editor?
     @State private var detailID: UUID?
     @State private var navigationError: String?
     @State private var directSignInID: UUID?
     @State private var showingReset = false
+    @State private var showingConnections = false
 
-    enum Panel: String, CaseIterable { case nodes = "Nodes", attention = "Attention", sessions = "Sessions" }
-    struct Editor: Identifiable { let id = UUID(); var source: HubConnection? }
+    enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
+    struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
+
+    private var loadingSources: [HubSourceWorkspace] {
+        aggregate.sources.filter { !$0.store.unauthorized && ($0.store.nodesLoading || $0.store.attentionLoading) }
+    }
+    private var connectionIssueCount: Int {
+        connections.connections.filter { $0.needsKindReview == true }.count +
+        aggregate.sources.filter { $0.store.unauthorized || $0.error != nil }.count +
+        (connections.persistenceError == nil ? 0 : 1)
+    }
+    private var isRefreshing: Bool { aggregate.sources.contains { $0.store.refreshing } }
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    // Dedicated text marker: never override descendant AX IDs
-                    // by assigning the home ID to the NavigationStack/List.
-                    Text("Phone Hub").font(.headline).accessibilityIdentifier("phoneHub.home")
-                    Button("Add Connection", systemImage: "plus") { editor = Editor() }
-                        .accessibilityIdentifier("phoneHub.addConnection")
-                    if connections.connections.isEmpty {
-                        Text("Your Hub lives on this phone. Add a Hub or Direct Node to see nodes, attention, and sessions here.")
-                            .foregroundStyle(.secondary)
-                        Button("Try demo") {
-                            do {
-                                let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)
-                                onOpenChat(source.id, source.url)
-                            } catch { navigationError = error.localizedDescription }
-                        }.accessibilityIdentifier("phoneHub.demo")
+                if connections.connections.isEmpty {
+                    Section {
+                        VStack(spacing: 16) {
+                            Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
+                            Text("Your agents, all in one place").font(.title3.bold())
+                            Text("Add a connection to bring your agents together.")
+                                .foregroundStyle(.secondary)
+                            Button("Add Connection", systemImage: "plus") { editor = Editor() }
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("phoneHub.addConnection")
+                            Button("Try demo") {
+                                do {
+                                    let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)
+                                    onOpenChat(source.id, source.url)
+                                } catch { navigationError = error.localizedDescription }
+                            }.accessibilityIdentifier("phoneHub.demo")
+                        }
+                        .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 28)
                     }
                 }
-                Section("Connections") {
-                    if let error = connections.persistenceError {
-                        Text(error).foregroundStyle(.orange)
-                        Button("Reset unreadable catalog", role: .destructive) { showingReset = true }
-                            .accessibilityIdentifier("phoneHub.resetCatalog")
-                    }
-                    ForEach(connections.connections.filter { $0.needsKindReview == true }) { source in
-                        VStack(alignment: .leading) {
-                            Text(source.name).font(.headline).accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-                            Text("Confirm Hub or Direct Node. Discovery could not verify this legacy connection.").font(.caption)
-                            Button("Review connection kind") { editor = Editor(source: source) }
-                                .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
-                            Button("Remove", role: .destructive) { connections.remove(source.id) }
-                                .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+                if !connections.connections.isEmpty {
+                    Section {
+                        HStack {
+                            PhoneHubPanelSelector(selection: panel, onSelect: { panel = $0 })
+                                .equatable()
+                            Spacer()
+                            if panel == .nodes {
+                                if aggregate.nodes.contains(where: { !$0.node.status.reachable }) || showOfflineNodes {
+                                    Button(showOfflineNodes ? "Online only" : "Show all (\(aggregate.nodes.filter { !$0.node.status.reachable }.count) offline)") {
+                                        showOfflineNodes.toggle()
+                                    }
+                                    .font(.caption)
+                                    .buttonStyle(.borderless)
+                                    .accessibilityIdentifier("phoneHub.nodes.showAll")
+                                    .accessibilityValue(showOfflineNodes ? "All agents" : "Online only")
+                                } else {
+                                    Text("\(aggregate.nodes.count) online").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                         }
-                    }
-                    ForEach(aggregate.sources) { source in sourceRow(source) }
-                }
-                Section {
-                    HStack {
-                        ForEach(Panel.allCases, id: \.self) { candidate in
-                            Button(candidate.rawValue) { panel = candidate }
-                                .buttonStyle(.bordered)
-                                .tint(panel == candidate ? .cyan : .secondary)
-                                .accessibilityIdentifier("phoneHub." + candidate.rawValue.lowercased())
+                        .frame(minHeight: 44)
+                        .listRowSeparator(.hidden)
+                        if let navigationError { Text(navigationError).foregroundStyle(.orange) }
+                        switch panel {
+                        case .nodes: nodes
+                        case .attention: attention
+                        case .sessions: sessions
                         }
-                    }
-                    if let navigationError { Text(navigationError).foregroundStyle(.orange) }
-                    switch panel {
-                    case .nodes: nodes
-                    case .attention: attention
-                    case .sessions: sessions
                     }
                 }
             }
-            .navigationTitle("Hub")
+            // Polling must not animate or rebuild the surrounding list layout.
+            .transaction { $0.animation = nil }
+            .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Settings", systemImage: "gearshape", action: onSettings)
-                        .accessibilityIdentifier("phoneHub.settings")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Refresh", systemImage: "arrow.clockwise") { aggregate.refresh() }
+                if isVisible && !showingConnections {
+                    ToolbarItem(placement: .principal) {
+                        Text("Agents").font(.headline).accessibilityIdentifier("phoneHub.home")
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { showingConnections = true } label: {
+                            Text("Connections")
+                                .font(.subheadline.weight(.medium))
+                                .overlay(alignment: .topTrailing) {
+                                    Circle().fill(.orange).frame(width: 7, height: 7)
+                                        .offset(x: 4, y: -3).opacity(connectionIssueCount > 0 ? 1 : 0)
+                                }
+                        }
+                        .accessibilityLabel("Connections")
+                        .accessibilityValue(connectionIssueCount == 0 ? "\(connections.connections.count) saved" : "\(connectionIssueCount) need attention")
+                        .accessibilityIdentifier("phoneHub.connections")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Settings", systemImage: "gearshape", action: onSettings)
+                            .accessibilityIdentifier("phoneHub.settings")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { aggregate.refresh() } label: {
+                            ZStack {
+                                Image(systemName: "arrow.clockwise").opacity(loadingSources.isEmpty ? 1 : 0)
+                                ProgressView().opacity(loadingSources.isEmpty ? 0 : 1)
+                            }
+                            .frame(width: 24, height: 24)
+                        }
+                        .accessibilityLabel(loadingSources.isEmpty ? "Refresh" : "Syncing connections")
+                        .disabled(isRefreshing || aggregate.sources.isEmpty)
                         .accessibilityIdentifier("phoneHub.refresh")
+                    }
                 }
             }
-            .refreshable { aggregate.refresh() }
+            .navigationDestination(isPresented: $showingConnections) { connectionManagement }
+            .refreshable { await aggregate.refreshAndWait() }
             .sheet(item: $editor) { editor in
-                PhoneHubConnectionEditor(connections: connections, source: editor.source)
-                    .safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
+                PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: { showingConnections = false })
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
             }
             .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } })) {
                 if let id = detailID, let source = aggregate.source(id), let workspace = source.hubWorkspace {
                     VStack(spacing: 0) {
-                        Button("Back to Phone Hub") { detailID = nil }
+                        Button("Back to Agents") { detailID = nil }
                             .padding().accessibilityIdentifier("phoneHub.details.close")
                         HubView(source: source, workspace: workspace, onOpenChat: { url in
                             openDetailDestination(url, nodeID: nil, source: source)
                         }, onOpenNodeChat: { url, nodeID in
                             openDetailDestination(url, nodeID: nodeID, source: source)
-                        }, onSettings: { detailID = nil; onSettings() })
+                        }, onSettings: { detailID = nil; showingConnections = true })
                     }
-                    .safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
                 }
             }
             .sheet(isPresented: Binding(get: { directSignInID != nil }, set: { if !$0 { directSignInID = nil } })) {
                 if let id = directSignInID, let source = aggregate.source(id) {
                     PhoneHubDirectAuthentication(source: source)
-                        .safeAreaInset(edge: .top, spacing: 0) { PhoneHubFixtureBanner() }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
                 }
             }
         }
         .onChange(of: connections.connections, initial: true) { _, sources in aggregate.synchronize(sources.filter { $0.needsKindReview != true }) }
         .task { await connections.resolveLegacyKinds() }
+        .onChange(of: isVisible) { _, visible in
+            guard !visible else { return }
+            // A chat/push/voice handoff must not leave administration or an
+            // authentication sheet over the retained browser destination.
+            showingConnections = false
+            detailID = nil
+            directSignInID = nil
+            editor = nil
+        }
+        .onChange(of: pendingConnectionURL, initial: true) { _, url in
+            guard let url else { return }
+            let canonical = HubConnectionStore.canonicalURL(url.absoluteString)
+            editor = Editor(source: connections.connections.first { $0.url == canonical }, address: url.absoluteString)
+            pendingConnectionURL = nil
+        }
         .confirmationDialog("Reset the unreadable catalog?", isPresented: $showingReset, titleVisibility: .visible) {
             Button("Reset saved connections", role: .destructive) { connections.resetUnreadableCatalog() }
         } message: { Text("This explicitly replaces the preserved catalog. You will need to add your connections again.") }
+    }
+
+    private var connectionManagement: some View {
+        List {
+            Section {
+                Button("Add Connection", systemImage: "plus") { editor = Editor() }
+                    .accessibilityIdentifier("phoneHub.addConnection")
+            }
+            Section("Connections") {
+                if let error = connections.persistenceError {
+                    Text(error).foregroundStyle(.orange)
+                    Button("Reset unreadable catalog", role: .destructive) { showingReset = true }
+                        .accessibilityIdentifier("phoneHub.resetCatalog")
+                }
+                ForEach(connections.connections.filter { $0.needsKindReview == true }) { source in
+                    VStack(alignment: .leading) {
+                        Text(source.name).font(.headline).accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
+                        Text("Could not identify this server. Check its address and retry detection.").font(.caption)
+                        Button("Review connection") { editor = Editor(source: source) }
+                            .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+                        Button("Remove", role: .destructive) { connections.remove(source.id) }
+                            .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+                    }
+                }
+                ForEach(aggregate.sources) { source in sourceRow(source) }
+            }
+        }
+        .transaction { $0.animation = nil }
+        .navigationTitle("Connections")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden()
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Agents", systemImage: "chevron.left") { showingConnections = false }
+                    .accessibilityIdentifier("phoneHub.connections.close")
+            }
+        }
     }
 
     private func sourceRow(_ source: HubSourceWorkspace) -> some View {
@@ -127,22 +222,9 @@ struct PhoneHubView: View {
                 Button("Sign in") { showAuthentication(source) }
                     .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
             } else {
-                if source.store.nodesLoading {
-                    ProgressView("Loading nodes for \(source.connection.name)…")
-                        .accessibilityIdentifier("phoneHub.nodesLoading.\(source.id.uuidString)")
-                }
-                if source.store.attentionLoading { ProgressView("Loading attention for \(source.connection.name)…") }
-                if let error = source.error { Text(error).font(.caption).foregroundStyle(.orange) }
-            }
-            if let status = source.store.attentionClearStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
-            if source.store.attentionHasMore && !source.store.unauthorized {
-                if source.store.canLoadMoreAttention {
-                    Button("Load more attention") { Task { await source.store.loadMoreAttention() } }
-                        .disabled(source.store.attentionLoading)
-                        .accessibilityIdentifier("phoneHub.moreAttention.\(source.id.uuidString)")
-                } else {
-                    Text("Showing the source maximum of 500 results. Clear reviewed results to reveal more.").font(.caption)
-                        .accessibilityIdentifier("phoneHub.attentionMaximum.\(source.id.uuidString)")
+                sourceSyncStatus(source)
+                if let error = source.error {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
                 }
             }
             HStack {
@@ -154,69 +236,167 @@ struct PhoneHubView: View {
                     .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
             }.buttonStyle(.borderless)
             HStack {
-                Button("Retry") {
+                Button(source.error == nil ? "Refresh" : "Retry") {
                     if source.store.unauthorized { showAuthentication(source) }
                     else { Task { await source.store.refresh() } }
-                }.accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+                }
+                .disabled(source.store.refreshing)
+                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
                 if source.connection.kind == .hub {
-                    Button("Manage / Security") { detailID = source.id }
+                    Button("Manage Server") { detailID = source.id }
                         .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
                 } else {
                     Button("Authentication") { directSignInID = source.id }
                         .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-                    Text("Hub administration unavailable").font(.caption2).foregroundStyle(.secondary)
                 }
             }.buttonStyle(.borderless)
         }.padding(.vertical, 4)
     }
 
+    /// A permanent status slot: refreshing changes its contents, never the
+    /// number/height of rows above the node list or the user's scroll anchor.
+    private func sourceSyncStatus(_ source: HubSourceWorkspace) -> some View {
+        let busy = source.store.nodesLoading || source.store.attentionLoading
+        let verified = source.store.nodesVerified && source.store.attentionVerified
+        let failed = source.error != nil
+        let message = failed ? "Couldn’t update" : (busy ? "Updating…" : (verified ? "Up to date" : "Waiting for server…"))
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(failed ? Color.orange : Color.green)
+                        .opacity(busy || !verified && !failed ? 0 : 1)
+                    ProgressView().controlSize(.small).opacity(busy ? 1 : 0)
+                }
+                .frame(width: 18, height: 18)
+                Text(message).font(.caption.weight(.medium)).lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(source.store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
+            Group {
+                if let updated = source.store.lastNodesRefresh {
+                    Text("Updated \(updated, style: .relative) ago")
+                } else {
+                    Text("Waiting for first update")
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
     @ViewBuilder private var nodes: some View {
-        ForEach(aggregate.nodes) { row in
+        let allNodes = aggregate.nodes
+        let visibleNodes = allNodes.filter { showOfflineNodes || $0.node.status.reachable }
+        ForEach(visibleNodes) { row in
             Button {
                 open(row.node.new_session_path, source: row.source, nodeID: row.node.id)
             } label: {
-                VStack(alignment: .leading) {
-                    Text(row.node.name).font(.headline)
-                    Text("\(row.source.name) · \(row.node.status.state)").font(.caption).foregroundStyle(.secondary)
-                    Text(row.node.sessions?.count_label ?? "New conversation").font(.caption)
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.node.name).font(.headline).foregroundStyle(.primary)
+                        Text("\(row.source.name) · \(row.node.status.reachable ? "Online" : "Offline")")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Text(row.node.sessions?.count_label ?? "New conversation")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
-            }.accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id)")
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id)")
                 .disabled(!row.node.status.reachable)
         }
-        if aggregate.nodes.isEmpty { Text("No nodes available yet").foregroundStyle(.secondary) }
+        if visibleNodes.isEmpty { emptyPanel(.nodes) }
     }
     @ViewBuilder private var sessions: some View {
         ForEach(aggregate.sessions) { row in
             Button { open(row.session.resume_path, source: row.source, nodeID: row.node.id) } label: {
                 VStack(alignment: .leading) {
                     Text(row.session.short_title.isEmpty ? "Session \(row.session.number.map(String.init) ?? row.session.id)" : row.session.short_title)
+                        .foregroundStyle(.primary)
                     Text("\(row.source.name) · \(row.node.name)").font(.caption).foregroundStyle(.secondary)
                 }
-            }.accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
+            }.buttonStyle(.plain)
+                .accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
         }
-        if aggregate.sessions.isEmpty { Text("No sessions available yet").foregroundStyle(.secondary) }
+        if aggregate.sessions.isEmpty { emptyPanel(.sessions) }
     }
     @ViewBuilder private var attention: some View {
         ForEach(aggregate.attention) { row in
             VStack(alignment: .leading) {
                 Button { open(row.path, source: row.source, nodeID: row.nodeID) } label: {
                     VStack(alignment: .leading) {
-                        Text(row.title)
+                        Text(row.title).foregroundStyle(.primary)
                         Text("\(row.source.name) · \(row.nodeID) · \(row.inputRequired ? "Input required" : "Unseen")")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                }.accessibilityIdentifier("phoneHub.attention.\(row.source.id.uuidString).\(row.nodeID).\(row.sessionID).\(row.itemKey)")
-                if let request = row.seenRequest {
-                    Button("Mark seen") {
-                        guard let source = aggregate.source(row.source.id),
-                              let item = source.store.inbox.first(where: { $0.node_id == row.nodeID && $0.session_id == request.session_id && $0.store_instance_id == request.store_instance_id && $0.attention_seq == request.attention_seq }) else { return }
+                }.buttonStyle(.plain)
+                    .accessibilityIdentifier("phoneHub.attention.\(row.source.id.uuidString).\(row.nodeID).\(row.sessionID).\(row.itemKey)")
+                if let request = row.seenRequest,
+                   let source = aggregate.source(row.source.id),
+                   let item = source.store.inbox.first(where: { $0.node_id == row.nodeID && $0.session_id == request.session_id && $0.store_instance_id == request.store_instance_id && $0.attention_seq == request.attention_seq }) {
+                    let busy = source.store.markingSeen.contains(HubStore.inboxItemKey(item))
+                    Button {
                         Task { await source.store.markInboxItemSeen(item) }
-                    }.buttonStyle(.borderless)
+                    } label: {
+                        HStack {
+                            if busy { ProgressView().controlSize(.small) }
+                            Text(busy ? "Marking seen…" : "Mark seen")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(busy)
                 }
             }
         }
-        if aggregate.attention.isEmpty { Text("No attention items available").foregroundStyle(.secondary) }
+        ForEach(aggregate.sources) { source in
+            if let status = source.store.attentionClearStatus {
+                Text("\(source.connection.name): \(status)").font(.caption).foregroundStyle(.secondary)
+            }
+            if source.store.attentionHasMore && !source.store.unauthorized {
+                if source.store.canLoadMoreAttention {
+                    Button("Load more from \(source.connection.name)") { Task { await source.store.loadMoreAttention() } }
+                        .disabled(source.store.attentionLoading)
+                        .accessibilityIdentifier("phoneHub.moreAttention.\(source.id.uuidString)")
+                } else {
+                    Text("\(source.connection.name): Showing the maximum of 500 results. Clear reviewed results to reveal more.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("phoneHub.attentionMaximum.\(source.id.uuidString)")
+                }
+            }
+        }
+        if aggregate.attention.isEmpty { emptyPanel(.attention) }
     }
+    @ViewBuilder private func emptyPanel(_ panel: Panel) -> some View {
+        let loading = aggregate.sources.contains { source in
+            !source.store.unauthorized && (panel == .attention ? source.store.attentionLoading : source.store.nodesLoading)
+        }
+        let unavailable = aggregate.sources.contains { source in
+            source.store.unauthorized || (panel == .attention ? source.store.attentionError != nil : source.store.nodeError != nil)
+        }
+        let offlineOnly = panel == .nodes && !showOfflineNodes && !aggregate.nodes.isEmpty
+        VStack(spacing: 12) {
+            if loading {
+                ProgressView()
+                Text("Loading \(panel.rawValue.lowercased())…").font(.headline)
+                Text("You can keep exploring while your servers respond.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                Image(systemName: unavailable ? "wifi.exclamationmark" : (panel == .attention ? "checkmark.circle" : "bubble.left.and.bubble.right"))
+                    .font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
+                Text(unavailable ? "Some results are unavailable" : (offlineOnly ? "No agents online" : (panel == .attention ? "You’re all caught up" : "No \(panel.rawValue.lowercased()) yet")))
+                    .font(.headline)
+                Text(unavailable ? "Open Connections to sign in or try again." : (offlineOnly ? "Offline agents are hidden. Use Show all to see them." : (aggregate.sources.isEmpty ? "Add a connection to get started." : (panel == .attention ? "New requests and results will appear here." : "Your \(panel.rawValue.lowercased()) will appear here when available."))))
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 24)
+    }
+
     private func showAuthentication(_ source: HubSourceWorkspace) {
         if source.connection.kind == .hub { detailID = source.id }
         else { directSignInID = source.id }
@@ -247,6 +427,28 @@ struct PhoneHubView: View {
     }
 }
 
+/// Polling invalidates the aggregate view frequently. Keep the native menu's
+/// presentation independent of those updates, while allowing actual selections
+/// to update its label. The callback only writes the owning view's panel state.
+@MainActor private struct PhoneHubPanelSelector: View, Equatable {
+    let selection: PhoneHubView.Panel
+    let onSelect: (PhoneHubView.Panel) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.selection == rhs.selection }
+
+    var body: some View {
+        Picker("View", selection: Binding(get: { selection }, set: onSelect)) {
+            ForEach(PhoneHubView.Panel.allCases, id: \.self) { candidate in
+                Text(candidate.rawValue).tag(candidate)
+                    .accessibilityIdentifier("phoneHub." + (candidate == .nodes ? "nodes" : candidate.rawValue.lowercased()))
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .accessibilityIdentifier("phoneHub.panelMenu")
+    }
+}
+
 /// Dedicated marker, never an AX identifier on a broad container.
 struct PhoneHubFixtureBanner: View {
     var body: some View {
@@ -262,47 +464,165 @@ struct PhoneHubFixtureBanner: View {
 @MainActor private struct PhoneHubConnectionEditor: View {
     @ObservedObject var connections: HubConnectionStore
     let source: HubConnection?
+    let onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var address: String
-    @State private var kind: HubConnection.Kind
+    @State private var isSaving = false
+    @State private var saved: HubConnection?
     @State private var error: String?
-    init(connections: HubConnectionStore, source: HubConnection?) {
+    @FocusState private var focusedField: Field?
+    private enum Field { case address, name }
+
+    init(connections: HubConnectionStore, source: HubConnection?, initialAddress: String? = nil, onDone: @escaping () -> Void = {}) {
         self.connections = connections
         self.source = source
+        self.onDone = onDone
         _name = State(initialValue: source?.name ?? "")
-        _address = State(initialValue: source?.url.absoluteString ?? "")
-        _kind = State(initialValue: source?.kind ?? .hub)
+        _address = State(initialValue: initialAddress ?? source?.url.absoluteString ?? "")
     }
+
+    private var serverURL: URL? { HubConnectionStore.canonicalURL(address) }
+    private var connectionName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? serverURL?.host ?? "Connection" : trimmed
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                TextField("Name", text: $name).accessibilityIdentifier("phoneHub.connection.name")
-                Picker("Kind", selection: $kind) {
-                    ForEach(HubConnection.Kind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("phoneHub.connection.kind")
-                TextField("https://server.example/prefix/", text: $address)
-                    .textContentType(.URL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("phoneHub.connection.url")
-                Text("Choose the server kind explicitly. Sign-in is separate; do not include a token in the URL.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let error { Text(error).foregroundStyle(.orange) }
-            }
-            .navigationTitle(source == nil ? "Add Connection" : "Edit Connection")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.accessibilityIdentifier("phoneHub.connection.cancel")
+            Group {
+                if let saved {
+                    VStack(spacing: 20) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 64)).foregroundStyle(.green)
+                            .accessibilityHidden(true)
+                        Text(source == nil ? "Connection added" : "Connection updated")
+                            .font(.title2.bold())
+                            .accessibilityIdentifier("phoneHub.connection.success")
+                        Text(saved.name).font(.headline)
+                        Text("\(saved.kind.title) · \(saved.url.host ?? saved.url.absoluteString)")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Text("You’re ready to explore. If this server needs sign-in, you’ll find it on the Hub.")
+                            .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Button("Back to Agents") { dismiss(); onDone() }
+                            .buttonStyle(.borderedProminent).controlSize(.large)
+                            .accessibilityIdentifier("phoneHub.connection.done")
+                    }
+                    .padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemGroupedBackground))
+                } else {
+                    Form {
+                        Section {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Label("Connect your server", systemImage: "network")
+                                    .font(.headline)
+                                Text("Paste an address. We’ll detect the server type for you.")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        Section {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Server address").font(.subheadline.weight(.medium))
+                                HStack {
+                                    TextField("https://server.example/", text: $address)
+                                        .textContentType(.URL).keyboardType(.URL)
+                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                        .focused($focusedField, equals: .address)
+                                        .submitLabel(.next)
+                                        .onSubmit { focusedField = .name }
+                                        .accessibilityIdentifier("phoneHub.connection.url")
+                                    if !address.isEmpty {
+                                        Button {
+                                            address = ""
+                                            focusedField = .address
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundStyle(.secondary)
+                                                .frame(minWidth: 44, minHeight: 44)
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityLabel("Clear server address")
+                                        .accessibilityIdentifier("phoneHub.connection.clearAddress")
+                                    }
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Name (optional)").font(.subheadline.weight(.medium))
+                                TextField("My server", text: $name)
+                                    .focused($focusedField, equals: .name)
+                                    .submitLabel(.go)
+                                    .onSubmit { if serverURL != nil { save() } }
+                                    .accessibilityIdentifier("phoneHub.connection.name")
+                            }
+                        } footer: {
+                            Text("Hub or Direct Node is detected automatically. Sign in after connecting—never put a token in the address.")
+                        }
+                        .disabled(isSaving)
+                        if isSaving {
+                            Section {
+                                HStack(spacing: 14) {
+                                    ProgressView()
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Checking your server…").font(.headline)
+                                        Text("Looking for a Hub or Direct Node at \(serverURL?.host ?? "this address"). This usually takes a few seconds.")
+                                            .font(.subheadline).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 8)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier("phoneHub.connection.checking")
+                            }
+                        } else if let error {
+                            Section {
+                                Label("Couldn’t connect yet", systemImage: "exclamationmark.triangle")
+                                    .font(.headline).foregroundStyle(.orange)
+                                    .accessibilityIdentifier("phoneHub.connection.error")
+                                Text(error).font(.subheadline)
+                                Text("Check that the address includes any server path, and that the server is online and reachable from your phone.")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                                Button("Try again", action: save)
+                                    .disabled(serverURL == nil)
+                                    .accessibilityIdentifier("phoneHub.connection.retry")
+                            }
+                        }
+                    }
+                    .scrollDismissesKeyboard(.interactively)
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        do {
-                            try connections.save(id: source?.id, name: name, kind: kind, address: address)
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
-                    }.accessibilityIdentifier("phoneHub.connection.save")
+            }
+            .task(id: isSaving) {
+                guard isSaving else { return }
+                do {
+                    saved = try await connections.saveDetectingKind(id: source?.id, name: connectionName, address: address)
+                } catch is CancellationError {
+                    // Leaving the sheet cancels discovery without saving.
+                } catch { self.error = error.localizedDescription }
+                isSaving = false
+            }
+            .sensoryFeedback(.success, trigger: saved != nil)
+            .sensoryFeedback(.error, trigger: error != nil)
+            .navigationTitle(saved == nil ? (source == nil ? "Add Connection" : "Edit Connection") : "All set")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if saved == nil {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }.accessibilityIdentifier("phoneHub.connection.cancel")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(isSaving ? "Checking…" : (source == nil ? "Connect" : "Save"), action: save)
+                            .disabled(isSaving || serverURL == nil)
+                            .accessibilityIdentifier("phoneHub.connection.save")
+                    }
                 }
             }
         }
+    }
+
+    private func save() {
+        guard !isSaving else { return }
+        focusedField = nil
+        error = nil
+        isSaving = true
     }
 }
 

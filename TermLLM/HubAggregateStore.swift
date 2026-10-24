@@ -114,7 +114,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
 
     func updateMetadata(_ connection: HubConnection) {
         guard active, self.connection.id == connection.id, self.connection.url == connection.url,
-              self.connection.kind == connection.kind else { return }
+              self.connection.kind == connection.kind, self.connection != connection else { return }
         objectWillChange.send()
         self.connection = connection
     }
@@ -302,7 +302,7 @@ final class HubAggregateStore: ObservableObject {
             source.dispose(removeCredentials: true)
             observations[source.id] = nil
         }
-        sources = connections.map { connection in
+        let updated = connections.map { connection in
             if let source = old[connection.id], source.isActive {
                 source.updateMetadata(connection)
                 return source
@@ -312,11 +312,21 @@ final class HubAggregateStore: ObservableObject {
             source.start()
             return source
         }
+        if sources.count != updated.count || zip(sources, updated).contains(where: { $0 !== $1 }) {
+            sources = updated
+        }
     }
     func source(_ id: UUID) -> HubSourceWorkspace? { sources.first { $0.id == id } }
     func refresh() {
         // Fire independently. A slow/offline source never delays the home UI.
         for source in sources { Task { await source.store.refresh() } }
+    }
+
+    /// Keep pull-to-refresh visible until its requests finish. Each source still
+    /// publishes results independently, so healthy results appear immediately.
+    func refreshAndWait() async {
+        let tasks = sources.map { source in Task { await source.store.refresh() } }
+        for task in tasks { await task.value }
     }
     var nodes: [PhoneHubNode] {
         sources.flatMap { source in
@@ -329,6 +339,28 @@ final class HubAggregateStore: ObservableObject {
             HubNavigation.nodeSessions(row.node).map { PhoneHubSession(source: row.source, node: row.node, session: $0) }
         }
     }
+    /// Needs-input plus unseen totals from verified sources, not the loaded
+    /// attention window (which may be paginated). Ordinary refreshes retain the
+    /// last verified totals. nil means no source has reported a result yet.
+    var attentionBadgeCount: Int? {
+        guard !sources.isEmpty else { return 0 }
+        var hasResult = false
+        var count = 0
+        for source in sources {
+            if source.store.unauthorized {
+                hasResult = true
+                continue
+            }
+            guard source.store.attentionVerified else { continue }
+            hasResult = true
+            for value in [source.store.totalInputRequired, source.store.totalUnseen] {
+                let (sum, overflow) = count.addingReportingOverflow(max(0, value))
+                count = overflow ? Int.max : sum
+            }
+        }
+        return hasResult ? count : nil
+    }
+
     var attention: [PhoneHubAttention] {
         sources.flatMap { source in
             guard source.store.attentionVerified, !source.store.unauthorized else { return [PhoneHubAttention]() }

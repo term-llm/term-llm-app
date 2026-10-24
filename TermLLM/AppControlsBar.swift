@@ -32,15 +32,28 @@ struct AppControlsBar: View {
     @Binding var isExpanded: Bool
     @Binding var hintAcknowledged: Bool
     let canGoBack: Bool
+    var showsSettings = true
+    var showsMediaActions = true
     let onAction: (AppControlAction) -> Void
 
+    var actions: [AppControlAction] {
+        AppControlAction.allCases.filter { action in
+            (showsSettings || action != .settings) &&
+            (showsMediaActions || (action != .music && action != .listen))
+        }
+    }
+    private var hintText: String {
+        if showsSettings { return "Pull down from the top of the page for Settings, Music, and Listen." }
+        if showsMediaActions { return "Pull down from the top of the page for Music, Listen, and page controls." }
+        return "Pull down from the top of the page for Back and Reload. Your tabs stay below the conversation."
+    }
     var isVisible: Bool { isExpanded || !hintAcknowledged }
 
     var body: some View {
         Group {
             if isExpanded {
                 HStack(spacing: 0) {
-                    ForEach(AppControlAction.allCases, id: \.self) { action in
+                    ForEach(actions, id: \.self) { action in
                         Button { activate(action) } label: {
                             Image(systemName: action.symbol)
                                 .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
@@ -67,7 +80,7 @@ struct AppControlsBar: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("App controls", systemImage: "arrow.down")
                         .font(.subheadline.weight(.semibold))
-                    Text("Pull down from the top of the page for Settings, Music, and Listen.")
+                    Text(hintText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -101,7 +114,7 @@ struct AppControlsBar: View {
         Button("Try it", action: reveal)
             .font(.subheadline.weight(.semibold))
             .frame(minWidth: 44, minHeight: 44)
-            .accessibilityHint("Shows the floating app controls, including Settings.")
+            .accessibilityHint(showsSettings ? "Shows the floating app controls, including Settings." : (showsMediaActions ? "Shows Music, Listen, and page controls." : "Shows Back and Reload."))
     }
 
     private var dismissHintButton: some View {

@@ -41,6 +41,77 @@ final class HubConnectionStoreTests: XCTestCase {
             XCTAssertEqual(HubConnectionStore(defaults: defaults).selectedID, id)
         }
     }
+    func testAutomaticDetectionSavesHubAndDirectAtTheirMounts() async throws {
+        for (role, kind) in [(HubServerRole.hub, HubConnection.Kind.hub), (.direct, .directNode)] {
+            let store = HubConnectionStore(defaults: defaults())
+            let source = try await store.saveDetectingKind(name: "Server", address: "https://example.com/mount") { url in
+                XCTAssertEqual(url.absoluteString, "https://example.com/mount/")
+                return role
+            }
+            XCTAssertEqual(source.kind, kind)
+            XCTAssertNil(source.needsKindReview)
+            XCTAssertEqual(store.selected, source)
+        }
+    }
+    func testFailedDetectionDoesNotSaveOrReplaceExistingConnection() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let original = try store.save(name: "Original", kind: .hub, address: "https://example.com/")
+        for id in [nil, Optional(original.id)] {
+            do {
+                try await store.saveDetectingKind(id: id, name: "New", address: "https://new.example/") { _ in .unknown }
+                XCTFail("Unknown roles must not be guessed")
+            } catch {
+                XCTAssertEqual(error as? HubConnectionStore.ValidationError, .discoveryFailed)
+            }
+            XCTAssertEqual(store.connections, [original])
+        }
+    }
+    func testCancelledDetectionDoesNotSave() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let task = Task {
+            try await store.saveDetectingKind(name: "Server", address: "https://example.com/") { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .hub
+            }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled discovery must not save")
+        } catch is CancellationError {
+            XCTAssertTrue(store.connections.isEmpty)
+        }
+    }
+    func testAutomaticNameEditDoesNotRequireDiscovery() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let original = try store.save(name: "Original", kind: .directNode, address: "https://example.com/")
+        let renamed = try await store.saveDetectingKind(id: original.id, name: "Renamed", address: original.url.absoluteString) { _ in
+            XCTFail("Verified unchanged endpoints do not need discovery")
+            return .unknown
+        }
+        XCTAssertEqual(renamed.id, original.id)
+        XCTAssertEqual(renamed.kind, .directNode)
+    }
+    func testAutomaticEndpointChangeRotatesIdentity() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let original = try store.save(name: "Original", kind: .hub, address: "https://example.com/")
+        let moved = try await store.saveDetectingKind(id: original.id, name: "Moved", address: "https://new.example/") { _ in .direct }
+        XCTAssertNotEqual(moved.id, original.id)
+        XCTAssertEqual(moved.kind, .directNode)
+    }
+    func testDetectionCannotResurrectRemovedConnection() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let original = try store.save(name: "Original", kind: .hub, address: "https://example.com/")
+        do {
+            try await store.saveDetectingKind(id: original.id, name: "Moved", address: "https://new.example/") { _ in
+                store.remove(original.id)
+                return .direct
+            }
+            XCTFail("Removed connection must not be saved")
+        } catch {
+            XCTAssertEqual(error as? HubConnectionStore.ValidationError, .missing)
+        }
+        XCTAssertTrue(store.connections.isEmpty)
+    }
     func testSaveSelectRemovePersistenceAndNoSecretsInDefaults() throws {
         let defaults = defaults()
         let store = HubConnectionStore(defaults: defaults)

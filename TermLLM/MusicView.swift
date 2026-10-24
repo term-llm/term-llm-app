@@ -4,6 +4,10 @@ import UIKit
 /// The Music screen: what's playing and the playlists saved on this device.
 struct MusicView: View {
     let library: MusicLibrary
+    /// Persistent destinations keep their navigation stack but omit sheet dismissal.
+    var embedded = false
+    /// Hide native chrome while this persistent destination is inactive.
+    var isActive: Bool = true
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -22,11 +26,18 @@ struct MusicView: View {
                 if let track = player.nowPlaying { nowPlayingSection(track) }
                 playlistsSection
             }
+            .accessibilityIdentifier("musicScreen")
             .navigationTitle("Music")
-            .navigationDestination(for: UUID.self) { PlaylistDetailView(library: library, playlistID: $0) }
+            .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+            .navigationDestination(for: UUID.self) {
+                PlaylistDetailView(library: library, playlistID: $0)
+                    .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+            }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
+                if !embedded {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { newName = ""; creating = true } label: { Image(systemName: "plus") }

@@ -68,7 +68,7 @@ final class HubConnectionStore: ObservableObject {
     }
 
     /// The legacy app never persisted role. A bounded public probe may resolve
-    /// it, but timeout/401 leaves an explicit review choice rather than guessing.
+    /// it, but timeout/401 leaves it unresolved rather than guessing.
     func resolveLegacyKinds(discover: (URL) async -> HubServerRole = HubServerRole.discover) async {
         let pending = connections.filter { $0.needsKindReview == true }
         for source in pending {
@@ -103,6 +103,32 @@ final class HubConnectionStore: ObservableObject {
         normalized.path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         normalized.path = normalized.path.isEmpty ? "/" : "/" + normalized.path + "/"
         return normalized.url
+    }
+
+    /// Discover new endpoints without borrowing credentials or guessing on failure.
+    /// Label-only edits of verified endpoints also work while the server is offline.
+    @discardableResult
+    func saveDetectingKind(id: UUID? = nil, name: String, address: String,
+                           discover: (URL) async -> HubServerRole = HubServerRole.discover) async throws -> HubConnection {
+        guard persistenceError == nil else { throw ValidationError.corrupt }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let url = Self.canonicalURL(address) else { throw ValidationError.invalid }
+        guard !connections.contains(where: { $0.id != id && $0.url == url }) else { throw ValidationError.duplicate }
+        let previous = connections.first { $0.id == id }
+        if id != nil && previous == nil { throw ValidationError.missing }
+        let kind: HubConnection.Kind
+        if let previous, previous.url == url, previous.needsKindReview != true {
+            kind = previous.kind
+        } else {
+            let role = await discover(url)
+            try Task.checkCancellation()
+            guard role != .unknown else { throw ValidationError.discoveryFailed }
+            kind = role == .hub ? .hub : .directNode
+        }
+        try Task.checkCancellation()
+        // Do not overwrite a connection edited or removed while discovery ran.
+        if let id, connections.first(where: { $0.id == id }) != previous { throw ValidationError.missing }
+        return try save(id: id, name: name, kind: kind, address: url.absoluteString)
     }
 
     @discardableResult
@@ -145,9 +171,10 @@ final class HubConnectionStore: ObservableObject {
         defaults.set(selected?.url.absoluteString ?? "", forKey: "serverURL")
     }
     enum ValidationError: LocalizedError {
-        case invalid, duplicate, missing, corrupt
+        case invalid, duplicate, missing, corrupt, discoveryFailed
         var errorDescription: String? {
             switch self {
+            case .discoveryFailed: "Could not identify this server. Check the URL and connection, then try again."
             case .corrupt: "Reset the unreadable saved catalog before making changes."
             case .invalid: "Enter a name and an HTTPS server URL without query, credentials, or ambiguous path components."
             case .duplicate: "This endpoint is already saved. Edit the existing connection instead."

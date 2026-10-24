@@ -67,7 +67,7 @@ struct HubView: View {
     private var store: HubStore { workspace.store }
     private var client: HubClient { workspace.client }
     @State private var tab: Panel = .nodes
-    @State private var filter = "all"
+    @State private var showOfflineNodes = false
     @State private var configuration: HubPageConfiguration?
     @State private var configurationError: String?
     @State private var token = ""
@@ -128,6 +128,7 @@ struct HubView: View {
         self.onAuthenticated = {}
         self.ownsWorkspace = false
         _workspace = StateObject(wrappedValue: workspace)
+        _tab = State(initialValue: .management)
     }
 
     @MainActor private static func cookies() async -> [HTTPCookie] {
@@ -177,10 +178,11 @@ struct HubView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .transaction { $0.animation = nil }
                     .refreshable { await store.refresh() }
                 }
             }
-            .navigationTitle("Hub")
+            .navigationTitle(source?.connection.name ?? "Hub")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -223,20 +225,45 @@ struct HubView: View {
         }
     }
 
+    private func panelRefreshStatus(loading: Bool, verified: Bool, title: String) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Image(systemName: "checkmark.circle").foregroundStyle(.secondary).opacity(loading ? 0 : 1)
+                ProgressView().controlSize(.small).opacity(loading ? 1 : 0)
+            }
+            .frame(width: 18, height: 18)
+            Text(loading ? "Updating \(title.lowercased())…" : (verified ? "\(title) updated" : "Waiting for \(title.lowercased())…"))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
     @ViewBuilder private var nodesPanel: some View {
+        let offlineCount = store.nodes.filter { !$0.status.reachable }.count
+        let visibleNodes = store.nodes.filter { showOfflineNodes || $0.status.reachable }
         Section {
-            Picker("Show nodes", selection: $filter) {
-                Text("All").tag("all")
-                Text("Online").tag("online")
-                Text("Offline").tag("offline")
-            }.pickerStyle(.segmented)
+            HStack {
+                Text(showOfflineNodes ? "All nodes" : "Online nodes")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                if offlineCount > 0 || showOfflineNodes {
+                    Button(showOfflineNodes ? "Online only" : "Show all (\(offlineCount) offline)") {
+                        showOfflineNodes.toggle()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("hub.nodes.showAll")
+                    .accessibilityValue(showOfflineNodes ? "All nodes" : "Online only")
+                }
+            }
+            .frame(minHeight: 44)
             LabeledContent("Active sessions", value: "\(store.activeSessionCount)")
-            if store.nodesLoading { ProgressView("Updating nodes…") }
+            panelRefreshStatus(loading: store.nodesLoading, verified: store.nodesVerified, title: "Nodes")
             if let error = store.nodeError { status(error, error: true) }
             if let warning = store.resolverWarning, !warning.isEmpty { status(warning, error: true) }
             if !store.nodesVerified && !store.nodes.isEmpty { status("Last known nodes · updating") }
         }
-        ForEach(store.nodes.filter { filter == "all" || ($0.status.reachable ? "online" : "offline") == filter }, id: \.id) { node in
+        ForEach(visibleNodes, id: \.id) { node in
             Section {
                 NavigationLink {
                     nodeDetails(node)
@@ -263,8 +290,11 @@ struct HubView: View {
                 }
             }
         }
-        if store.nodes.isEmpty && !store.nodesLoading && store.nodeError == nil {
-            Section { Text("No nodes found. Add a server in Manage, or check your Hub resolver.").foregroundStyle(.secondary) }
+        if visibleNodes.isEmpty && !store.nodesLoading && store.nodeError == nil {
+            Section {
+                Text(store.nodes.isEmpty ? "No nodes found. Add a server in Manage, or check your Hub resolver." : "No nodes online. Use Show all to see offline nodes.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -317,7 +347,7 @@ struct HubView: View {
         Section {
             LabeledContent("Needs input", value: "\(store.totalInputRequired)")
             LabeledContent("Unseen results", value: "\(store.totalUnseen)")
-            if store.attentionLoading { ProgressView("Updating attention…") }
+            panelRefreshStatus(loading: store.attentionLoading, verified: store.attentionVerified, title: "Attention")
             if let error = store.attentionError {
                 status(error, error: true)
                 if !store.inbox.isEmpty || !store.inputRequired.isEmpty { status("Showing the last successful attention result.") }
@@ -367,7 +397,7 @@ struct HubView: View {
     @ViewBuilder private var delegationsPanel: some View {
         Section {
             LabeledContent("Active", value: "\(store.activeDelegationCount)")
-            if store.delegationsLoading { ProgressView("Updating delegations…") }
+            panelRefreshStatus(loading: store.delegationsLoading, verified: store.delegationsVerified, title: "Delegations")
             if let error = store.delegationError { status(error, error: true) }
         }
         ForEach(store.delegations, id: \.id) { work in
@@ -540,7 +570,7 @@ struct HubView: View {
                 }
                 if signingIn { ProgressView("Signing in…") }
                 Button("Retry discovery") { Task { await discover(); await store.refresh() } }
-                Button("Server settings", action: onSettings)
+                Button(source == nil ? "Server settings" : "Connections", action: onSettings)
                 Button("Open chat") { onOpenChat(server) }
             }.padding(24).frame(maxWidth: 520).frame(maxWidth: .infinity)
         }

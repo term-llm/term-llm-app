@@ -141,6 +141,8 @@ struct BrowserView: UIViewRepresentable {
     /// document: direct frontend token storage is origin-wide, not path-wide.
     var connectionMount: URL? = nil
     var onAuthorizationRevoked: () -> Void = {}
+    /// Committed main document only; provisional destinations are not retained context.
+    var onDocumentCommitted: (URL) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -240,6 +242,12 @@ struct BrowserView: UIViewRepresentable {
         private var nativeDestinationID: UUID?
 
         func update(_ view: WKWebView, parent: BrowserView) {
+            if self.parent.isContentVisible && !parent.isContentVisible {
+                // Keep the document alive when returning to the native Hub, but
+                // do not let its hidden focused input cover the native screens.
+                // This is a native responder handoff, not JS or a navigation.
+                view.endEditing(true)
+            }
             self.parent = parent
             let destination = parent.nativeDestination
             let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
@@ -532,6 +540,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            if let url = webView.url { parent.onDocumentCommitted(url) }
             MainActor.assumeIsolated {
                 let owner: String?
                 if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }

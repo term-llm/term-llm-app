@@ -46,6 +46,44 @@ struct HubBrowserDestination: Equatable {
     var sourceID: UUID? = nil
 }
 
+/// Context for the one retained browser workspace. This is presentation state,
+/// never a new navigation request or a persisted claim of authorization.
+struct ChatTabContext: Equatable {
+    let sourceID: UUID
+    let browserIdentity: UUID
+    let agentID: String?
+    let agentName: String
+    let url: URL
+
+    static func resolve(connection: HubConnection, browserIdentity: UUID, url: URL,
+                        agents: [HubNode]) -> ChatTabContext? {
+        guard HubNavigation.isWithinMount(url, server: connection.url) else { return nil }
+        let agentID: String?
+        if connection.kind == .directNode {
+            agentID = agents.first?.id
+        } else {
+            let mountCount = connection.url.path.split(separator: "/").count
+            let relative = Array(url.path.split(separator: "/").dropFirst(mountCount))
+            agentID = relative.count >= 2 && relative[0] == "node" ? String(relative[1]) : nil
+        }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let path = (parts?.percentEncodedPath ?? url.path) + (parts?.percentEncodedQuery.map { "?" + $0 } ?? "")
+        parts?.query = nil
+        parts?.fragment = nil
+        let isSourceRoot = parts?.url == connection.url && url.query == nil && url.fragment == nil
+        guard isSourceRoot || HubNavigation.chatDestination(path, server: connection.url, nodeID: agentID,
+                                                            direct: connection.kind == .directNode) == url else { return nil }
+        let agentName = agents.first { $0.id == agentID }?.name ?? connection.name
+        return ChatTabContext(sourceID: connection.id, browserIdentity: browserIdentity,
+                              agentID: agentID, agentName: agentName, url: url)
+    }
+
+    func belongs(to connection: HubConnection, browserIdentity: UUID) -> Bool {
+        sourceID == connection.id && self.browserIdentity == browserIdentity &&
+            HubNavigation.isWithinMount(url, server: connection.url)
+    }
+}
+
 /// Public, bounded role discovery never treats a timeout/auth failure as a Hub.
 /// A failed probe does not replace or interrupt the existing chat workspace.
 enum HubServerRole: Equatable {

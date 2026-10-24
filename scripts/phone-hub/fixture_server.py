@@ -6,6 +6,7 @@ core 2496b5fd (unchanged through 5147a9f6 for direct attention/session APIs).
 Three sources deliberately collide on remote node/session/attention identifiers.
 """
 import argparse
+import html
 from http.server import ThreadingHTTPServer
 import importlib.util
 import json
@@ -120,6 +121,8 @@ class Handler(legacy.Handler):
         with self.server.state_lock:
             mode = self.server.source_modes[source]
             seen = source in self.server.seen
+        if mode == 'delayed-update' and route in ('/api/nodes', '/api/attention', '/api/delegations'):
+            self.server.stopping.wait(2)
         if route == '/healthz':
             data = dict(status='ok', version='protocol-fixture', agent='direct-node' if source == 'direct' else TITLES[source], capabilities=['attention'])
             if source != 'direct':
@@ -141,6 +144,10 @@ class Handler(legacy.Handler):
                         self.server.slow_nodes_pending -= 1
         elif source != 'direct' and route == '/api/nodes':
             node = hub_node(source)
+            if mode == 'delayed-update':
+                node['name'] = TITLES[source] + ' refreshed agent'
+            if mode == 'offline':
+                node['status'].update(reachable=False, state='offline')
             if source == 'home' and mode == 'pending-check':
                 node['name'] = 'Home pending-check refresh'
             self.json(200, dict(nodes=[node]))
@@ -174,8 +181,11 @@ class Handler(legacy.Handler):
                 basePath='/' + source, canAddNodes=False, passkeyAuth=False, cacheDisplayAllowed=False)
             body = '<h1>' + TITLES[source] + ' fixture chat</h1><p>Static local HTML, not an LLM or real remote agent.</p>'
             self.send(200, legacy.page(body, config), 'text/html; charset=utf-8')
-        elif (source == 'direct' and route.startswith('/chat/')) or (source != 'direct' and route.startswith('/node/shared/')):
-            body = '<h1>' + TITLES[source] + ' fixture chat</h1><p>This route belongs to ' + SOURCES[source] + '.</p>'
+        elif (source == 'direct' and route.startswith('/chat/')) or (source != 'direct' and (route == '/node/shared' or route.startswith('/node/shared/'))):
+            body = ('<header aria-label="Fixture agent header"><h1>' + TITLES[source] + ' fixture chat</h1></header>'
+                    '<p>This route belongs to ' + SOURCES[source] + '.</p><p>' + html.escape(path) + '</p>'
+                    '<a href="' + ('/' + source + '/node/shared/chat/1' if source != 'direct' else '/direct/chat/1') + '" aria-label="Open existing fixture conversation">Open existing conversation</a>'
+                    '<p><input aria-label="Fixture draft" placeholder="Local fixture draft"></p>')
             self.send(200, legacy.page(body), 'text/html; charset=utf-8')
         else:
             self.json(404, dict(error='Unknown fixture route'))
@@ -193,7 +203,7 @@ class Handler(legacy.Handler):
                     self.server.source_modes['home'] = 'pending-check'
                     self.server.pending_check_healthy_completed = False
                 self.json(200, dict(fixture=True, state='pending-check'))
-            elif len(pieces) == 3 and pieces[1] in SOURCES and pieces[2] in ('healthy', 'unauthorized'):
+            elif len(pieces) == 3 and pieces[1] in SOURCES and pieces[2] in ('healthy', 'unauthorized', 'offline', 'delayed-update'):
                 with self.server.state_lock:
                     self.server.source_modes[pieces[1]] = pieces[2]
                 self.json(200, dict(fixture=True, state=pieces[2]))

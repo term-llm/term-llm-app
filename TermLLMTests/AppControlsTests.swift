@@ -22,6 +22,174 @@ final class AppControlsTests: XCTestCase {
             canGoBack: canGoBack, onAction: { state.actions.append($0) })
     }
 
+    func testPlaybackShelfDoesNotInventOrStartAPlayer() {
+        XCTAssertNil(MediaPlaybackShelf.visibleSource(podcastVisible: false, podcastPlaying: false,
+                                                     musicAvailable: false, musicPlaying: false))
+        XCTAssertEqual(MediaPlaybackShelf.visibleSource(podcastVisible: true, podcastPlaying: false,
+                                                       musicAvailable: true, musicPlaying: true), .music)
+        XCTAssertEqual(MediaPlaybackShelf.visibleSource(podcastVisible: true, podcastPlaying: true,
+                                                       musicAvailable: true, musicPlaying: false), .podcasts)
+        XCTAssertEqual(MediaPlaybackShelf.visibleSource(podcastVisible: true, podcastPlaying: false,
+                                                       musicAvailable: true, musicPlaying: false, preferred: .music), .music,
+                       "Pausing Music must not switch the shelf to an older paused podcast")
+        XCTAssertEqual(MediaPlaybackShelf.visibleSource(podcastVisible: false, podcastPlaying: true,
+                                                       musicAvailable: true, musicPlaying: false), .music,
+                       "Hiding the podcast bar must not bring it back during tab changes")
+    }
+
+    private func playback(podcastID: UUID? = nil, podcastVisible: Bool = false,
+                          podcastPlaying: Bool = false, musicID: String? = nil,
+                          musicPlaying: Bool = false) -> MediaPlaybackShelf.Playback {
+        .init(podcastID: podcastID, podcastVisible: podcastVisible,
+              podcastPlaying: podcastPlaying, musicID: musicID, musicPlaying: musicPlaying)
+    }
+
+    func testMusicShelfDismissalDoesNotFallBackToPausedPodcast() {
+        var state = MediaPlaybackShelf.State()
+        let playing = playback(podcastID: UUID(), podcastVisible: true,
+                               musicID: "song-a", musicPlaying: true)
+        state.update(playing)
+        XCTAssertEqual(state.visibleSource(for: playing), .music)
+        state.dismiss(.music, playback: playing)
+        XCTAssertNil(state.visibleSource(for: playing), "Dismissal hides controls even while audio is playing")
+        XCTAssertEqual(state.dismissedMusicID, "song-a")
+
+        var paused = playing
+        paused.musicPlaying = false
+        state.update(paused)
+        XCTAssertNil(state.visibleSource(for: paused), "Pausing hidden Music must not reveal the old podcast")
+    }
+
+    func testPodcastShelfDismissalDoesNotFallBackToPausedMusic() {
+        var state = MediaPlaybackShelf.State()
+        let playing = playback(podcastID: UUID(), podcastVisible: true, podcastPlaying: true,
+                               musicID: "older-song")
+        state.update(playing)
+        XCTAssertEqual(state.visibleSource(for: playing), .podcasts)
+        state.dismiss(.podcasts, playback: playing)
+        var hidden = playing
+        hidden.podcastVisible = false // ListenPlayer.hideBar(), not stop().
+        state.update(hidden)
+        XCTAssertTrue(hidden.podcastPlaying)
+        XCTAssertNil(state.visibleSource(for: hidden))
+
+        hidden.podcastPlaying = false
+        state.update(hidden)
+        XCTAssertNil(state.visibleSource(for: hidden))
+    }
+
+    func testShelfHostRemountsPreserveDismissalAndPreferredSource() {
+        var state = MediaPlaybackShelf.State()
+        var current = playback(podcastID: UUID(), podcastVisible: true,
+                               musicID: "song-a", musicPlaying: true)
+        state.update(current)
+        state.dismiss(.music, playback: current)
+        for _ in 0..<4 {
+            // Each fallback tab's onChange(initial: true) sees the same inputs.
+            state.update(current)
+            XCTAssertNil(state.visibleSource(for: current))
+            XCTAssertEqual(state.preferredSource, .music)
+        }
+        current.musicPlaying = false
+        state.update(current)
+        state.update(current)
+        XCTAssertNil(state.visibleSource(for: current))
+
+        state.dismiss(.podcasts, playback: current)
+        current.podcastVisible = false
+        state.update(current)
+        state.update(current)
+        XCTAssertNil(state.visibleSource(for: current))
+        XCTAssertEqual(state.preferredSource, .podcasts)
+    }
+
+    func testNewMusicIdentityRestoresShelfWithoutAPlayingTransition() {
+        var state = MediaPlaybackShelf.State()
+        var current = playback(musicID: "song-a", musicPlaying: true)
+        state.update(current)
+        state.dismiss(.music, playback: current)
+        current.musicID = "song-b"
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .music)
+        XCTAssertNil(state.dismissedMusicID)
+
+        current.musicPlaying = false
+        state.update(current)
+        state.dismiss(.music, playback: current)
+        current.musicID = "song-c"
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .music, "A genuinely new paused selection can restore controls")
+    }
+
+    func testResumingDismissedMusicRestoresShelf() {
+        var state = MediaPlaybackShelf.State()
+        var current = playback(musicID: "song-a")
+        state.update(current)
+        state.dismiss(.music, playback: current)
+        XCTAssertNil(state.visibleSource(for: current))
+        current.musicPlaying = true
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .music)
+    }
+
+    func testNewPodcastOrExplicitShowRestoresShelf() {
+        var state = MediaPlaybackShelf.State()
+        var current = playback(podcastID: UUID(), podcastVisible: true, podcastPlaying: true,
+                               musicID: "older-song")
+        state.update(current)
+        state.dismiss(.podcasts, playback: current)
+        current.podcastVisible = false
+        state.update(current)
+        current.podcastID = UUID()
+        current.podcastVisible = true // ListenPlayer.play() shows the bar for a new item.
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .podcasts)
+
+        state.dismiss(.podcasts, playback: current)
+        current.podcastVisible = false
+        current.podcastPlaying = false
+        state.update(current)
+        current.podcastVisible = true // Explicit showBar() should also be respected.
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .podcasts)
+    }
+
+    func testStartingAnotherSourceRestoresDismissedShelf() {
+        var state = MediaPlaybackShelf.State()
+        var current = playback(podcastID: UUID(), podcastVisible: true,
+                               musicID: "song-a", musicPlaying: true)
+        state.update(current)
+        state.dismiss(.music, playback: current)
+        current.musicPlaying = false
+        current.podcastPlaying = true
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .podcasts)
+
+        state.dismiss(.podcasts, playback: current)
+        current.podcastVisible = false
+        current.podcastPlaying = false
+        state.update(current)
+        current.musicPlaying = true
+        state.update(current)
+        XCTAssertEqual(state.visibleSource(for: current), .music)
+    }
+
+    func testPersistentTabsReplaceDuplicateFloatingMediaNavigation() {
+        let state = State()
+        var controls = bar(state)
+        controls.showsSettings = false
+        controls.showsMediaActions = false
+        XCTAssertEqual(controls.actions, [.back, .reload])
+    }
+
+    func testPhoneHubOwnsSettingsInsteadOfDuplicatingItInChatControls() {
+        let state = State()
+        var controls = bar(state)
+        controls.showsSettings = false
+        XCTAssertFalse(controls.actions.contains(.settings))
+        XCTAssertEqual(controls.actions, [.back, .reload, .music, .listen])
+    }
+
     func testOpeningControlsAcknowledgesHintAndDoesNotNavigate() {
         let state = State()
         XCTAssertFalse(state.defaults.bool(forKey: AppControlsBar.hintAcknowledgedKey))
