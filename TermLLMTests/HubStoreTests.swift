@@ -100,6 +100,12 @@ final class MockHubClient: HubServing, @unchecked Sendable {
         listDelegationsCalls += 1
         return try await delegationsResponse()
     }
+    /// nil = Hub without /api/changes (store falls back to plain polling).
+    var changesResponse: (@MainActor (UInt64?) async throws -> HubChangesResponse)?
+    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+        guard let changesResponse else { throw HubChangesUnsupported() }
+        return try await changesResponse(since)
+    }
     func clear_attention() async throws -> ClearAttentionResponse {
         clearAttentionCalls += 1
         return try await clearAttentionResponse()
@@ -661,6 +667,66 @@ final class HubStoreTests: XCTestCase {
         XCTAssertTrue(store.nodesVerified)
         XCTAssertTrue(store.attentionVerified)
         XCTAssertTrue(store.delegationsVerified)
+    }
+
+    func testLongPollChangeTriggersRefresh() async {
+        let refreshed = expectation(description: "change-driven refresh")
+        var released = false
+        client.changesResponse = { since in
+            switch since {
+            case nil: return HubChangesResponse(version: 0)
+            case 0?: return HubChangesResponse(version: 1)
+            default:
+                // Park until the store is disposed.
+                while !Task.isCancelled { try? await Task.sleep(nanoseconds: 10_000_000) }
+                throw CancellationError()
+            }
+        }
+        client.attentionResponse = {
+            if self.client.listAttentionCalls == 2, !released { released = true; refreshed.fulfill() }
+            return AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
+                                     nodes: [], input_required: [], inbox: [], has_more: false)
+        }
+        store.start()
+        defer { store.dispose() }
+        // pollInterval is 999s: only the change feed can cause the second fetch.
+        await fulfillment(of: [refreshed], timeout: 5)
+    }
+
+    func testEarlyUnchangedLongPollDoesNotSpin() async {
+        // A server/proxy that answers "no change" instantly must not busy-loop.
+        var changesCalls = 0
+        client.changesResponse = { _ in
+            changesCalls += 1
+            return HubChangesResponse(version: 7)
+        }
+        store = HubStore(client: client, pollInterval: 0.2)
+        store.start()
+        defer { store.dispose() }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        // Baseline + about one call per 0.2s interval; a spin would be thousands.
+        XCTAssertLessThanOrEqual(changesCalls, 6)
+        XCTAssertGreaterThanOrEqual(changesCalls, 2)
+    }
+
+    func testSuspendPollingStopsAndResumeRestarts() async {
+        var changesCalls = 0
+        client.changesResponse = { _ in
+            changesCalls += 1
+            return HubChangesResponse(version: 1)
+        }
+        store = HubStore(client: client, pollInterval: 0.05)
+        store.start()
+        defer { store.dispose() }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        store.suspendPolling()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let suspendedAt = changesCalls
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(changesCalls, suspendedAt, "No polling while suspended")
+        store.resumePolling()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertGreaterThan(changesCalls, suspendedAt, "Polling resumes")
     }
 
     func testPollCoalescesWithInFlightRead() async {

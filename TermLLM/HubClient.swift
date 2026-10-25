@@ -133,9 +133,25 @@ protocol HubServing: Sendable {
 
     // Health
     func healthz() async throws -> HealthResponse
+
+    // Change feed long-poll (GET /api/changes). Optional: the default throws
+    // ``HubChangesUnsupported`` so callers fall back to plain polling.
+    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse
+}
+
+struct HubChangesUnsupported: Error {}
+
+extension HubServing {
+    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+        throw HubChangesUnsupported()
+    }
 }
 
 // MARK: - Request / Response Models
+
+struct HubChangesResponse: Codable, Sendable, Equatable {
+    let version: UInt64
+}
 
 struct NodesResponse: Codable, Sendable, Equatable {
     let nodes: [HubNode]
@@ -1277,6 +1293,13 @@ extension HubClient: HubServing {
 
     func list_delegations() async throws -> DelegationsResponse {
         try await request("/api/delegations")
+    }
+
+    // MARK: Changes
+
+    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+        guard let since else { return try await request("/api/changes") }
+        return try await request("/api/changes?since=\(since)&timeout=\(timeout)")
     }
 
     // MARK: Registration

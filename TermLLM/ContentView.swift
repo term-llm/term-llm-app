@@ -197,7 +197,9 @@ struct ContentView: View {
             if let request = voiceLaunches.request { beginVoiceLaunch(request) }
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .background { aggregate.setPollingSuspended(true) }
             if phase == .active {
+                aggregate.setPollingSuspended(false)
                 Task { await push.refreshAuthorization() }
                 if let request = voiceLaunches.request { beginVoiceLaunch(request) }
                 push.routeManualToKeyScene()

@@ -200,9 +200,62 @@ final class HubStore: ObservableObject {
     func start() {
         guard !disposed, !unauthorized, pollTask == nil else { return }
         launchPanelTasks()
+        startPollLoop()
+    }
+
+    /// Stop the change-feed loop while the app is backgrounded (background
+    /// audio keeps the process alive). Data and epoch are untouched.
+    func suspendPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    /// Resume after `suspendPolling`. Refetches idle panels, then polls again.
+    /// No-op while already polling, disposed or unauthorized.
+    func resumePolling() {
+        guard !disposed, !unauthorized, pollTask == nil else { return }
+        launchPanelTasksIfIdle()
+        startPollLoop()
+    }
+
+    private func startPollLoop() {
+        let client = client
+        let interval = pollInterval
         pollTask = Task { [weak self] in
+            // Long-poll the Hub change feed: it answers on change or after
+            // `interval`, and either way panels refetch. Hubs without the feed
+            // (or direct nodes) fall back to sleeping `interval` between polls.
+            var since: UInt64?
+            var longPoll = true
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64((self?.pollInterval ?? 15) * 1_000_000_000))
+                if longPoll {
+                    do {
+                        let previous = since
+                        let began = ContinuousClock.now
+                        since = try await client.wait_for_changes(
+                            since: previous, timeout: max(1, Int(interval.rounded()))).version
+                        if Task.isCancelled { break }
+                        // First call only records the baseline version.
+                        if previous == nil { continue }
+                        if since != previous {
+                            // Coalesce bursts (one bump per node in a collection round).
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        } else {
+                            // "No change" should only arrive after the long-poll
+                            // timeout. A server or proxy that answers early must
+                            // not turn this into a busy loop: wait out the rest
+                            // of the interval, like plain polling.
+                            let remaining = Duration.seconds(interval) - (ContinuousClock.now - began)
+                            if remaining > .zero { try? await Task.sleep(for: remaining) }
+                        }
+                    } catch {
+                        if Task.isCancelled { break }
+                        if Self.changesUnsupported(error) { longPoll = false }
+                        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                    }
+                } else {
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
                 guard let self, !self.disposed, !self.unauthorized else { break }
                 self.launchPanelTasksIfIdle()
             }
@@ -698,6 +751,13 @@ final class HubStore: ObservableObject {
         resolverWarning = nil
         securityStatus = nil
         recentAuthRequired = false
+    }
+
+    /// Hubs predating /api/changes answer 404/405 (or a non-JSON page).
+    private nonisolated static func changesUnsupported(_ error: Error) -> Bool {
+        if error is HubChangesUnsupported || error is DecodingError { return true }
+        guard let apiError = error as? HubAPIError else { return false }
+        return apiError.status == 404 || apiError.status == 405
     }
 
     private func isAuthError(_ error: Error) -> Bool {

@@ -200,7 +200,11 @@ struct HubView: View {
                 if tab == .security, configuration?.passkeyAuth == true { await store.loadSecurity() }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await store.refresh() } }
+                if phase == .background { store.suspendPolling() }
+                if phase == .active {
+                    store.resumePolling()
+                    Task { await store.refresh() }
+                }
             }
             .alert("Rename passkey", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Passkey name", text: $credentialName)

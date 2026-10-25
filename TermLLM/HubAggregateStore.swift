@@ -380,6 +380,12 @@ final class HubAggregateStore: ObservableObject {
         }
     }
     func source(_ id: UUID) -> HubSourceWorkspace? { sources.first { $0.id == id } }
+    /// Pause every source's change-feed loop while backgrounded, resume on return.
+    func setPollingSuspended(_ suspended: Bool) {
+        for source in sources where source.isActive {
+            if suspended { source.store.suspendPolling() } else { source.store.resumePolling() }
+        }
+    }
     func refresh() {
         // Fire independently. A slow/offline source never delays the home UI.
         for source in sources { Task { await source.store.refresh() } }
