@@ -6,7 +6,7 @@ import UIKit
 final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked Sendable {
     struct Paired: @unchecked Sendable {
         let credential: MobileSharingCredential
-        let live: MobileSharingLiveConnection
+        let live: MobileSharingLiveConnection?
     }
 
     private let identities: MobileSharingIdentityStore
@@ -22,7 +22,7 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
               closed: @escaping @Sendable () -> Void) async throws -> Paired {
         guard !link.isExpired(at: clock()) else { throw MobileSharingProtocolError.expired }
         guard let capability = link.invitationCapability else {
-            throw MobileSharingBrokerError.unauthorized
+            throw MobileSharingProtocolError.invalidLink
         }
         let prepared = try identities.prepare(hostKey: link.hostKey)
         let attempt = try MobileSharingPairingAttempt(link: link, credential: prepared,
@@ -43,40 +43,19 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
             // carries SDP; close it, then use the durable device slot for the
             // first signed transport handshake exactly like every reconnect.
             socket.close()
-            let live = try await reconnectAfterPairing(credential: credential, closed: closed)
+            let live: MobileSharingLiveConnection?
+            do {
+                live = try await reconnect(credential: credential, closed: closed)
+            } catch {
+                // Approval is durable and revocation-only. Preserve the source
+                // even when this first transport attempt is cancelled/offline;
+                // the runtime will expose it and reconnect without another QR.
+                live = nil
+            }
             return Paired(credential: credential, live: live)
         } catch {
             socket.close()
             throw error
-        }
-    }
-
-    private func reconnectAfterPairing(credential: MobileSharingCredential,
-                                       closed: @escaping @Sendable () -> Void) async throws -> MobileSharingLiveConnection {
-        var lastError: Error = MobileSharingBrokerError.peerOffline
-        for attempt in 0..<20 {
-            try Task.checkCancellation()
-            do { return try await reconnect(credential: credential, closed: closed) }
-            catch {
-                guard Self.isTransientFirstConnect(error) else { throw error }
-                lastError = error
-                if attempt < 19 { try await Task.sleep(nanoseconds: 500_000_000) }
-            }
-        }
-        throw lastError
-    }
-
-    private static func isTransientFirstConnect(_ error: Error) -> Bool {
-        if error is URLError { return true }
-        switch error {
-        case MobileSharingBrokerError.notFound, MobileSharingBrokerError.peerOffline,
-             MobileSharingBrokerError.expired, MobileSharingBrokerError.brokerClosed,
-             MobileSharingBrokerError.closed(_, _):
-            return true
-        case PeerWebRTCError.channelFailed, PeerWebRTCError.closed, PeerWebRTCError.gatheringTimedOut:
-            return true
-        default:
-            return false
         }
     }
 
@@ -132,7 +111,8 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
             let verifiedSDP = try attempt.verify(answer)
             let authorization = PeerAuthorizationState(PeerAuthorization(
                 peerID: MobileSharingBase64URL.encode(credential.hostKey),
-                sessionID: UUID().uuidString, expiresAt: .distantFuture, scopePrefix: "/"))
+                sessionID: UUID().uuidString, expiresAt: .distantFuture,
+                scopePrefix: credential.basePath ?? "/"))
             try await webRTC.acceptVerifiedAnswer(verifiedSDP, authorization: authorization)
             let channel = try await withTimeout(20) { try await webRTC.openChannel() }
             let multiplexer = PeerHTTPMultiplexer(channel: channel)

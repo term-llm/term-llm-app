@@ -142,8 +142,8 @@ struct MobileSharingPairingView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         case .connected(let name):
             Image(systemName: "checkmark.shield.fill").font(.system(size: 48)).foregroundStyle(.green)
-            Text("Connected to \(name)").font(.title2.bold())
-            Text("The host is saved by its verified identity and will reconnect without another QR code.")
+            Text("Saved \(name)").font(.title2.bold())
+            Text("The verified host is saved and will reconnect without another QR code if it is currently offline.")
                 .multilineTextAlignment(.center).foregroundStyle(.secondary)
             Button("Done") { model.dismiss() }.buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("mobileSharing.done")

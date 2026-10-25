@@ -20,8 +20,9 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
 
     func start(port preferredPort: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16 {
         var lastError: Error = PeerWireError.channelClosed
-        let attempts = preferredPort == nil ? maxAttempts : 1
-        for _ in 0..<attempts {
+        let attempts = preferredPort == nil ? maxAttempts : 4
+        for attempt in 0..<attempts {
+            try Task.checkCancellation()
             let requested = preferredPort.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any
             let v4 = try makeListener(host: .ipv4(.loopback), port: requested, onConnection: onConnection)
             let port: UInt16
@@ -30,6 +31,9 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
             } catch {
                 v4.cancel()
                 lastError = error
+                if preferredPort != nil, attempt < attempts - 1 {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                }
                 continue
             }
             guard let nwPort = NWEndpoint.Port(rawValue: port) else { v4.cancel(); continue }
@@ -57,6 +61,9 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
                 v4.cancel()
                 lastError = error
             }
+            if preferredPort != nil, attempt < attempts - 1 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
         }
         throw lastError
     }
@@ -66,7 +73,7 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: host, port: port)
         parameters.acceptLocalOnly = true
-        parameters.allowLocalEndpointReuse = false
+        parameters.allowLocalEndpointReuse = true
         let listener = try NWListener(using: parameters)
         listener.newConnectionHandler = { connection in
             guard Self.isLoopback(connection.endpoint) else {
@@ -81,24 +88,32 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     }
 
     private static func ready(_ listener: NWListener, queue: DispatchQueue) async throws -> UInt16 {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            let once = PeerOnce()
-            listener.stateUpdateHandler = { [weak listener] state in
-                switch state {
-                case .ready:
-                    if let port = listener?.port?.rawValue, port != 0 {
-                        once.run { cont.resume(returning: port) }
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
+                let once = PeerOnce()
+                listener.stateUpdateHandler = { [weak listener] state in
+                    switch state {
+                    case .ready:
+                        if let port = listener?.port?.rawValue, port != 0 {
+                            once.run { cont.resume(returning: port) }
+                        }
+                    case .failed(let error), .waiting(let error):
+                        once.run { cont.resume(throwing: error) }
+                    case .cancelled:
+                        once.run { cont.resume(throwing: CancellationError()) }
+                    default:
+                        break
                     }
-                case .failed(let error), .waiting(let error):
-                    once.run { cont.resume(throwing: error) }
-                case .cancelled:
-                    once.run { cont.resume(throwing: PeerWireError.channelClosed) }
-                default:
-                    break
+                }
+                if Task.isCancelled {
+                    once.run { cont.resume(throwing: CancellationError()) }
+                } else {
+                    listener.start(queue: queue)
                 }
             }
-            listener.start(queue: queue)
-        }
+        }, onCancel: {
+            listener.cancel()
+        })
     }
 
     func stop() {

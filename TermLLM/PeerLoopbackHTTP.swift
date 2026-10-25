@@ -456,7 +456,8 @@ final class PeerLoopbackConnection: @unchecked Sendable {
     private func handle(_ request: PeerLoopbackRequest, keepAlive: Bool) async -> Bool {
         let isHead = request.method == "HEAD"
         guard isAuthorized() else {
-            try? await writeSimple(status: 401, message: "Peer session revoked", keepAlive: false, head: isHead)
+            // A torn-down local bridge says nothing about the durable grant.
+            try? await writeSimple(status: 503, message: "Peer session unavailable", keepAlive: false, head: isHead)
             return false
         }
         if case .reject(let status, let reason) = configuration.gate.evaluate(request) {
@@ -484,7 +485,7 @@ final class PeerLoopbackConnection: @unchecked Sendable {
             case .tooManyStreams?: status = 503
             case .requestBodyTooLarge?: status = 413
             case .invalidRequest?: status = 400
-            case .unauthorized?: status = 401
+            case .unauthorized?: status = 503
             default: status = 502
             }
             try? await writeSimple(status: status, message: "Peer unavailable", keepAlive: keepAlive, head: isHead)
@@ -500,6 +501,11 @@ final class PeerLoopbackConnection: @unchecked Sendable {
         let noBody = isHead || response.status == 204 || response.status == 304 || (100..<200).contains(response.status)
         let chunked = !noBody && request.version == "HTTP/1.1"
         var header = PeerHeaderFilter.inbound(response.header, policy: configuration.cookiePolicy)
+        if response.status == 401 {
+            // This status crossed the authenticated peer channel, unlike local
+            // bridge failures. BrowserView may safely classify it as grant loss.
+            header.set(PeerAuthorizationLoss.headerName, PeerAuthorizationLoss.headerValue)
+        }
         if chunked { header.set("Transfer-Encoding", "chunked") }
         let persistent = keepAlive && (chunked || noBody)
         header.set("Connection", persistent ? "keep-alive" : "close")

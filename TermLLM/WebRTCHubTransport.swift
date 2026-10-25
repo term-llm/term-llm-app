@@ -16,6 +16,11 @@ struct PeerScopeDenied: LocalizedError, Equatable, Sendable {
     }
 }
 
+struct PeerAuthorizationLoss: Sendable {
+    static let headerName = "X-Term-LLM-Peer-Error"
+    static let headerValue = "authorization_revoked"
+}
+
 /// Carries native API requests over an authenticated `term-llm-http-v1`
 /// DataChannel. Only the configured stable loopback origin is accepted; the
 /// wire sees an origin-relative path, never a URL, cookie or owner token.

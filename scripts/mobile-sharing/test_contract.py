@@ -86,6 +86,10 @@ class MobileSharingContractTests(unittest.TestCase):
         self.assertIn("44f36788497f701bc8c0306de3a1c2511d56019d", project)
         resolved = (ROOT / "TermLLM.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved").read_text()
         self.assertIn("44f36788497f701bc8c0306de3a1c2511d56019d", resolved)
+        native_fixture = ROOT / "TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json"
+        self.assertEqual(native_fixture.read_bytes(),
+                         (Path(__file__).parent / "fixtures/vectors_v2.json").read_bytes())
+        self.assertIn(native_fixture.name, project)
 
     def test_swift_declares_frozen_v2_names_and_no_pilot_pairing(self):
         source = (ROOT / "TermLLM/MobileSharingProtocol.swift").read_text()
@@ -105,6 +109,12 @@ class MobileSharingContractTests(unittest.TestCase):
         connector = (ROOT / "TermLLM/MobileSharingConnector.swift").read_text()
         self.assertIn('catch MobileSharingBrokerError.unauthorized', connector)
         self.assertIn('throw MobileSharingProtocolError.revoked', connector)
+        catalog = (ROOT / "TermLLM/HubConnectionStore.swift").read_text()
+        self.assertIn('canonicalMobileSharingBridgeURL(source.url.absoluteString)', catalog)
+        self.assertIn('does not call `ServerAddress.parse`', catalog)
+        runtime = (ROOT / "TermLLM/MobileSharingRuntime.swift").read_text()
+        self.assertIn('await endpoint.installCapability', runtime)
+        self.assertNotIn('await bridge.installCapability', runtime)
         peer = (ROOT / "TermLLM/PeerWireProtocol.swift").read_text()
         self.assertIn("var maxRequestBodyBytes = 48_384", peer)
         self.assertIn('static let channelLabel = "term-llm-http-v1"', peer)

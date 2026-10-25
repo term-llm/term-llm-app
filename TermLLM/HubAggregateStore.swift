@@ -215,6 +215,31 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         }
     }
 
+    /// Mobile Sharing restoration is two-phase: finish any authorization purge
+    /// first, then let the runtime reinstall its current bridge capability,
+    /// then expose the browser/native workspace again.
+    func prepareMobileSharingAuthorizationRestore() async -> UInt64? {
+        guard active, connection.isMobileSharing else { return nil }
+        await resetTask?.value
+        guard active else { return nil }
+        authenticationEpoch &+= 1
+        security?.nextEpoch()
+        security?.authorizeCookieReads()
+        installAuthorizationContext()
+        return authenticationEpoch
+    }
+
+    @discardableResult
+    func completeMobileSharingAuthorizationRestore(epoch: UInt64) async -> Bool {
+        guard active, connection.isMobileSharing, authenticationEpoch == epoch else { return false }
+        browserRevoked = false
+        browserReady = true
+        browserIdentity = UUID()
+        authenticationError = nil
+        await store.resumeAfterAuthentication()
+        return active && authenticationEpoch == epoch && !store.unauthorized
+    }
+
     func revokeAuthorization(expected: UInt64? = nil) {
         guard expected == nil || expected == authenticationEpoch else { return }
         guard active, !browserRevoked else { return }
@@ -368,10 +393,26 @@ final class HubAggregateStore: ObservableObject {
                            transport: MobileSharingRuntime.shared.transport(for: connection))
     }) { self.makeSource = makeSource }
 
+    static func shouldRemoveCredentialsWhenReplacing(_ old: HubConnection,
+                                                     with replacement: HubConnection?) -> Bool {
+        guard let replacement, old.id == replacement.id,
+              old.isMobileSharing, replacement.isMobileSharing,
+              old.mobileSharingHostKey == replacement.mobileSharingHostKey,
+              old.url.scheme?.lowercased() == replacement.url.scheme?.lowercased(),
+              old.url.host?.lowercased() == replacement.url.host?.lowercased(),
+              old.url.port == replacement.url.port else { return true }
+        // A re-pair may update only the signed mount while retaining the same
+        // UUID-owned WebKit store and loopback origin. Clearing that store here
+        // would race and erase the newly installed capability cookie.
+        return false
+    }
+
     func synchronize(_ connections: [HubConnection]) {
         let old = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         for source in sources where !connections.contains(where: { $0.id == source.id && $0.url == source.connection.url && $0.kind == source.connection.kind }) {
-            source.dispose(removeCredentials: true)
+            let replacement = connections.first { $0.id == source.id }
+            source.dispose(removeCredentials: Self.shouldRemoveCredentialsWhenReplacing(source.connection,
+                                                                                         with: replacement))
             observations[source.id] = nil
         }
         let updated = connections.map { connection in

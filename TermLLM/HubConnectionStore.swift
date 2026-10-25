@@ -55,7 +55,8 @@ final class HubConnectionStore: ObservableObject {
 
     /// Single, side-effect-free validation path for UI and credential readers.
     /// A missing catalog is not permission to borrow the ambient WebKit jar.
-    static func validatedDocument(_ raw: Any?) throws -> Document {
+    static func validatedDocument(_ raw: Any?,
+                                  canonicalOrdinaryURL: (String) -> URL? = canonicalURL) throws -> Document {
         guard let data = raw as? Data,
               var doc = try? JSONDecoder().decode(Document.self, from: data),
               Set(doc.connections.map(\.id)).count == doc.connections.count,
@@ -64,9 +65,11 @@ final class HubConnectionStore: ObservableObject {
         var endpoints = Set<String>()
         for index in doc.connections.indices {
             let source = doc.connections[index]
+            let url = source.mobileSharingHostKey == nil
+                ? canonicalOrdinaryURL(source.url.absoluteString)
+                : canonicalMobileSharingBridgeURL(source.url.absoluteString)
             guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let url = canonicalURL(source.url.absoluteString),
-                  endpoints.insert(url.absoluteString).inserted else {
+                  let url, endpoints.insert(url.absoluteString).inserted else {
                 throw ValidationError.corrupt
             }
             if let encodedKey = source.mobileSharingHostKey {
@@ -121,18 +124,33 @@ final class HubConnectionStore: ObservableObject {
         return normalized.url
     }
 
+    /// Dedicated validator for the app-owned loopback bridge. It deliberately
+    /// does not call `ServerAddress.parse`: physical devices reject arbitrary
+    /// HTTP servers, while this narrowly constrained URL is local metadata.
+    static func canonicalMobileSharingBridgeURL(_ input: String) -> URL? {
+        guard var parts = URLComponents(string: input),
+              parts.scheme?.lowercased() == "http", parts.host?.lowercased() == "localhost",
+              let port = parts.port, (1024...65535).contains(port),
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              !parts.percentEncodedPath.contains("%"), !parts.path.contains("\\"),
+              !parts.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              !parts.path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0 == "." || $0 == ".." }),
+              !parts.path.contains("//") else { return nil }
+        parts.scheme = "http"
+        parts.host = "localhost"
+        let path = parts.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        parts.path = path.isEmpty ? "/" : "/" + path + "/"
+        return parts.url
+    }
+
     static func isMobileSharingBridgeURL(_ url: URL) -> Bool {
-        guard url.scheme == "http", url.host?.lowercased() == "localhost",
-              let port = url.port, (1024...65535).contains(port),
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              let canonical = canonicalURL(url.absoluteString), canonical == url else { return false }
-        return true
+        canonicalMobileSharingBridgeURL(url.absoluteString) == url
     }
 
     /// Adds or updates a paired source by its pinned host identity. The local
     /// bridge URL is presentation/transport metadata and never its identity.
     @discardableResult
-    func saveMobileSharing(name: String, hostKey: Data, bridgePort: UInt16,
+    func saveMobileSharing(id: UUID? = nil, name: String, hostKey: Data, bridgePort: UInt16,
                            basePath: String = "/") throws -> HubConnection {
         let normalizedPath = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let path = normalizedPath.isEmpty ? "/" : "/" + normalizedPath + "/"
@@ -143,13 +161,19 @@ final class HubConnectionStore: ObservableObject {
         let encodedKey = MobileSharingBase64URL.encode(hostKey)
         if let index = connections.firstIndex(where: { $0.mobileSharingHostKey == encodedKey }) {
             connections[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Keep the original stable browser origin across re-pairing.
+            // Keep the original port/origin but follow the newly signed mount.
+            guard let oldPort = connections[index].url.port,
+                  let updated = URL(string: "http://localhost:\(oldPort)\(path)"),
+                  let canonical = Self.canonicalMobileSharingBridgeURL(updated.absoluteString) else {
+                throw ValidationError.corrupt
+            }
+            connections[index].url = canonical
             connections[index].needsKindReview = nil
             persist()
             return connections[index]
         }
         guard !connections.contains(where: { $0.url == url }) else { throw ValidationError.duplicate }
-        let source = HubConnection(id: UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+        let source = HubConnection(id: id ?? UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                                    kind: .directNode, url: url, needsKindReview: nil,
                                    mobileSharingHostKey: encodedKey)
         connections.append(source)

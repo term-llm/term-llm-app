@@ -29,7 +29,7 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     private let lock = NSLock()
     private var peerConnection: RTCPeerConnection?
     private var channel: PeerRTCDataChannel?
-    private var channelWaiters: [CheckedContinuation<PeerFrameChannel, Error>] = []
+    private var channelWaiters: [UUID: CheckedContinuation<PeerFrameChannel, Error>] = [:]
     private var gatheringWaiters: [CheckedContinuation<Void, Never>] = []
     private var gatheringComplete = false
     private var revokeToken: UUID?
@@ -168,19 +168,30 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     /// Resolves once the `term-llm-http-v1` channel is open.
     func openChannel() async throws -> PeerFrameChannel {
         guard authorized() else { throw PeerWebRTCError.unauthorized }
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<PeerFrameChannel, Error>) in
-            let ready: PeerFrameChannel?? = lock.withLock {
-                if peerConnection == nil { return .some(nil) }
-                if let channel, channel.isOpen { return .some(channel) }
-                channelWaiters.append(cont)
-                return nil
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<PeerFrameChannel, Error>) in
+                let ready: PeerFrameChannel?? = lock.withLock {
+                    if peerConnection == nil { return .some(nil) }
+                    if let channel, channel.isOpen { return .some(channel) }
+                    if Task.isCancelled { return .some(nil) }
+                    channelWaiters[waiterID] = cont
+                    return nil
+                }
+                switch ready {
+                case .some(.some(let channel)): cont.resume(returning: channel)
+                case .some(.none): cont.resume(throwing: Task.isCancelled ? CancellationError() : PeerWebRTCError.closed)
+                case .none: break
+                }
             }
-            switch ready {
-            case .some(.some(let c)): cont.resume(returning: c)
-            case .some(.none): cont.resume(throwing: PeerWebRTCError.closed)
-            case .none: break
-            }
-        }
+        }, onCancel: { [weak self] in
+            self?.cancelChannelWaiter(waiterID)
+        })
+    }
+
+    private func cancelChannelWaiter(_ id: UUID) {
+        let continuation = lock.withLock { channelWaiters.removeValue(forKey: id) }
+        continuation?.resume(throwing: CancellationError())
     }
 
     func stats() async -> PeerSessionStats {
@@ -198,7 +209,7 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
 
     func close() {
         let (pc, ch, waiters, disconnect): (RTCPeerConnection?, PeerRTCDataChannel?, [CheckedContinuation<PeerFrameChannel, Error>], DispatchWorkItem?) = lock.withLock {
-            let r = (peerConnection, channel, channelWaiters, disconnectWorkItem)
+            let r = (peerConnection, channel, Array(channelWaiters.values), disconnectWorkItem)
             peerConnection = nil
             channel = nil
             channelWaiters.removeAll()
@@ -206,9 +217,9 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
             return r
         }
         disconnect?.cancel()
-        guard pc != nil else { return }
         waiters.forEach { $0.resume(throwing: PeerWebRTCError.closed) }
         releaseGatheringWaiters()
+        guard pc != nil else { return }
         ch?.close()
         pc?.close()
         let (auth, token) = lock.withLock { (authorization, revokeToken) }
@@ -241,9 +252,9 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
 
     private func channelOpened() {
         let (ch, waiters): (PeerRTCDataChannel?, [CheckedContinuation<PeerFrameChannel, Error>]) = lock.withLock {
-            let w = channelWaiters
+            let waiters = Array(channelWaiters.values)
             channelWaiters.removeAll()
-            return (channel, w)
+            return (channel, waiters)
         }
         guard let ch else { return }
         waiters.forEach { $0.resume(returning: ch) }

@@ -96,6 +96,16 @@ final class PeerLoopbackBridge: @unchecked Sendable {
     var connectionCount: Int { lock.withLock { connections.count } }
 
     func start() async throws -> PeerLoopbackEndpoint {
+        try await start(paused: false)
+    }
+
+    /// Reserve the loopback origin without accepting HTTP. Call `activate()`
+    /// only after its capability cookie is installed in the matching data store.
+    func startPaused() async throws -> PeerLoopbackEndpoint {
+        try await start(paused: true)
+    }
+
+    private func start(paused: Bool) async throws -> PeerLoopbackEndpoint {
         guard authorization.check(), let auth = authorization.current else { throw PeerLoopbackBridgeError.unauthorized }
         try lock.withLock {
             switch state {
@@ -108,7 +118,9 @@ final class PeerLoopbackBridge: @unchecked Sendable {
         let port: UInt16
         do {
             port = try await listener.start(port: preferredPort) { [weak self] stream in self?.accept(stream) ?? stream.close() }
+            try Task.checkCancellation()
         } catch {
+            listener.stop()
             lock.withLock { state = .idle }
             throw error
         }
@@ -116,13 +128,23 @@ final class PeerLoopbackBridge: @unchecked Sendable {
                                       capability: capability, scopePrefix: auth.scopePrefix)
         let stillWanted: Bool = lock.withLock {
             guard state == .starting else { return false }
-            state = .running
+            if !paused { state = .running }
             endpoint = ep
             return true
         }
         guard stillWanted else { listener.stop(); throw PeerLoopbackBridgeError.revoked }
         revokeToken = authorization.onRevoke { [weak self] in self?.revoke() }
         return ep
+    }
+
+    func activate() throws {
+        try lock.withLock {
+            guard state == .starting, endpoint != nil else {
+                if state == .revoked { throw PeerLoopbackBridgeError.revoked }
+                throw PeerLoopbackBridgeError.alreadyStarted
+            }
+            state = .running
+        }
     }
 
     func revoke() {

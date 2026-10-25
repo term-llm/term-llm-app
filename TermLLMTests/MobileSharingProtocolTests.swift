@@ -15,6 +15,17 @@ final class MobileSharingProtocolTests: XCTestCase {
         try XCTUnwrap(MobileSharingBase64URL.decode(value, maximumBytes: 1024))
     }
 
+    private func fixture() throws -> [String: Any] {
+        let bundle = Bundle(for: Self.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "mobile-sharing-vectors-v2", withExtension: "json"))
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        return try XCTUnwrap(object as? [String: Any])
+    }
+
+    private func fixtureString(_ key: String, in fixture: [String: Any]) throws -> String {
+        try XCTUnwrap(fixture[key] as? String, key)
+    }
+
     private func link(expiry: Int64 = 2_000_000_000) throws -> MobileSharingPairingLink {
         try MobileSharingPairingLink.parse(
             "termllm://pair?v=2&b=https%3A%2F%2Fbroker.example&h=\(hostKey)&i=\(invitationID)&e=\(expiry)&n=desk" +
@@ -65,23 +76,49 @@ final class MobileSharingProtocolTests: XCTestCase {
         XCTAssertNil(Mirror(reflecting: paired).children.first { $0.label?.contains("expir") == true })
     }
 
-    func testFrozenTransportRequestVectorMatchesCore() throws {
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: data(deviceSeed))
-        var request = MobileSharingTransportRequest(
-            challenge_id: MobileSharingB64(try data("EBESExQVFhcYGRobHB0eHw")),
-            host_nonce: MobileSharingB64(try data("YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8")),
-            device_key: MobileSharingB64(try data(deviceKey)),
-            device_nonce: MobileSharingB64(try data("cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8")),
-            device_id: MobileSharingB64(try data("kJGSk5SVlpeYmZqbnJ2enw")),
-            offer_sdp: "v=0\r\na=fingerprint:sha-256 AA:BB\r\n", sig: MobileSharingB64(Data()))
-        let transcript = MobileSharingTranscript.transportRequest(request, hostKey: try data(hostKey))
-        request.sig = MobileSharingB64(try privateKey.signature(for: transcript))
-        XCTAssertEqual(MobileSharingBase64URL.encode(transcript),
-                       "AAAAE3Rlcm0tbGxtL3BhaXJpbmcvdjIAAAARdHJhbnNwb3J0LXJlcXVlc3QAAAAGZGV2aWNlAAAAEBAREhMUFRYXGBkaGxwdHh8AAAAgA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbgAAAAgYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8AAAAgKay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdcAAAAgcHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8AAAAQkJGSk5SVlpeYmZqbnJ2enwAAACJ2PTANCmE9ZmluZ2VycHJpbnQ6c2hhLTI1NiBBQTpCQg0K")
-        XCTAssertEqual(MobileSharingBase64URL.encode(MobileSharingTranscript.hash(transcript)),
-                       "NNiiHkgLqm4wNnYno_5egHqlvaRGitTYiBMcI716T_I")
-        XCTAssertEqual(MobileSharingBase64URL.encode(request.sig.data),
-                       "o_D8IXFdtoUdI4lCIxMWbUjRLDlvl_vnMbyGOrrW1qJ0JG8ncaIRn-mQhJK6XVHu9d8Ifuv68hFFxyBAJyfZAw")
+    func testFrozenTransportVectorsLoadCopiedCoreFixture() throws {
+        let fixture = try fixture()
+        var credential = MobileSharingCredential(hostKey: try data(try fixtureString("host_key", in: fixture)),
+                                                  deviceSeed: try data(try fixtureString("device_seed", in: fixture)))
+        credential.deviceID = try fixtureString("device_id", in: fixture)
+        credential.reconnectCapability = try data(try fixtureString("reconnect_capability", in: fixture))
+        credential.basePath = "/chat"
+
+        let hello = try MobileSharingTransportAttempt.hello(
+            credential: credential, nonce: try data(try fixtureString("transport_hello_nonce", in: fixture)))
+        XCTAssertEqual(MobileSharingBase64URL.encode(MobileSharingTranscript.transportHello(hello,
+                                                                                              hostKey: credential.hostKey)),
+                       try fixtureString("transport_hello_transcript", in: fixture))
+        XCTAssertEqual(MobileSharingBase64URL.encode(hello.sig.data),
+                       try fixtureString("transport_hello_signature", in: fixture))
+
+        let challengeData = Data(try fixtureString("transport_challenge_json", in: fixture).utf8)
+        let challenge = try MobileSharingMessageCodec.decode(
+            MobileSharingTransportChallenge.self, data: challengeData, expectedType: "transport_challenge",
+            fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_id", "expires_at", "sig"])
+        let request = try MobileSharingTransportAttempt(
+            challenge: challenge, credential: credential,
+            offerSDP: try fixtureString("transport_offer_sdp", in: fixture),
+            now: Date(timeIntervalSince1970: 1_800_000_000),
+            nonce: try data(try fixtureString("transport_device_nonce", in: fixture)))
+        XCTAssertEqual(MobileSharingBase64URL.encode(MobileSharingTranscript.transportRequest(request.request,
+                                                                                                hostKey: credential.hostKey)),
+                       try fixtureString("transport_request_transcript", in: fixture))
+        XCTAssertEqual(MobileSharingBase64URL.encode(request.requestHash),
+                       try fixtureString("transport_request_hash", in: fixture))
+        XCTAssertEqual(MobileSharingBase64URL.encode(request.request.sig.data),
+                       try fixtureString("transport_request_signature", in: fixture))
+
+        let answerData = Data(try fixtureString("transport_answer_json", in: fixture).utf8)
+        let answer = try MobileSharingMessageCodec.decode(
+            MobileSharingTransportAnswer.self, data: answerData, expectedType: "transport_answer",
+            fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_nonce", "request_hash", "device_id", "answer_sdp", "sig"])
+        XCTAssertEqual(try request.verify(answer), try fixtureString("transport_answer_sdp", in: fixture))
+        var wrongHost = answer
+        wrongHost.host_key = MobileSharingB64(Data(repeating: 0xFF, count: 32))
+        XCTAssertThrowsError(try request.verify(wrongHost)) { error in
+            XCTAssertEqual(error as? MobileSharingProtocolError, .hostIdentityChanged)
+        }
     }
 
     func testLinkValidationIsBoundedStrictAndKeepsSecretsInFragment() throws {
@@ -90,6 +127,12 @@ final class MobileSharingProtocolTests: XCTestCase {
         XCTAssertEqual(parsed.invitationID, try data(invitationID))
         XCTAssertEqual(parsed.hostLabel, "desk")
         XCTAssertEqual(parsed.hostID.count, 43)
+        let spaced = try MobileSharingPairingLink.parse(
+            "termllm://pair?v=2&b=https%3A%2F%2Fbroker.example&h=\(hostKey)&i=\(invitationID)&e=2000000000&n=my+desk#s=\(pairingSecret)")
+        XCTAssertEqual(spaced.hostLabel, "my desk")
+        let literalPlus = try MobileSharingPairingLink.parse(
+            "termllm://pair?v=2&b=https%3A%2F%2Fbroker.example&h=\(hostKey)&i=\(invitationID)&e=2000000000&n=C%2B%2B#s=\(pairingSecret)")
+        XCTAssertEqual(literalPlus.hostLabel, "C++")
 
         let valid = "termllm://pair?v=2&b=https%3A%2F%2Fbroker.example&h=\(hostKey)&i=\(invitationID)&e=2000000000"
         for invalid in [

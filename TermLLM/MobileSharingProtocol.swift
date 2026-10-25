@@ -67,13 +67,13 @@ struct MobileSharingPairingLink: Equatable, Sendable {
               let components = URLComponents(string: raw), components.scheme == "termllm",
               components.host == "pair", components.user == nil, components.password == nil,
               components.port == nil, components.path.isEmpty,
-              let queryItems = components.queryItems, let fragment = components.fragment else {
+              let encodedQuery = components.percentEncodedQuery,
+              let encodedFragment = components.percentEncodedFragment else {
             throw MobileSharingProtocolError.invalidLink
         }
-        let query = try strict(items: queryItems, required: ["v", "b", "h", "i", "e"], optional: ["n"])
+        let query = try strict(raw: encodedQuery, required: ["v", "b", "h", "i", "e"], optional: ["n"])
         guard query["v"] == "2" else { throw MobileSharingProtocolError.invalidLink }
-        let fragmentItems = try parseFragment(fragment)
-        let secrets = try strict(items: fragmentItems, required: ["s"], optional: ["c"])
+        let secrets = try strict(raw: encodedFragment, required: ["s"], optional: ["c"])
         guard let brokerRaw = query["b"], let broker = validateBroker(brokerRaw),
               let host = query["h"].flatMap({ MobileSharingBase64URL.decode($0, maximumBytes: 32) }), host.count == 32,
               let invitation = query["i"].flatMap({ MobileSharingBase64URL.decode($0, maximumBytes: 16) }), invitation.count == 16,
@@ -97,22 +97,25 @@ struct MobileSharingPairingLink: Equatable, Sendable {
                     pairingSecret: secret, invitationCapability: secrets["c"])
     }
 
-    private static func strict(items: [URLQueryItem], required: Set<String>, optional: Set<String>) throws -> [String: String] {
+    private static func strict(raw: String, required: Set<String>, optional: Set<String>) throws -> [String: String] {
+        guard !raw.isEmpty else { throw MobileSharingProtocolError.invalidLink }
         var values: [String: String] = [:]
-        for item in items {
-            guard required.contains(item.name) || optional.contains(item.name), values[item.name] == nil,
-                  let value = item.value, !value.isEmpty else { throw MobileSharingProtocolError.invalidLink }
-            values[item.name] = value
+        for field in raw.split(separator: "&", omittingEmptySubsequences: false) {
+            let pair = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2,
+                  let name = formDecode(String(pair[0])), let value = formDecode(String(pair[1])),
+                  required.contains(name) || optional.contains(name), values[name] == nil,
+                  !value.isEmpty else { throw MobileSharingProtocolError.invalidLink }
+            values[name] = value
         }
         guard required.isSubset(of: Set(values.keys)) else { throw MobileSharingProtocolError.invalidLink }
         return values
     }
 
-    private static func parseFragment(_ raw: String) throws -> [URLQueryItem] {
-        guard !raw.isEmpty, let values = URLComponents(string: "https://fragment.invalid/?" + raw)?.queryItems else {
-            throw MobileSharingProtocolError.invalidLink
-        }
-        return values
+    /// Core uses Go's QueryEscape/QueryUnescape contract, where `+` means a
+    /// space and a literal plus must be `%2B`.
+    private static func formDecode(_ value: String) -> String? {
+        value.replacingOccurrences(of: "+", with: "%20").removingPercentEncoding
     }
 
     private static func validateBroker(_ raw: String) -> URL? {
@@ -361,9 +364,9 @@ struct MobileSharingTransportAttempt: Sendable {
               deviceIDRaw.count == 16,
               let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: credential.deviceSeed),
               challenge.challenge_id.data.count == 16, challenge.host_nonce.data.count == 32,
-              challenge.device_key.data == key.publicKey.rawRepresentation,
-              challenge.device_id.data == deviceIDRaw,
-              Int64(now.timeIntervalSince1970) < challenge.expires_at else {
+               challenge.device_key.data == key.publicKey.rawRepresentation,
+               challenge.device_id.data == deviceIDRaw,
+               Int64(now.timeIntervalSince1970) - 30 < challenge.expires_at else {
             throw MobileSharingProtocolError.invalid("transport challenge")
         }
         let challengeTranscript = MobileSharingTranscript.transportChallenge(challenge)

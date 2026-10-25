@@ -130,13 +130,17 @@ final class MobileSharingBrokerClient: @unchecked Sendable {
         let data = try await get(suffix, capability: capability)
         do {
             let value = try JSONDecoder().decode(MobileSharingICECredentials.self, from: data)
-            guard !value.ice_servers.isEmpty, value.ice_servers.count <= 16,
-                  value.ice_servers.allSatisfy({ !$0.urls.isEmpty && $0.urls.count <= 8 }) else {
-                throw MobileSharingBrokerError.malformed
-            }
-            return value
+            return try Self.validateICE(value)
         } catch let error as MobileSharingBrokerError { throw error }
         catch { throw MobileSharingBrokerError.malformed }
+    }
+
+    static func validateICE(_ value: MobileSharingICECredentials) throws -> MobileSharingICECredentials {
+        guard value.ice_servers.count <= 16,
+              value.ice_servers.allSatisfy({ !$0.urls.isEmpty && $0.urls.count <= 8 }) else {
+            throw MobileSharingBrokerError.malformed
+        }
+        return value
     }
 
     func dial(hostID: String, kind: String, peerID: String, capability: String) async throws -> MobileSharingBrokerSocket {
@@ -210,8 +214,16 @@ final class MobileSharingBrokerSocket: @unchecked Sendable {
 
     func receive() async throws -> MobileSharingBrokerFrame {
         let message: URLSessionWebSocketTask.Message
-        do { message = try await task.receive() }
-        catch {
+        do {
+            message = try await withTaskCancellationHandler(operation: {
+                try await task.receive()
+            }, onCancel: { [task] in
+                task.cancel(with: .goingAway, reason: nil)
+            })
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
             let code = task.closeCode.rawValue
             let reason = task.closeReason.map { String(decoding: $0.prefix(128), as: UTF8.self) } ?? ""
             switch code {

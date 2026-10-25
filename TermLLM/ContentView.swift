@@ -110,10 +110,25 @@ struct ContentView: View {
             guard !isFixture else { return }
             push.updateAttentionBadge(count: count)
         }
-        .onChange(of: mobileSharing.statuses) { _, statuses in
-            for (id, status) in statuses {
-                guard case .connected(_) = status, let source = aggregate.source(id) else { continue }
-                Task { await source.store.refresh() }
+        .onChange(of: mobileSharing.statuses) { previous, statuses in
+            for (id, status) in statuses where previous[id] != status {
+                guard let source = aggregate.source(id) else { continue }
+                switch status {
+                case .revoked, .identityChanged:
+                    source.revokeAuthorization()
+                case .connected(_):
+                    if let old = previous[id], case .connected(_) = old { continue }
+                    Task { @MainActor in
+                        if source.browserRevoked {
+                            guard let epoch = await source.prepareMobileSharingAuthorizationRestore(),
+                                  await mobileSharing.reinstallCapability(for: id),
+                                  await source.completeMobileSharingAuthorizationRestore(epoch: epoch) else { return }
+                        }
+                        await source.store.refresh()
+                    }
+                default:
+                    break
+                }
             }
         }
         .onChange(of: connections.selectedID, initial: true) { _, id in
@@ -508,8 +523,7 @@ struct ContentView: View {
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             if let source, source.connection.isMobileSharing {
-                                mobileSharing.markRevoked(source.id)
-                                source.revokeAuthorization()
+                                loadError = "This route is not available over Mobile Sharing."
                                 return
                             }
                             loginRequired = true
@@ -524,6 +538,7 @@ struct ContentView: View {
                         authenticationScript: browserAuthenticationScript,
                         connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
                         allowsMediaCapture: !isMobileSharing,
+                        isMobileSharing: isMobileSharing,
                         onAuthorizationRevoked: {
                             guard !HubFixture.isEnabled, let source, source.isActive,
                                   source.browserIdentity == browserIdentity else { return }
