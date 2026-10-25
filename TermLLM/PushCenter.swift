@@ -564,9 +564,9 @@ final class PushCenter: NSObject, ObservableObject {
     /// contains the page owns the tap, even when another one is selected.
     /// Without saved connections (legacy/tests) the configured server's origin
     /// is the only owner. A tap nobody owns just opens the app, quietly.
-    func open(urlString raw: String?, configuredServer: URL?, connections: [HubConnection] = [],
+    func open(urlString raw: String?, scope: String? = nil, configuredServer: URL?, connections: [HubConnection] = [],
               selectedConnectionID: UUID? = nil, windowID: String? = nil, isCompletion: Bool = false) {
-        guard let raw, let url = URL(string: raw) else { return }
+        guard let raw, var url = URL(string: raw) else { return }
         var connectionID: UUID?
         if connections.isEmpty {
             guard let server = configuredServer, let origin = Self.origin(url), origin == Self.origin(server) else {
@@ -574,11 +574,13 @@ final class PushCenter: NSObject, ObservableObject {
                 return
             }
         } else {
-            guard let owner = Self.owningConnection(for: url, in: connections, selectedID: selectedConnectionID) else {
+            guard let resolved = Self.resolveDestination(url, scope: scope, in: connections, selectedID: selectedConnectionID) else {
                 pushLog.info("Notification tap matches no saved connection; opening the app only")
                 return
             }
-            connectionID = owner.id
+            if resolved.url != url { pushLog.info("Notification page rebased onto the saved connection's mount") }
+            url = resolved.url
+            connectionID = resolved.connection.id
         }
         let sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
         let session = windowID.flatMap { id in
@@ -623,6 +625,82 @@ final class PushCenter: NSObject, ObservableObject {
                 if a.mountPath.count != b.mountPath.count { return a.mountPath.count < b.mountPath.count }
                 return a.id != selectedID && b.id == selectedID
             }
+    }
+
+    /// What a push is really about, read off its page path: the agent
+    /// (`node/<id>`) and the conversation (`chat/<selector>`), if any.
+    struct PushIntent: Equatable {
+        var nodeID: String?
+        var sessionSelector: String?
+
+        static func parse(path: String, scope: String?) -> PushIntent {
+            var intent = PushIntent()
+            let segments = path.split(separator: "/").map(String.init)
+            for (index, segment) in segments.enumerated() where index + 1 < segments.count {
+                if segment == "node", intent.nodeID == nil { intent.nodeID = segments[index + 1] }
+                if segment == "chat" { intent.sessionSelector = segments[index + 1] }
+            }
+            // A node behind a hub enrolls under its public `…/node/<id>` scope
+            // even when its own payload paths only know its local prefix.
+            if intent.nodeID == nil, let scope {
+                let scoped = (scope.removingPercentEncoding ?? scope).split(separator: "/").map(String.init)
+                if let index = scoped.firstIndex(of: "node"), index + 1 < scoped.count { intent.nodeID = scoped[index + 1] }
+            }
+            return intent
+        }
+    }
+
+    /// A push names "session X on agent Y", but its sender rarely knows the
+    /// public mount the app reaches it through: a node behind a hub sends its
+    /// local prefix, and a hub under `/hub/` may report paths without it.
+    /// Resolve the page against the saved connection on that origin and rebuild
+    /// it on the connection's real mount. An already-valid page is kept as is;
+    /// anything the connection cannot serve lands on the agent's front page,
+    /// or the connection root, never on a 404.
+    static func resolveDestination(_ url: URL, scope: String?, in connections: [HubConnection],
+                                   selectedID: UUID?) -> (url: URL, connection: HubConnection)? {
+        let candidates = connections.filter { $0.needsKindReview != true && sameOrigin($0.url, url) }
+        guard !candidates.isEmpty else { return nil }
+        let intent = PushIntent.parse(path: url.path, scope: scope)
+        if let owner = owningConnection(for: url, in: candidates, selectedID: selectedID) {
+            // A direct node serves every page under its mount. A hub serves its
+            // own root and `node/<id>/…`; any other path is a sender's guess.
+            if owner.kind == .directNode { return (url, owner) }
+            let relative = url.path.dropFirst(owner.mountPath.count - 1).split(separator: "/", omittingEmptySubsequences: false)
+            if url.path == owner.mountPath || url.path + "/" == owner.mountPath
+                || (relative.count >= 3 && relative[1] == "node" && !relative[2].isEmpty) {
+                return (url, owner)
+            }
+            return (rebuilt(intent, on: owner), owner)
+        }
+        // Same origin, but outside every saved mount: the mount itself is what
+        // the sender got wrong. A hub can reach any agent the push names.
+        let owner = candidates.first { $0.id == selectedID && ($0.kind == .hub || intent.nodeID == nil) }
+            ?? candidates.first { $0.kind == .hub }
+            ?? candidates.first { $0.id == selectedID }
+            ?? candidates[0]
+        return (rebuilt(intent, on: owner), owner)
+    }
+
+    private static func rebuilt(_ intent: PushIntent, on connection: HubConnection) -> URL {
+        let direct = connection.kind == .directNode
+        var root = connection.mountPath
+        if !direct {
+            guard let nodeID = intent.nodeID else { return connection.url }
+            root += "node/" + nodeID + "/"
+        }
+        if let selector = intent.sessionSelector,
+           let chat = HubNavigation.chatDestination(root + "chat/" + selector, server: connection.url,
+                                                    nodeID: intent.nodeID, direct: direct) {
+            return chat
+        }
+        return HubNavigation.chatDestination(root, server: connection.url, nodeID: intent.nodeID, direct: direct)
+            ?? connection.url
+    }
+
+    private static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let left = origin(lhs), let right = origin(rhs) else { return false }
+        return left == right
     }
 
     func routeManualToKeyScene() {
@@ -741,19 +819,22 @@ extension PushCenter: UNUserNotificationCenterDelegate {
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         let url = info[PushMessage.urlKey] as? String
-        let metadata = PushMessage.delivered(userInfo: info)?.metadata
-        handleNotificationTap(urlString: url, windowID: metadata?.windowID, isCompletion: metadata?.kind == "completion", completionHandler: completionHandler)
+        let delivered = PushMessage.delivered(userInfo: info)
+        let metadata = delivered?.metadata
+        handleNotificationTap(urlString: url, scope: delivered?.scope, windowID: metadata?.windowID,
+                              isCompletion: metadata?.kind == "completion", completionHandler: completionHandler)
     }
 
     /// Use the completion-handler delegate API so UIKit's completion runs on the
     /// main thread too. The async delegate's generated thunk can resume on a
     /// worker thread after our actor hop and crash UIKit's state restoration.
-    nonisolated func handleNotificationTap(urlString: String?, windowID: String? = nil, isCompletion: Bool = false, completionHandler: @escaping () -> Void) {
+    nonisolated func handleNotificationTap(urlString: String?, scope: String? = nil, windowID: String? = nil,
+                                           isCompletion: Bool = false, completionHandler: @escaping () -> Void) {
         // UIKit's completion handler is safe to call on the main thread.
         nonisolated(unsafe) let completionHandler = completionHandler
         Task { @MainActor in
             let saved = try? HubConnectionStore.validatedDocument(defaults.object(forKey: HubConnectionStore.storageKey))
-            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""),
+            open(urlString: urlString, scope: scope, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""),
                  connections: saved?.connections ?? [], selectedConnectionID: saved?.selectedID,
                  windowID: windowID, isCompletion: isCompletion)
             completionHandler()

@@ -694,17 +694,60 @@ final class PushCenterTests: XCTestCase {
         center.open(urlString: "https://hub.example/ui/node/dev/chat/2", configuredServer: hub.url,
                     connections: saved, selectedConnectionID: hub.id)
         XCTAssertEqual(center.pendingNavigation?.connectionID, node.id)
+        // A hub has no chat routes of its own: this is the sender's guess, so
+        // the hub's front page is shown instead of its 404 page.
         center.open(urlString: "https://hub.example/ui/chat/3", configuredServer: hub.url,
                     connections: saved, selectedConnectionID: node.id)
         XCTAssertEqual(center.pendingNavigation?.connectionID, hub.id)
+        XCTAssertEqual(center.pendingNavigation?.url.absoluteString, "https://hub.example/ui/")
+        // Same origin, outside every mount: the mount is what the sender got wrong.
+        center.open(urlString: "https://hub.example/elsewhere/", configuredServer: hub.url,
+                    connections: saved, selectedConnectionID: hub.id)
+        XCTAssertEqual(center.pendingNavigation?.connectionID, hub.id)
+        XCTAssertEqual(center.pendingNavigation?.url.absoluteString, "https://hub.example/ui/")
         let previous = try XCTUnwrap(center.pendingNavigation)
 
-        // Unowned taps (unknown server, connection awaiting review, outside every
-        // mount) only open the app and never replace a pending destination.
-        for url in ["https://unknown.example/chat/1", "https://review.example/chat/1", "https://hub.example/elsewhere/"] {
+        // Unowned taps (unknown server, connection awaiting review) only open
+        // the app and never replace a pending destination.
+        for url in ["https://unknown.example/chat/1", "https://review.example/chat/1"] {
             center.open(urlString: url, configuredServer: hub.url, connections: saved, selectedConnectionID: hub.id)
             XCTAssertEqual(center.pendingNavigation, previous, url)
         }
+    }
+
+    func testTapResolvesAgentAndSessionOntoTheConnectionsRealMount() {
+        let hub = HubConnection(id: UUID(), name: "Hub", kind: .hub, url: URL(string: "https://hub.example/hub/")!)
+        let direct = HubConnection(id: UUID(), name: "Laptop", kind: .directNode, url: URL(string: "https://laptop.example/ui/")!)
+        func resolve(_ url: String, scope: String? = nil, selected: UUID? = nil) -> (url: String, id: UUID)? {
+            PushCenter.resolveDestination(URL(string: url)!, scope: scope, in: [hub, direct], selectedID: selected)
+                .map { ($0.url.absoluteString, $0.connection.id) }
+        }
+        // Valid pages are kept verbatim, query and all.
+        XCTAssertEqual(resolve("https://hub.example/hub/node/Dev/chat/s1?view=full")?.url, "https://hub.example/hub/node/Dev/chat/s1?view=full")
+        XCTAssertEqual(resolve("https://hub.example/hub/")?.url, "https://hub.example/hub/")
+        XCTAssertEqual(resolve("https://laptop.example/ui/anything/else")?.url, "https://laptop.example/ui/anything/else")
+
+        // A hub under /hub/ reports its node pages without the mount.
+        XCTAssertEqual(resolve("https://hub.example/node/Dev/chat/s1")?.url, "https://hub.example/hub/node/Dev/chat/s1")
+        XCTAssertEqual(resolve("https://hub.example/node/Dev/")?.url, "https://hub.example/hub/node/Dev/")
+        // `term-llm notify app` from a node behind the hub sends the node's own
+        // /ui prefix; the enrolled scope says which agent that is.
+        XCTAssertEqual(resolve("https://hub.example/ui/", scope: "/hub/node/Dev")?.url, "https://hub.example/hub/node/Dev/")
+        XCTAssertEqual(resolve("https://hub.example/ui/chat/7", scope: "/node/Dev")?.url, "https://hub.example/hub/node/Dev/chat/7")
+        XCTAssertEqual(resolve("https://hub.example/hub/ui/", scope: "/hub/node/Dev")?.url, "https://hub.example/hub/node/Dev/")
+        // No agent anywhere in the push: the hub's front page.
+        XCTAssertEqual(resolve("https://hub.example/ui/")?.url, "https://hub.example/hub/")
+        XCTAssertEqual(resolve("https://hub.example/hub/chat/7")?.url, "https://hub.example/hub/")
+        // A selector the chat route cannot carry still reaches the agent.
+        XCTAssertEqual(resolve("https://hub.example/node/Dev/chat/bad.slug")?.url, "https://hub.example/hub/node/Dev/")
+
+        // A direct node mounted under /ui receiving a root-relative page.
+        XCTAssertEqual(resolve("https://laptop.example/chat/5")?.url, "https://laptop.example/ui/chat/5")
+        XCTAssertEqual(resolve("https://laptop.example/")?.url, "https://laptop.example/ui/")
+        XCTAssertEqual(resolve("https://laptop.example/chat/5")?.id, direct.id)
+
+        // Unknown origins stay unowned.
+        XCTAssertNil(resolve("https://other.example/node/Dev/chat/s1"))
     }
 
     func testOwningConnectionPrefersSelectedOnEqualMounts() {
