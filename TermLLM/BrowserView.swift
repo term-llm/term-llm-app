@@ -140,6 +140,8 @@ struct BrowserView: UIViewRepresentable {
     /// Isolated source pages may never commit an ancestor/sibling same-origin
     /// document: direct frontend token storage is origin-wide, not path-wide.
     var connectionMount: URL? = nil
+    /// Peer sources are text/data only and must never gain camera or microphone.
+    var allowsMediaCapture = true
     var onAuthorizationRevoked: () -> Void = {}
     /// Committed main document only; provisional destinations are not retained context.
     var onDocumentCommitted: (URL) -> Void = { _ in }
@@ -669,6 +671,10 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
+            guard parent.allowsMediaCapture else {
+                decisionHandler(.deny)
+                return
+            }
             guard type == .microphone, isHubOrigin(origin) else {
                 decisionHandler(.prompt)
                 return

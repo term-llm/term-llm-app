@@ -11,6 +11,10 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
     var kind: Kind
     var url: URL
     var needsKindReview: Bool?
+    /// Present only for a Mobile Sharing source. This pinned Ed25519 host key,
+    /// not the loopback browser URL, is the durable source/trust identity.
+    var mobileSharingHostKey: String? = nil
+    var isMobileSharing: Bool { mobileSharingHostKey != nil }
     var mountPath: String {
         let prefix = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return prefix.isEmpty ? "/" : "/" + prefix + "/"
@@ -56,12 +60,24 @@ final class HubConnectionStore: ObservableObject {
               var doc = try? JSONDecoder().decode(Document.self, from: data),
               Set(doc.connections.map(\.id)).count == doc.connections.count,
               doc.selectedID == nil || doc.connections.contains(where: { $0.id == doc.selectedID }) else { throw ValidationError.corrupt }
+        var identities = Set<String>()
         var endpoints = Set<String>()
         for index in doc.connections.indices {
             let source = doc.connections[index]
-            guard let url = canonicalURL(source.url.absoluteString),
-                  !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  endpoints.insert(url.absoluteString).inserted else { throw ValidationError.corrupt }
+            guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let url = canonicalURL(source.url.absoluteString),
+                  endpoints.insert(url.absoluteString).inserted else {
+                throw ValidationError.corrupt
+            }
+            if let encodedKey = source.mobileSharingHostKey {
+                guard source.kind == .directNode, source.needsKindReview != true,
+                      let key = MobileSharingBase64URL.decode(encodedKey, maximumBytes: 32), key.count == 32,
+                      Self.isMobileSharingBridgeURL(url), identities.insert("peer:\(encodedKey)").inserted else {
+                    throw ValidationError.corrupt
+                }
+            } else {
+                guard identities.insert("http:\(url.absoluteString)").inserted else { throw ValidationError.corrupt }
+            }
             doc.connections[index].url = url
         }
         return doc
@@ -103,6 +119,43 @@ final class HubConnectionStore: ObservableObject {
         normalized.path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         normalized.path = normalized.path.isEmpty ? "/" : "/" + normalized.path + "/"
         return normalized.url
+    }
+
+    static func isMobileSharingBridgeURL(_ url: URL) -> Bool {
+        guard url.scheme == "http", url.host?.lowercased() == "localhost",
+              let port = url.port, (1024...65535).contains(port),
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              let canonical = canonicalURL(url.absoluteString), canonical == url else { return false }
+        return true
+    }
+
+    /// Adds or updates a paired source by its pinned host identity. The local
+    /// bridge URL is presentation/transport metadata and never its identity.
+    @discardableResult
+    func saveMobileSharing(name: String, hostKey: Data, bridgePort: UInt16,
+                           basePath: String = "/") throws -> HubConnection {
+        let normalizedPath = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let path = normalizedPath.isEmpty ? "/" : "/" + normalizedPath + "/"
+        guard persistenceError == nil, hostKey.count == 32, bridgePort >= 1024,
+              MobileSharingCrypto.validBasePath(basePath),
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let url = URL(string: "http://localhost:\(bridgePort)\(path)") else { throw ValidationError.invalid }
+        let encodedKey = MobileSharingBase64URL.encode(hostKey)
+        if let index = connections.firstIndex(where: { $0.mobileSharingHostKey == encodedKey }) {
+            connections[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Keep the original stable browser origin across re-pairing.
+            connections[index].needsKindReview = nil
+            persist()
+            return connections[index]
+        }
+        guard !connections.contains(where: { $0.url == url }) else { throw ValidationError.duplicate }
+        let source = HubConnection(id: UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                   kind: .directNode, url: url, needsKindReview: nil,
+                                   mobileSharingHostKey: encodedKey)
+        connections.append(source)
+        if selectedID == nil { selectedID = source.id }
+        persist()
+        return source
     }
 
     /// Discover new endpoints without borrowing credentials or guessing on failure.

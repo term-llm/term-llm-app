@@ -205,7 +205,14 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
                 try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
             }
         }
-        directClient?.on_unauthorized = { [weak self] in await self?.revokeAuthorization(expected: expected) }
+        let mobileSharingSource = connection.isMobileSharing
+        let sourceID = id
+        directClient?.on_unauthorized = { [weak self] in
+            if mobileSharingSource {
+                await MainActor.run { MobileSharingRuntime.shared.markRevoked(sourceID) }
+            }
+            await self?.revokeAuthorization(expected: expected)
+        }
     }
 
     func revokeAuthorization(expected: UInt64? = nil) {
@@ -356,7 +363,9 @@ final class HubAggregateStore: ObservableObject {
     private let makeSource: @MainActor (HubConnection) -> HubSourceWorkspace
 
     init(makeSource: @escaping @MainActor (HubConnection) -> HubSourceWorkspace = { connection in
-        HubSourceWorkspace(connection: connection, bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage())
+        HubSourceWorkspace(connection: connection,
+                           bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage(),
+                           transport: MobileSharingRuntime.shared.transport(for: connection))
     }) { self.makeSource = makeSource }
 
     func synchronize(_ connections: [HubConnection]) {

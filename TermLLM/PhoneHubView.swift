@@ -491,6 +491,7 @@ struct PhoneHubView: View {
 struct PhoneHubConnectionsView: View {
     @ObservedObject var connections: HubConnectionStore
     @ObservedObject var aggregate: HubAggregateStore
+    @ObservedObject private var mobileSharing = MobileSharingRuntime.shared
     /// Opening a chat from Hub management leaves Settings.
     let onOpenChat: (UUID, URL) -> Void
     @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
@@ -578,13 +579,21 @@ struct PhoneHubConnectionsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(source.connection.name).font(.headline)
                 .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-            Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
-                .font(.caption).foregroundStyle(.secondary)
-            if source.store.unauthorized {
+            if source.connection.isMobileSharing {
+                Text("Mobile Sharing · \(source.connection.mobileSharingHostKey?.prefix(12) ?? "unknown identity")…")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(mobileSharing.status(for: source.id).label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(mobileSharingStatusColor(source.id))
+            } else {
+                Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if source.store.unauthorized && !source.connection.isMobileSharing {
                 Text("Needs sign-in").foregroundStyle(.orange)
                 Button("Sign in") { showAuthentication(source) }
                     .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
-            } else {
+            } else if !source.connection.isMobileSharing {
                 sourceSyncStatus(source)
                 if let error = source.error {
                     Text(error).font(.caption).foregroundStyle(.secondary)
@@ -593,27 +602,43 @@ struct PhoneHubConnectionsView: View {
             HStack {
                 Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
                     .accessibilityIdentifier("phoneHub.select.\(source.id.uuidString)")
-                Button("Edit") { editor = PhoneHubView.Editor(source: source.connection) }
-                    .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+                if !source.connection.isMobileSharing {
+                    Button("Edit") { editor = PhoneHubView.Editor(source: source.connection) }
+                        .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+                }
                 Button("Remove", role: .destructive) { connections.remove(source.id) }
                     .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
             }.buttonStyle(.borderless)
             HStack {
-                Button(source.error == nil ? "Refresh" : "Retry") {
-                    if source.store.unauthorized { showAuthentication(source) }
-                    else { Task { await source.store.refresh() } }
-                }
-                .disabled(source.store.refreshing)
-                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
-                if source.connection.kind == .hub {
-                    Button("Manage Server") { detailID = source.id }
-                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                if source.connection.isMobileSharing {
+                    Button("Reconnect") { mobileSharing.reconnectNow(source.id) }
+                        .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
                 } else {
-                    Button("Authentication") { directSignInID = source.id }
-                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                    Button(source.error == nil ? "Refresh" : "Retry") {
+                        if source.store.unauthorized { showAuthentication(source) }
+                        else { Task { await source.store.refresh() } }
+                    }
+                    .disabled(source.store.refreshing)
+                    .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+                    if source.connection.kind == .hub {
+                        Button("Manage Server") { detailID = source.id }
+                            .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                    } else {
+                        Button("Authentication") { directSignInID = source.id }
+                            .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                    }
                 }
             }.buttonStyle(.borderless)
         }.padding(.vertical, 4)
+    }
+
+    private func mobileSharingStatusColor(_ sourceID: UUID) -> Color {
+        switch mobileSharing.status(for: sourceID) {
+        case .connected(_): .green
+        case .connecting: .secondary
+        case .revoked, .identityChanged, .failed(_): .orange
+        case .offline, .suspended: .secondary
+        }
     }
 
     /// A permanent status slot: refreshing changes its contents, never the

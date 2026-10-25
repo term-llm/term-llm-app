@@ -111,6 +111,24 @@
 		9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */; };
 		ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */; };
 		FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */; };
+		A20000000000000000000001 /* PeerWireProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* PeerWireProtocol.swift */; };
+		A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* PeerHTTPMultiplexer.swift */; };
+		A20000000000000000000003 /* PeerSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* PeerSession.swift */; };
+		A20000000000000000000004 /* PeerWebRTCSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* PeerWebRTCSession.swift */; };
+		A20000000000000000000005 /* WebRTCHubTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* WebRTCHubTransport.swift */; };
+		A20000000000000000000006 /* PeerLoopbackBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* PeerLoopbackBridge.swift */; };
+		A20000000000000000000007 /* PeerLoopbackHTTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* PeerLoopbackHTTP.swift */; };
+		A20000000000000000000008 /* PeerLoopbackListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* PeerLoopbackListener.swift */; };
+		A20000000000000000000009 /* MobileSharingIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* MobileSharingIdentityStore.swift */; };
+		A2000000000000000000000A /* MobileSharingProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000A /* MobileSharingProtocol.swift */; };
+		A2000000000000000000000B /* MobileSharingBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* MobileSharingBroker.swift */; };
+		A2000000000000000000000C /* MobileSharingConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000C /* MobileSharingConnector.swift */; };
+		A2000000000000000000000D /* MobileSharingRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* MobileSharingRuntime.swift */; };
+		A2000000000000000000000E /* MobileSharingPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* MobileSharingPairingView.swift */; };
+		A21000000000000000000001 /* MobileSharingIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000001 /* MobileSharingIdentityTests.swift */; };
+		A21000000000000000000002 /* MobileSharingProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* MobileSharingProtocolTests.swift */; };
+		A21000000000000000000003 /* MobileSharingRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000003 /* MobileSharingRuntimeTests.swift */; };
+		A30200000000000000000001 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = A30100000000000000000001 /* WebRTC */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -256,6 +274,23 @@
 		D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStoreTests.swift; sourceTree = "<group>"; };
 		E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStoreTests.swift; sourceTree = "<group>"; };
 		FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubView.swift; sourceTree = "<group>"; };
+		A10000000000000000000001 /* PeerWireProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerWireProtocol.swift; sourceTree = "<group>"; };
+		A10000000000000000000002 /* PeerHTTPMultiplexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerHTTPMultiplexer.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* PeerSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerSession.swift; sourceTree = "<group>"; };
+		A10000000000000000000004 /* PeerWebRTCSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerWebRTCSession.swift; sourceTree = "<group>"; };
+		A10000000000000000000005 /* WebRTCHubTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCHubTransport.swift; sourceTree = "<group>"; };
+		A10000000000000000000006 /* PeerLoopbackBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackBridge.swift; sourceTree = "<group>"; };
+		A10000000000000000000007 /* PeerLoopbackHTTP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackHTTP.swift; sourceTree = "<group>"; };
+		A10000000000000000000008 /* PeerLoopbackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackListener.swift; sourceTree = "<group>"; };
+		A10000000000000000000009 /* MobileSharingIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingIdentityStore.swift; sourceTree = "<group>"; };
+		A1000000000000000000000A /* MobileSharingProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingProtocol.swift; sourceTree = "<group>"; };
+		A1000000000000000000000B /* MobileSharingBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingBroker.swift; sourceTree = "<group>"; };
+		A1000000000000000000000C /* MobileSharingConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingConnector.swift; sourceTree = "<group>"; };
+		A1000000000000000000000D /* MobileSharingRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingRuntime.swift; sourceTree = "<group>"; };
+		A1000000000000000000000E /* MobileSharingPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingPairingView.swift; sourceTree = "<group>"; };
+		A11000000000000000000001 /* MobileSharingIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingIdentityTests.swift; sourceTree = "<group>"; };
+		A11000000000000000000002 /* MobileSharingProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingProtocolTests.swift; sourceTree = "<group>"; };
+		A11000000000000000000003 /* MobileSharingRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSharingRuntimeTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -263,6 +298,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30200000000000000000001 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -372,6 +408,20 @@
 				0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */,
 				C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */,
 				FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */,
+				A10000000000000000000001 /* PeerWireProtocol.swift */,
+				A10000000000000000000002 /* PeerHTTPMultiplexer.swift */,
+				A10000000000000000000003 /* PeerSession.swift */,
+				A10000000000000000000004 /* PeerWebRTCSession.swift */,
+				A10000000000000000000005 /* WebRTCHubTransport.swift */,
+				A10000000000000000000006 /* PeerLoopbackBridge.swift */,
+				A10000000000000000000007 /* PeerLoopbackHTTP.swift */,
+				A10000000000000000000008 /* PeerLoopbackListener.swift */,
+				A10000000000000000000009 /* MobileSharingIdentityStore.swift */,
+				A1000000000000000000000A /* MobileSharingProtocol.swift */,
+				A1000000000000000000000B /* MobileSharingBroker.swift */,
+				A1000000000000000000000C /* MobileSharingConnector.swift */,
+				A1000000000000000000000D /* MobileSharingRuntime.swift */,
+				A1000000000000000000000E /* MobileSharingPairingView.swift */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -412,6 +462,9 @@
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
 				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
+				A11000000000000000000001 /* MobileSharingIdentityTests.swift */,
+				A11000000000000000000002 /* MobileSharingProtocolTests.swift */,
+				A11000000000000000000003 /* MobileSharingRuntimeTests.swift */,
 			);
 			path = TermLLMTests;
 			sourceTree = "<group>";
@@ -466,6 +519,9 @@
 				000000000000000000000478 /* PBXTargetDependency */,
 			);
 			name = TermLLM;
+			packageProductDependencies = (
+				A30100000000000000000001 /* WebRTC */,
+			);
 			productName = TermLLM;
 			productReference = 000000000000000000000030 /* TermLLM.app */;
 			productType = "com.apple.product-type.application";
@@ -542,6 +598,9 @@
 			);
 			mainGroup = 000000000000000000000002;
 			productRefGroup = 000000000000000000000003 /* Products */;
+			packageReferences = (
+				A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -651,6 +710,20 @@
 				ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */,
 				0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */,
 				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
+				A20000000000000000000001 /* PeerWireProtocol.swift in Sources */,
+				A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */,
+				A20000000000000000000003 /* PeerSession.swift in Sources */,
+				A20000000000000000000004 /* PeerWebRTCSession.swift in Sources */,
+				A20000000000000000000005 /* WebRTCHubTransport.swift in Sources */,
+				A20000000000000000000006 /* PeerLoopbackBridge.swift in Sources */,
+				A20000000000000000000007 /* PeerLoopbackHTTP.swift in Sources */,
+				A20000000000000000000008 /* PeerLoopbackListener.swift in Sources */,
+				A20000000000000000000009 /* MobileSharingIdentityStore.swift in Sources */,
+				A2000000000000000000000A /* MobileSharingProtocol.swift in Sources */,
+				A2000000000000000000000B /* MobileSharingBroker.swift in Sources */,
+				A2000000000000000000000C /* MobileSharingConnector.swift in Sources */,
+				A2000000000000000000000D /* MobileSharingRuntime.swift in Sources */,
+				A2000000000000000000000E /* MobileSharingPairingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -690,6 +763,9 @@
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
 				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
+				A21000000000000000000001 /* MobileSharingIdentityTests.swift in Sources */,
+				A21000000000000000000002 /* MobileSharingProtocolTests.swift in Sources */,
+				A21000000000000000000003 /* MobileSharingRuntimeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1027,6 +1103,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = revision;
+				revision = 44f36788497f701bc8c0306de3a1c2511d56019d;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A30100000000000000000001 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000001 /* Project object */;
 }

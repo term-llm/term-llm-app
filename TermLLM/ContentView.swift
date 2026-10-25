@@ -42,6 +42,8 @@ struct ContentView: View {
     @StateObject private var deviceTools = DeviceToolsSettings.shared
     @StateObject private var voiceLaunches = VoiceLaunchCenter.shared
     @StateObject private var push = PushCenter.shared
+    @StateObject private var mobileSharing = MobileSharingRuntime.shared
+    @StateObject private var mobilePairing = MobileSharingPairingModel()
     @State private var pushWindowID: String?
     @State private var pushActivity: NSUserActivity?
     @State private var voiceRequest: VoiceBrowserLaunch?
@@ -101,11 +103,18 @@ struct ContentView: View {
         .onChange(of: connections.connections, initial: true) { _, sources in
             guard !HubFixture.isEnabled else { return }
             aggregate.synchronize(sources.filter { $0.needsKindReview != true })
+            mobileSharing.synchronize(sources)
             if !isFixture { push.updateAttentionBadge(count: aggregate.attentionBadgeCount) }
         }
         .onChange(of: aggregate.attentionBadgeCount) { _, count in
             guard !isFixture else { return }
             push.updateAttentionBadge(count: count)
+        }
+        .onChange(of: mobileSharing.statuses) { _, statuses in
+            for (id, status) in statuses {
+                guard case .connected(_) = status, let source = aggregate.source(id) else { continue }
+                Task { await source.store.refresh() }
+            }
         }
         .onChange(of: connections.selectedID, initial: true) { _, id in
             HubCookieScopeRegistry.shared.selectedID = id
@@ -159,8 +168,13 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             settings.safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
         }
+        .sheet(isPresented: Binding(get: { mobilePairing.isPresented }, set: { if !$0 { mobilePairing.dismiss() } })) {
+            MobileSharingPairingView(model: mobilePairing, catalog: connections, runtime: mobileSharing)
+        }
         .onOpenURL { link in
-            guard !isFixture, let server = HubConnectionImport.server(from: link) else { return }
+            guard !isFixture else { return }
+            if mobilePairing.handle(link) { return }
+            guard let server = HubConnectionImport.server(from: link) else { return }
             importedServer = server
         }
         .alert("Add connection?", isPresented: Binding(
@@ -197,9 +211,13 @@ struct ContentView: View {
             if let request = voiceLaunches.request { beginVoiceLaunch(request) }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { aggregate.setPollingSuspended(true) }
+            if phase == .background {
+                aggregate.setPollingSuspended(true)
+                mobileSharing.setForeground(false)
+            }
             if phase == .active {
                 aggregate.setPollingSuspended(false)
+                mobileSharing.setForeground(true)
                 Task { await push.refreshAuthorization() }
                 if let request = voiceLaunches.request { beginVoiceLaunch(request) }
                 push.routeManualToKeyScene()
@@ -466,6 +484,7 @@ struct ContentView: View {
     private func page(_ url: URL) -> some View {
         let source = selectedWorkspace
         let browserIdentity = source?.browserIdentity
+        let isMobileSharing = source?.connection.isMobileSharing == true
         return ZStack(alignment: .top) {
             if !HubFixture.isEnabled && !workspaceChosen {
                 Color.clear
@@ -485,23 +504,30 @@ struct ContentView: View {
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
                         scenePhase: chatIsVisible ? scenePhase : .inactive, isSigningIn: isSigningIn,
-                        deviceTools: !isFixture && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
+                        deviceTools: !isFixture && !isMobileSharing && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
+                            if let source, source.connection.isMobileSharing {
+                                mobileSharing.markRevoked(source.id)
+                                source.revokeAuthorization()
+                                return
+                            }
                             loginRequired = true
                             if hubRole == .direct && chatIsVisible { signIn(to: url) }
                         }, onRevealControls: revealControls,
-                        voiceLaunch: voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
-                        push: isFixture ? nil : push, pushNavigation: push.pendingNavigation, pushChangeCount: push.changeCount,
+                        voiceLaunch: isMobileSharing ? nil : voiceRequest, onVoiceLaunchFinished: finishVoiceLaunch,
+                        push: isFixture || isMobileSharing ? nil : push, pushNavigation: isMobileSharing ? nil : push.pendingNavigation, pushChangeCount: push.changeCount,
                         onPushNavigationHandled: push.navigationHandled,
                         onPushWindowReady: { pushWindowID = $0 }, nativeDestination: hubDestination,
                         isContentVisible: chatIsVisible,
                         websiteDataStore: HubFixture.isEnabled ? nil : selectedWorkspace?.security?.dataStore,
                         authenticationScript: browserAuthenticationScript,
                         connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
+                        allowsMediaCapture: !isMobileSharing,
                         onAuthorizationRevoked: {
                             guard !HubFixture.isEnabled, let source, source.isActive,
                                   source.browserIdentity == browserIdentity else { return }
+                            if source.connection.isMobileSharing { MobileSharingRuntime.shared.markRevoked(source.id) }
                             source.revokeAuthorization()
                         }, onDocumentCommitted: { destination in
                             guard !HubFixture.isEnabled, let source, let browserIdentity else { return }
@@ -690,7 +716,7 @@ struct ContentView: View {
     /// One agent across all connections. Choosing it never switches the chat;
     /// only running the shortcut does.
     private var voiceShortcutSection: some View {
-        let nodes = aggregate.nodes
+        let nodes = aggregate.nodes.filter { !$0.source.isMobileSharing }
         let savedIsListed = voiceTarget.map { target in nodes.contains { $0.source.id == target.sourceID && $0.node.id == target.nodeID } } ?? true
         return Section {
             Picker("Agent", selection: Binding(
