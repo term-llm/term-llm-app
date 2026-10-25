@@ -323,61 +323,82 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
 
 @MainActor
 final class ListenAudioSessionTests: XCTestCase {
-    func testNormalPlaybackDoesNotMix() throws {
+    func testNormalPlaybackDoesNotMix() async throws {
         let session = FakeListenAudioSession()
         let engine = AVListenEngine(audioSession: session)
-        try engine.play(rate: 1)
+        try await engine.play(rate: 1)
         XCTAssertEqual(session.categoryOptions, [[]])
         XCTAssertEqual(session.activationCount, 1)
     }
 
-    func testBackgroundInterruptionDenialRetriesWithMixing() throws {
+    func testSessionCallsStayOffTheMainThreadAndInOrder() async throws {
+        let session = FakeListenAudioSession()
+        let engine = AVListenEngine(audioSession: session)
+        try await engine.play(rate: 1)
+        engine.stop()
+        // Queued behind the deactivation, so this also waits for it.
+        try await engine.play(rate: 1)
+        XCTAssertEqual(session.activeCalls, [true, false, true])
+        XCTAssertFalse(session.calledOnMainThread)
+    }
+
+    func testBackgroundInterruptionDenialRetriesWithMixing() async throws {
         let session = FakeListenAudioSession()
         session.activationErrors = [NSError(domain: NSOSStatusErrorDomain,
                                             code: AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue)]
         let engine = AVListenEngine(audioSession: session)
-        try engine.play(rate: 1)
+        try await engine.play(rate: 1)
         XCTAssertEqual(session.categoryOptions, [[], [.mixWithOthers]])
         XCTAssertEqual(session.activationCount, 2)
 
         // The fallback is not sticky: the next request tries exclusive playback.
-        try engine.play(rate: 1)
+        try await engine.play(rate: 1)
         XCTAssertEqual(session.categoryOptions.last, [])
     }
 
-    func testUnrelatedActivationErrorsAreNotRetried() {
+    func testUnrelatedActivationErrorsAreNotRetried() async {
         let session = FakeListenAudioSession()
         session.activationErrors = [NSError(domain: NSOSStatusErrorDomain, code: -50)]
         let engine = AVListenEngine(audioSession: session)
-        XCTAssertThrowsError(try engine.play(rate: 1)) { error in
+        do {
+            try await engine.play(rate: 1)
+            XCTFail("expected an error")
+        } catch {
             XCTAssertEqual((error as NSError).code, -50)
         }
         XCTAssertEqual(session.activationCount, 1)
         XCTAssertEqual(session.categoryOptions, [[]])
     }
 
-    func testFailedFallbackIsReported() {
+    func testFailedFallbackIsReported() async {
         let session = FakeListenAudioSession()
         session.activationErrors = [
             NSError(domain: NSOSStatusErrorDomain, code: AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue),
             NSError(domain: NSOSStatusErrorDomain, code: -50),
         ]
         let engine = AVListenEngine(audioSession: session)
-        XCTAssertThrowsError(try engine.play(rate: 1)) { error in
+        do {
+            try await engine.play(rate: 1)
+            XCTFail("expected an error")
+        } catch {
             XCTAssertEqual((error as NSError).code, -50)
         }
         XCTAssertEqual(session.activationCount, 2)
     }
 }
 
-@MainActor
-private final class FakeListenAudioSession: ListenAudioSession {
+/// Called on the engine's session queue; tests read it only after awaiting
+/// the engine, which orders those reads after the calls.
+private final class FakeListenAudioSession: ListenAudioSession, @unchecked Sendable {
     var categoryOptions: [AVAudioSession.CategoryOptions] = []
     var activationErrors: [NSError] = []
     var activationCount = 0
+    var activeCalls: [Bool] = []
+    var calledOnMainThread = false
 
     func setCategory(_ category: AVAudioSession.Category, mode: AVAudioSession.Mode,
                      policy: AVAudioSession.RouteSharingPolicy, options: AVAudioSession.CategoryOptions) throws {
+        if Thread.isMainThread { calledOnMainThread = true }
         XCTAssertEqual(category, .playback)
         XCTAssertEqual(mode, .spokenAudio)
         XCTAssertEqual(policy, .longFormAudio)
@@ -385,6 +406,8 @@ private final class FakeListenAudioSession: ListenAudioSession {
     }
 
     func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {
+        if Thread.isMainThread { calledOnMainThread = true }
+        activeCalls.append(active)
         guard active else { return }
         activationCount += 1
         if !activationErrors.isEmpty { throw activationErrors.removeFirst() }

@@ -137,7 +137,8 @@ final class ListenPlayer {
             guard attempt == generation else { return }
             loadedID = id
             if autoplay {
-                try engine.play(rate: rate)
+                try await engine.play(rate: rate)
+                guard attempt == generation else { return }
                 status = .playing
             } else {
                 status = .paused
@@ -166,8 +167,17 @@ final class ListenPlayer {
         if let current, loadedID == current.id, status == .paused {
             if await switchToDownload(at: engine.currentTime, autoplay: true) { return }
             willStartPlayback?()
-            try engine.play(rate: rate)
+            // Playing as soon as asked, so a pause while the audio session
+            // activates reaches the engine and wins.
+            let attempt = generation
             status = .playing
+            do {
+                try await engine.play(rate: rate)
+            } catch {
+                if attempt == generation, status == .playing { status = .paused }
+                throw error
+            }
+            guard attempt == generation, status == .playing else { return }
             showNowPlaying()
             return
         }

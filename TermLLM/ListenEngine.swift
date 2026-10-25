@@ -46,7 +46,7 @@ protocol ListenEngine: AnyObject {
     var isStalled: Bool { get }
     /// Prepares `source`, positioned at `startAt`; throws when it can't play.
     func load(_ source: ListenSource, startAt: TimeInterval) async throws
-    func play(rate: Float) throws
+    func play(rate: Float) async throws
     func pause()
     func seek(to seconds: TimeInterval) async
     func setRate(_ rate: Float)
@@ -100,7 +100,7 @@ struct WebKitCookieJar: ListenCookieJar {
 // MARK: - AVFoundation
 
 /// Injectable so session activation failures can be tested without real audio.
-@MainActor
+/// Called only from `ListenAudioSessionQueue`'s background queue.
 protocol ListenAudioSession: AnyObject {
     func setCategory(_ category: AVAudioSession.Category, mode: AVAudioSession.Mode,
                      policy: AVAudioSession.RouteSharingPolicy, options: AVAudioSession.CategoryOptions) throws
@@ -109,12 +109,64 @@ protocol ListenAudioSession: AnyObject {
 
 extension AVAudioSession: ListenAudioSession {}
 
+/// Configures and (de)activates the audio session off the main thread: these
+/// calls block on the system audio server and can stall the UI. One serial
+/// queue keeps a stop followed quickly by a play in order.
+final class ListenAudioSessionQueue: @unchecked Sendable {
+    // Only touched on `queue`.
+    private let session: any ListenAudioSession
+    private let queue = DispatchQueue(label: "TermLLM.ListenAudioSession", qos: .userInitiated)
+
+    init(session: any ListenAudioSession) {
+        self.session = session
+    }
+
+    func activate(spoken: Bool) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try self.activateNow(spoken: spoken)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Fire and forget: nothing waits on giving the session up.
+    func deactivate() {
+        queue.async { try? self.session.setActive(false, options: .notifyOthersOnDeactivation) }
+    }
+
+    private func activateNow(spoken: Bool) throws {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let mode: AVAudioSession.Mode = spoken ? .spokenAudio : .default
+        try session.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [])
+        do {
+            try session.setActive(true, options: [])
+        } catch {
+            let error = error as NSError
+            guard error.domain == NSOSStatusErrorDomain,
+                  error.code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue else { throw error }
+            // A request arriving from a locked-screen voice conversation runs
+            // in the background. iOS won't let it interrupt another audio
+            // session there; retry cooperatively rather than refusing to play.
+            try session.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [.mixWithOthers])
+            try session.setActive(true, options: [])
+        }
+    }
+}
+
 @MainActor
 final class AVListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
 
     private let player = AVPlayer()
-    private let audioSession: any ListenAudioSession
+    private let audioSession: ListenAudioSessionQueue
+    /// Bumped by every play, pause, and stop so a play that finishes
+    /// activating after a later pause or stop doesn't start audio.
+    private var playRequest = 0
     private var timeObserver: Any?
     private var itemObservers: [NSObjectProtocol] = []
     private var keyValueObservers: [NSKeyValueObservation] = []
@@ -126,7 +178,7 @@ final class AVListenEngine: ListenEngine {
     static let loadTimeout: Duration = .seconds(30)
 
     init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance()) {
-        self.audioSession = audioSession
+        self.audioSession = ListenAudioSessionQueue(session: audioSession)
         player.automaticallyWaitsToMinimizeStalling = true
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
                                                       queue: .main) { [weak self] _ in
@@ -205,25 +257,17 @@ final class AVListenEngine: ListenEngine {
         if startAt > 0 { await seek(to: startAt) }
     }
 
-    func play(rate: Float) throws {
-        let mode: AVAudioSession.Mode = spoken ? .spokenAudio : .default
-        try audioSession.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [])
-        do {
-            try audioSession.setActive(true, options: [])
-        } catch {
-            let error = error as NSError
-            guard error.domain == NSOSStatusErrorDomain,
-                  error.code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue else { throw error }
-            // A request arriving from a locked-screen voice conversation runs
-            // in the background. iOS won't let it interrupt another audio
-            // session there; retry cooperatively rather than refusing to play.
-            try audioSession.setCategory(.playback, mode: mode, policy: .longFormAudio, options: [.mixWithOthers])
-            try audioSession.setActive(true, options: [])
-        }
+    func play(rate: Float) async throws {
+        playRequest += 1
+        let request = playRequest
+        try await audioSession.activate(spoken: spoken)
+        // A pause or stop while the session was activating wins.
+        guard request == playRequest, player.currentItem != nil else { return }
         player.playImmediately(atRate: rate)
     }
 
     func pause() {
+        playRequest += 1
         player.pause()
     }
 
@@ -247,7 +291,8 @@ final class AVListenEngine: ListenEngine {
         player.replaceCurrentItem(with: nil)
         removeItemObservers()
         isRemote = false
-        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        playRequest += 1
+        audioSession.deactivate()
     }
 
     private func waitUntilReady(_ item: AVPlayerItem) async throws {

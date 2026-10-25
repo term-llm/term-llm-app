@@ -25,7 +25,7 @@ final class FakeListenEngine: ListenEngine {
         duration = durations[source.url]
     }
 
-    func play(rate: Float) throws {
+    func play(rate: Float) async throws {
         playing = true
         rates.append(rate)
     }
