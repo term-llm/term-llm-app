@@ -315,7 +315,8 @@ struct BrowserView: UIViewRepresentable {
             }
             if let navigation = parent.pushNavigation, let scene = view.window?.windowScene,
                navigation.windowID == MainActor.assumeIsolated({ PushCenter.windowID(for: scene) }),
-               navigation.id != handledPushNavigation, sameOrigin(navigation.url, parent.url) {
+               navigation.id != handledPushNavigation,
+               HubNavigation.isWithinMount(navigation.url, server: parent.connectionMount ?? parent.url) {
                 cancelVoiceLaunch(error: "Voice launch interrupted by notification tap.")
                 resetRecovery()
                 rejectedHTTPResponse = false

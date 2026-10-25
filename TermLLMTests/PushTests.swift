@@ -674,6 +674,46 @@ final class PushCenterTests: XCTestCase {
         XCTAssertNil(center.pendingNavigation)
     }
 
+    func testTapRoutesToOwningSavedConnectionNotJustTheSelectedOne() throws {
+        let center = makeCenter()
+        let hub = HubConnection(id: UUID(), name: "Hub", kind: .hub, url: URL(string: "https://hub.example/ui/")!)
+        let node = HubConnection(id: UUID(), name: "Dev", kind: .directNode, url: URL(string: "https://hub.example/ui/node/dev/")!)
+        let other = HubConnection(id: UUID(), name: "Other", kind: .directNode, url: URL(string: "https://other.example/")!)
+        var review = HubConnection(id: UUID(), name: "Review", kind: .hub, url: URL(string: "https://review.example/")!)
+        review.needsKindReview = true
+        let saved = [hub, node, other, review]
+
+        // A different origin from the selected connection still finds its owner.
+        center.open(urlString: "https://other.example/chat/1", configuredServer: hub.url,
+                    connections: saved, selectedConnectionID: hub.id)
+        XCTAssertEqual(center.pendingNavigation?.connectionID, other.id)
+        XCTAssertEqual(center.pendingNavigation?.url.absoluteString, "https://other.example/chat/1")
+
+        // The most specific mount wins over a containing hub mount.
+        center.open(urlString: "https://hub.example/ui/node/dev/chat/2", configuredServer: hub.url,
+                    connections: saved, selectedConnectionID: hub.id)
+        XCTAssertEqual(center.pendingNavigation?.connectionID, node.id)
+        center.open(urlString: "https://hub.example/ui/chat/3", configuredServer: hub.url,
+                    connections: saved, selectedConnectionID: node.id)
+        XCTAssertEqual(center.pendingNavigation?.connectionID, hub.id)
+        let previous = try XCTUnwrap(center.pendingNavigation)
+
+        // Unowned taps (unknown server, connection awaiting review, outside every
+        // mount) only open the app and never replace a pending destination.
+        for url in ["https://unknown.example/chat/1", "https://review.example/chat/1", "https://hub.example/elsewhere/"] {
+            center.open(urlString: url, configuredServer: hub.url, connections: saved, selectedConnectionID: hub.id)
+            XCTAssertEqual(center.pendingNavigation, previous, url)
+        }
+    }
+
+    func testOwningConnectionPrefersSelectedOnEqualMounts() {
+        let a = HubConnection(id: UUID(), name: "A", kind: .hub, url: URL(string: "https://hub.example/ui/")!)
+        let b = HubConnection(id: UUID(), name: "B", kind: .hub, url: URL(string: "https://hub.example/ui/")!)
+        let url = URL(string: "https://hub.example/ui/chat/1")!
+        XCTAssertEqual(PushCenter.owningConnection(for: url, in: [a, b], selectedID: b.id)?.id, b.id)
+        XCTAssertEqual(PushCenter.owningConnection(for: url, in: [a, b], selectedID: a.id)?.id, a.id)
+    }
+
     func testNotificationTapCompletesOnMainThreadAfterRouting() async {
         defaults.set("https://hub.example/ui/", forKey: "serverURL")
         let center = makeCenter()

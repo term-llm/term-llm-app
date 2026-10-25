@@ -590,6 +590,19 @@ struct ContentView: View {
         showingControls = true
     }
 
+    /// A signed-out or not-yet-ready connection cannot open the page directly;
+    /// land on Agents with it selected so its sign-in is one tap away.
+    private func openPushOnConnection(_ sourceID: UUID, _ destination: URL) {
+        aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
+        if let source = aggregate.source(sourceID), source.isActive, !source.browserRevoked {
+            openPhoneChat(sourceID, destination)
+            return
+        }
+        connections.select(sourceID)
+        showingSettings = false
+        selectTab(.agents)
+    }
+
     private func openPhoneChat(_ sourceID: UUID, _ destination: URL) {
         aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
         guard let source = aggregate.source(sourceID), source.isActive, !source.browserRevoked else { return }
@@ -736,7 +749,23 @@ struct ContentView: View {
     }
 
     private func revealPendingPushIfOwned() {
-        guard !isFixture, push.pendingNavigation?.canPresent(in: pushWindowID, server: address) == true else { return }
+        guard !isFixture, let navigation = push.pendingNavigation, let pushWindowID,
+              navigation.windowID == pushWindowID else { return }
+        if let owner = navigation.connectionID, owner != connections.selectedID {
+            // Another saved connection owns this page: switch to it the same
+            // way Agents opens a chat. A connection removed since the tap
+            // simply leaves the app where it is.
+            push.navigationHandled(navigation.id)
+            guard connections.connections.contains(where: { $0.id == owner }) else { return }
+            openPushOnConnection(owner, navigation.url)
+            return
+        }
+        guard navigation.canPresent(in: pushWindowID, server: address) else {
+            // A page outside the selected mount can never be presented here;
+            // drop it rather than let it linger and hijack a later visit.
+            if address != nil { push.navigationHandled(navigation.id) }
+            return
+        }
         workspaceChosen = true
         showingSettings = false
         showingHub = false

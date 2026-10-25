@@ -2,7 +2,10 @@ import Combine
 import CryptoKit
 import Foundation
 import UIKit
+import OSLog
 import UserNotifications
+
+private let pushLog = Logger(subsystem: "com.termllm.app", category: "push")
 
 /// APNs gateway this build's device tokens belong to. Builds signed with a
 /// development profile (run from Xcode) use the sandbox; TestFlight, App Store
@@ -56,6 +59,8 @@ struct PushNavigation: Equatable {
     var windowID: String? = nil
     var isCompletion = false
     var excludedWindowIDs: Set<String> = []
+    /// Saved connection that owns `url`; nil for legacy single-server routing.
+    var connectionID: UUID? = nil
 
     func canPresent(in windowID: String?, server: URL?) -> Bool {
         guard let windowID, self.windowID == windowID, let server else { return false }
@@ -273,21 +278,33 @@ final class PushCenter: NSObject, ObservableObject {
                 enabled = saved.enabled == true; optOuts = saved.optOuts
             }
             try deliveries.migrate(enabled: defaults.object(forKey: Self.enabledKey) == nil ? nil : enabled, optOuts: optOuts)
-            let shared = try deliveries.transaction { $0 }
+            // One locked read/write for the whole launch reconciliation rather
+            // than one shared-file transaction per record (each re-reads the
+            // file and consent journal). Records before a failing one still
+            // commit, matching the previous per-record transactions.
+            var recoveredRetirements = false
+            var recordFailure: Error?
+            let (shared, pending) = try deliveries.transaction { state -> (PushDeliveryStore.State, Int) in
+                let shared = state
+                for (key, record) in records {
+                    guard let separator = key.firstIndex(of: "|") else { continue }
+                    let localOff = shared.enabled == false || shared.optOuts.contains(key)
+                    if localOff, record.retired != true { records[key]?.retired = true; recoveredRetirements = true }
+                    let origin = String(key[..<separator])
+                    let scope = String(key[key.index(after: separator)...])
+                    do {
+                        try PushDeliveryStore.remember(in: &state, origin: origin, scope: scope,
+                                                       endpoint: record.endpoint, subscriptionID: record.subscriptionID)
+                    } catch { recordFailure = error; break }
+                    if record.retired == true || localOff { PushDeliveryStore.retire(in: &state, origin: origin, scope: scope) }
+                }
+                return (shared, state.enrollments.filter(\.pendingCleanup).count)
+            }
             enabled = shared.enabled == true
             optOuts = shared.optOuts
-            var recoveredRetirements = false
-            for (key, record) in records {
-                guard let separator = key.firstIndex(of: "|") else { continue }
-                let localOff = shared.enabled == false || optOuts.contains(key)
-                if localOff, record.retired != true { records[key]?.retired = true; recoveredRetirements = true }
-                let origin = String(key[..<separator])
-                let scope = String(key[key.index(after: separator)...])
-                try deliveries.remember(origin: origin, scope: scope, endpoint: record.endpoint, subscriptionID: record.subscriptionID)
-                if record.retired == true || localOff { try deliveries.retire(origin: origin, scope: scope) }
-            }
+            if let recordFailure { throw recordFailure }
             if recoveredRetirements { persistRecords() }
-            refreshPendingCleanup()
+            pendingCleanupCount = pending
         } catch { reportStorageFailure() }
     }
 
@@ -541,9 +558,26 @@ final class PushCenter: NSObject, ObservableObject {
 
     // MARK: Notifications shown and tapped
 
-    func open(urlString raw: String?, configuredServer: URL?, windowID: String? = nil, isCompletion: Bool = false) {
-        guard let raw, let url = URL(string: raw), let server = configuredServer,
-              let origin = Self.origin(url), origin == Self.origin(server) else { return }
+    /// Saved connections are the routing table: the connection whose mount
+    /// contains the page owns the tap, even when another one is selected.
+    /// Without saved connections (legacy/tests) the configured server's origin
+    /// is the only owner. A tap nobody owns just opens the app, quietly.
+    func open(urlString raw: String?, configuredServer: URL?, connections: [HubConnection] = [],
+              selectedConnectionID: UUID? = nil, windowID: String? = nil, isCompletion: Bool = false) {
+        guard let raw, let url = URL(string: raw) else { return }
+        var connectionID: UUID?
+        if connections.isEmpty {
+            guard let server = configuredServer, let origin = Self.origin(url), origin == Self.origin(server) else {
+                pushLog.info("Notification tap has no matching server; opening the app only")
+                return
+            }
+        } else {
+            guard let owner = Self.owningConnection(for: url, in: connections, selectedID: selectedConnectionID) else {
+                pushLog.info("Notification tap matches no saved connection; opening the app only")
+                return
+            }
+            connectionID = owner.id
+        }
         let sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
         let session = windowID.flatMap { id in
             windows.scene(windowID: id)?.session ?? UIApplication.shared.openSessions.first { $0.persistentIdentifier == sessions[id] }
@@ -553,7 +587,8 @@ final class PushCenter: NSObject, ObservableObject {
         let completion = isCompletion || windowID != nil
         let navigation = PushNavigation(id: UUID(), url: url,
             windowID: completion ? (session == nil ? nil : windowID) : windows.keyWindowID(), isCompletion: completion,
-            excludedWindowIDs: completion && session == nil ? windows.existingWindowIDs() : [])
+            excludedWindowIDs: completion && session == nil ? windows.existingWindowIDs() : [],
+            connectionID: connectionID)
         pendingNavigation = navigation
         navigationIssue = nil
         // Manual/legacy alerts have no owner claim: use the current key scene,
@@ -568,6 +603,17 @@ final class PushCenter: NSObject, ObservableObject {
                 self.navigationIssue = "iOS could not open the notification's owning or fresh window. No other conversation was substituted."
             }
         }
+    }
+
+    /// Most specific saved mount containing `url`; the selected connection wins
+    /// ties. Connections awaiting kind review cannot open pages, so never own.
+    static func owningConnection(for url: URL, in connections: [HubConnection], selectedID: UUID?) -> HubConnection? {
+        connections
+            .filter { $0.needsKindReview != true && HubNavigation.isWithinMount(url, server: $0.url) }
+            .max { a, b in
+                if a.mountPath.count != b.mountPath.count { return a.mountPath.count < b.mountPath.count }
+                return a.id != selectedID && b.id == selectedID
+            }
     }
 
     func routeManualToKeyScene() {
@@ -695,7 +741,10 @@ extension PushCenter: UNUserNotificationCenterDelegate {
         // UIKit's completion handler is safe to call on the main thread.
         nonisolated(unsafe) let completionHandler = completionHandler
         Task { @MainActor in
-            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""), windowID: windowID, isCompletion: isCompletion)
+            let saved = try? HubConnectionStore.validatedDocument(defaults.object(forKey: HubConnectionStore.storageKey))
+            open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""),
+                 connections: saved?.connections ?? [], selectedConnectionID: saved?.selectedID,
+                 windowID: windowID, isCompletion: isCompletion)
             completionHandler()
         }
     }

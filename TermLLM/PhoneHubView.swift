@@ -256,7 +256,7 @@ struct PhoneHubView: View {
             sessionSearchResults(flags: flags)
         } else {
             let sort = PhoneHubSessionSort.browseOptions.contains(sessionSort) ? sessionSort : .recent
-            let rows = sort.sorted(aggregate.sessions) { sessionFlag($0, flags: flags) }
+            let rows = aggregate.sortedSessions(sort, flags: flags) { sessionFlag($0, flags: flags) }
             ForEach(rows) { row in sessionRow(row, flag: sessionFlag(row, flags: flags)) }
             if rows.isEmpty { emptyPanel(.sessions) }
         }
@@ -264,7 +264,7 @@ struct PhoneHubView: View {
 
     @ViewBuilder private func sessionSearchResults(flags: [PhoneHubSessionKey: PhoneHubSessionAttention]) -> some View {
         let sort = searchSort
-        let results = sort.sorted(aggregate.searchResults) { sessionFlag($0, flags: flags) }
+        let results = aggregate.sortedSearchResults(sort, flags: flags) { sessionFlag($0, flags: flags) }
         let agents = aggregate.searchAgents
         let pending = agents.filter { $0.state == .searching }.count
         if pending > 0 {

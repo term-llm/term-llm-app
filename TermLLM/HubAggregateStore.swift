@@ -403,10 +403,66 @@ final class HubAggregateStore: ObservableObject {
             return source.store.nodes.map { PhoneHubNode(source: source.connection, node: $0) }
         }
     }
+    /// Rebuilt only when a verified source's connection or node list changes.
+    /// HubStore never republishes an equal node array, so the array equality
+    /// check normally short-circuits on shared storage.
     var sessions: [PhoneHubSession] {
-        nodes.flatMap { row in
-            HubNavigation.nodeSessions(row.node).map { PhoneHubSession(source: row.source, node: row.node, session: $0) }
+        let inputs = sources.compactMap { source -> SessionInputs? in
+            guard source.store.nodesVerified, !source.store.unauthorized else { return nil }
+            return SessionInputs(connection: source.connection, nodes: source.store.nodes)
         }
+        if let cache = sessionCache, cache.inputs == inputs { return cache.rows }
+        let rows = inputs.flatMap { input in
+            input.nodes.flatMap { node in
+                HubNavigation.nodeSessions(node).map { PhoneHubSession(source: input.connection, node: node, session: $0) }
+            }
+        }
+        sessionGeneration &+= 1
+        sessionCache = (inputs, rows)
+        return rows
+    }
+
+    private struct SessionInputs: Equatable {
+        let connection: HubConnection
+        let nodes: [HubNode]
+    }
+    private var sessionCache: (inputs: [SessionInputs], rows: [PhoneHubSession])?
+    private var sessionGeneration: UInt64 = 0
+
+    private struct SortMemo {
+        let sort: PhoneHubSessionSort
+        let input: UInt64
+        let flags: [PhoneHubSessionKey: PhoneHubSessionAttention]?
+        let rows: [PhoneHubSession]
+    }
+    private var browseSortMemo: SortMemo?
+    private var searchSortMemo: SortMemo?
+
+    /// `sessions` sorted, reused until the rows, sort or (for the attention
+    /// sort only) the attention flags change. `flag` must depend only on the
+    /// row and `flags`.
+    func sortedSessions(_ sort: PhoneHubSessionSort, flags: [PhoneHubSessionKey: PhoneHubSessionAttention],
+                        flag: (PhoneHubSession) -> PhoneHubSessionAttention?) -> [PhoneHubSession] {
+        let rows = sessions
+        return memoizedSort(&browseSortMemo, rows: rows, input: sessionGeneration, sort: sort, flags: flags, flag: flag)
+    }
+
+    /// `searchResults` sorted, with the same reuse rules as `sortedSessions`.
+    func sortedSearchResults(_ sort: PhoneHubSessionSort, flags: [PhoneHubSessionKey: PhoneHubSessionAttention],
+                             flag: (PhoneHubSession) -> PhoneHubSessionAttention?) -> [PhoneHubSession] {
+        let rows = searchResults
+        return memoizedSort(&searchSortMemo, rows: rows, input: searchResultsGeneration, sort: sort, flags: flags, flag: flag)
+    }
+
+    private func memoizedSort(_ memo: inout SortMemo?, rows: [PhoneHubSession], input: UInt64, sort: PhoneHubSessionSort,
+                              flags: [PhoneHubSessionKey: PhoneHubSessionAttention],
+                              flag: (PhoneHubSession) -> PhoneHubSessionAttention?) -> [PhoneHubSession] {
+        // Only the attention sort reads flags; other sorts ignore them.
+        let keyFlags = sort == .attention ? flags : nil
+        if let memo, memo.sort == sort, memo.input == input, memo.flags == keyFlags { return memo.rows }
+        let sorted = sort.sorted(rows, flag: flag)
+        memo = SortMemo(sort: sort, input: input, flags: keyFlags, rows: sorted)
+        return sorted
     }
     /// Needs-input plus unseen totals from verified sources, not the loaded
     /// attention window (which may be paginated). Ordinary refreshes retain the
@@ -457,7 +513,9 @@ final class HubAggregateStore: ObservableObject {
     @Published private(set) var agentSearchQuery: String?
     /// One leg per reachable agent, in source then node order.
     @Published private(set) var searchAgents: [PhoneHubSearchAgent] = []
-    @Published private var searchHitsByLeg: [Int: [PhoneHubSession]] = [:]
+    @Published private var searchHitsByLeg: [Int: [PhoneHubSession]] = [:] {
+        didSet { searchHitsGeneration &+= 1 }
+    }
     private var searchTask: Task<Void, Never>?
     private var searchGeneration: UInt64 = 0
 
@@ -602,12 +660,32 @@ final class HubAggregateStore: ObservableObject {
     /// once the user has asked the agents. Agent matches come first, in agent
     /// then node-rank order, and carry the snippet for duplicates.
     var searchResults: [PhoneHubSession] {
-        guard !searchQuery.isEmpty else { return [] }
         let live = Set(sources.filter { $0.isActive && !$0.store.unauthorized }.map(\.id))
+        let loaded = sessions
+        let key = SearchResultsKey(query: searchQuery, hits: searchHitsGeneration, live: live, sessions: sessionGeneration)
+        if let cache = searchResultsCache, cache.key == key { return cache.rows }
+        let rows = buildSearchResults(live: live, loaded: loaded)
+        searchResultsGeneration &+= 1
+        searchResultsCache = (key, rows)
+        return rows
+    }
+
+    private struct SearchResultsKey: Equatable {
+        let query: String
+        let hits: UInt64
+        let live: Set<UUID>
+        let sessions: UInt64
+    }
+    private var searchResultsCache: (key: SearchResultsKey, rows: [PhoneHubSession])?
+    private var searchResultsGeneration: UInt64 = 0
+    private var searchHitsGeneration: UInt64 = 0
+
+    private func buildSearchResults(live: Set<UUID>, loaded: [PhoneHubSession]) -> [PhoneHubSession] {
+        guard !searchQuery.isEmpty else { return [] }
         var seen = Set<PhoneHubIdentity>()
         var out = searchHitsByLeg.keys.sorted().flatMap { searchHitsByLeg[$0] ?? [] }
             .filter { live.contains($0.source.id) && seen.insert($0.id).inserted }
-        for row in sessions where row.displayTitle.localizedCaseInsensitiveContains(searchQuery)
+        for row in loaded where row.displayTitle.localizedCaseInsensitiveContains(searchQuery)
             || (row.session.long_title?.localizedCaseInsensitiveContains(searchQuery) ?? false) {
             if seen.insert(row.id).inserted { out.append(row) }
         }

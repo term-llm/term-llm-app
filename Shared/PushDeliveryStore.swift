@@ -165,27 +165,35 @@ final class PushDeliveryStore {
 
     func remember(origin: String, scope: String, endpoint: String, subscriptionID: String? = nil) throws {
         try transaction { state in
-            let pending = state.enabled != true || state.optOuts.contains(origin + "|" + scope)
-            if let index = state.enrollments.firstIndex(where: {
-                $0.origin == origin && $0.scope == scope && $0.endpoint == endpoint &&
-                    ($0.subscriptionID == subscriptionID || $0.subscriptionID == nil)
-            }) {
-                // A retired enrollment is never reactivated by a late callback.
-                state.enrollments[index].subscriptionID = subscriptionID ?? state.enrollments[index].subscriptionID
-                state.enrollments[index].pendingCleanup = state.enrollments[index].pendingCleanup || pending
-            } else {
-                guard state.enrollments.count < Self.capacity else { throw Failure.capacity }
-                state.enrollments.append(Enrollment(origin: origin, scope: scope, endpoint: endpoint,
-                                                   subscriptionID: subscriptionID, pendingCleanup: pending))
-            }
+            try Self.remember(in: &state, origin: origin, scope: scope, endpoint: endpoint, subscriptionID: subscriptionID)
+        }
+    }
+
+    /// In-transaction form of ``remember(origin:scope:endpoint:subscriptionID:)``
+    /// so callers can batch several enrollments under one lock/read/write.
+    static func remember(in state: inout State, origin: String, scope: String, endpoint: String, subscriptionID: String?) throws {
+        let pending = state.enabled != true || state.optOuts.contains(origin + "|" + scope)
+        if let index = state.enrollments.firstIndex(where: {
+            $0.origin == origin && $0.scope == scope && $0.endpoint == endpoint &&
+                ($0.subscriptionID == subscriptionID || $0.subscriptionID == nil)
+        }) {
+            // A retired enrollment is never reactivated by a late callback.
+            state.enrollments[index].subscriptionID = subscriptionID ?? state.enrollments[index].subscriptionID
+            state.enrollments[index].pendingCleanup = state.enrollments[index].pendingCleanup || pending
+        } else {
+            guard state.enrollments.count < capacity else { throw Failure.capacity }
+            state.enrollments.append(Enrollment(origin: origin, scope: scope, endpoint: endpoint,
+                                               subscriptionID: subscriptionID, pendingCleanup: pending))
         }
     }
 
     func retire(origin: String, scope: String) throws {
-        try transaction { state in
-            for index in state.enrollments.indices where state.enrollments[index].origin == origin && state.enrollments[index].scope == scope {
-                state.enrollments[index].pendingCleanup = true
-            }
+        try transaction { state in Self.retire(in: &state, origin: origin, scope: scope) }
+    }
+
+    static func retire(in state: inout State, origin: String, scope: String) {
+        for index in state.enrollments.indices where state.enrollments[index].origin == origin && state.enrollments[index].scope == scope {
+            state.enrollments[index].pendingCleanup = true
         }
     }
 

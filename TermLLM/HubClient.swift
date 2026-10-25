@@ -496,7 +496,6 @@ struct URLSessionHubTransport: HubTransport {
         private let onUnauthorized: (@Sendable () async -> Void)?
         private let observe: (@Sendable (Event) -> Void)?
         private var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
-        private var session: URLSession?
         private var task: URLSessionDataTask?
         private var response: HTTPURLResponse?
         private var body = Data()
@@ -518,11 +517,11 @@ struct URLSessionHubTransport: HubTransport {
                 return
             }
             self.continuation = continuation
-            let session = HubClient.ephemeralSession(delegate: self)
-            self.session = session
-            // Deliberately NO completion handler: this delegate owns response,
-            // data and terminal delivery, including incomplete HTTP bodies.
-            let task = session.dataTask(with: request)
+            // Deliberately NO completion handler: this per-task delegate owns
+            // response, data and terminal delivery, including incomplete HTTP
+            // bodies. The session is shared so connections are reused.
+            let task = HubClient.sharedSession.dataTask(with: request)
+            task.delegate = self
             self.task = task
             lock.unlock()
             task.resume()
@@ -536,13 +535,10 @@ struct URLSessionHubTransport: HubTransport {
             finished = true
             let continuation = self.continuation
             let task = self.task
-            let session = self.session
             self.continuation = nil
             self.task = nil
-            self.session = nil
             lock.unlock()
             task?.cancel()
-            session?.invalidateAndCancel()
             continuation?.resume(with: result)
         }
 
@@ -1107,17 +1103,35 @@ final class HubClient: @unchecked Sendable {
 
     private enum Method: String { case GET, POST, PATCH, DELETE }
 
+    /// Long-lived ephemeral session shared by every production Hub/node
+    /// request so TCP/TLS connections (and HTTP/2) are reused across polls.
+    /// No cookie jar, no credential storage and no response cache, so nothing
+    /// survives between requests except pooled connections. Each request
+    /// attaches its own per-task delegate (`URLSessionTask.delegate`); the
+    /// session delegate only exists as a redirect-blocking backstop.
+    static let sharedSession: URLSession = ephemeralSession(delegate: SessionRedirectBlocker())
+
     /// Creates an ephemeral URLSession with no cookie jar, no credential
-    /// storage, and the given delegate.
+    /// storage, no response cache, and the given delegate.
     static func ephemeralSession(delegate: URLSessionDelegate) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
         config.urlCredentialStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = defaultTimeout
         config.timeoutIntervalForResource = defaultTimeout
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }
+
+    private final class SessionRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                        completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
     }
 
     /// Core typed transport.
