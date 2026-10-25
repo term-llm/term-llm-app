@@ -17,7 +17,66 @@ struct PhoneHubSession: Identifiable {
     let source: HubConnection
     let node: HubNode
     let session: HubNodeSession
+    /// Search-only: matched message excerpt with `**` around matched terms.
+    var snippet: String? = nil
+    /// Search-only: the node reported unseen attention for this session.
+    var unseen: Bool = false
     var id: PhoneHubIdentity { PhoneHubIdentity(sourceID: source.id, nodeID: node.id, sessionID: session.id, key: "session") }
+    var displayTitle: String {
+        session.short_title.isEmpty ? "Session \(session.number.map(String.init) ?? session.id)" : session.short_title
+    }
+}
+
+struct PhoneHubSessionKey: Hashable { let sourceID: UUID; let nodeID: String; let sessionID: String }
+enum PhoneHubSessionAttention { case inputRequired, unseen }
+
+enum PhoneHubSessionSort: String, CaseIterable, Identifiable {
+    case relevance, recent, attention, title, agent
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .relevance: "Relevance"
+        case .recent: "Recent activity"
+        case .attention: "Needs attention first"
+        case .title: "Title"
+        case .agent: "Agent"
+        }
+    }
+    static let browseOptions: [PhoneHubSessionSort] = [.recent, .attention, .title, .agent]
+    static let searchOptions: [PhoneHubSessionSort] = [.relevance, .recent, .attention, .title]
+
+    /// Stable: relevance/agent keep the input order (agent order, then the
+    /// node's own ranking). Other sorts break ties by recency, then input order.
+    func sorted(_ rows: [PhoneHubSession], flag: (PhoneHubSession) -> PhoneHubSessionAttention?) -> [PhoneHubSession] {
+        guard self != .relevance, self != .agent else { return rows }
+        func priority(_ row: PhoneHubSession) -> Int {
+            switch flag(row) {
+            case .inputRequired: 0
+            case .unseen: 1
+            case nil: row.session.active_run == true ? 2 : 3
+            }
+        }
+        let indexed = rows.enumerated().map { (offset: $0.offset, row: $0.element, priority: self == .attention ? priority($0.element) : 0) }
+        return indexed.sorted { a, b in
+            if self == .attention, a.priority != b.priority { return a.priority < b.priority }
+            if self == .title {
+                let order = a.row.displayTitle.localizedStandardCompare(b.row.displayTitle)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
+            let at = a.row.session.last_message_at ?? Int.min, bt = b.row.session.last_message_at ?? Int.min
+            if at != bt { return at > bt }
+            return a.offset < b.offset
+        }.map(\.row)
+    }
+}
+
+/// One fan-out leg: a single agent on a single source.
+struct PhoneHubSearchAgent: Identifiable {
+    enum State: Equatable { case searching, done(Int), failed(String) }
+    let source: HubConnection
+    let node: HubNode
+    var state: State
+    var id: PhoneHubIdentity { PhoneHubIdentity(sourceID: source.id, nodeID: node.id, sessionID: "", key: "search") }
 }
 struct PhoneHubAttention: Identifiable {
     let source: HubConnection
@@ -48,6 +107,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     let hubWorkspace: HubWorkspace?
     let directClient: DirectNodeClient?
     let security: HubConnectionSecurity?
+    let searcher: (any HubSessionSearching)?
     @Published private(set) var browserRevoked = false
     @Published private(set) var browserIdentity = UUID()
     @Published private(set) var browserReady = false
@@ -72,11 +132,13 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             hubWorkspace = workspace
             store = workspace.store
             directClient = nil
+            searcher = client
         } else {
             let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport)
             directClient = client
             hubWorkspace = nil
             store = HubStore(client: client)
+            searcher = client
         }
         relay.owner = self
         installAuthorizationContext()
@@ -93,10 +155,11 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     }
 
     /// Inject existing HubServing mocks without network, WK or Keychain effects.
-    init(connection: HubConnection, store: HubStore) {
+    init(connection: HubConnection, store: HubStore, searcher: (any HubSessionSearching)? = nil) {
         self.connection = connection
         self.id = connection.id
         self.store = store
+        self.searcher = searcher
         hubWorkspace = nil
         directClient = nil
         security = nil
@@ -377,6 +440,172 @@ final class HubAggregateStore: ObservableObject {
             }
             return required + unseen
         }
+    }
+
+    // MARK: Session search
+
+    static let searchLimitPerAgent = 20
+    /// What the user typed; filters loaded sessions locally, never the network.
+    @Published private(set) var searchQuery = ""
+    /// The query the agents were last asked about; nil until the user asks.
+    @Published private(set) var agentSearchQuery: String?
+    /// One leg per reachable agent, in source then node order.
+    @Published private(set) var searchAgents: [PhoneHubSearchAgent] = []
+    @Published private var searchHitsByLeg: [Int: [PhoneHubSession]] = [:]
+    private var searchTask: Task<Void, Never>?
+    private var searchGeneration: UInt64 = 0
+
+    private struct SearchLeg {
+        let source: HubSourceWorkspace
+        let node: HubNode
+        let searcher: any HubSessionSearching
+        let epoch: UInt64
+    }
+
+    /// Typing only changes the local filter. Results from an earlier agent
+    /// search no longer answer a changed query, so they are discarded.
+    func updateSearchQuery(_ text: String) {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query != searchQuery else { return }
+        searchQuery = query
+        guard agentSearchQuery != nil, agentSearchQuery != query else { return }
+        cancelAgentSearch()
+    }
+
+    private func cancelAgentSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchGeneration &+= 1
+        agentSearchQuery = nil
+        searchAgents = []
+        searchHitsByLeg = [:]
+    }
+
+    private var searchLegs: [SearchLeg] {
+        sources.flatMap { source -> [SearchLeg] in
+            guard source.isActive, !source.store.unauthorized, source.store.nodesVerified,
+                  let searcher = source.searcher else { return [] }
+            return source.store.nodes
+                .filter { $0.status.reachable && (source.connection.kind == .directNode || SessionSearchQuery.isSafeNodeID($0.id)) }
+                .map { SearchLeg(source: source, node: $0, searcher: searcher, epoch: source.authEpoch) }
+        }
+    }
+
+    /// Agents an explicit search would ask right now.
+    var searchableAgentCount: Int { searchLegs.count }
+
+    /// Explicit fan-out: each reachable agent searches its full history, then
+    /// reports run/input state for just its matches. A slow, failing or
+    /// signed-out agent only affects its own leg; a newer query, auth change
+    /// or removed source discards late answers.
+    func searchAllAgents() {
+        let query = searchQuery
+        cancelAgentSearch()
+        guard !query.isEmpty else { return }
+        let generation = searchGeneration
+        agentSearchQuery = query
+        let legs = searchLegs
+        searchAgents = legs.map { PhoneHubSearchAgent(source: $0.source.connection, node: $0.node, state: .searching) }
+        guard !legs.isEmpty else { return }
+        let limit = Self.searchLimitPerAgent
+        let requests = legs.map { (searcher: $0.searcher, nodeID: $0.node.id) }
+        typealias Answer = (search: SessionSearchResponse, status: DirectNodeSessionsStatus?)
+        searchTask = Task { @MainActor [weak self] in
+            await withTaskGroup(of: (Int, Result<Answer, any Error>).self) { group in
+                for (index, request) in requests.enumerated() {
+                    group.addTask {
+                        do {
+                            let found = try await request.searcher.search_sessions(node_id: request.nodeID, query: query, limit: limit)
+                            guard !found.sessions.isEmpty else { return (index, .success((found, nil))) }
+                            // State is best effort: matches still help without it.
+                            let status = try? await request.searcher.sessions_status(node_id: request.nodeID, ids: found.sessions.map(\.id))
+                            return (index, .success((found, status)))
+                        } catch {
+                            return (index, .failure(error))
+                        }
+                    }
+                }
+                for await (index, result) in group {
+                    guard let self, self.searchGeneration == generation, !Task.isCancelled else {
+                        group.cancelAll()
+                        return
+                    }
+                    self.applySearch(result, leg: legs[index], index: index)
+                }
+            }
+        }
+    }
+
+    /// Pull-to-refresh repeats an agent search the user already asked for.
+    func rerunSearch() {
+        guard agentSearchQuery != nil else { return }
+        searchAllAgents()
+    }
+
+    private func applySearch(_ result: Result<(search: SessionSearchResponse, status: DirectNodeSessionsStatus?), any Error>,
+                             leg: SearchLeg, index: Int) {
+        guard searchAgents.indices.contains(index) else { return }
+        let source = leg.source
+        guard source.isActive, source.authEpoch == leg.epoch, !source.store.unauthorized else {
+            searchAgents[index].state = .failed("Sign-in changed")
+            return
+        }
+        switch result {
+        case .success(let answer):
+            let connection = source.connection
+            var states: [String: DirectNodeSessionEntry] = [:]
+            for entry in answer.status?.sessions ?? [] { states[entry.id] = entry }
+            let hits = answer.search.sessions.map { entry in
+                let state = states[entry.id]
+                return PhoneHubSession(source: connection, node: leg.node,
+                                session: HubNodeSession(
+                                    id: entry.id, number: entry.number.map(Int.init),
+                                    short_title: entry.short_title ?? entry.long_title ?? "",
+                                    long_title: entry.long_title, pinned: entry.pinned,
+                                    active_run: state?.active_run, interaction_required: state?.interaction_required,
+                                    pending_interaction_count: state?.pending_interaction_count,
+                                    pending_interaction_kinds: state?.pending_interaction_kinds,
+                                    last_message_at: entry.last_message_at.map(Int.init),
+                                    message_count: entry.message_count,
+                                    resume_path: Self.searchResumePath(connection: connection, nodeID: leg.node.id, entry: entry)),
+                                snippet: entry.snippet, unseen: (state?.attention_unseen ?? entry.attention_unseen) == true)
+            }
+            searchHitsByLeg[index] = hits
+            searchAgents[index].state = .done(hits.count)
+        case .failure(let error):
+            if error is CancellationError { return }
+            let message: String
+            switch (error as? HubAPIError)?.status {
+            case 401, 403: message = "Not authorized"
+            case 404, 501: message = "Search not supported"
+            default: message = "Couldn’t search"
+            }
+            searchAgents[index].state = .failed(message)
+        }
+    }
+
+    /// Mirrors the server's canonical `/chat/<selector>` route; destinations
+    /// are still validated by `HubNavigation.chatDestination` before opening.
+    static func searchResumePath(connection: HubConnection, nodeID: String, entry: SessionSearchEntry) -> String {
+        let selector = (entry.number ?? 0) > 0 ? String(entry.number!) : entry.id
+        let root = connection.kind == .hub ? connection.mountPath + "node/" + nodeID + "/" : connection.mountPath
+        return root + "chat/" + selector
+    }
+
+    /// Loaded sessions whose titles match, plus agent matches (message text)
+    /// once the user has asked the agents. Agent matches come first, in agent
+    /// then node-rank order, and carry the snippet for duplicates.
+    var searchResults: [PhoneHubSession] {
+        guard !searchQuery.isEmpty else { return [] }
+        let live = Set(sources.filter { $0.isActive && !$0.store.unauthorized }.map(\.id))
+        var seen = Set<PhoneHubIdentity>()
+        var out = searchHitsByLeg.keys.sorted().flatMap { searchHitsByLeg[$0] ?? [] }
+            .filter { live.contains($0.source.id) && seen.insert($0.id).inserted }
+        for row in sessions where row.displayTitle.localizedCaseInsensitiveContains(searchQuery)
+            || (row.session.long_title?.localizedCaseInsensitiveContains(searchQuery) ?? false) {
+            if seen.insert(row.id).inserted { out.append(row) }
+        }
+        return out
     }
 
     func destination(path: String, sourceID: UUID, nodeID: String) -> URL? {

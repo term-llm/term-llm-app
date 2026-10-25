@@ -128,7 +128,7 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
 private final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
     }
 }

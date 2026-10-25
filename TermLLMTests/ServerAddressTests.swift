@@ -12,7 +12,7 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertEqual(ServerAddress.parse(ServerAddress.demo)?.absoluteString, ServerAddress.demo)
         XCTAssertEqual(ServerAddress.parse("demo.term-llm.com")?.absoluteString, ServerAddress.demo)
         let settings = DeviceToolsSettings(defaults: isolatedDefaults())
-        XCTAssertFalse(settings.isEnabled(for: URL(string: ServerAddress.demo)!))
+        XCTAssertFalse(settings.isEnabled, "device tools are off by default")
     }
 
     func testPKCEChallengeMatchesRFC7636() {

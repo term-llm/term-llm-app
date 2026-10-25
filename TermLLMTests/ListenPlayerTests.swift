@@ -525,7 +525,8 @@ private final class MediaTransportFixture: @unchecked Sendable {
 
 private final class MediaTransportProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
-    private static var recorded: [URL: [URLRequest]] = [:]
+    // Guarded by `lock`.
+    nonisolated(unsafe) private static var recorded: [URL: [URLRequest]] = [:]
 
     static func requests(for url: URL) -> [URLRequest] { lock.withLock { recorded[url] ?? [] } }
     static func removeRequests(for url: URL) { lock.withLock { recorded[url] = nil } }

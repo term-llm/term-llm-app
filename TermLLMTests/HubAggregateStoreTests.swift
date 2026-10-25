@@ -273,4 +273,179 @@ final class HubAggregateStoreTests: XCTestCase {
             XCTAssertFalse(HubNavigation.isWithinMount(URL(string: raw)!, server: server), raw)
         }
     }
+
+    // MARK: Session search
+
+    nonisolated private static func searchEntry(_ id: String, number: Int64?, at: Int64, snippet: String = "a **hit**") -> SessionSearchEntry {
+        SessionSearchEntry(id: id, number: number, short_title: "Title \(id)", long_title: nil, pinned: false,
+                           last_message_at: at, message_count: 2, snippet: snippet, attention_unseen: false)
+    }
+
+    private func searchAggregate(_ searchers: [UUID: MockSessionSearcher]) -> HubAggregateStore {
+        HubAggregateStore { connection in
+            let client = MockHubClient()
+            client.nodesResponse = { self.nodes(connection) }
+            return HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999),
+                                      searcher: searchers[connection.id])
+        }
+    }
+
+    private func waitForSearch(_ aggregate: HubAggregateStore) async {
+        for _ in 0..<200 where aggregate.searchAgents.contains(where: { $0.state == .searching }) {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func testTypingFiltersLoadedSessionsWithoutAskingAgents() async throws {
+        let work = connection("work")
+        let searcher = MockSessionSearcher { _, _ in
+            XCTFail("Typing must not fan out")
+            return SessionSearchResponse(sessions: [])
+        }
+        let aggregate = searchAggregate([work.id: searcher])
+        aggregate.synchronize([work])
+        await aggregate.refreshAndWait()
+        aggregate.updateSearchQuery("shared SESSION ")
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(aggregate.searchResults.map(\.session.id), ["session-shared"])
+        XCTAssertNil(aggregate.agentSearchQuery)
+        XCTAssertTrue(aggregate.searchAgents.isEmpty)
+        XCTAssertEqual(aggregate.searchableAgentCount, 1)
+        XCTAssertEqual(searcher.searchCount, 0)
+        aggregate.synchronize([])
+    }
+
+    func testAgentSearchFansOutPerSourceMergesStatusAndIsolatesFailures() async throws {
+        let work = connection("work"), home = connection("home"), direct = connection("direct", kind: .directNode)
+        let workSearcher = MockSessionSearcher({ nodeID, query in
+            XCTAssertEqual(nodeID, "shared")
+            XCTAssertEqual(query, "relay")
+            return SessionSearchResponse(sessions: [Self.searchEntry("s1", number: 9, at: 1_000)])
+        }, status: { _, ids in
+            XCTAssertEqual(ids, ["s1"])
+            return DirectNodeSessionsStatus(sessions: [Self.statusEntry("s1", running: true)])
+        })
+        let homeSearcher = MockSessionSearcher { _, _ in throw HubAPIError(status: 404, message: "not found") }
+        let directSearcher = MockSessionSearcher({ _, _ in
+            SessionSearchResponse(sessions: [Self.searchEntry("s1", number: nil, at: 2_000)])
+        }, status: { _, _ in throw HubAPIError(status: 500, message: "status down") })
+        let aggregate = searchAggregate([work.id: workSearcher, home.id: homeSearcher, direct.id: directSearcher])
+        aggregate.synchronize([work, home, direct])
+        await aggregate.refreshAndWait()
+        aggregate.updateSearchQuery("  relay ")
+        aggregate.searchAllAgents()
+        XCTAssertEqual(aggregate.agentSearchQuery, "relay")
+        await waitForSearch(aggregate)
+
+        XCTAssertEqual(aggregate.searchAgents.map(\.state), [.done(1), .failed("Search not supported"), .done(1)])
+        let results = aggregate.searchResults
+        XCTAssertEqual(results.count, 2, "Identical remote IDs from different sources stay distinct")
+        XCTAssertEqual(results.map(\.source.id), [work.id, direct.id])
+        XCTAssertEqual(results[0].session.active_run, true, "Run state comes from the status lookup")
+        XCTAssertNil(results[1].session.active_run, "A failed status lookup still keeps the match")
+        XCTAssertEqual(results[0].session.resume_path, "/work/node/shared/chat/9")
+        XCTAssertEqual(results[1].session.resume_path, "/direct/chat/s1", "Falls back to the session ID without a number")
+        XCTAssertNotNil(aggregate.destination(path: results[0].session.resume_path, sourceID: work.id, nodeID: "shared"))
+        XCTAssertNotNil(aggregate.destination(path: results[1].session.resume_path, sourceID: direct.id, nodeID: "shared"))
+        XCTAssertEqual(results[0].snippet, "a **hit**")
+
+        aggregate.source(work.id)?.store.purgeOnUnauthorized()
+        XCTAssertEqual(aggregate.searchResults.map(\.source.id), [direct.id], "Signed-out sources drop their results")
+
+        aggregate.updateSearchQuery("relay retry")
+        XCTAssertNil(aggregate.agentSearchQuery, "Agent results do not answer a changed query")
+        XCTAssertTrue(aggregate.searchAgents.isEmpty)
+        aggregate.updateSearchQuery("")
+        XCTAssertTrue(aggregate.searchResults.isEmpty)
+        aggregate.synchronize([])
+    }
+
+    func testAgentSearchDiscardsSupersededQueries() async throws {
+        let work = connection("work")
+        let gate = AsyncGate()
+        let searcher = MockSessionSearcher { _, query in
+            if query == "old" { await gate.wait() }
+            return SessionSearchResponse(sessions: [Self.searchEntry(query, number: 1, at: 1)])
+        }
+        let aggregate = searchAggregate([work.id: searcher])
+        aggregate.synchronize([work])
+        await aggregate.refreshAndWait()
+        aggregate.updateSearchQuery("old")
+        aggregate.searchAllAgents()
+        try? await Task.sleep(for: .milliseconds(20))
+        aggregate.updateSearchQuery("new")
+        aggregate.searchAllAgents()
+        await waitForSearch(aggregate)
+        await gate.open()
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(aggregate.searchResults.map(\.session.id), ["new"])
+        aggregate.synchronize([])
+    }
+
+    nonisolated private static func statusEntry(_ id: String, running: Bool) -> DirectNodeSessionEntry {
+        DirectNodeSessionEntry(id: id, number: nil, project_id: nil, project_name: nil, short_title: "Title", long_title: nil,
+                               pinned: nil, active_run: running, active_response_id: nil, run_epoch: nil, started_rev: nil,
+                               started_at: nil, transcript_rev: nil, message_count: nil, last_message_at: nil,
+                               attention_store_instance_id: nil, attention_seq: nil, attention_response_id: nil,
+                               seen_through_seq: nil, seen_rev: nil, seen_source: nil, attention_unseen: nil,
+                               attention_outcome: nil, attention_terminal_at: nil, interaction_required: false,
+                               pending_interaction_count: nil, pending_interaction_kinds: nil)
+    }
+
+    func testSessionSortOrders() {
+        let work = connection("work")
+        let node = nodes(work).nodes[0]
+        func row(_ id: String, title: String, at: Int?, running: Bool = false, input: Bool = false) -> PhoneHubSession {
+            PhoneHubSession(source: work, node: node, session: HubNodeSession(
+                id: id, number: nil, short_title: title, long_title: nil, pinned: false, active_run: running,
+                interaction_required: input, pending_interaction_count: nil, pending_interaction_kinds: nil,
+                last_message_at: at, message_count: nil, resume_path: "/work/node/shared/chat/\(id)"))
+        }
+        let rows = [row("a", title: "beta", at: 10), row("b", title: "Alpha", at: 30, running: true),
+                    row("c", title: "gamma", at: nil, input: true), row("d", title: "delta", at: 20)]
+        let unseen: Set<String> = ["d"]
+        let flag: (PhoneHubSession) -> PhoneHubSessionAttention? = {
+            $0.session.interaction_required == true ? .inputRequired : (unseen.contains($0.session.id) ? .unseen : nil)
+        }
+        XCTAssertEqual(PhoneHubSessionSort.recent.sorted(rows, flag: flag).map(\.session.id), ["b", "d", "a", "c"])
+        XCTAssertEqual(PhoneHubSessionSort.attention.sorted(rows, flag: flag).map(\.session.id), ["c", "d", "b", "a"])
+        XCTAssertEqual(PhoneHubSessionSort.title.sorted(rows, flag: flag).map(\.session.id), ["b", "a", "d", "c"])
+        XCTAssertEqual(PhoneHubSessionSort.agent.sorted(rows, flag: flag).map(\.session.id), ["a", "b", "c", "d"])
+        XCTAssertEqual(PhoneHubSessionSort.relevance.sorted(rows, flag: flag).map(\.session.id), ["a", "b", "c", "d"])
+    }
+}
+
+final class MockSessionSearcher: HubSessionSearching, @unchecked Sendable {
+    typealias Search = @Sendable (String, String) async throws -> SessionSearchResponse
+    typealias Status = @Sendable (String, [String]) async throws -> DirectNodeSessionsStatus
+    private let lock = NSLock()
+    private var _searchCount = 0
+    let search: Search
+    let status: Status
+    init(_ search: @escaping Search, status: @escaping Status = { _, _ in DirectNodeSessionsStatus(sessions: []) }) {
+        self.search = search
+        self.status = status
+    }
+    var searchCount: Int { lock.lock(); defer { lock.unlock() }; return _searchCount }
+    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+        lock.withLock { _searchCount += 1 }
+        return try await search(node_id, query)
+    }
+    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+        try await status(node_id, ids)
+    }
+}
+
+actor AsyncGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        opened = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
 }

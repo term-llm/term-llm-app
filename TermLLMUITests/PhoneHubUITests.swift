@@ -8,7 +8,9 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     private func required(_ element: XCUIElement, timeout: TimeInterval = 30,
                           file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
-        let found = element.waitForExistence(timeout: timeout)
+        // XCTest's waiters poll at 1 s and only check after the first second;
+        // skip the wait entirely when the element is already present.
+        let found = element.exists || element.waitForExistence(timeout: timeout)
         if !found {
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "phone-hub-missing-element-hierarchy-DEMO-FIXTURE-LOCAL"
@@ -28,12 +30,36 @@ final class PhoneHubUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Matches `PhoneHubFixture.seedSources`; seeded connections have fixed IDs.
+    private static let seededIDs = [
+        "work": "00000000-0000-4000-8000-000000000001",
+        "home": "00000000-0000-4000-8000-000000000002",
+        "direct": "00000000-0000-4000-8000-000000000003",
+        "slow": "00000000-0000-4000-8000-000000000004",
+    ]
+    private func id(_ key: String) -> String { Self.seededIDs[key]! }
+
+    /// Fixture source modes are global; never inherit another test's state.
+    override func setUp() async throws {
+        for source in Self.seededIDs.keys {
+            var request = URLRequest(url: URL(string: "http://localhost:8767/__control/" + source + "/healthy")!)
+            request.httpMethod = "POST"
+            request.httpBody = Data("{}".utf8)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, "Fixture server must be running")
+        }
+    }
+
+    /// `seed` preloads fixture connections (in order; the first is selected)
+    /// instead of typing them into the editor. Only the editor tests type.
     @MainActor
-    private func launch(reset: Bool, arguments: [String] = []) {
+    private func launch(reset: Bool, seed: [String] = [], arguments: [String] = []) {
         app = XCUIApplication()
         app.launchArguments = arguments
         app.launchEnvironment["TERMLLM_PHONE_HUB_FIXTURE_URL"] = fixture + "/"
         app.launchEnvironment["TERMLLM_PHONE_HUB_FIXTURE_RESET"] = reset ? "1" : "0"
+        if !seed.isEmpty { app.launchEnvironment["TERMLLM_PHONE_HUB_FIXTURE_SEED"] = seed.joined(separator: ",") }
         app.launch()
         _ = required(app.staticTexts["phoneHub.fixtureBanner"])
     }
@@ -41,7 +67,10 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     private func reveal(_ element: XCUIElement, upwards: Bool = true,
                         file: StaticString = #filePath, line: UInt = #line) {
-        for direction in [upwards, !upwards] {
+        // Inside the Settings sheet a downward swipe at the top dismisses the
+        // sheet; Connections opens scrolled to the top, so only scroll down.
+        let inSheet = app.buttons["settings.done"].exists || app.navigationBars["Connections"].exists
+        for direction in inSheet ? [true] : [upwards, !upwards] {
             for _ in 0..<8 {
                 if element.exists {
                     let rect = element.frame
@@ -58,17 +87,26 @@ final class PhoneHubUITests: XCTestCase {
         XCTFail("Cannot reveal actual native element", file: file, line: line)
     }
 
+    /// Connections are managed in Settings, not from the Agents header.
     @MainActor
     private func openConnections() {
-        if app.buttons["phoneHub.connections.close"].exists { return }
-        required(app.buttons["phoneHub.connections"]).tap()
-        _ = required(app.buttons["phoneHub.addConnection"])
+        if app.navigationBars["Connections"].exists { return }
+        if !app.buttons["settings.done"].exists {
+            required(app.buttons["phoneHub.settings"]).tap()
+        }
+        required(app.buttons["settings.connections"]).tap()
+        _ = required(app.navigationBars["Connections"])
     }
 
     @MainActor
     private func closeConnections() {
-        if app.buttons["phoneHub.connections.close"].exists {
-            app.buttons["phoneHub.connections.close"].tap()
+        let connectionsBar = app.navigationBars["Connections"]
+        if connectionsBar.exists {
+            connectionsBar.buttons["Settings"].tap()
+            _ = required(app.buttons["settings.done"])
+        }
+        if app.buttons["settings.done"].exists {
+            app.buttons["settings.done"].tap()
         }
         _ = required(app.staticTexts["phoneHub.home"])
     }
@@ -76,7 +114,7 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     private func addConnection(_ name: String, path: String) {
         openConnections()
-        let add = app.buttons["phoneHub.addConnection"]
+        let add = app.buttons["phoneHub.connections.add"]
         reveal(add, upwards: false)
         add.tap()
         let nameField = required(app.textFields["phoneHub.connection.name"])
@@ -88,7 +126,7 @@ final class PhoneHubUITests: XCTestCase {
         XCTAssertFalse(app.segmentedControls["phoneHub.connection.kind"].exists)
         required(app.buttons["phoneHub.connection.save"]).tap()
         required(app.buttons["phoneHub.connection.done"]).tap()
-        _ = required(app.staticTexts["phoneHub.home"])
+        closeConnections()
     }
 
     @MainActor
@@ -109,14 +147,28 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     private func panel(_ name: String) {
         closeConnections()
-        required(app.buttons["phoneHub.panelMenu"]).tap()
-        required(app.buttons["phoneHub." + name]).tap()
-        let title = name == "nodes" ? "Agents" : name.capitalized
-        let selection = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", title, title),
-                                                  object: app.buttons["phoneHub.panelMenu"])
-        XCTAssertEqual(XCTWaiter.wait(for: [selection], timeout: 5), .completed, "The view menu must select the requested panel")
+        let segment = required(app.buttons["phoneHub." + name])
+        reveal(segment, upwards: false)
+        segment.tap()
+        guard !segment.isSelected else { return }
+        let selection = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: segment)
+        XCTAssertEqual(XCTWaiter.wait(for: [selection], timeout: 5), .completed, "The view switcher must select the requested panel")
     }
 
+    @MainActor
+    private func setShowOfflineAgents(_ on: Bool) {
+        openConnections()
+        let toggle = app.switches["phoneHub.showOfflineAgents"]
+        reveal(toggle)
+        if (toggle.value as? String == "1") != on {
+            // Tap the switch knob; the row label alone does not flip it.
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        }
+        XCTAssertEqual(toggle.value as? String, on ? "1" : "0")
+        closeConnections()
+    }
+
+    @MainActor
     private func control(_ source: String, _ state: String) async throws {
         var request = URLRequest(url: URL(string: fixture + "/__control/" + source + "/" + state)!)
         request.httpMethod = "POST"
@@ -129,8 +181,7 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     func testAgentsViewMenuCanSwitchRepeatedly() throws {
         continueAfterFailure = false
-        launch(reset: true)
-        addConnection("Work Hub", path: "/work/")
+        launch(reset: true, seed: ["work"])
         panel("attention")
         _ = required(app.staticTexts["Work result"])
         panel("sessions")
@@ -172,9 +223,8 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     func testContextualChatTabKeepsExactPageAndDraftAcrossAllDestinations() throws {
         continueAfterFailure = false
-        launch(reset: true)
-        addConnection("Work Hub", path: "/work/")
-        let work = sourceID("Work Hub")
+        launch(reset: true, seed: ["work"])
+        let work = id("work")
         required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         if app.buttons["Got it"].exists { app.buttons["Got it"].tap() }
@@ -208,10 +258,8 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     func testRemovingCurrentConnectionDoesNotRetargetChatToAnotherAgent() throws {
         continueAfterFailure = false
-        launch(reset: true)
-        addConnection("Work Hub", path: "/work/")
-        addConnection("Home Hub", path: "/home/")
-        let work = sourceID("Work Hub")
+        launch(reset: true, seed: ["work", "home"])
+        let work = id("work")
         required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         required(app.tabBars.buttons["Agents"]).tap()
@@ -276,26 +324,22 @@ final class PhoneHubUITests: XCTestCase {
     }
 
     @MainActor
-    func testNodesDefaultToOnlineAndCanRevealOfflineNodes() async throws {
+    func testNodesDefaultToOnlineAndConnectionsCanRevealOfflineNodes() async throws {
         continueAfterFailure = false
-        launch(reset: true)
         try await control("work", "offline")
-        defer { Task { try? await control("work", "healthy") } }
-        addConnection("Work Hub", path: "/work/")
-        let work = sourceID("Work Hub")
+        launch(reset: true, seed: ["work"])
+        let work = id("work")
         panel("nodes")
         let offlineNode = app.buttons["phoneHub.node." + work + ".shared"]
-        let showAll = app.buttons["phoneHub.nodes.showAll"]
-        reveal(showAll)
-        XCTAssertFalse(offlineNode.exists)
+        XCTAssertFalse(app.buttons["phoneHub.nodes.showAll"].exists, "The list has no offline filter control")
         _ = required(app.staticTexts["No agents online"])
+        XCTAssertFalse(offlineNode.exists)
         shot("nodes-online-only-empty")
-        showAll.tap()
+        setShowOfflineAgents(true)
         reveal(offlineNode)
         XCTAssertFalse(offlineNode.isEnabled)
         shot("nodes-show-all")
-        reveal(showAll, upwards: false)
-        showAll.tap()
+        setShowOfflineAgents(false)
         XCTAssertFalse(offlineNode.exists)
         addConnection("Home Hub", path: "/home/")
         let home = sourceID("Home Hub")
@@ -308,11 +352,8 @@ final class PhoneHubUITests: XCTestCase {
     @MainActor
     func testRefreshAppliesDeltaWithoutMovingVisibleNodes() async throws {
         continueAfterFailure = false
-        launch(reset: true)
-        try await control("work", "healthy")
-        addConnection("Work Hub", path: "/work/")
-        addConnection("Home Hub", path: "/home/")
-        let home = sourceID("Home Hub")
+        launch(reset: true, seed: ["work", "home"])
+        let home = id("home")
         panel("nodes")
         let anchor = app.buttons["phoneHub.node." + home + ".shared"]
         reveal(anchor)
@@ -330,7 +371,6 @@ final class PhoneHubUITests: XCTestCase {
             XCTAssertEqual(anchor.frame.minY, baseline, accuracy: 2, "Delta updates must preserve the visible scroll anchor")
         }
         shot("refresh-delta-preserves-position")
-        try await control("work", "healthy")
     }
 
     @MainActor
@@ -346,24 +386,27 @@ final class PhoneHubUITests: XCTestCase {
         shot("settings-app-preferences-only")
         done.tap()
         _ = required(app.buttons["phoneHub.addConnection"])
-        addConnection("Work Hub", path: "/work/")
-        let before = sourceID("Work Hub")
+        app.terminate()
+        launch(reset: true, seed: ["work"])
         required(app.buttons["phoneHub.settings"]).tap()
         XCTAssertFalse(app.textFields["serverAddress"].exists)
-        _ = required(app.buttons["settings.toolsConnection"])
+        XCTAssertFalse(app.buttons["settings.toolsConnection"].exists, "No per-connection settings picker")
+        _ = required(app.buttons["settings.voiceAgent"])
         reveal(app.switches["deviceToolsToggle"])
         _ = required(app.switches["deviceToolsToggle"])
+        required(app.buttons["deviceToolsInfo"]).tap()
+        _ = required(app.staticTexts["Music"])
+        shot("settings-device-tools-info")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         required(app.buttons["settings.done"]).tap()
-        XCTAssertEqual(sourceID("Work Hub"), before)
+        _ = required(app.buttons["phoneHub.node." + id("work") + ".shared"])
     }
 
     @MainActor
     func testNodesFirstHomeAndResumeKeepTheRetainedConversation() throws {
         continueAfterFailure = false
-        launch(reset: true)
-        addConnection("Work Hub", path: "/work/")
-        addConnection("Home Hub", path: "/home/")
-        let work = sourceID("Work Hub"), home = sourceID("Home Hub")
+        launch(reset: true, seed: ["work", "home"])
+        let work = id("work"), home = id("home")
         let workNode = required(app.buttons["phoneHub.node." + work + ".shared"])
         XCTAssertTrue(workNode.isHittable, "Nodes must be visible without scrolling through connection administration")
         XCTAssertFalse(app.buttons["phoneHub.addConnection"].exists)
@@ -382,9 +425,9 @@ final class PhoneHubUITests: XCTestCase {
         XCTAssertFalse(app.buttons["phoneHub.features." + work].exists)
         closeConnections()
         required(app.buttons["phoneHub.settings"]).tap()
-        let toolsConnection = required(app.buttons["settings.toolsConnection"])
-        toolsConnection.tap()
-        required(app.buttons["Home Hub"]).tap()
+        // Choosing the voice agent from another connection must not switch the chat.
+        required(app.buttons["settings.voiceAgent"]).tap()
+        required(app.buttons["Home agent"]).tap()
         let deviceToggle = app.switches["deviceToolsToggle"]
         reveal(deviceToggle)
         _ = required(deviceToggle)
@@ -404,14 +447,30 @@ final class PhoneHubUITests: XCTestCase {
     }
 
     @MainActor
+    func testVoiceShortcutOpensTheChosenAgentOnItsConnection() async throws {
+        continueAfterFailure = false
+        launch(reset: true, seed: ["work", "home"])
+        let work = id("work")
+        required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
+        _ = required(app.webViews.staticTexts["Work fixture chat"])
+        required(app.tabBars.buttons["Agents"]).tap()
+        required(app.buttons["phoneHub.settings"]).tap()
+        XCTAssertFalse(required(app.buttons["settings.voiceTest"]).isEnabled, "No agent chosen yet")
+        required(app.buttons["settings.voiceAgent"]).tap()
+        required(app.buttons["Home agent"]).tap()
+        shot("settings-voice-agent-chosen")
+        required(app.buttons["settings.voiceTest"]).tap()
+        _ = required(app.webViews.staticTexts["Home fixture chat"])
+        XCTAssertFalse(app.webViews.staticTexts["Work fixture chat"].exists, "Voice opens the chosen agent, not the current chat")
+    }
+
+    @MainActor
     func testSavedConnectionsAndUnifiedViews() throws {
         continueAfterFailure = false
-        launch(reset: true)
-        shot("01-empty-local-home")
-        addConnection("Work Hub", path: "/work/")
-        addConnection("Home Hub", path: "/home/")
+        launch(reset: true, seed: ["work", "home"])
+        // One connection goes through the editor so persistence covers a real save.
         addConnection("Laptop", path: "/direct/")
-        let work = sourceID("Work Hub"), home = sourceID("Home Hub"), direct = sourceID("Laptop")
+        let work = id("work"), home = id("home"), direct = sourceID("Laptop")
         XCTAssertEqual(Set([work, home, direct]).count, 3)
         panel("nodes")
         let workNode = app.buttons["phoneHub.node." + work + ".shared"].firstMatch
@@ -440,28 +499,68 @@ final class PhoneHubUITests: XCTestCase {
             let row = app.staticTexts[text].firstMatch
             reveal(row)
         }
+        let inputSession = app.buttons["phoneHub.session." + work + ".shared.active-shared"]
+        reveal(inputSession, upwards: false)
+        XCTAssertEqual(inputSession.value as? String, "Input required", "Sessions mark pending input")
+        let unseenSession = app.buttons["phoneHub.session." + work + ".shared.session-shared"]
+        reveal(unseenSession)
+        XCTAssertEqual(unseenSession.value as? String, "Unseen", "Sessions mark unseen results")
         shot("04-source-qualified-sessions")
         app.terminate()
         launch(reset: false)
-        XCTAssertEqual(sourceID("Work Hub"), work)
-        XCTAssertEqual(sourceID("Home Hub"), home)
-        XCTAssertEqual(sourceID("Laptop"), direct)
+        openConnections()
+        for source in [work, home, direct] {
+            XCTAssertTrue(app.descendants(matching: .any)["phoneHub.source." + source].firstMatch.exists,
+                          "Connection identity must survive relaunch")
+        }
         shot("05-connections-survive-process-relaunch")
+    }
+
+    @MainActor
+    func testSessionSearchFansOutToEveryAgentAndSorts() throws {
+        continueAfterFailure = false
+        launch(reset: true, seed: ["work", "home", "direct"])
+        let work = id("work"), home = id("home"), direct = id("direct")
+        panel("sessions")
+        // The list sorts by recent activity by default.
+        _ = required(app.buttons["phoneHub.session." + work + ".shared.session-shared"])
+        shot("06-sessions-sort-and-search")
+        let field = required(app.textFields["phoneHub.sessionSearch"])
+        field.tap()
+        field.typeText("relay")
+        // Typing only filters loaded sessions; asking the agents is explicit.
+        _ = required(app.buttons["phoneHub.sessionSearch.agents"])
+        XCTAssertFalse(app.buttons["phoneHub.session." + work + ".shared.search-11"].exists)
+        shot("07a-session-search-local-first")
+        field.typeText("\n")
+        // Older matches come from each agent, beyond the dashboard's recent window.
+        for row in [work + ".shared", home + ".shared", direct + ".direct-node"] {
+            let hit = app.buttons["phoneHub.session." + row + ".search-11"]
+            reveal(hit, upwards: false)
+        }
+        let workHit = app.buttons["phoneHub.session." + work + ".shared.search-11"]
+        let running = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Running"), object: workHit)
+        XCTAssertEqual(XCTWaiter.wait(for: [running], timeout: 10), .completed,
+                       "Run state comes from the follow-up status lookup")
+        XCTAssertFalse(app.buttons["phoneHub.sessionSearch.agents"].exists, "The agents were already asked")
+        XCTAssertTrue(app.staticTexts["phoneHub.sessionSearch.agent." + work + ".shared"].exists
+                      || app.otherElements["phoneHub.sessionSearch.agent." + work + ".shared"].exists,
+                      "Relevance groups results by agent")
+        shot("07-session-search-fan-out")
+        required(app.buttons["phoneHub.sessionSort"]).tap()
+        required(app.buttons["Recent activity"]).tap()
+        XCTAssertEqual(app.buttons["phoneHub.sessionSort"].value as? String, "Recent activity")
+        shot("08-session-search-recent")
+        required(app.buttons["phoneHub.sessionSearch.clear"]).tap()
+        _ = required(app.buttons["phoneHub.session." + work + ".shared.session-shared"])
+        XCTAssertFalse(app.buttons["phoneHub.session." + work + ".shared.search-11"].exists)
     }
 
     @MainActor
     func testSlowAndUnauthorizedSourcesDoNotBlockHealthySources() async throws {
         continueAfterFailure = false
-        launch(reset: true)
-        try await control("work", "healthy")
-        addConnection("Home Hub", path: "/home/")
-        addConnection("Laptop", path: "/direct/")
-        addConnection("Work Hub", path: "/work/")
-        let work = sourceID("Work Hub"), home = sourceID("Home Hub")
-        // Start Slow last: typing the other saved connections must not consume
-        // its real native request timeout before the concurrency assertion.
-        addConnection("Slow Hub", path: "/slow/")
-        let slow = sourceID("Slow Hub")
+        launch(reset: true, seed: ["home", "direct", "work", "slow"])
+        let work = id("work"), home = id("home"), slow = id("slow")
         try await control("home", "pending-check")
         openConnections()
         let slowRetry = app.buttons["phoneHub.retry." + slow]

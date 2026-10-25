@@ -1,0 +1,247 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Agents tab switcher concepts</title>
+<style>
+  :root { --blue:#0a84ff; --sep:#e3e3e8; --bg:#f2f2f7; --sec:#8a8a8e; --ter:#c4c4c7; --orange:#ff9f0a; --green:#30d158; --red:#ff453a; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:28px; background:#d9dbe0; font: 15px -apple-system, "SF Pro Text", system-ui, sans-serif; color:#000; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .lede { margin:0 0 24px; color:#444; max-width:1200px; }
+  .grid { display:grid; grid-template-columns: repeat(3, 390px); gap:36px 32px; }
+  .card h2 { font-size:16px; margin:0 0 2px; }
+  .card p.note { margin:0 0 10px; color:#444; font-size:13px; line-height:1.35; min-height:70px; }
+  .phone { width:390px; height:760px; background:var(--bg); border-radius:44px; overflow:hidden; position:relative; box-shadow: 0 0 0 10px #111, 0 18px 40px rgba(0,0,0,.25); }
+  .status { height:44px; display:flex; justify-content:space-between; align-items:center; padding:0 30px; font-weight:600; font-size:15px; }
+  .nav { height:44px; display:flex; align-items:center; justify-content:space-between; padding:0 16px; position:relative; }
+  .nav .title { position:absolute; left:0; right:0; text-align:center; font-weight:600; font-size:17px; pointer-events:none; }
+  .nav .left, .nav .right { color:var(--blue); font-size:16px; display:flex; gap:18px; align-items:center; z-index:1; }
+  .ico { font-size:19px; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--orange); vertical-align:top; margin-left:2px; }
+  .large { font-size:32px; font-weight:700; padding:2px 16px 8px; display:flex; align-items:center; gap:6px; }
+  .content { padding:0 16px; }
+  .group { background:#fff; border-radius:12px; overflow:hidden; margin-bottom:18px; }
+  .row { display:flex; align-items:center; gap:12px; padding:11px 14px; min-height:44px; border-bottom:0.5px solid var(--sep); }
+  .row:last-child { border-bottom:none; }
+  .row .main { flex:1; min-width:0; }
+  .row .t { font-weight:600; font-size:16px; }
+  .row .s { font-size:13px; color:var(--sec); margin-top:2px; }
+  .chev { color:var(--ter); font-weight:600; }
+  .muted .t { color:var(--sec); font-weight:500; }
+  .hdr { font-size:13px; color:var(--sec); text-transform:uppercase; letter-spacing:.02em; padding:0 14px 6px; display:flex; justify-content:space-between; align-items:center; }
+  .hdr a { color:var(--blue); text-transform:none; font-size:14px; letter-spacing:0; }
+  .hdr.big { text-transform:none; font-size:20px; font-weight:700; color:#000; padding:4px 2px 8px; letter-spacing:0; }
+  .seg { display:flex; background:#e4e4e9; border-radius:9px; padding:2px; margin:4px 0 14px; }
+  .seg div { flex:1; text-align:center; padding:6px 0; font-size:14px; font-weight:500; border-radius:7px; }
+  .seg .on { background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.12); font-weight:600; }
+  .badge { display:inline-block; min-width:18px; padding:0 5px; height:18px; line-height:18px; border-radius:9px; background:var(--orange); color:#fff; font-size:11px; font-weight:700; margin-left:4px; vertical-align:1px; }
+  .badge.grey { background:#c7c7cc; }
+  .count { color:var(--sec); font-weight:400; margin-left:3px; }
+  .status-dot { width:9px; height:9px; border-radius:50%; background:var(--green); flex:none; }
+  .status-dot.off { background:#c7c7cc; }
+  .status-dot.busy { background:var(--orange); }
+  .avatar { width:34px; height:34px; border-radius:9px; display:grid; place-items:center; color:#fff; font-weight:700; font-size:14px; flex:none; position:relative; }
+  .avatar .pip { position:absolute; right:-2px; bottom:-2px; width:11px; height:11px; border-radius:50%; border:2px solid #fff; background:var(--green); }
+  .avatar.off { filter:grayscale(1); opacity:.45; }
+  .avatar.off .pip { background:#c7c7cc; }
+  .pill { font-size:12px; font-weight:600; padding:3px 8px; border-radius:10px; background:#fff3e0; color:#c76b00; white-space:nowrap; }
+  .pill.blue { background:#e6f0ff; color:#0060d0; }
+  .disclose { color:var(--sec); font-size:14px; }
+  .disclose b { color:#000; font-weight:500; }
+  .menu { position:absolute; top:132px; left:16px; width:250px; background:rgba(250,250,252,.97); border-radius:14px; box-shadow:0 10px 40px rgba(0,0,0,.25); overflow:hidden; z-index:5; }
+  .menu .mi { padding:11px 16px; display:flex; justify-content:space-between; align-items:center; border-bottom:0.5px solid var(--sep); font-size:16px; }
+  .menu .mi:last-child { border-bottom:none; }
+  .menu .div { height:8px; background:#e9e9ee; }
+  .menu .chk { color:var(--blue); width:18px; }
+  .menu .lbl { flex:1; }
+  .scrim { position:absolute; inset:0; background:rgba(0,0,0,.08); z-index:4; }
+  .chips { display:flex; gap:8px; margin:4px 0 14px; overflow:hidden; }
+  .chip { padding:7px 12px; border-radius:16px; background:#fff; font-size:14px; font-weight:500; white-space:nowrap; border:1px solid #e1e1e6; }
+  .chip.on { background:#000; color:#fff; border-color:#000; }
+  .ctl { display:flex; justify-content:space-between; align-items:center; padding:4px 2px 12px; }
+  .ctl .picker { color:var(--blue); font-weight:500; font-size:16px; }
+  .ctl .btn { color:var(--blue); font-size:13px; }
+  .inbox { background:#fff; border-radius:14px; padding:12px 14px; margin-bottom:14px; border-left:4px solid var(--orange); }
+  .inbox .t { font-weight:600; }
+  .inbox .s { font-size:13px; color:var(--sec); margin-top:2px; }
+  .inbox .act { display:flex; gap:14px; margin-top:8px; font-size:14px; color:var(--blue); font-weight:500; }
+  .offline-line { font-size:13px; color:var(--sec); padding:2px 4px 14px; line-height:1.4; }
+  .offline-line b { color:#555; font-weight:500; }
+  .tabbar { position:absolute; left:0; right:0; bottom:0; height:84px; background:rgba(248,248,250,.96); border-top:0.5px solid #d0d0d5; display:flex; justify-content:space-around; padding-top:8px; font-size:10px; color:var(--sec); }
+  .tabbar div { text-align:center; }
+  .tabbar .on { color:var(--blue); }
+  .tabbar .ti { font-size:22px; display:block; margin-bottom:2px; }
+  .rec { outline:3px solid #34c759; outline-offset:6px; border-radius:44px; }
+  .tag { display:inline-block; font-size:11px; font-weight:700; color:#fff; background:#34c759; padding:2px 7px; border-radius:6px; margin-left:6px; vertical-align:2px; }
+  .tag.cur { background:#8e8e93; }
+</style>
+</head>
+<body>
+<h1>Agents tab — view switcher &amp; offline agents</h1>
+<p class="lede">Same data in every phone: 2 connections, 6 agents (3 online, 3 offline), 2 attention items, 14 sessions. Offline agent rows are disabled in the app today, so every concept treats them as status information, not a filter.</p>
+
+<div class="grid">
+
+<!-- 0. CURRENT -->
+<div class="card">
+  <h2>0 · Today <span class="tag cur">CURRENT</span></h2>
+  <p class="note">Menu picker hides the other two views and gives no hint that 2 items need you. "Show all (3 offline)" takes the top slot for rows you can't open. The title and the picker both say "Agents".</p>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title">Agents</div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="content">
+      <div class="ctl" style="padding-top:10px"><span class="picker">Agents ⌃⌄</span><span class="btn">Show all (3 offline)</span></div>
+      <div class="group">
+        <div class="row"><div class="main"><div class="t">studio-mac</div><div class="s">Home Hub · Online</div><div class="s" style="font-size:12px">5 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><div class="main"><div class="t">build-box</div><div class="s">Work · Online</div><div class="s" style="font-size:12px">2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><div class="main"><div class="t">laptop</div><div class="s">Home Hub · Online</div><div class="s" style="font-size:12px">New conversation</div></div><span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+<!-- A. SEGMENTED + COLLAPSED OFFLINE -->
+<div class="card">
+  <h2>A · Segmented with counts <span class="tag">RECOMMENDED</span></h2>
+  <p class="note">All three views always visible; Attention carries a badge so you know to look. No toggle: offline agents collapse into one disclosure row at the end of the list ("3 offline"), expanded on tap with last-seen times.</p>
+  <div class="phone rec">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title">Agents</div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="content">
+      <div class="seg"><div class="on">Agents</div><div>Attention<span class="badge">2</span></div><div>Sessions</div></div>
+      <div class="group">
+        <div class="row"><span class="status-dot busy"></span><div class="main"><div class="t">studio-mac</div><div class="s">Home Hub · 5 sessions · 1 needs input</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">build-box</div><div class="s">Work · 2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">laptop</div><div class="s">Home Hub · New conversation</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="group">
+        <div class="row muted"><span class="status-dot off"></span><div class="main"><div class="t">3 offline</div><div class="s">nas, old-mbp, pi-garage</div></div><span class="chev">⌄</span></div>
+      </div>
+      <div class="hdr" style="padding-top:4px">Expanded</div>
+      <div class="group">
+        <div class="row muted"><span class="status-dot off"></span><div class="main"><div class="t">3 offline</div></div><span class="chev">⌃</span></div>
+        <div class="row muted"><span class="status-dot off"></span><div class="main"><div class="t">nas</div><div class="s">Home Hub · last seen 2 h ago</div></div></div>
+        <div class="row muted"><span class="status-dot off"></span><div class="main"><div class="t">old-mbp</div><div class="s">Work · last seen 3 d ago</div></div></div>
+        <div class="row muted"><span class="status-dot off"></span><div class="main"><div class="t">pi-garage</div><div class="s">Home Hub · last seen 5 d ago</div></div></div>
+      </div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+<!-- B. INBOX ON TOP -->
+<div class="card">
+  <h2>B · Attention as an inbox, not a tab</h2>
+  <p class="note">Attention is the most urgent view, so it shouldn't sit behind a switch. Pending items pin above the list and disappear when cleared. Switcher shrinks to Agents / Sessions. Offline is a standard collapsible section.</p>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title">Agents</div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="content">
+      <div class="inbox">
+        <div style="display:flex;justify-content:space-between"><span class="t">Approve shell command?</span><span class="pill">Input</span></div>
+        <div class="s">studio-mac · Refactor hub polling</div>
+        <div class="act"><span>Open</span><span>Mark seen</span></div>
+      </div>
+      <div class="inbox" style="border-left-color:var(--blue)">
+        <div style="display:flex;justify-content:space-between"><span class="t">Release notes drafted</span><span class="pill blue">Unseen</span></div>
+        <div class="s">build-box · Changelog 1.4</div>
+      </div>
+      <div class="seg"><div class="on">Agents</div><div>Sessions</div></div>
+      <div class="group">
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">studio-mac</div><div class="s">Home Hub · 5 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">build-box</div><div class="s">Work · 2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">laptop</div><div class="s">Home Hub · New conversation</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="hdr"><span>Offline · 3</span><a>Show ›</a></div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+<!-- C. UNIFIED HOME -->
+<div class="card">
+  <h2>C · One page, no switcher</h2>
+  <p class="note">Three short sections — Needs you, Agents, Recent — each with "See all" pushing the full list. Nothing to switch. Offline agents become one line of text under Agents; nothing to toggle.</p>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title"></div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="large">Agents</div>
+    <div class="content">
+      <div class="hdr big"><span>Needs you <span class="badge">2</span></span><a>See all</a></div>
+      <div class="group">
+        <div class="row"><div class="main"><div class="t">Approve shell command?</div><div class="s">studio-mac · Input required</div></div><span class="chev">›</span></div>
+        <div class="row"><div class="main"><div class="t">Release notes drafted</div><div class="s">build-box · Unseen</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="hdr big"><span>Agents</span></div>
+      <div class="group">
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">studio-mac</div><div class="s">Home Hub · 5 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">build-box</div><div class="s">Work · 2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">laptop</div><div class="s">Home Hub · New conversation</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="offline-line" style="margin-top:-8px">Offline: <b>nas</b>, <b>old-mbp</b>, <b>pi-garage</b></div>
+      <div class="hdr big"><span>Recent</span><a>See all 14</a></div>
+      <div class="group">
+        <div class="row"><div class="main"><div class="t" style="font-weight:500">Refactor hub polling</div><div class="s">studio-mac · 4 min ago</div></div><span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+<!-- D. TITLE MENU -->
+<div class="card">
+  <h2>D · Title is the switcher</h2>
+  <p class="note">Keep the menu but move it into the nav title (one "Agents" instead of two) and put counts in it. Orange dot on the title when Attention has items. "Show offline" lives as a checkmark item in the same menu — the toggle stays, just out of the way.</p>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title" style="pointer-events:auto">Agents <span style="color:var(--sec);font-size:13px">⌄</span><span class="dot"></span></div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="scrim"></div>
+    <div class="menu" style="left:70px">
+      <div class="mi"><span class="chk">✓</span><span class="lbl">Agents</span><span class="count">3</span></div>
+      <div class="mi"><span class="chk"></span><span class="lbl">Attention</span><span class="badge">2</span></div>
+      <div class="mi"><span class="chk"></span><span class="lbl">Sessions</span><span class="count">14</span></div>
+      <div class="div"></div>
+      <div class="mi"><span class="chk"></span><span class="lbl">Show offline agents</span><span class="count">3</span></div>
+    </div>
+    <div class="content" style="padding-top:10px">
+      <div class="group">
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">studio-mac</div><div class="s">Home Hub · 5 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">build-box</div><div class="s">Work · 2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row"><span class="status-dot"></span><div class="main"><div class="t">laptop</div><div class="s">Home Hub · New conversation</div></div><span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+<!-- E. GROUPED BY CONNECTION -->
+<div class="card">
+  <h2>E · Grouped by connection, offline inline</h2>
+  <p class="note">Segmented control as in A, but agents grouped under their connection with "2 of 3 online" in the header. Offline agents stay in place as small greyed rows, so there's no filter at all — you can see which machine is down at a glance.</p>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><div class="left">Connections</div><div class="title">Agents</div><div class="right"><span class="ico">⚙︎</span><span class="ico">↻</span></div></div>
+    <div class="content">
+      <div class="seg"><div class="on">Agents</div><div>Attention<span class="badge">2</span></div><div>Sessions</div></div>
+      <div class="hdr"><span>Home Hub</span><span style="text-transform:none">2 of 4 online</span></div>
+      <div class="group">
+        <div class="row"><div class="avatar" style="background:#5e5ce6">S<span class="pip"></span></div><div class="main"><div class="t">studio-mac</div><div class="s">5 sessions · 1 needs input</div></div><span class="chev">›</span></div>
+        <div class="row"><div class="avatar" style="background:#0a84ff">L<span class="pip"></span></div><div class="main"><div class="t">laptop</div><div class="s">New conversation</div></div><span class="chev">›</span></div>
+        <div class="row muted" style="min-height:36px;padding:7px 14px"><div class="avatar off" style="background:#888;width:26px;height:26px;font-size:12px">N<span class="pip"></span></div><div class="main"><div class="t" style="font-size:14px">nas <span style="font-weight:400">· 2 h ago</span></div></div></div>
+        <div class="row muted" style="min-height:36px;padding:7px 14px"><div class="avatar off" style="background:#888;width:26px;height:26px;font-size:12px">P<span class="pip"></span></div><div class="main"><div class="t" style="font-size:14px">pi-garage <span style="font-weight:400">· 5 d ago</span></div></div></div>
+      </div>
+      <div class="hdr"><span>Work</span><span style="text-transform:none">1 of 2 online</span></div>
+      <div class="group">
+        <div class="row"><div class="avatar" style="background:#ff9f0a">B<span class="pip"></span></div><div class="main"><div class="t">build-box</div><div class="s">2 sessions</div></div><span class="chev">›</span></div>
+        <div class="row muted" style="min-height:36px;padding:7px 14px"><div class="avatar off" style="background:#888;width:26px;height:26px;font-size:12px">O<span class="pip"></span></div><div class="main"><div class="t" style="font-size:14px">old-mbp <span style="font-weight:400">· 3 d ago</span></div></div></div>
+      </div>
+    </div>
+    <div class="tabbar"><div class="on"><span class="ti">◉</span>Agents</div><div><span class="ti">✎</span>Chat</div><div><span class="ti">♪</span>Music</div><div><span class="ti">◎</span>Podcasts</div></div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

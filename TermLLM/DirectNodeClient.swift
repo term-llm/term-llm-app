@@ -238,6 +238,11 @@ final class DirectNodeClient: @unchecked Sendable {
 
     // MARK: - Node-specific public methods
 
+    /// GET /v1/sessions/search — full-text session search on this node.
+    func search_sessions(query: String, limit: Int) async throws -> SessionSearchResponse {
+        try await request("/v1/sessions/search?\(SessionSearchQuery.percentEncoded(query: query, limit: limit))")
+    }
+
     /// GET /v1/sessions/status — list of sessions with attention and run state.
     func sessions_status() async throws -> DirectNodeSessionsStatus {
         try await request("/v1/sessions/status")
@@ -860,5 +865,16 @@ private extension String {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/")
         return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
+    }
+}
+
+extension DirectNodeClient: HubSessionSearching {
+    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+        try await search_sessions(query: query, limit: limit)
+    }
+
+    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+        guard let query = SessionSearchQuery.percentEncodedStatus(ids: ids) else { return DirectNodeSessionsStatus(sessions: []) }
+        return try await request("/v1/sessions/status?\(query)")
     }
 }

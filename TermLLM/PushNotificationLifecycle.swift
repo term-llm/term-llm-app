@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 
 /// Injectable inbox boundary; tests never touch the system notification center.
-protocol PushNotificationInbox {
+protocol PushNotificationInbox: Sendable {
     func delivered() async -> [UNNotificationRequest]
     func pending() async -> [UNNotificationRequest]
     func removeDelivered(_ ids: [String])

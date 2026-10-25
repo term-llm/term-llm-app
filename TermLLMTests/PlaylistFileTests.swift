@@ -7,7 +7,7 @@ final class PlaylistFileTests: XCTestCase {
     private var url: URL!
     private let fixedNow = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21 …
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         url = temporaryPlaylistFile()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     }

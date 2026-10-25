@@ -11,7 +11,7 @@ struct ContentView: View {
     @StateObject private var aggregate = HubAggregateStore()
     @State private var draftURL = ""
     @State private var showingSettings = false
-    @State private var voiceSettingsSourceID: UUID?
+    @State private var voiceTarget = VoiceShortcutTarget.load(from: HubFixture.defaults)
     @State private var loading = false
     @State private var canGoBack = false
     @State private var loadError: String?
@@ -216,10 +216,9 @@ struct ContentView: View {
                     voiceLaunchError = nil; push.navigationIssue = nil
                     openSettings()
                 }
-            } else if let id = connections.selectedID {
+            } else {
                 Button("Voice settings") {
                     voiceLaunchError = nil
-                    voiceSettingsSourceID = id
                     openSettings()
                 }
             }
@@ -484,7 +483,7 @@ struct ContentView: View {
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
                         scenePhase: chatIsVisible ? scenePhase : .inactive, isSigningIn: isSigningIn,
-                        deviceTools: !isFixture && deviceTools.isEnabled(for: url) ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
+                        deviceTools: !isFixture && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             loginRequired = true
@@ -622,14 +621,16 @@ struct ContentView: View {
     private var settings: some View {
         NavigationStack {
             Form {
-                voiceAndDeviceSections
+                if !HubFixture.isEnabled {
+                    connectionsSection
+                }
+                if !aggregate.sources.isEmpty {
+                    voiceShortcutSection
+                    deviceToolsSection
+                }
                 notificationsSection
                 if let issue = push.badgeIssue {
                     Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
-                }
-                Section {
-                    Text("Manage connections and sign-in in Agents → Connections.")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Settings")
@@ -644,69 +645,91 @@ struct ContentView: View {
         }
     }
 
-    private var voiceSettingsSource: HubSourceWorkspace? {
-        voiceSettingsSourceID.flatMap { aggregate.source($0) } ?? selectedWorkspace ?? aggregate.sources.first
+    /// Saved servers are configuration: managed here, not from the Agents header.
+    private var connectionsSection: some View {
+        let issues = PhoneHubConnectionsView.issueCount(connections: connections, aggregate: aggregate)
+        let saved = connections.connections.count
+        return Section {
+            NavigationLink {
+                PhoneHubConnectionsView(connections: connections, aggregate: aggregate, onOpenChat: { sourceID, url in
+                    showingSettings = false
+                    openPhoneChat(sourceID, url)
+                })
+            } label: {
+                LabeledContent {
+                    if issues > 0 {
+                        Label("\(issues)", systemImage: "exclamationmark.circle.fill")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(saved == 0 ? "None" : "\(saved)")
+                    }
+                } label: {
+                    Label("Connections", systemImage: "server.rack")
+                }
+            }
+            .accessibilityValue(issues > 0 ? "\(issues) need attention" : (saved == 0 ? "None saved" : "\(saved) saved"))
+            .accessibilityIdentifier("settings.connections")
+        }
     }
 
-    /// App-level settings own these controls. Choosing their permission scope
-    /// must not select a browser workspace or navigate the retained chat.
-    @ViewBuilder private var voiceAndDeviceSections: some View {
-        Section {
-            if let source = voiceSettingsSource {
-                Picker("Connection", selection: Binding(
-                    get: { voiceSettingsSource?.id },
-                    set: { voiceSettingsSourceID = $0 }
-                )) {
-                    ForEach(aggregate.sources) { source in
-                        Text(source.connection.name).tag(Optional(source.id))
+    /// One agent across all connections. Choosing it never switches the chat;
+    /// only running the shortcut does.
+    private var voiceShortcutSection: some View {
+        let nodes = aggregate.nodes
+        let savedIsListed = voiceTarget.map { target in nodes.contains { $0.source.id == target.sourceID && $0.node.id == target.nodeID } } ?? true
+        return Section {
+            Picker("Agent", selection: Binding(
+                get: { voiceTarget?.key ?? "" },
+                set: { key in
+                    guard let row = nodes.first(where: { "\($0.source.id.uuidString)|\($0.node.id)" == key }) else {
+                        if key.isEmpty { setVoiceTarget(nil) }
+                        return
+                    }
+                    setVoiceTarget(VoiceShortcutTarget(sourceID: row.source.id, nodeID: row.node.id,
+                                                       name: row.node.name, path: row.node.new_session_path))
+                }
+            )) {
+                Text("None").tag("")
+                if !savedIsListed, let voiceTarget {
+                    Text(voiceTarget.name).tag(voiceTarget.key)
+                }
+                ForEach(aggregate.sources) { source in
+                    let rows = nodes.filter { $0.source.id == source.id }
+                    if !rows.isEmpty {
+                        Section(source.connection.name) {
+                            ForEach(rows) { row in
+                                Text(row.node.name).tag("\(row.source.id.uuidString)|\(row.node.id)")
+                            }
+                        }
                     }
                 }
-                .accessibilityIdentifier("settings.toolsConnection")
-                Text(source.connection.url.absoluteString)
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("Add a connection in Agents → Connections to configure voice and device sharing.")
-                    .foregroundStyle(.secondary)
             }
+            .accessibilityIdentifier("settings.voiceAgent")
+            Button("Start live conversation") { voiceLaunches.requestLaunch() }
+                .disabled(voiceTarget == nil)
+                .accessibilityIdentifier("settings.voiceTest")
         } header: {
-            Text("Voice & device tools")
+            Text("Voice shortcut")
         } footer: {
-            if voiceSettingsSource != nil {
-                Text("Choose which server may use these features. Changing this setting does not switch your chat.")
-            }
-        }
-        if let source = voiceSettingsSource {
-            VoiceShortcutSection(server: source.connection.url) {
-                connections.select(source.id)
-                showingSettings = false
-                voiceLaunches.requestLaunch()
-            }
-            deviceToolsSection(for: source.connection.url)
+            Text("Runs from the Action Button, Siri or Shortcuts.")
         }
     }
 
-    /// Per-server opt-in for sharing device tools with the web page (WebMCP).
-    private func deviceToolsSection(for address: URL) -> some View {
+    private func setVoiceTarget(_ target: VoiceShortcutTarget?) {
+        voiceTarget = target
+        VoiceShortcutTarget.save(target, to: HubFixture.defaults)
+    }
+
+    private var deviceToolsSection: some View {
         Section {
-            Toggle(isOn: Binding(
-                get: { deviceTools.isEnabled(for: address) },
-                set: { deviceTools.setEnabled($0, for: address) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Share device tools with this server")
-                    Text(address.host() ?? address.absoluteString)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("deviceToolsToggle")
-            if deviceTools.isEnabled(for: address) {
-                LabeledContent("Tools", value: deviceTools.registry.tools.map(\.name).joined(separator: ", "))
-            }
+            Toggle("Share device tools", isOn: $deviceTools.isEnabled)
+                .accessibilityIdentifier("deviceToolsToggle")
+            NavigationLink("What’s shared") { DeviceToolsInfoView() }
+                .accessibilityIdentifier("deviceToolsInfo")
         } header: {
             Text("Device tools")
         } footer: {
-            Text("Lets the agent use tools on this \(UIDevice.current.model) while you chat here. They appear in term-llm's MCP servers list, where you can turn them off per conversation. Nothing listens on the network. Remembered per server.")
+            Text("Let agents use this \(UIDevice.current.model) while you chat.")
         }
     }
 
@@ -720,26 +743,47 @@ struct ContentView: View {
     }
 
     private func beginVoiceLaunch(_ id: UUID) {
-        guard voiceRequest == nil, scenePhase == .active, let pushWindowID,
-              voiceLaunches.claim(id, windowID: pushWindowID, isKeyScene: push.isKeyScene(pushWindowID)) else { return }
-        do {
-            guard let address else {
-                throw VoiceLaunchFailure(message: "Add a connection in Agents → Connections first.")
-            }
-            let destination = try VoiceShortcutSettings.shared.destination(for: address)
-            workspaceChosen = true
-            showingHub = false
-            showingSettings = false
-            showingMusic = false
-            showingListen = false
-            showingPlayer = false
-            voiceLaunchError = nil
-            voiceRequest = VoiceBrowserLaunch(id: id, url: destination)
-            pendingChat = makeChatContext(for: destination)
-            if !HubFixture.isEnabled { selectTab(.chat) }
-        } catch {
-            voiceLaunchError = error.localizedDescription
+        // Fixtures never register a push window; they run as a single key scene.
+        guard voiceRequest == nil, scenePhase == .active, let windowID = pushWindowID ?? (isFixture ? "fixture" : nil),
+              voiceLaunches.claim(id, windowID: windowID, isKeyScene: isFixture || push.isKeyScene(windowID)) else { return }
+        guard let target = voiceTarget, let source = aggregate.source(target.sourceID), source.isActive,
+              !source.browserRevoked,
+              let destination = aggregate.destination(path: target.path, sourceID: source.id, nodeID: target.nodeID) else {
+            voiceLaunchError = voiceTarget == nil
+                ? "Choose an agent for the voice shortcut in Settings."
+                : "The voice shortcut’s agent isn’t available. Sign in to its connection or choose another agent in Settings."
             voiceLaunches.finish()
+            return
+        }
+        showingSettings = false
+        showingHub = false
+        showingMusic = false
+        showingListen = false
+        showingPlayer = false
+        voiceLaunchError = nil
+        Task { @MainActor in
+            await source.prepareBrowserAuthentication()
+            guard voiceLaunches.request == id else { return }
+            guard source.isActive, !source.browserRevoked, aggregate.source(source.id) === source else {
+                voiceLaunchError = "Connection authorization changed. Sign in again before starting voice."
+                voiceLaunches.finish()
+                return
+            }
+            // Same selection path as opening an agent from the Agents tab.
+            if connections.selectedID != source.id {
+                connections.select(source.id)
+                hubDestination = HubBrowserDestination(url: destination, sourceID: source.id)
+            }
+            serverURL = source.connection.url.absoluteString
+            hubRole = source.connection.kind == .hub ? .hub : .direct
+            hubBrowserRevoked = false
+            loadError = nil
+            loginError = nil
+            loginRequired = false
+            workspaceChosen = true
+            voiceRequest = VoiceBrowserLaunch(id: id, url: destination)
+            pendingChat = makeChatContext(for: destination, source: source)
+            selectTab(.chat)
         }
     }
 
@@ -856,14 +900,12 @@ struct ContentView: View {
                     }
                 }
             }
-        } header: {
-            Text("Notifications")
         } footer: {
-            Text(push.authorization == .denied
-                 ? "Notifications are blocked for term-llm in iOS Settings."
-                 : "This switch keeps a local opt-out; it does not change iOS permission. Cleanup of server enrollments retries when their authenticated pages reconnect. Offline or unopened nodes may retain remote subscriptions and in-flight alerts may still leave quiet cards.")
+            if push.authorization == .denied {
+                Text("Notifications are blocked for term-llm in iOS Settings.")
+            }
             if push.pendingCleanupCount > 0 {
-                Text("\(push.pendingCleanupCount) server enrollment cleanup(s) pending. Open each enrolled node while signed in and online to retry.")
+                Text("^[\(push.pendingCleanupCount) agent](inflect: true) may still send notifications until you open it while signed in.")
             }
             if let issue = push.storageIssue { Text(issue) }
             if let issue = push.navigationIssue { Text(issue) }

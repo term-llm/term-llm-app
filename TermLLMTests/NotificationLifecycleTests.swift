@@ -34,18 +34,18 @@ final class PushDeliveryStoreTests: XCTestCase {
     func testIndependentInstancesSerializeConcurrentArrival() throws {
         let url = try XCTUnwrap(store.url)
         let message = completionMessage(event: "concurrent", now: now)
-        let lock = NSLock()
-        var results: [PushDeliveryStore.Disposition] = []
-        var failures = 0
+        let now = now
+        let results = HubTestBox<[PushDeliveryStore.Disposition]>([])
+        let failures = HubTestBox(0)
         DispatchQueue.concurrentPerform(iterations: 32) { _ in
             do {
                 let disposition = try PushDeliveryStore(url: url).receive(message, now: now)
-                lock.withLock { results.append(disposition) }
-            } catch { lock.withLock { failures += 1 } }
+                results.update { $0.append(disposition) }
+            } catch { failures.update { $0 += 1 } }
         }
-        XCTAssertEqual(failures, 0)
-        XCTAssertEqual(results.filter { $0 == .allowed }.count, 1)
-        XCTAssertEqual(results.filter { $0 == .replay }.count, 31)
+        XCTAssertEqual(failures.value, 0)
+        XCTAssertEqual(results.value.filter { $0 == .allowed }.count, 1)
+        XCTAssertEqual(results.value.filter { $0 == .replay }.count, 31)
     }
 
     func testCapacityDoesNotEvictUnexpiredReplayProtection() throws {
@@ -366,7 +366,7 @@ final class NativeNotificationLifecycleTests: XCTestCase {
     }
 }
 
-final class FakePushInbox: PushNotificationInbox {
+final class FakePushInbox: PushNotificationInbox, @unchecked Sendable { // only used from serial test code
     var items: [UNNotificationRequest] = []
     var pendingItems: [UNNotificationRequest] = []
     var removedDelivered: [String] = []

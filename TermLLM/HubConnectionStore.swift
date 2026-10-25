@@ -21,7 +21,7 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
 /// never this defaults document or the legacy URL mirror.
 @MainActor
 final class HubConnectionStore: ObservableObject {
-    static let storageKey = "phoneHub.connections.v1"
+    nonisolated static let storageKey = "phoneHub.connections.v1"
     struct Document: Codable {
         var connections: [HubConnection]
         var selectedID: UUID?

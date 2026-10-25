@@ -237,17 +237,17 @@ final class HubStoreTests: XCTestCase {
     private var client: MockHubClient!
     private var store: HubStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         client = MockHubClient()
         store = HubStore(client: client, pollInterval: 999)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         store.dispose()
         store = nil
         client = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Initial state

@@ -27,7 +27,16 @@ private final class DirectMockTransport: HubTransport, @unchecked Sendable {
         _ request: URLRequest,
         onUnauthorized: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
-        lock.lock()
+        record(request)
+        let (data, response) = try await handler(request)
+        if response.statusCode == 401 || response.statusCode == 403 {
+            await onUnauthorized?()
+        }
+        return (data, response)
+    }
+
+    private func record(_ request: URLRequest) {
+        lock.lock(); defer { lock.unlock() }
         // Normalize header keys to lowercase for portable, case-insensitive assertions.
         let normalizedHeaders = (request.allHTTPHeaderFields ?? [:])
             .reduce(into: [String: String]()) { $0[$1.key.lowercased()] = $1.value }
@@ -37,12 +46,6 @@ private final class DirectMockTransport: HubTransport, @unchecked Sendable {
             headers: normalizedHeaders,
             body: request.httpBody
         ))
-        lock.unlock()
-        let (data, response) = try await handler(request)
-        if response.statusCode == 401 || response.statusCode == 403 {
-            await onUnauthorized?()
-        }
-        return (data, response)
     }
 }
 
@@ -369,6 +372,27 @@ final class DirectNodeClientTests: XCTestCase {
         XCTAssertEqual(req.headers["authorization"], "Bearer tok-secret")
     }
 
+    func testSessionSearchHitsNodeWithBearerAndEncodedQuery() async throws {
+        let (client, transport) = makeClient(bearer: "tok-secret") { _ in
+            jsonHTTP("{\"sessions\":[{\"id\":\"s1\",\"short_title\":\"Hit\",\"snippet\":\"**x**\"}]}")
+        }
+        let response = try await client.search_sessions(node_id: "ignored", query: "fix ci", limit: 20)
+        let req = transport.requests[0]
+        XCTAssertEqual(req.url.path, "/direct/v1/sessions/search")
+        XCTAssertEqual(URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "q=fix%20ci&limit=20")
+        XCTAssertEqual(req.headers["authorization"], "Bearer tok-secret")
+        XCTAssertEqual(response.sessions.map(\.id), ["s1"])
+    }
+
+    func testSessionStatusForIDsHitsNode() async throws {
+        let (client, transport) = makeClient(bearer: "tok-secret") { _ in jsonHTTP(emptyStatusJSON) }
+        _ = try await client.sessions_status(node_id: "ignored", ids: ["s1", "s2"])
+        let req = transport.requests[0]
+        XCTAssertEqual(req.url.path, "/direct/v1/sessions/status")
+        XCTAssertEqual(URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "ids=s1,s2")
+        XCTAssertEqual(req.headers["authorization"], "Bearer tok-secret")
+    }
+
     func testBearerInjectedOnGet() async throws {
         let (client, transport) = makeClient(bearer: "tok-secret") { _ in
             jsonHTTP(emptyStatusJSON)
@@ -588,10 +612,10 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListNodeAttentionRetries409UntilSuccess() async throws {
         // Test 409 retry via single-kind list_node_attention (no concurrency complications)
-        var callCount = 0
+        let callCount = HubTestBox(0)
         let (client, transport) = makeClient { _ in
-            callCount += 1
-            if callCount <= 2 {
+            callCount.update { $0 += 1 }
+            if callCount.value <= 2 {
                 return jsonHTTP(#"{"error":{"message":"conflict","type":"conflict_error"}}"#, status: 409)
             }
             return jsonHTTP(attentionPageJSON())
@@ -615,9 +639,9 @@ final class DirectNodeClientTests: XCTestCase {
     /// list_node_attention must also exhaust its bounded 409 retry and surface the error,
     /// consistently with list_attention (both use fetchAttentionWithRetry).
     func testListNodeAttentionThrowsAfterMaxRetries() async throws {
-        var callCount = 0
+        let callCount = HubTestBox(0)
         let (client, transport) = makeClient { _ in
-            callCount += 1
+            callCount.update { $0 += 1 }
             return jsonHTTP(#"{"error":{"message":"conflict","type":"conflict_error"}}"#, status: 409)
         }
         do {
@@ -652,47 +676,47 @@ final class DirectNodeClientTests: XCTestCase {
 
     func test501ForTestNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.test_node(NodeFormData(name: "", url: "", token: "")) }
+        await assertThrows501 { _ = try await client.test_node(NodeFormData(name: "", url: "", token: "")) }
     }
 
     func test501ForAddNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.add_node(NodeFormData(name: "", url: "", token: "")) }
+        await assertThrows501 { _ = try await client.add_node(NodeFormData(name: "", url: "", token: "")) }
     }
 
     func test501ForRemoveNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.remove_node(id: "n1") }
+        await assertThrows501 { _ = try await client.remove_node(id: "n1") }
     }
 
     func test501ForReorderNodes() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.reorder_nodes(node_ids: []) }
+        await assertThrows501 { _ = try await client.reorder_nodes(node_ids: []) }
     }
 
     func test501ForClearAttention() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.clear_attention() }
+        await assertThrows501 { _ = try await client.clear_attention() }
     }
 
     func test501ForRegistrationInfo() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.registration_info() }
+        await assertThrows501 { _ = try await client.registration_info() }
     }
 
     func test501ForSession() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.session() }
+        await assertThrows501 { _ = try await client.session() }
     }
 
     func test501ForListCredentials() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.list_credentials() }
+        await assertThrows501 { _ = try await client.list_credentials() }
     }
 
     func test501ForLogout() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.logout() }
+        await assertThrows501 { _ = try await client.logout() }
     }
 
     func test501ForBeginLogin() async throws {
@@ -707,12 +731,12 @@ final class DirectNodeClientTests: XCTestCase {
 
     func test501ForVerifyGrant() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.verify_grant(prefix: .bootstrap, code: "123") }
+        await assertThrows501 { _ = try await client.verify_grant(prefix: .bootstrap, code: "123") }
     }
 
     func test501ForAuthorizeNative() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { try await client.authorize_native(challenge: "c") }
+        await assertThrows501 { _ = try await client.authorize_native(challenge: "c") }
     }
 
     // MARK: list_delegations returns empty
@@ -727,38 +751,37 @@ final class DirectNodeClientTests: XCTestCase {
     // MARK: on_unauthorized
 
     func testOnUnauthorizedFiresOn401() async {
-        var fired = false
+        let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Unauthorized"}}"#, status: 401)
         }
-        client.on_unauthorized = { fired = true }
+        client.on_unauthorized = { fired.set(true) }
         do { _ = try await client.sessions_status() } catch {}
-        XCTAssertTrue(fired)
+        XCTAssertTrue(fired.value)
     }
 
     func testOnUnauthorizedFiresOn403() async {
-        var fired = false
+        let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Forbidden"}}"#, status: 403)
         }
-        client.on_unauthorized = { fired = true }
+        client.on_unauthorized = { fired.set(true) }
         do { _ = try await client.sessions_status() } catch {}
-        XCTAssertTrue(fired)
+        XCTAssertTrue(fired.value)
     }
 
     func testOnUnauthorizedNotFiredOnSuccess() async throws {
-        var fired = false
+        let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in jsonHTTP(emptyStatusJSON) }
-        client.on_unauthorized = { fired = true }
+        client.on_unauthorized = { fired.set(true) }
         _ = try await client.sessions_status()
-        XCTAssertFalse(fired)
+        XCTAssertFalse(fired.value)
     }
 
     func testOnUnauthorizedEpochScoped() async {
         // Set callback, change it before the 401 fires — stale callback must be silenced.
-        let fired = NSLock()
-        var firstCallbackFired = false
-        var secondCallbackFired = false
+        let firstCallbackFired = HubTestBox(false)
+        let secondCallbackFired = HubTestBox(false)
 
         let gate = DirectGate()
         let (client, _) = makeClient { [gate] _ in
@@ -766,20 +789,19 @@ final class DirectNodeClientTests: XCTestCase {
             return jsonHTTP(#"{"error":{"message":"Unauth"}}"#, status: 401)
         }
 
-        client.on_unauthorized = { firstCallbackFired = true }
+        client.on_unauthorized = { firstCallbackFired.set(true) }
 
         let task = Task {
             do { _ = try await client.sessions_status() } catch {}
         }
 
         // Replace callback before the transport fires 401
-        client.on_unauthorized = { secondCallbackFired = true }
+        client.on_unauthorized = { secondCallbackFired.set(true) }
         await gate.release()
         await task.value
 
-        fired.lock(); defer { fired.unlock() }
-        XCTAssertFalse(firstCallbackFired, "Stale callback must not fire")
-        XCTAssertTrue(secondCallbackFired, "Current epoch callback must fire")
+        XCTAssertFalse(firstCallbackFired.value, "Stale callback must not fire")
+        XCTAssertTrue(secondCallbackFired.value, "Current epoch callback must fire")
     }
 
     // MARK: validate_bearer
@@ -814,13 +836,13 @@ final class DirectNodeClientTests: XCTestCase {
     }
 
     func testValidateBearerDoesNotFireOnUnauthorized() async {
-        var fired = false
+        let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Unauthorized"}}"#, status: 401)
         }
-        client.on_unauthorized = { fired = true }
+        client.on_unauthorized = { fired.set(true) }
         do { _ = try await client.validate_bearer(token: "bad") } catch {}
-        XCTAssertFalse(fired, "validate_bearer must not fire on_unauthorized on failure")
+        XCTAssertFalse(fired.value, "validate_bearer must not fire on_unauthorized on failure")
     }
 
     func testValidateBearerOnlyVersionMarkerSuffices() async throws {
@@ -1109,7 +1131,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     private func assertThrows501(
         _ block: @escaping () async throws -> Void,
-        file: StaticString = #file,
+        file: StaticString = #filePath,
         line: UInt = #line
     ) async {
         do {

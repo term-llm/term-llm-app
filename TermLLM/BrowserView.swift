@@ -97,7 +97,7 @@ struct BrowserView: UIViewRepresentable {
         case httpError(Int)
     }
 
-    static func recovery(for response: HTTPURLResponse) -> Recovery? {
+    nonisolated static func recovery(for response: HTTPURLResponse) -> Recovery? {
         guard response.statusCode >= 400 else { return nil }
         if response.statusCode == 401,
            response.value(forHTTPHeaderField: "X-Term-Llm-Login-Url") != nil {
@@ -159,7 +159,7 @@ struct BrowserView: UIViewRepresentable {
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
-            coordinator?.parent.canGoBack = webView.canGoBack
+            MainActor.assumeIsolated { coordinator?.parent.canGoBack = webView.canGoBack }
         }
         context.coordinator.urlObservation = view.observe(\.url, options: [.initial, .new]) { [weak coordinator = context.coordinator] webView, _ in
             MainActor.assumeIsolated { coordinator?.parent.push?.visibleURL = webView.url }
@@ -560,7 +560,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
-                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
             if let mount = parent.connectionMount,
                let destination = navigationResponse.response.url,
                !HubNavigation.isWithinMount(destination, server: mount) {
@@ -605,7 +605,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             guard let destination = navigationAction.request.url else {
                 decisionHandler(.cancel)
                 return
@@ -655,7 +655,7 @@ struct BrowserView: UIViewRepresentable {
         // The configured hub already has app-level microphone permission; don't re-prompt on every live session.
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
-                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
             guard type == .microphone, isHubOrigin(origin) else {
                 decisionHandler(.prompt)
                 return
@@ -667,7 +667,7 @@ struct BrowserView: UIViewRepresentable {
         @available(iOS 27.0, *)
         func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo,
-                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
             decisionHandler(isHubOrigin(origin) ? .grant : .prompt)
         }
 

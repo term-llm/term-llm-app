@@ -125,6 +125,10 @@ final class NativeHubUITests: XCTestCase {
         XCTAssertTrue(ready.isEnabled)
         capture("03-native-dashboard-nodes-sessions")
 
+        // Offline nodes are hidden until explicitly revealed.
+        let showAll = app.buttons["hub.nodes.showAll"].firstMatch
+        reveal(showAll)
+        showAll.tap()
         let offline = app.buttons["hub.node.offline"].firstMatch
         reveal(offline)
         offline.tap()

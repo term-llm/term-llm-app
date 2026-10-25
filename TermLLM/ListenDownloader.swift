@@ -327,7 +327,7 @@ enum ListenMediaSession {
     class Delegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                        completionHandler: @escaping (URLRequest?) -> Void) {
+                        completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
             // A redirect can leave the credential owner's mount even on the same
             // host. Follow public redirects, but don't forward scoped credentials.
             var redirected = request

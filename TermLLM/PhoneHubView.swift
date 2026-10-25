@@ -9,13 +9,16 @@ struct PhoneHubView: View {
     let onOpenChat: (UUID, URL) -> Void
     let onSettings: () -> Void
     @State private var panel: Panel = .nodes
-    @State private var showOfflineNodes = false
+    /// Offline agents cannot be opened, so they are hidden from the list by
+    /// default; the opt-in lives with connection management, not the list.
+    @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
     @State private var editor: Editor?
-    @State private var detailID: UUID?
     @State private var navigationError: String?
-    @State private var directSignInID: UUID?
-    @State private var showingReset = false
-    @State private var showingConnections = false
+    @State private var sessionSearch = ""
+    @AppStorage("phoneHub.sessionSort", store: PhoneHubFixture.defaults) private var sessionSort: PhoneHubSessionSort = .recent
+    /// Search keeps its own order: relevance by default, per query session.
+    @State private var searchSort: PhoneHubSessionSort = .relevance
+    @FocusState private var sessionSearchFocused: Bool
 
     enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
     struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
@@ -24,11 +27,29 @@ struct PhoneHubView: View {
         aggregate.sources.filter { !$0.store.unauthorized && ($0.store.nodesLoading || $0.store.attentionLoading) }
     }
     private var connectionIssueCount: Int {
-        connections.connections.filter { $0.needsKindReview == true }.count +
-        aggregate.sources.filter { $0.store.unauthorized || $0.error != nil }.count +
-        (connections.persistenceError == nil ? 0 : 1)
+        PhoneHubConnectionsView.issueCount(connections: connections, aggregate: aggregate)
     }
     private var isRefreshing: Bool { aggregate.sources.contains { $0.store.refreshing } }
+    private var visibleNodes: [PhoneHubNode] {
+        aggregate.nodes.filter { showOfflineNodes || $0.node.status.reachable }
+    }
+    /// Strongest attention state per session: input required beats unseen.
+    private var sessionAttention: [PhoneHubSessionKey: PhoneHubSessionAttention] {
+        var flags: [PhoneHubSessionKey: PhoneHubSessionAttention] = [:]
+        for row in aggregate.attention {
+            let key = PhoneHubSessionKey(sourceID: row.source.id, nodeID: row.nodeID, sessionID: row.sessionID)
+            if row.inputRequired { flags[key] = .inputRequired } else if flags[key] == nil { flags[key] = .unseen }
+        }
+        return flags
+    }
+
+    /// Badge text for the Attention segment; nil when nothing needs attention.
+    private var attentionBadge: String? {
+        let count = aggregate.attention.count
+        guard count > 0 else { return nil }
+        let more = aggregate.sources.contains { !$0.store.unauthorized && $0.store.attentionHasMore }
+        return more ? "\(count)+" : "\(count)"
+    }
 
     var body: some View {
         NavigationStack {
@@ -55,26 +76,6 @@ struct PhoneHubView: View {
                 }
                 if !connections.connections.isEmpty {
                     Section {
-                        HStack {
-                            PhoneHubPanelSelector(selection: panel, onSelect: { panel = $0 })
-                                .equatable()
-                            Spacer()
-                            if panel == .nodes {
-                                if aggregate.nodes.contains(where: { !$0.node.status.reachable }) || showOfflineNodes {
-                                    Button(showOfflineNodes ? "Online only" : "Show all (\(aggregate.nodes.filter { !$0.node.status.reachable }.count) offline)") {
-                                        showOfflineNodes.toggle()
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                    .accessibilityIdentifier("phoneHub.nodes.showAll")
-                                    .accessibilityValue(showOfflineNodes ? "All agents" : "Online only")
-                                } else {
-                                    Text("\(aggregate.nodes.count) online").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .frame(minHeight: 44)
-                        .listRowSeparator(.hidden)
                         if let navigationError { Text(navigationError).foregroundStyle(.orange) }
                         switch panel {
                         case .nodes: nodes
@@ -86,30 +87,43 @@ struct PhoneHubView: View {
             }
             // Polling must not animate or rebuild the surrounding list layout.
             .transaction { $0.animation = nil }
+            // The grouped list's default top margin leaves a gap far larger
+            // than the 8 pt rhythm of the pinned controls above it.
+            .contentMargins(.top, 8, for: .scrollContent)
+            // Pinned outside the List: a list row clips the control with its
+            // own rounded shape, and a pinned switcher stays reachable.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !connections.connections.isEmpty {
+                    VStack(spacing: 8) {
+                        PhoneHubPanelSelector(selection: panel, attention: attentionBadge, onSelect: { panel = $0 })
+                            .equatable()
+                        if panel == .sessions { sessionControls }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(Color(.systemGroupedBackground))
+                }
+            }
             .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
             .toolbar {
-                if isVisible && !showingConnections {
+                if isVisible {
                     ToolbarItem(placement: .principal) {
                         Text("Agents").font(.headline).accessibilityIdentifier("phoneHub.home")
                     }
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { showingConnections = true } label: {
-                            Text("Connections")
-                                .font(.subheadline.weight(.medium))
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // Connections live in Settings; their issues badge it.
+                        Button(action: onSettings) {
+                            Image(systemName: "gearshape")
                                 .overlay(alignment: .topTrailing) {
-                                    Circle().fill(.orange).frame(width: 7, height: 7)
-                                        .offset(x: 4, y: -3).opacity(connectionIssueCount > 0 ? 1 : 0)
+                                    Circle().fill(.orange).frame(width: 8, height: 8)
+                                        .offset(x: 3, y: -3).opacity(connectionIssueCount > 0 ? 1 : 0)
                                 }
                         }
-                        .accessibilityLabel("Connections")
-                        .accessibilityValue(connectionIssueCount == 0 ? "\(connections.connections.count) saved" : "\(connectionIssueCount) need attention")
-                        .accessibilityIdentifier("phoneHub.connections")
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Settings", systemImage: "gearshape", action: onSettings)
-                            .accessibilityIdentifier("phoneHub.settings")
+                        .accessibilityLabel("Settings")
+                        .accessibilityValue(connectionIssueCount == 0 ? "" : "\(connectionIssueCount) connection\(connectionIssueCount == 1 ? "" : "s") need attention")
+                        .accessibilityIdentifier("phoneHub.settings")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { aggregate.refresh() } label: {
@@ -125,42 +139,22 @@ struct PhoneHubView: View {
                     }
                 }
             }
-            .navigationDestination(isPresented: $showingConnections) { connectionManagement }
-            .refreshable { await aggregate.refreshAndWait() }
+            .refreshable {
+                await aggregate.refreshAndWait()
+                aggregate.rerunSearch()
+            }
             .sheet(item: $editor) { editor in
-                PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: { showingConnections = false })
+                PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
                     .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-            }
-            .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } })) {
-                if let id = detailID, let source = aggregate.source(id), let workspace = source.hubWorkspace {
-                    VStack(spacing: 0) {
-                        Button("Back to Agents") { detailID = nil }
-                            .padding().accessibilityIdentifier("phoneHub.details.close")
-                        HubView(source: source, workspace: workspace, onOpenChat: { url in
-                            openDetailDestination(url, nodeID: nil, source: source)
-                        }, onOpenNodeChat: { url, nodeID in
-                            openDetailDestination(url, nodeID: nodeID, source: source)
-                        }, onSettings: { detailID = nil; showingConnections = true })
-                    }
-                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-                }
-            }
-            .sheet(isPresented: Binding(get: { directSignInID != nil }, set: { if !$0 { directSignInID = nil } })) {
-                if let id = directSignInID, let source = aggregate.source(id) {
-                    PhoneHubDirectAuthentication(source: source)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-                }
             }
         }
+        .onChange(of: sessionSearch) { _, text in aggregate.updateSearchQuery(text) }
         .onChange(of: connections.connections, initial: true) { _, sources in aggregate.synchronize(sources.filter { $0.needsKindReview != true }) }
         .task { await connections.resolveLegacyKinds() }
         .onChange(of: isVisible) { _, visible in
             guard !visible else { return }
-            // A chat/push/voice handoff must not leave administration or an
-            // authentication sheet over the retained browser destination.
-            showingConnections = false
-            detailID = nil
-            directSignInID = nil
+            // A chat/push/voice handoff must not leave a connection editor
+            // over the retained browser destination.
             editor = nil
         }
         .onChange(of: pendingConnectionURL, initial: true) { _, url in
@@ -169,124 +163,14 @@ struct PhoneHubView: View {
             editor = Editor(source: connections.connections.first { $0.url == canonical }, address: url.absoluteString)
             pendingConnectionURL = nil
         }
-        .confirmationDialog("Reset the unreadable catalog?", isPresented: $showingReset, titleVisibility: .visible) {
-            Button("Reset saved connections", role: .destructive) { connections.resetUnreadableCatalog() }
-        } message: { Text("This explicitly replaces the preserved catalog. You will need to add your connections again.") }
-    }
-
-    private var connectionManagement: some View {
-        List {
-            Section {
-                Button("Add Connection", systemImage: "plus") { editor = Editor() }
-                    .accessibilityIdentifier("phoneHub.addConnection")
-            }
-            Section("Connections") {
-                if let error = connections.persistenceError {
-                    Text(error).foregroundStyle(.orange)
-                    Button("Reset unreadable catalog", role: .destructive) { showingReset = true }
-                        .accessibilityIdentifier("phoneHub.resetCatalog")
-                }
-                ForEach(connections.connections.filter { $0.needsKindReview == true }) { source in
-                    VStack(alignment: .leading) {
-                        Text(source.name).font(.headline).accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-                        Text("Could not identify this server. Check its address and retry detection.").font(.caption)
-                        Button("Review connection") { editor = Editor(source: source) }
-                            .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
-                        Button("Remove", role: .destructive) { connections.remove(source.id) }
-                            .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
-                    }
-                }
-                ForEach(aggregate.sources) { source in sourceRow(source) }
-            }
-        }
-        .transaction { $0.animation = nil }
-        .navigationTitle("Connections")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden()
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Agents", systemImage: "chevron.left") { showingConnections = false }
-                    .accessibilityIdentifier("phoneHub.connections.close")
-            }
-        }
-    }
-
-    private func sourceRow(_ source: HubSourceWorkspace) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(source.connection.name).font(.headline)
-                .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-            Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
-                .font(.caption).foregroundStyle(.secondary)
-            if source.store.unauthorized {
-                Text("Needs sign-in").foregroundStyle(.orange)
-                Button("Sign in") { showAuthentication(source) }
-                    .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
-            } else {
-                sourceSyncStatus(source)
-                if let error = source.error {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            HStack {
-                Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
-                    .accessibilityIdentifier("phoneHub.select.\(source.id.uuidString)")
-                Button("Edit") { editor = Editor(source: source.connection) }
-                    .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
-                Button("Remove", role: .destructive) { connections.remove(source.id) }
-                    .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
-            }.buttonStyle(.borderless)
-            HStack {
-                Button(source.error == nil ? "Refresh" : "Retry") {
-                    if source.store.unauthorized { showAuthentication(source) }
-                    else { Task { await source.store.refresh() } }
-                }
-                .disabled(source.store.refreshing)
-                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
-                if source.connection.kind == .hub {
-                    Button("Manage Server") { detailID = source.id }
-                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-                } else {
-                    Button("Authentication") { directSignInID = source.id }
-                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-                }
-            }.buttonStyle(.borderless)
-        }.padding(.vertical, 4)
-    }
-
-    /// A permanent status slot: refreshing changes its contents, never the
-    /// number/height of rows above the node list or the user's scroll anchor.
-    private func sourceSyncStatus(_ source: HubSourceWorkspace) -> some View {
-        let busy = source.store.nodesLoading || source.store.attentionLoading
-        let verified = source.store.nodesVerified && source.store.attentionVerified
-        let failed = source.error != nil
-        let message = failed ? "Couldn’t update" : (busy ? "Updating…" : (verified ? "Up to date" : "Waiting for server…"))
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                ZStack {
-                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(failed ? Color.orange : Color.green)
-                        .opacity(busy || !verified && !failed ? 0 : 1)
-                    ProgressView().controlSize(.small).opacity(busy ? 1 : 0)
-                }
-                .frame(width: 18, height: 18)
-                Text(message).font(.caption.weight(.medium)).lineLimit(1)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier(source.store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
-            Group {
-                if let updated = source.store.lastNodesRefresh {
-                    Text("Updated \(updated, style: .relative) ago")
-                } else {
-                    Text("Waiting for first update")
-                }
-            }
-            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-        }
     }
 
     @ViewBuilder private var nodes: some View {
-        let allNodes = aggregate.nodes
-        let visibleNodes = allNodes.filter { showOfflineNodes || $0.node.status.reachable }
+        let visibleNodes = visibleNodes
+        // The connection name only disambiguates when several hubs are
+        // configured, and "Online" is the default state, so neither earns a
+        // line on its own: show only what differs between rows.
+        let multipleSources = aggregate.sources.count > 1
         ForEach(visibleNodes) { row in
             Button {
                 open(row.node.new_session_path, source: row.source, nodeID: row.node.id)
@@ -294,10 +178,12 @@ struct PhoneHubView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.node.name).font(.headline).foregroundStyle(.primary)
-                        Text("\(row.source.name) · \(row.node.status.reachable ? "Online" : "Offline")")
+                        Text(([
+                            multipleSources ? row.source.name : nil,
+                            row.node.status.reachable ? nil : "Offline",
+                            row.node.sessions?.count_label ?? "New conversation",
+                        ] as [String?]).compactMap { $0 }.joined(separator: " · "))
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Text(row.node.sessions?.count_label ?? "New conversation")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
@@ -309,22 +195,215 @@ struct PhoneHubView: View {
             }.buttonStyle(.plain)
                 .accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id)")
                 .disabled(!row.node.status.reachable)
+                .opacity(row.node.status.reachable ? 1 : 0.5)
         }
         if visibleNodes.isEmpty { emptyPanel(.nodes) }
     }
-    @ViewBuilder private var sessions: some View {
-        ForEach(aggregate.sessions) { row in
-            Button { open(row.session.resume_path, source: row.source, nodeID: row.node.id) } label: {
-                VStack(alignment: .leading) {
-                    Text(row.session.short_title.isEmpty ? "Session \(row.session.number.map(String.init) ?? row.session.id)" : row.session.short_title)
-                        .foregroundStyle(.primary)
-                    Text("\(row.source.name) · \(row.node.name)").font(.caption).foregroundStyle(.secondary)
+    private var isSearchingSessions: Bool { !aggregate.searchQuery.isEmpty }
+
+    /// Pinned under the panel switcher so it stays reachable while scrolling.
+    private var sessionControls: some View {
+        let searching = !sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let options = searching ? PhoneHubSessionSort.searchOptions : PhoneHubSessionSort.browseOptions
+        let current = searching ? searchSort : sessionSort
+        return HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+                TextField("Search sessions", text: $sessionSearch)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .onSubmit { aggregate.searchAllAgents() }
+                    .focused($sessionSearchFocused)
+                    .accessibilityIdentifier("phoneHub.sessionSearch")
+                if !sessionSearch.isEmpty {
+                    Button {
+                        sessionSearch = ""
+                        sessionSearchFocused = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                    .accessibilityIdentifier("phoneHub.sessionSearch.clear")
                 }
-            }.buttonStyle(.plain)
-                .accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+            Menu {
+                Picker("Sort by", selection: Binding(get: { current }, set: { if searching { searchSort = $0 } else { sessionSort = $0 } })) {
+                    ForEach(options) { Text($0.label).tag($0) }
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .frame(width: 36, height: 36)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+            }
+            .accessibilityLabel("Sort sessions")
+            .accessibilityValue(current.label)
+            .accessibilityIdentifier("phoneHub.sessionSort")
         }
-        if aggregate.sessions.isEmpty { emptyPanel(.sessions) }
     }
+
+    private func sessionFlag(_ row: PhoneHubSession, flags: [PhoneHubSessionKey: PhoneHubSessionAttention]) -> PhoneHubSessionAttention? {
+        if row.session.interaction_required == true { return .inputRequired }
+        if let flag = flags[PhoneHubSessionKey(sourceID: row.source.id, nodeID: row.node.id, sessionID: row.session.id)] { return flag }
+        return row.unseen ? .unseen : nil
+    }
+
+    @ViewBuilder private var sessions: some View {
+        let flags = sessionAttention
+        if isSearchingSessions {
+            sessionSearchResults(flags: flags)
+        } else {
+            let sort = PhoneHubSessionSort.browseOptions.contains(sessionSort) ? sessionSort : .recent
+            let rows = sort.sorted(aggregate.sessions) { sessionFlag($0, flags: flags) }
+            ForEach(rows) { row in sessionRow(row, flag: sessionFlag(row, flags: flags)) }
+            if rows.isEmpty { emptyPanel(.sessions) }
+        }
+    }
+
+    @ViewBuilder private func sessionSearchResults(flags: [PhoneHubSessionKey: PhoneHubSessionAttention]) -> some View {
+        let sort = searchSort
+        let results = sort.sorted(aggregate.searchResults) { sessionFlag($0, flags: flags) }
+        let agents = aggregate.searchAgents
+        let pending = agents.filter { $0.state == .searching }.count
+        if pending > 0 {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Searching \(pending) of \(agents.count) agent\(agents.count == 1 ? "" : "s")…")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("phoneHub.sessionSearch.progress")
+        }
+        if sort == .relevance {
+            // Rankings are per node, so relevance is shown agent by agent.
+            ForEach(agents) { agent in
+                let rows = results.filter { $0.source.id == agent.source.id && $0.node.id == agent.node.id }
+                if !rows.isEmpty || agent.state != .done(0) {
+                    searchAgentHeader(agent, count: rows.count)
+                    ForEach(rows) { row in sessionRow(row, flag: sessionFlag(row, flags: flags)) }
+                }
+            }
+            // Loaded title matches from agents that were not searchable.
+            let asked = Set(agents.map(\.id))
+            let others = results.filter { !asked.contains(PhoneHubIdentity(sourceID: $0.source.id, nodeID: $0.node.id, sessionID: "", key: "search")) }
+            ForEach(others) { row in sessionRow(row, flag: sessionFlag(row, flags: flags)) }
+        } else {
+            ForEach(agents.filter { if case .failed = $0.state { true } else { false } }) { agent in
+                searchAgentHeader(agent, count: 0)
+            }
+            ForEach(results) { row in sessionRow(row, flag: sessionFlag(row, flags: flags)) }
+        }
+        let asked = aggregate.agentSearchQuery != nil
+        if results.isEmpty && pending == 0 && (asked || aggregate.searchableAgentCount == 0) {
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
+                Text("No matching sessions").font(.headline)
+                Text(asked && !agents.isEmpty ? "Searched \(agents.count) agent\(agents.count == 1 ? "" : "s")." : "No online agents to search.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 24)
+            .accessibilityIdentifier("phoneHub.sessionSearch.empty")
+        }
+        if !asked && aggregate.searchableAgentCount > 0 {
+            searchAgentsButton(localMatches: results.count)
+        }
+    }
+
+    /// Typing only filters loaded sessions; asking every agent is explicit
+    /// because each search costs a request per agent.
+    private func searchAgentsButton(localMatches: Int) -> some View {
+        let count = aggregate.searchableAgentCount
+        return Button { aggregate.searchAllAgents() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass.circle.fill").font(.title2).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Search \(count == 1 ? "1 agent" : "all \(count) agents") for “\(aggregate.searchQuery)”")
+                        .fontWeight(.semibold)
+                    Text(localMatches == 0 ? "No loaded sessions match. Agents search their full history."
+                         : "Includes older sessions and message text.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .accessibilityIdentifier("phoneHub.sessionSearch.agents")
+    }
+
+    private func searchAgentHeader(_ agent: PhoneHubSearchAgent, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(agent.node.name)
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            Spacer(minLength: 0)
+            switch agent.state {
+            case .searching: ProgressView().controlSize(.mini)
+            case .done: Text("\(count)").font(.caption).foregroundStyle(.secondary)
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("phoneHub.sessionSearch.agent.\(agent.source.id.uuidString).\(agent.node.id)")
+    }
+
+    private func sessionRow(_ row: PhoneHubSession, flag: PhoneHubSessionAttention?) -> some View {
+        Button { open(row.session.resume_path, source: row.source, nodeID: row.node.id) } label: {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(flag == .inputRequired ? Color.orange : Color.accentColor)
+                    .frame(width: 9, height: 9)
+                    .opacity(flag == nil ? 0 : 1)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.displayTitle)
+                        .foregroundStyle(.primary)
+                        .fontWeight(flag == nil ? .regular : .semibold)
+                    if let snippet = row.snippet, !snippet.isEmpty {
+                        Text(Self.highlighted(snippet))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Text(sessionCaption(row)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if flag == .inputRequired {
+                    Text("Input")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                } else if row.session.active_run == true {
+                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                }
+            }
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityValue(flag == .inputRequired ? "Input required" : (flag == .unseen ? "Unseen" : ""))
+            .accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
+    }
+
+    private func sessionCaption(_ row: PhoneHubSession) -> String {
+        var parts = [row.node.name]
+        if let ms = row.session.last_message_at, ms > 0 {
+            parts.append(Date(timeIntervalSince1970: TimeInterval(ms) / 1000).formatted(.relative(presentation: .named)))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Node snippets mark matched terms with `**`; render them bold without
+    /// interpreting any other Markdown in untrusted transcript text.
+    static func highlighted(_ snippet: String) -> AttributedString {
+        var out = AttributedString()
+        for (index, part) in snippet.components(separatedBy: "**").enumerated() {
+            var segment = AttributedString(part)
+            if index % 2 == 1 { segment.inlinePresentationIntent = .stronglyEmphasized }
+            out += segment
+        }
+        return out
+    }
+
     @ViewBuilder private var attention: some View {
         ForEach(aggregate.attention) { row in
             VStack(alignment: .leading) {
@@ -390,23 +469,187 @@ struct PhoneHubView: View {
                     .font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
                 Text(unavailable ? "Some results are unavailable" : (offlineOnly ? "No agents online" : (panel == .attention ? "You’re all caught up" : "No \(panel.rawValue.lowercased()) yet")))
                     .font(.headline)
-                Text(unavailable ? "Open Connections to sign in or try again." : (offlineOnly ? "Offline agents are hidden. Use Show all to see them." : (aggregate.sources.isEmpty ? "Add a connection to get started." : (panel == .attention ? "New requests and results will appear here." : "Your \(panel.rawValue.lowercased()) will appear here when available."))))
+                Text(unavailable ? "Open Settings › Connections to sign in or try again." : (offlineOnly ? "Offline agents are hidden. Turn on Show offline agents in Settings › Connections to see them." : (aggregate.sources.isEmpty ? "Add a connection to get started." : (panel == .attention ? "New requests and results will appear here." : "Your \(panel.rawValue.lowercased()) will appear here when available."))))
                     .font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 24)
     }
 
-    private func showAuthentication(_ source: HubSourceWorkspace) {
-        if source.connection.kind == .hub { detailID = source.id }
-        else { directSignInID = source.id }
-    }
     private func open(_ path: String, source: HubConnection, nodeID: String) {
         guard let url = aggregate.destination(path: path, sourceID: source.id, nodeID: nodeID) else {
             navigationError = "The source supplied an unsafe chat path. Navigation blocked."
             return
         }
         onOpenChat(source.id, url)
+    }
+}
+
+/// Saved connections are app configuration, so they live in Settings. Owns
+/// its own editor, Hub management and direct sign-in sheets.
+@MainActor
+struct PhoneHubConnectionsView: View {
+    @ObservedObject var connections: HubConnectionStore
+    @ObservedObject var aggregate: HubAggregateStore
+    /// Opening a chat from Hub management leaves Settings.
+    let onOpenChat: (UUID, URL) -> Void
+    @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
+    @State private var editor: PhoneHubView.Editor?
+    @State private var detailID: UUID?
+    @State private var directSignInID: UUID?
+    @State private var showingReset = false
+    @State private var navigationError: String?
+
+    /// Connections needing the user: unidentified, signed out, failing, or an
+    /// unreadable catalog. Badges Settings and its Connections row.
+    static func issueCount(connections: HubConnectionStore, aggregate: HubAggregateStore) -> Int {
+        connections.connections.filter { $0.needsKindReview == true }.count +
+        aggregate.sources.filter { $0.store.unauthorized || $0.error != nil }.count +
+        (connections.persistenceError == nil ? 0 : 1)
+    }
+
+    var body: some View {
+        List {
+            if let navigationError {
+                Section { Text(navigationError).foregroundStyle(.orange) }
+            }
+            Section {
+                Button("Add Connection", systemImage: "plus") { editor = PhoneHubView.Editor() }
+                    .accessibilityIdentifier("phoneHub.connections.add")
+            }
+            Section("Connections") {
+                if let error = connections.persistenceError {
+                    Text(error).foregroundStyle(.orange)
+                    Button("Reset unreadable catalog", role: .destructive) { showingReset = true }
+                        .accessibilityIdentifier("phoneHub.resetCatalog")
+                }
+                ForEach(connections.connections.filter { $0.needsKindReview == true }) { source in
+                    VStack(alignment: .leading) {
+                        Text(source.name).font(.headline).accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
+                        Text("Could not identify this server. Check its address and retry detection.").font(.caption)
+                        Button("Review connection") { editor = PhoneHubView.Editor(source: source) }
+                            .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+                        Button("Remove", role: .destructive) { connections.remove(source.id) }
+                            .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+                    }
+                }
+                ForEach(aggregate.sources) { source in sourceRow(source) }
+            }
+            Section {
+                Toggle("Show offline agents", isOn: $showOfflineNodes)
+                    .accessibilityIdentifier("phoneHub.showOfflineAgents")
+            } footer: {
+                Text("Offline agents can’t be opened. When shown, they appear greyed out in the Agents list.")
+            }
+        }
+        .transaction { $0.animation = nil }
+        .navigationTitle("Connections")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $editor) { editor in
+            PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
+                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+        }
+        .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } })) {
+            if let id = detailID, let source = aggregate.source(id), let workspace = source.hubWorkspace {
+                VStack(spacing: 0) {
+                    Button("Back to Connections") { detailID = nil }
+                        .padding().accessibilityIdentifier("phoneHub.details.close")
+                    HubView(source: source, workspace: workspace, onOpenChat: { url in
+                        openDetailDestination(url, nodeID: nil, source: source)
+                    }, onOpenNodeChat: { url, nodeID in
+                        openDetailDestination(url, nodeID: nodeID, source: source)
+                    }, onSettings: { detailID = nil })
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            }
+        }
+        .sheet(isPresented: Binding(get: { directSignInID != nil }, set: { if !$0 { directSignInID = nil } })) {
+            if let id = directSignInID, let source = aggregate.source(id) {
+                PhoneHubDirectAuthentication(source: source)
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            }
+        }
+        .confirmationDialog("Reset the unreadable catalog?", isPresented: $showingReset, titleVisibility: .visible) {
+            Button("Reset saved connections", role: .destructive) { connections.resetUnreadableCatalog() }
+        } message: { Text("This explicitly replaces the preserved catalog. You will need to add your connections again.") }
+    }
+
+    private func sourceRow(_ source: HubSourceWorkspace) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(source.connection.name).font(.headline)
+                .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
+            Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
+                .font(.caption).foregroundStyle(.secondary)
+            if source.store.unauthorized {
+                Text("Needs sign-in").foregroundStyle(.orange)
+                Button("Sign in") { showAuthentication(source) }
+                    .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
+            } else {
+                sourceSyncStatus(source)
+                if let error = source.error {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
+                    .accessibilityIdentifier("phoneHub.select.\(source.id.uuidString)")
+                Button("Edit") { editor = PhoneHubView.Editor(source: source.connection) }
+                    .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+                Button("Remove", role: .destructive) { connections.remove(source.id) }
+                    .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+            }.buttonStyle(.borderless)
+            HStack {
+                Button(source.error == nil ? "Refresh" : "Retry") {
+                    if source.store.unauthorized { showAuthentication(source) }
+                    else { Task { await source.store.refresh() } }
+                }
+                .disabled(source.store.refreshing)
+                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+                if source.connection.kind == .hub {
+                    Button("Manage Server") { detailID = source.id }
+                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                } else {
+                    Button("Authentication") { directSignInID = source.id }
+                        .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+                }
+            }.buttonStyle(.borderless)
+        }.padding(.vertical, 4)
+    }
+
+    /// A permanent status slot: refreshing changes its contents, never the
+    /// number/height of rows above the node list or the user's scroll anchor.
+    private func sourceSyncStatus(_ source: HubSourceWorkspace) -> some View {
+        let busy = source.store.nodesLoading || source.store.attentionLoading
+        let verified = source.store.nodesVerified && source.store.attentionVerified
+        let failed = source.error != nil
+        let message = failed ? "Couldn’t update" : (busy ? "Updating…" : (verified ? "Up to date" : "Waiting for server…"))
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(failed ? Color.orange : Color.green)
+                        .opacity(busy || !verified && !failed ? 0 : 1)
+                    ProgressView().controlSize(.small).opacity(busy ? 1 : 0)
+                }
+                .frame(width: 18, height: 18)
+                Text(message).font(.caption.weight(.medium)).lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(source.store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
+            Group {
+                if let updated = source.store.lastNodesRefresh {
+                    Text("Updated \(updated, style: .relative) ago")
+                } else {
+                    Text("Waiting for first update")
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func showAuthentication(_ source: HubSourceWorkspace) {
+        if source.connection.kind == .hub { detailID = source.id }
+        else { directSignInID = source.id }
     }
     private func openDetailDestination(_ url: URL, nodeID: String?, source: HubSourceWorkspace) {
         guard source.isActive, !source.store.unauthorized else { return }
@@ -427,25 +670,67 @@ struct PhoneHubView: View {
     }
 }
 
-/// Polling invalidates the aggregate view frequently. Keep the native menu's
-/// presentation independent of those updates, while allowing actual selections
-/// to update its label. The callback only writes the owning view's panel state.
-@MainActor private struct PhoneHubPanelSelector: View, Equatable {
+/// Segmented view switcher with an Attention badge. A native segmented picker
+/// cannot render the badge, so this draws the segments itself.
+/// Polling invalidates the aggregate view frequently; equatable on the
+/// selection and badge keeps unrelated updates from re-rendering it. The
+/// callback only writes the owning view's panel state.
+@MainActor struct PhoneHubPanelSelector: View, Equatable {
     let selection: PhoneHubView.Panel
+    /// Attention badge text; nil hides the badge.
+    let attention: String?
     let onSelect: (PhoneHubView.Panel) -> Void
 
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.selection == rhs.selection }
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.selection == rhs.selection && lhs.attention == rhs.attention }
 
     var body: some View {
-        Picker("View", selection: Binding(get: { selection }, set: onSelect)) {
+        HStack(spacing: 2) {
             ForEach(PhoneHubView.Panel.allCases, id: \.self) { candidate in
-                Text(candidate.rawValue).tag(candidate)
-                    .accessibilityIdentifier("phoneHub." + (candidate == .nodes ? "nodes" : candidate.rawValue.lowercased()))
+                segment(candidate)
             }
         }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .accessibilityIdentifier("phoneHub.panelMenu")
+        .padding(2)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("phoneHub.panels")
+    }
+
+    private func segment(_ candidate: PhoneHubView.Panel) -> some View {
+        let selected = candidate == selection
+        return Button { onSelect(candidate) } label: {
+            HStack(spacing: 5) {
+                Text(candidate.rawValue)
+                    .fontWeight(selected ? .semibold : .medium)
+                    .foregroundStyle(.primary)
+                if candidate == .attention, let attention {
+                    Text(attention)
+                        .font(.caption2.weight(.bold)).monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Capsule().fill(.orange))
+                }
+            }
+            .font(.subheadline)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .padding(.horizontal, 4)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color(.systemBackground))
+                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(candidate.rawValue)
+        .accessibilityValue(candidate == .attention ? (attention.map { "\($0) need attention" } ?? "None") : "")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("phoneHub." + (candidate == .nodes ? "nodes" : candidate.rawValue.lowercased()))
     }
 }
 

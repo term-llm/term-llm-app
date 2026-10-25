@@ -11,15 +11,43 @@ enum PhoneHubFixture {
         false
         #endif
     }
-    static let defaults: UserDefaults = {
+    // UserDefaults is documented thread-safe.
+    nonisolated(unsafe) static let defaults: UserDefaults = {
         guard isEnabled else { return .standard }
         let name = "com.termllm.app.phone-hub-fixture"
         let defaults = UserDefaults(suiteName: name)!
-        if ProcessInfo.processInfo.environment["TERMLLM_PHONE_HUB_FIXTURE_RESET"] == "1" {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["TERMLLM_PHONE_HUB_FIXTURE_RESET"] == "1" {
             defaults.removePersistentDomain(forName: name)
         }
+        if let list = environment["TERMLLM_PHONE_HUB_FIXTURE_SEED"] { PhoneHubFixture.seed(list, into: defaults) }
         return defaults
     }()
+
+    /// UI tests preload connections instead of typing them into the editor.
+    /// Fixed IDs let tests address rows without reading them back from the UI.
+    static let seedSources: [(key: String, name: String, kind: HubConnection.Kind, id: UUID)] = [
+        ("work", "Work Hub", .hub, UUID(uuidString: "00000000-0000-4000-8000-000000000001")!),
+        ("home", "Home Hub", .hub, UUID(uuidString: "00000000-0000-4000-8000-000000000002")!),
+        ("direct", "Laptop", .directNode, UUID(uuidString: "00000000-0000-4000-8000-000000000003")!),
+        ("slow", "Slow Hub", .hub, UUID(uuidString: "00000000-0000-4000-8000-000000000004")!),
+    ]
+
+    private static func seed(_ list: String, into defaults: UserDefaults) {
+        guard let base = environmentURL else { return }
+        let connections = list.split(separator: ",").compactMap { key in
+            seedSources.first { $0.key == key }.map {
+                HubConnection(id: $0.id, name: $0.name, kind: $0.kind, url: base.appendingPathComponent($0.key + "/"))
+            }
+        }
+        let document = HubConnectionStore.Document(connections: connections, selectedID: connections.first?.id)
+        if let data = try? JSONEncoder().encode(document) { defaults.set(data, forKey: HubConnectionStore.storageKey) }
+        defaults.set(connections.first?.url.absoluteString ?? "", forKey: "serverURL")
+    }
+
+    private static var environmentURL: URL? {
+        ProcessInfo.processInfo.environment["TERMLLM_PHONE_HUB_FIXTURE_URL"].flatMap(URL.init(string:))
+    }
 }
 
 protocol HubBearerStorage {

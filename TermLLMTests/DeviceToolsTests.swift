@@ -3,22 +3,23 @@ import XCTest
 
 @MainActor
 final class DeviceToolsTests: XCTestCase {
-    func testSharingIsOptInPerServerAndPersisted() {
+    func testSharingIsGlobalOptInAndPersisted() {
         let defaults = UserDefaults(suiteName: "DeviceToolsTests-\(UUID().uuidString)")!
-        let hub = URL(string: "https://jarvis.example/ui/")!
-        let devBox = URL(string: "https://devbox.example/")!
         let settings = DeviceToolsSettings(defaults: defaults)
-        XCTAssertFalse(settings.isEnabled(for: hub), "off by default")
+        XCTAssertFalse(settings.isEnabled, "off by default")
+        settings.isEnabled = true
+        XCTAssertTrue(DeviceToolsSettings(defaults: defaults).isEnabled)
+        settings.isEnabled = false
+        XCTAssertFalse(DeviceToolsSettings(defaults: defaults).isEnabled)
+    }
 
-        settings.setEnabled(true, for: hub)
-        XCTAssertTrue(settings.isEnabled(for: hub))
-        XCTAssertFalse(settings.isEnabled(for: devBox))
-        XCTAssertFalse(settings.isEnabled(for: URL(string: "https://jarvis.example/other/")!), "base path matters")
-
-        let reloaded = DeviceToolsSettings(defaults: defaults)
-        XCTAssertTrue(reloaded.isEnabled(for: hub))
-        reloaded.setEnabled(false, for: hub)
-        XCTAssertFalse(DeviceToolsSettings(defaults: defaults).isEnabled(for: hub))
+    func testLegacyPerServerOptInMigratesToGlobalSwitch() {
+        for (servers, expected) in [(["https://jarvis.example/ui/"], true), ([], false)] {
+            let defaults = UserDefaults(suiteName: "DeviceToolsTests-\(UUID().uuidString)")!
+            defaults.set(servers, forKey: DeviceToolsSettings.legacyServersKey)
+            XCTAssertEqual(DeviceToolsSettings(defaults: defaults).isEnabled, expected)
+            XCTAssertNil(defaults.object(forKey: DeviceToolsSettings.legacyServersKey))
+        }
     }
 
     func testStandardRegistry() {

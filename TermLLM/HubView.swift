@@ -58,7 +58,7 @@ struct HubView: View {
     let server: URL
     let onOpenChat: (URL) -> Void
     let onSettings: () -> Void
-    let onAuthorizationRevoked: () -> Void
+    let onAuthorizationRevoked: @MainActor () -> Void
     let onAuthenticated: () -> Void
     @StateObject private var workspace: HubWorkspace
     private var ownsWorkspace = true
@@ -100,7 +100,7 @@ struct HubView: View {
 
     init(server: URL, onOpenChat: @escaping (URL) -> Void, onSettings: @escaping () -> Void,
          requiresAuthentication: Bool = false,
-         onAuthorizationRevoked: @escaping () -> Void = {}, onAuthenticated: @escaping () -> Void = {}) {
+         onAuthorizationRevoked: @escaping @MainActor () -> Void = {}, onAuthenticated: @escaping () -> Void = {}) {
         self.server = server
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings

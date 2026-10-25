@@ -215,7 +215,7 @@ final class PushCenterTests: XCTestCase {
         var centerRef: PushCenter?
         let center = PushCenter(
             defaults: defaults, identities: PushIdentityStore(storage: storage), authorizer: authorizer,
-            relayTransport: { [unowned self] request in
+            relayTransport: { @MainActor [unowned self] request in
                 relayRequests.append(request)
                 await relayBeforeReply?()
                 let response = HTTPURLResponse(url: request.url!, statusCode: relayResponse.0, httpVersion: nil, headerFields: nil)!
@@ -858,7 +858,7 @@ private final class FakeBadgeSink {
     }
 }
 
-private final class FakeAuthorizer: PushAuthorizer {
+private final class FakeAuthorizer: PushAuthorizer, @unchecked Sendable { // driven serially by tests
     var current: UNAuthorizationStatus = .notDetermined
     var grant = true
     var requests = 0

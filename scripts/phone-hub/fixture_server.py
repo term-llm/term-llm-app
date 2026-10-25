@@ -82,6 +82,36 @@ def node_attention(source, kind, seen=False):
                 items=[] if (seen and not active) else [item], has_more=False)
 
 
+def search_corpus(source):
+    title = TITLES[source]
+    return [
+        (11, title + ' relay retry backoff', 'tuned the **relay** retry backoff for push delivery'),
+        (12, title + ' CI cache cleanup', 'cleared the **cache** key so CI stops reusing stale builds'),
+        (13, title + ' release notes draft', 'drafted **release** notes for the next build'),
+    ]
+
+
+def search_sessions(source, query):
+    """Synthetic full-text matches beyond the dashboard's recent window."""
+    needle = query.strip().lower()
+    matches = [row for row in search_corpus(source) if needle and needle in (row[1] + ' ' + row[2].replace('**', '')).lower()]
+    return dict(sessions=[dict(id='search-' + str(number), number=number, short_title=short, long_title='',
+                               pinned=False, last_message_at=1792735200000 - number * 3_600_000, message_count=6,
+                               snippet=snippet, attention_unseen=False) for number, short, snippet in matches])
+
+
+def status_for_ids(source, raw_ids):
+    """`/v1/sessions/status?ids=`: exactly the requested synthetic sessions."""
+    wanted = [item for item in raw_ids.split(',') if item]
+    rows = {'search-' + str(number): dict(id='search-' + str(number), number=number, short_title=short, long_title='',
+                                         active_run=number == 11 and source == 'work', interaction_required=False,
+                                         last_message_at=1792735200000 - number * 3_600_000, message_count=6)
+            for number, short, _ in search_corpus(source)}
+    for item in (session(source, True), session(source)):
+        rows[item['id']] = item
+    return dict(sessions=[rows[item] for item in wanted if item in rows])
+
+
 class PhoneFixtureServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -160,6 +190,11 @@ class Handler(legacy.Handler):
             self.json(200, dict(delegations=[]))
         elif route == '/api/auth/session':
             self.json(404, dict(error='No passkey authentication in this fixture'))
+        elif (source == 'direct' and route == '/v1/sessions/search') or (source != 'direct' and route == '/node/shared/v1/sessions/search'):
+            self.json(200, search_sessions(source, parse_qs(parts.query).get('q', [''])[0]))
+        elif (source != 'direct' and route == '/node/shared/v1/sessions/status') or (
+                source == 'direct' and route == '/v1/sessions/status' and 'ids' in parse_qs(parts.query)):
+            self.json(200, status_for_ids(source, parse_qs(parts.query).get('ids', [''])[0]))
         elif source == 'direct' and route == '/v1/sessions/status':
             self.json(200, dict(sessions=[session(source, True), session(source)]))
         elif source == 'direct' and route == '/v1/attention':

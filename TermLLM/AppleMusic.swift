@@ -1,6 +1,6 @@
 import Combine
 import Foundation
-import MusicKit
+@preconcurrency import MusicKit
 import os
 
 /// Music diagnostics: `log stream --predicate 'subsystem == "com.termllm.app"'`

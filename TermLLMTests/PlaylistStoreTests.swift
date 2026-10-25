@@ -6,7 +6,7 @@ final class PlaylistStoreTests: XCTestCase {
     private var file: URL!
     private var clock = Date(timeIntervalSince1970: 1_000)
 
-    override func setUp() {
+    override func setUp() async throws {
         file = temporaryPlaylistFile()
         clock = Date(timeIntervalSince1970: 1_000)
     }

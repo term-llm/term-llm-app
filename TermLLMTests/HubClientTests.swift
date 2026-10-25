@@ -26,7 +26,7 @@ private final class CookieRecorder: @unchecked Sendable {
 }
 
 // Mutable state shared with Foundation/Network delegate queues in tests.
-private final class HubTestBox<Value>: @unchecked Sendable {
+final class HubTestBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value
     init(_ value: Value) { stored = value }
@@ -666,39 +666,100 @@ final class HubClientTests: XCTestCase {
     // MARK: Unauthorized callback
 
     func testUnauthorizedCallbackFiredOn401() async {
-        var callbackFired = false
+        let callbackFired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Unauthorized\"}}", status: 401)
         }
-        client.on_unauthorized = { callbackFired = true }
+        client.on_unauthorized = { callbackFired.set(true) }
         do {
             _ = try await client.list_nodes()
             XCTFail("Expected error")
         } catch {}
-        XCTAssertTrue(callbackFired)
+        XCTAssertTrue(callbackFired.value)
     }
 
     func testUnauthorizedCallbackFiredOn403() async {
-        var callbackFired = false
+        let callbackFired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Forbidden\"}}", status: 403)
         }
-        client.on_unauthorized = { callbackFired = true }
+        client.on_unauthorized = { callbackFired.set(true) }
         do {
             _ = try await client.list_nodes()
             XCTFail("Expected error")
         } catch {}
-        XCTAssertTrue(callbackFired)
+        XCTAssertTrue(callbackFired.value)
+    }
+
+    // MARK: Session search
+
+    func testSessionSearchUsesNodeProxyWithStrictQueryEncoding() async throws {
+        let (client, transport) = makeClient(base: "https://hub.example.com/hub/") { _ in
+            jsonResponse("""
+            {"sessions":[{"id":"s1","number":4,"short_title":"Fix relay","snippet":"the **relay** retry",
+              "last_message_at":1700000000000,"message_count":3}]}
+            """)
+        }
+        let response = try await client.search_sessions(node_id: "laptop-1", query: "a+b & c=d%", limit: 500)
+        let url = transport.requests[0].url
+        XCTAssertEqual(url.path, "/hub/node/laptop-1/v1/sessions/search")
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery,
+                       "q=a%2Bb%20%26%20c%3Dd%25&limit=50")
+        XCTAssertEqual(response.sessions.first?.number, 4)
+    }
+
+    func testSessionStatusForIDsUsesNodeProxyWithoutRevokingHub() async throws {
+        let callbackFired = HubTestBox(false)
+        let (client, transport) = makeClient(base: "https://hub.example.com/hub/") { _ in
+            jsonResponse("{\"sessions\":[{\"id\":\"s1\",\"short_title\":\"Fix\",\"active_run\":true,\"interaction_required\":false}]}")
+        }
+        client.on_unauthorized = { callbackFired.set(true) }
+        let status = try await client.sessions_status(node_id: "laptop-1", ids: ["s1", "a,b", "s 2"])
+        let url = transport.requests[0].url
+        XCTAssertEqual(url.path, "/hub/node/laptop-1/v1/sessions/status")
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "ids=s1,s%202",
+                       "IDs containing the separator are not requested")
+        XCTAssertEqual(status.sessions.first?.active_run, true)
+        let empty = try await client.sessions_status(node_id: "laptop-1", ids: [])
+        XCTAssertTrue(empty.sessions.isEmpty)
+        XCTAssertEqual(transport.requests.count, 1, "No IDs, no request")
+        XCTAssertFalse(callbackFired.value)
+    }
+
+    func testSessionSearchRejectsUnsafeNodeID() async {
+        let (client, transport) = makeClient { _ in jsonResponse("{\"sessions\":[]}") }
+        do {
+            _ = try await client.search_sessions(node_id: "../api", query: "x", limit: 5)
+            XCTFail("Expected rejection")
+        } catch {}
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    /// A proxied node can answer 401/403 itself; that must not sign the
+    /// whole Hub out.
+    func testSessionSearchUnauthorizedDoesNotRevokeHub() async {
+        let callbackFired = HubTestBox(false)
+        let (client, _) = makeClient { _ in
+            jsonResponse("{\"error\":{\"message\":\"Unauthorized\"}}", status: 401)
+        }
+        client.on_unauthorized = { callbackFired.set(true) }
+        do {
+            _ = try await client.search_sessions(node_id: "laptop", query: "x", limit: 5)
+            XCTFail("Expected error")
+        } catch {
+            XCTAssertEqual((error as? HubAPIError)?.status, 401)
+        }
+        XCTAssertFalse(callbackFired.value)
     }
 
     func testUnauthorizedNotFiredOnSuccess() async throws {
-        var callbackFired = false
+        let callbackFired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonResponse("{\"nodes\":[]}")
         }
-        client.on_unauthorized = { callbackFired = true }
+        client.on_unauthorized = { callbackFired.set(true) }
         _ = try await client.list_nodes()
-        XCTAssertFalse(callbackFired)
+        XCTAssertFalse(callbackFired.value)
     }
 
     // MARK: Set-Cookie sink
@@ -762,9 +823,9 @@ final class HubClientTests: XCTestCase {
         let html = """
         <div id="root" data-hub-config="{&#34;page&#34;:&#34;bearer-login&#34;,&#34;authMode&#34;:&#34;bearer&#34;,&#34;formAction&#34;:&#34;/hub/&#34;}"></div>
         """
-        var authPurged = false
+        let authPurged = HubTestBox(false)
         let (client, _) = makeClient { _ in htmlResponse(html, status: 401) }
-        client.on_unauthorized = { authPurged = true }
+        client.on_unauthorized = { authPurged.set(true) }
         let result = try await client.discover()
         if case .page(let config) = result {
             XCTAssertEqual(config.page, "bearer-login")
@@ -772,7 +833,7 @@ final class HubClientTests: XCTestCase {
         } else {
             XCTFail("Expected .page for 401 bearer login")
         }
-        XCTAssertTrue(authPurged, "on_unauthorized must fire on 401 discover")
+        XCTAssertTrue(authPurged.value, "on_unauthorized must fire on 401 discover")
     }
 
     func testDiscover401WithoutHTMLReturnsRedirect() async throws {

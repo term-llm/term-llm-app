@@ -360,6 +360,60 @@ struct HubNodeSession: Codable, Sendable, Equatable {
     let resume_path: String
 }
 
+/// One match from a node's `GET /v1/sessions/search` (full-text over message
+/// text, relevance ordered, one best hit per session). Timestamps are unix ms.
+/// Search only finds sessions; run/input state comes from a status lookup.
+struct SessionSearchEntry: Codable, Sendable, Equatable {
+    let id: String
+    let number: Int64?
+    let short_title: String?
+    let long_title: String?
+    let pinned: Bool?
+    let last_message_at: Int64?
+    let message_count: Int?
+    let snippet: String?
+    let attention_unseen: Bool?
+}
+
+struct SessionSearchResponse: Codable, Sendable, Equatable {
+    let sessions: [SessionSearchEntry]
+}
+
+/// Per-agent session search. Hubs proxy to each node; a Direct Node answers
+/// for itself and ignores `node_id`.
+protocol HubSessionSearching: Sendable {
+    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse
+    /// `GET /v1/sessions/status?ids=…`: current run/input state for exactly
+    /// these sessions. Older nodes ignore `ids`; callers match by ID.
+    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus
+}
+
+enum SessionSearchQuery {
+    static let maximumLimit = 50
+    /// Strict encoding: `+`, `&`, `=` and `%` in user text must not alter the
+    /// server's query parsing.
+    static func percentEncoded(query: String, limit: Int) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        let q = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+        return "q=\(q)&limit=\(min(max(limit, 1), maximumLimit))"
+    }
+
+    static let maximumStatusIDs = 100
+    /// IDs are joined with commas, so an ID containing one is not requested.
+    static func percentEncodedStatus(ids: [String]) -> String? {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        let encoded = ids.filter { !$0.isEmpty && !$0.contains(",") }.prefix(maximumStatusIDs)
+            .compactMap { $0.addingPercentEncoding(withAllowedCharacters: allowed) }
+        return encoded.isEmpty ? nil : "ids=" + encoded.joined(separator: ",")
+    }
+
+    /// Node IDs are untrusted path segments; mirror the chat-route charset.
+    static func isSafeNodeID(_ id: String) -> Bool {
+        !id.isEmpty && id != "." && id != ".." &&
+            id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }
+    }
+}
+
 struct HubNodeDiagnostic: Codable, Sendable, Equatable {
     let severity: String
     let code: String
@@ -1014,7 +1068,7 @@ final class HubClient: @unchecked Sendable {
     /// Resolves an API path (which may contain a query string) to a full URL
     /// under the configured mount path.  The query portion is split out and
     /// set on URLComponents.query so `?` is not percent-encoded into the path.
-    private func mounted(_ path: String) -> URL {
+    private func mounted(_ path: String, percentEncodedQuery: String? = nil) -> URL {
         let suffix = path.hasPrefix("/") ? path : "/\(path)"
 
         // Split path from query
@@ -1031,6 +1085,7 @@ final class HubClient: @unchecked Sendable {
         var components = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!
         components.path = "\(mount_path)\(pathPart)"
         components.query = queryPart
+        if let percentEncodedQuery { components.percentEncodedQuery = percentEncodedQuery }
         return components.url!
     }
 
@@ -1083,10 +1138,12 @@ final class HubClient: @unchecked Sendable {
         _ path: String,
         method: Method = .GET,
         body: (any Encodable)? = nil,
-        rawBody: Data? = nil
+        rawBody: Data? = nil,
+        percentEncodedQuery: String? = nil,
+        revokesOnUnauthorized: Bool = true
     ) async throws -> Data {
         let authorization = captureAuthorization()
-        let url = mounted(path)
+        let url = mounted(path, percentEncodedQuery: percentEncodedQuery)
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -1116,7 +1173,7 @@ final class HubClient: @unchecked Sendable {
         }
 
         guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
-        let (data, http) = try await transport.execute(request, onUnauthorized: authorization.callback)
+        let (data, http) = try await transport.execute(request, onUnauthorized: revokesOnUnauthorized ? authorization.callback : nil)
 
         // Process response Set-Cookie headers through scoped cookie_sink.
         // No ambient jar — the only cookie persistence is through this sink.
@@ -1314,6 +1371,40 @@ extension HubClient: HubServing {
 
     func healthz() async throws -> HealthResponse {
         try await request("/healthz")
+    }
+}
+
+// MARK: - Session search
+
+extension HubClient: HubSessionSearching {
+    /// Fan-out leg through the Hub's node proxy, which injects the node token.
+    /// A 401/403 here may come from the node rather than the Hub session, so it
+    /// fails this agent only; ordinary Hub polling owns Hub sign-in revocation.
+    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe node identifier.")
+        }
+        let data = try await executeRequest(
+            "/node/\(node_id)/v1/sessions/search",
+            percentEncodedQuery: SessionSearchQuery.percentEncoded(query: query, limit: limit),
+            revokesOnUnauthorized: false
+        )
+        if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }
+        return try JSONDecoder().decode(SessionSearchResponse.self, from: data)
+    }
+
+    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe node identifier.")
+        }
+        guard let query = SessionSearchQuery.percentEncodedStatus(ids: ids) else { return DirectNodeSessionsStatus(sessions: []) }
+        let data = try await executeRequest(
+            "/node/\(node_id)/v1/sessions/status",
+            percentEncodedQuery: query,
+            revokesOnUnauthorized: false
+        )
+        if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }
+        return try JSONDecoder().decode(DirectNodeSessionsStatus.self, from: data)
     }
 }
 

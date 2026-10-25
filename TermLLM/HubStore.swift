@@ -126,7 +126,7 @@ final class HubStore: ObservableObject {
 
     static let defaultAttentionLimit = 20
     static let maxAttentionLimit = 500
-    static let defaultPollInterval: TimeInterval = 15
+    nonisolated static let defaultPollInterval: TimeInterval = 15
 
     private static let terminalDelegationStatuses: Set<String> = [
         "succeeded", "failed", "cancelled", "timed_out", "error",

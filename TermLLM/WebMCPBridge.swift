@@ -47,7 +47,7 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let origin = message.frameInfo.securityOrigin
         let frameOrigin = Self.originString(scheme: origin.protocol, host: origin.host, port: origin.port)
         let body = message.body

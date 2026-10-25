@@ -6,6 +6,8 @@ import UserNotifications
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // UI tests wait for transitions to settle after every tap.
+        if PhoneHubFixture.isEnabled { UIView.setAnimationsEnabled(false) }
         guard !HubFixture.isEnabled else { return true }
         // Must be set before launch finishes to receive the tap that launched the app.
         UNUserNotificationCenter.current().delegate = PushCenter.shared

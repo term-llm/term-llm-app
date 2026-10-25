@@ -251,22 +251,16 @@ final class AVListenEngine: ListenEngine {
     }
 
     private func waitUntilReady(_ item: AVPlayerItem) async throws {
+        // Combine's timeout finishes without a value, which reads as "not ready".
+        // Everything stays on the main actor; no child task has to own the item.
         let ready = item.publisher(for: \.status)
             .first { $0 != .unknown }
+            .map(Optional.some)
+            .timeout(.seconds(TimeInterval(Self.loadTimeout.components.seconds)), scheduler: DispatchQueue.main)
             .values
-        let status: AVPlayerItem.Status? = try await withThrowingTaskGroup(of: AVPlayerItem.Status?.self) { group in
-            group.addTask { @MainActor in
-                for await status in ready { return status }
-                return nil
-            }
-            group.addTask {
-                try await Task.sleep(for: Self.loadTimeout)
-                return nil
-            }
-            let first = try await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        var status: AVPlayerItem.Status?
+        for await value in ready { status = value }
+        try Task.checkCancellation()
         switch status {
         case .readyToPlay?:
             return

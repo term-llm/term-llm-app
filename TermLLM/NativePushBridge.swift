@@ -68,14 +68,14 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
     static let changeScript = "window.dispatchEvent(new Event(\(String(decoding: JSONValue.string(changeEvent).encoded(), as: UTF8.self))))"
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let origin = message.frameInfo.securityOrigin
         let frameOrigin = WebMCPBridge.originString(scheme: origin.protocol, host: origin.host, port: origin.port)
         let body = message.body
         let isMainFrame = message.frameInfo.isMainFrame
         let expected = expectedOrigin
         let center = center
-        weak var webView = message.webView
+        weak let webView = message.webView
         Task { @MainActor in
             let generation = self.documentGeneration
             let object = body as? [String: Any]
@@ -113,9 +113,9 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
         let message: String
     }
 
-    static func validScope(_ scope: String) -> Bool { PushMetadata.validScope(scope) }
+    nonisolated static func validScope(_ scope: String) -> Bool { PushMetadata.validScope(scope) }
 
-    static func scope(_ scope: String, contains url: URL) -> Bool {
+    nonisolated static func scope(_ scope: String, contains url: URL) -> Bool {
         let path = url.path
         let decoded = scope.removingPercentEncoding ?? scope
         let root = decoded.hasSuffix("/") ? String(decoded.dropLast()) : decoded

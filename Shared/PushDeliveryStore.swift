@@ -252,7 +252,6 @@ final class PushDeliveryStore {
             if let url, FileManager.default.fileExists(atPath: url.path) { return .unavailable }
             return Self.policy(message, state: State(), now: now)
         } catch { return .unavailable } // unreadable keychain may hide explicit off
-        return .unavailable
     }
 
     func admit(_ message: PushMessage, now: Date = Date()) -> Disposition {

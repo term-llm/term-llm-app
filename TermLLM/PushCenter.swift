@@ -93,7 +93,7 @@ enum PushError: LocalizedError, Equatable {
 /// Registers a device token with the push relay and returns the Web Push
 /// endpoint bound to one server's VAPID key (see push-relay/README.md).
 struct PushRelayClient {
-    typealias Transport = (URLRequest) async throws -> (Data, HTTPURLResponse)
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     let baseURL: URL
     let transport: Transport
@@ -145,7 +145,7 @@ struct PushRelayClient {
     }
 }
 
-protocol PushAuthorizer {
+protocol PushAuthorizer: Sendable {
     func status() async -> UNAuthorizationStatus
     func request() async throws -> Bool
 }
@@ -674,7 +674,9 @@ final class PushCenter: NSObject, ObservableObject {
 extension PushCenter: UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        return await presentationOptions(userInfo: notification.request.content.userInfo)
+        // userInfo is an immutable property-list snapshot; hop it to the main actor.
+        let info = UncheckedUserInfo(value: notification.request.content.userInfo)
+        return await MainActor.run { presentationOptions(userInfo: info.value) }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -690,9 +692,14 @@ extension PushCenter: UNUserNotificationCenterDelegate {
     /// main thread too. The async delegate's generated thunk can resume on a
     /// worker thread after our actor hop and crash UIKit's state restoration.
     nonisolated func handleNotificationTap(urlString: String?, windowID: String? = nil, isCompletion: Bool = false, completionHandler: @escaping () -> Void) {
+        // UIKit's completion handler is safe to call on the main thread.
+        nonisolated(unsafe) let completionHandler = completionHandler
         Task { @MainActor in
             open(urlString: urlString, configuredServer: ServerAddress.parse(defaults.string(forKey: "serverURL") ?? ""), windowID: windowID, isCompletion: isCompletion)
             completionHandler()
         }
     }
 }
+
+/// Notification userInfo is an immutable property-list snapshot.
+private struct UncheckedUserInfo: @unchecked Sendable { let value: [AnyHashable: Any] }

@@ -13,7 +13,8 @@ enum HubFixture {
     }
 
     static var isEnabled: Bool { server != nil }
-    static let defaults: UserDefaults = {
+    // UserDefaults is documented thread-safe.
+    nonisolated(unsafe) static let defaults: UserDefaults = {
         if PhoneHubFixture.isEnabled { return PhoneHubFixture.defaults }
         guard isEnabled else { return .standard }
         let name = "com.termllm.app.native-hub-fixture"
@@ -125,7 +126,7 @@ enum HubServerRole: Equatable {
 private final class HubRoleRedirectBlocker: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
     }
 }

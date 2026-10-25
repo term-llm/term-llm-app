@@ -76,7 +76,7 @@ struct MediaPlaybackShelf: View {
 
     /// Playing beats paused. A preferred but hidden source must not fall back
     /// to an older paused source when its controls are dismissed.
-    static func visibleSource(podcastVisible: Bool, podcastPlaying: Bool,
+    nonisolated static func visibleSource(podcastVisible: Bool, podcastPlaying: Bool,
                               musicAvailable: Bool, musicPlaying: Bool,
                               preferred: Source? = nil) -> Source? {
         if podcastVisible && podcastPlaying { return .podcasts }
