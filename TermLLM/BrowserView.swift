@@ -207,6 +207,7 @@ struct BrowserView: UIViewRepresentable {
         private var bridge: WebMCPBridge?
         private(set) var pushBridge: NativePushBridge?
         private var registeredPushWindowID: String?
+        private weak var registeredPushScene: UIWindowScene?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
         private var voiceTask: Task<Void, Never>?
@@ -248,6 +249,12 @@ struct BrowserView: UIViewRepresentable {
                 // This is a native responder handoff, not JS or a navigation.
                 view.endEditing(true)
             }
+            // A retained tab may stay attached to the window while another tab
+            // is shown. WebKit only throttles timers/rAF and reports a hidden
+            // document when the view itself is hidden, so mirror native
+            // visibility here rather than letting the page run at full rate.
+            let hidden = !parent.isContentVisible
+            if view.isHidden != hidden { view.isHidden = hidden }
             self.parent = parent
             let destination = parent.nativeDestination
             let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
@@ -332,8 +339,13 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func registerPushScene(_ scene: UIWindowScene) {
+            // Runs on every SwiftUI update of the browser. Registration persists
+            // a scene-session map in UserDefaults, so only redo it when the scene
+            // (or its identifier) actually changes, not on every render pass.
+            guard registeredPushWindowID == nil || registeredPushScene !== scene else { return }
             let id = MainActor.assumeIsolated { PushCenter.windowID(for: scene) }
             MainActor.assumeIsolated { parent.push?.registerWindow(id, scene: scene) }
+            registeredPushScene = scene
             guard registeredPushWindowID != id else { return }
             registeredPushWindowID = id
             let ready = parent.onPushWindowReady

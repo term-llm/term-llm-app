@@ -640,12 +640,14 @@ final class PushCenter: NSObject, ObservableObject {
 
     func registerWindow(_ windowID: String, scene: UIWindowScene) {
         windows.register(windowID: windowID, scene: scene)
-        var sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
+        let stored = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
         // Retain only live/restorable scene sessions; no unbounded scene history.
         let live = Set(UIApplication.shared.openSessions.map(\.persistentIdentifier))
-        sessions = sessions.filter { live.contains($0.value) }
+        var sessions = stored.filter { live.contains($0.value) }
         sessions[windowID] = scene.session.persistentIdentifier
-        defaults.set(sessions, forKey: Self.windowSessionsKey)
+        // Callers re-register on page loads and bridge messages; only touch
+        // the defaults store when the persisted map actually changes.
+        if sessions != stored { defaults.set(sessions, forKey: Self.windowSessionsKey) }
         DispatchQueue.main.async { [weak self] in self?.routeManualToKeyScene() }
     }
 
