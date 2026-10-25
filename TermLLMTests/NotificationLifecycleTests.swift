@@ -207,6 +207,7 @@ final class NativeNotificationLifecycleTests: XCTestCase {
             authorizer: NotificationTestAuthorizer(), relayTransport: { _ in XCTFail("No relay calls expected"); throw PushError.relayUnavailable },
             registerForRemote: {}, deliveries: deliveries, inbox: inbox)
         center.activateScene = { _, _, _ in }
+        center.supportsMultipleScenes = { true }
         center.isActive = { true }
         center.windows.sceneIsActive = { _ in true }
         await center.setEnabled(true)
@@ -351,6 +352,7 @@ final class NativeNotificationLifecycleTests: XCTestCase {
         let target = completionMessage()
         var activity: NSUserActivity?
         center.activateScene = { session, value, _ in XCTAssertNil(session); activity = value }
+        center.windows.keyWindowOverride = { "sibling" }
         center.open(urlString: target.url?.absoluteString, configuredServer: URL(string: origin), windowID: "closed-owner")
         let navigation = try XCTUnwrap(center.pendingNavigation)
         XCTAssertNil(navigation.windowID, "no arbitrary sibling owner")

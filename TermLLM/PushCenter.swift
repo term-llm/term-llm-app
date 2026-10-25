@@ -211,6 +211,8 @@ final class PushCenter: NSObject, ObservableObject {
     /// Legacy diagnostic only. A URL is never attendance or read authority.
     var visibleURL: URL?
     var isActive: () -> Bool = { UIApplication.shared.applicationState == .active }
+    /// Injected by tests; false on iPhone, where only one scene can exist.
+    var supportsMultipleScenes: () -> Bool = { UIApplication.shared.supportsMultipleScenes }
 
     private let defaults: UserDefaults
     private let identities: PushIdentityStore
@@ -584,7 +586,14 @@ final class PushCenter: NSObject, ObservableObject {
         }
         // If the exact scene is gone, only the scene activity may claim a fresh
         // destination. Existing sibling BrowserViews cannot consume nil owner.
-        let completion = isCompletion || windowID != nil
+        // When no sibling can be substituted, the scene iOS shows replaces the
+        // gone owner: single-scene apps (iPhone) cannot create a fresh scene,
+        // and with every window closed the launching scene is the fresh one.
+        // Route those like manual taps instead of requesting a scene that
+        // iOS refuses (single-scene) or that duplicates the launching window.
+        let ownerGone = (isCompletion || windowID != nil) && session == nil
+        let shownSceneReplacesOwner = ownerGone && (!supportsMultipleScenes() || windows.existingWindowIDs().isEmpty)
+        let completion = (isCompletion || windowID != nil) && !shownSceneReplacesOwner
         let navigation = PushNavigation(id: UUID(), url: url,
             windowID: completion ? (session == nil ? nil : windowID) : windows.keyWindowID(), isCompletion: completion,
             excludedWindowIDs: completion && session == nil ? windows.existingWindowIDs() : [],

@@ -39,6 +39,7 @@ final class NotificationReviewRegressionTests: XCTestCase {
             authorizer: ReviewAuthorizer(), relayTransport: { _ in XCTFail("No registration expected"); throw PushError.relayUnavailable },
             registerForRemote: {}, deliveries: deliveries ?? store, inbox: inbox ?? FakePushInbox())
         center.activateScene = { _, _, _ in XCTFail("Unexpected scene activation") }
+        center.supportsMultipleScenes = { true }
         return center
     }
 
@@ -278,8 +279,35 @@ final class NotificationReviewRegressionTests: XCTestCase {
         XCTAssertEqual(first.pendingNavigation?.windowID, "native_fresh")
     }
 
+    func testSingleSceneOwnerGoneCompletionRoutesToSoleSceneWithoutActivation() {
+        let first = center()
+        first.supportsMultipleScenes = { false }
+        first.windows.keyWindowOverride = { nil }
+        first.open(urlString: origin + "/node/A/chat/session", configuredServer: URL(string: origin),
+                   windowID: "native_gone", isCompletion: true)
+        XCTAssertNil(first.pendingNavigation?.windowID, "cold launch waits for the sole scene")
+        XCTAssertNil(first.navigationIssue)
+        first.windows.keyWindowOverride = { "native_sole" }
+        first.routeManualToKeyScene()
+        XCTAssertEqual(first.pendingNavigation?.windowID, "native_sole")
+        XCTAssertNil(first.navigationIssue)
+    }
+
+    func testMultiSceneOwnerGoneWithEveryWindowClosedUsesLaunchingScene() {
+        let first = center() // multi-scene; activation would XCTFail
+        first.windows.keyWindowOverride = { nil }
+        first.open(urlString: origin + "/node/A/chat/session", configuredServer: URL(string: origin),
+                   windowID: "native_gone", isCompletion: true)
+        XCTAssertNil(first.pendingNavigation?.windowID)
+        first.windows.keyWindowOverride = { "native_launch" }
+        first.routeManualToKeyScene()
+        XCTAssertEqual(first.pendingNavigation?.windowID, "native_launch")
+        XCTAssertNil(first.navigationIssue)
+    }
+
     func testSceneActivationFailureClearsPendingCompletionAndSurfacesLimitation() async {
         let first = center()
+        first.windows.keyWindowOverride = { "native_sibling" }
         let surfaced = expectation(description: "activation error surfaced")
         let observation = first.$navigationIssue.compactMap { $0 }.sink { _ in surfaced.fulfill() }
         defer { observation.cancel() }

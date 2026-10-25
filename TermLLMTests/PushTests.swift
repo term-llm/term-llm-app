@@ -232,6 +232,7 @@ final class PushCenterTests: XCTestCase {
         centerRef = center
         center.isActive = { true }
         center.activateScene = { _, _, _ in }
+        center.supportsMultipleScenes = { true }
         return center
     }
 
