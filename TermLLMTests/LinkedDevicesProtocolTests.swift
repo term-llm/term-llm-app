@@ -26,27 +26,40 @@ final class LinkedDevicesProtocolTests: XCTestCase {
         try XCTUnwrap(fixture[key] as? String, key)
     }
 
+    /// CryptoKit can produce a valid Ed25519 signature that is not byte-identical
+    /// to core's frozen signer (observed in the actual simulator run). Both must
+    /// authenticate the exact frozen transcript under the same public key.
+    private func assertValidSignatures(generated: Data, frozen: String, transcript: Data, publicKey: Data,
+                                       file: StaticString = #filePath, line: UInt = #line) throws {
+        let verifier = try Curve25519.Signing.PublicKey(rawRepresentation: publicKey)
+        XCTAssertTrue(verifier.isValidSignature(generated, for: transcript),
+                      "generated signature did not authenticate the frozen transcript", file: file, line: line)
+        XCTAssertTrue(verifier.isValidSignature(try data(frozen), for: transcript),
+                      "frozen core signature did not authenticate the frozen transcript", file: file, line: line)
+    }
+
     private func link(expiry: Int64 = 2_000_000_000) throws -> LinkedDevicesPairingLink {
         try LinkedDevicesPairingLink.parse(
             "termllm://pair?v=2&b=https%3A%2F%2Fbroker.example&h=\(hostKey)&i=\(invitationID)&e=\(expiry)&n=desk" +
             "#s=\(pairingSecret)&c=aW52aXRhdGlvbi1jYXA")
     }
 
-    func testFrozenPairingVectorsMatchCoreByteForByte() throws {
+    func testFrozenPairingVectorMatchesCoreAndSignaturesVerify() throws {
         let credential = LinkedDevicesCredential(hostKey: try data(hostKey), deviceSeed: try data(deviceSeed))
         let attempt = try LinkedDevicesPairingAttempt(link: link(), credential: credential, deviceName: "phone",
                                                        now: Date(timeIntervalSince1970: 1_900_000_000),
                                                        nonce: try data(deviceNonce))
         XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.request.device_key.data), deviceKey)
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(LinkedDevicesTranscript.pairRequest(attempt.request,
-                                                                                          hostKey: try data(hostKey))),
+        let transcript = LinkedDevicesTranscript.pairRequest(attempt.request, hostKey: try data(hostKey))
+        XCTAssertEqual(LinkedDevicesBase64URL.encode(transcript),
                        "AAAAE3Rlcm0tbGxtL3BhaXJpbmcvdjIAAAAMcGFpci1yZXF1ZXN0AAAABmRldmljZQAAABCgoaKjpKWmp6ipqqusra6vAAAAIAOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4AAAAICmsuuFBvMrwsi4alNNNC8c2HlJtC_4SyJeUvJMilm3XAAAAIODh4uPk5ebn6Onq6-zt7u_w8fLz9PX29_j5-vv8_f7_AAAABXBob25l")
         XCTAssertEqual(LinkedDevicesBase64URL.encode(LinkedDevicesTranscript.macKey(try data(pairingSecret))),
                        "GNYGK6Gilj7Ywjzf9gteSebL72uRZV4HGr9W0OJftpE")
         XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.request.mac.data),
                        "redYqpOeAgSKJdImOylqSQLzu7zXxKxhYfWr3BVFEZM")
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.request.sig.data),
-                       "qCkEwwvTAO1wsZrc3q9F9B7AIArcovGXgE1msKa7r5QNTgjCEXCEzZHdBIwKwGF6h6R8hctXwx1Rxd20H5JxCg")
+        try assertValidSignatures(generated: attempt.request.sig.data,
+                                  frozen: "qCkEwwvTAO1wsZrc3q9F9B7AIArcovGXgE1msKa7r5QNTgjCEXCEzZHdBIwKwGF6h6R8hctXwx1Rxd20H5JxCg",
+                                  transcript: transcript, publicKey: attempt.request.device_key.data)
         XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.requestHash),
                        "J7_QqLsW2vuSxBGIHCWR8lnuPDKfkveV5oKQuXQxOxA")
         XCTAssertEqual(attempt.sas, "505580")
@@ -86,11 +99,12 @@ final class LinkedDevicesProtocolTests: XCTestCase {
 
         let hello = try LinkedDevicesTransportAttempt.hello(
             credential: credential, nonce: try data(try fixtureString("transport_hello_nonce", in: fixture)))
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(LinkedDevicesTranscript.transportHello(hello,
-                                                                                              hostKey: credential.hostKey)),
+        let helloTranscript = LinkedDevicesTranscript.transportHello(hello, hostKey: credential.hostKey)
+        XCTAssertEqual(LinkedDevicesBase64URL.encode(helloTranscript),
                        try fixtureString("transport_hello_transcript", in: fixture))
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(hello.sig.data),
-                       try fixtureString("transport_hello_signature", in: fixture))
+        try assertValidSignatures(generated: hello.sig.data,
+                                  frozen: try fixtureString("transport_hello_signature", in: fixture),
+                                  transcript: helloTranscript, publicKey: hello.device_key.data)
 
         let challengeData = Data(try fixtureString("transport_challenge_json", in: fixture).utf8)
         let challenge = try LinkedDevicesMessageCodec.decode(
@@ -101,13 +115,15 @@ final class LinkedDevicesProtocolTests: XCTestCase {
             offerSDP: try fixtureString("transport_offer_sdp", in: fixture),
             now: Date(timeIntervalSince1970: 1_800_000_000),
             nonce: try data(try fixtureString("transport_device_nonce", in: fixture)))
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(LinkedDevicesTranscript.transportRequest(request.request,
-                                                                                                hostKey: credential.hostKey)),
+        let requestTranscript = LinkedDevicesTranscript.transportRequest(request.request,
+                                                                          hostKey: credential.hostKey)
+        XCTAssertEqual(LinkedDevicesBase64URL.encode(requestTranscript),
                        try fixtureString("transport_request_transcript", in: fixture))
         XCTAssertEqual(LinkedDevicesBase64URL.encode(request.requestHash),
                        try fixtureString("transport_request_hash", in: fixture))
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(request.request.sig.data),
-                       try fixtureString("transport_request_signature", in: fixture))
+        try assertValidSignatures(generated: request.request.sig.data,
+                                  frozen: try fixtureString("transport_request_signature", in: fixture),
+                                  transcript: requestTranscript, publicKey: request.request.device_key.data)
 
         let answerData = Data(try fixtureString("transport_answer_json", in: fixture).utf8)
         let answer = try LinkedDevicesMessageCodec.decode(

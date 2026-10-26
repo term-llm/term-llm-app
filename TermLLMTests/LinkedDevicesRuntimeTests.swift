@@ -51,7 +51,7 @@ private final class BackpressuredRuntimeTestChannel: PeerFrameChannel, @unchecke
     private var closeHandler: (() -> Void)?
     private var sends = 0
     var isOpen: Bool { true }
-    var bufferedAmount: UInt64 { 1_000_000 }
+    var bufferedAmount: UInt64 { PeerWireLimits.default.sendHighWaterBytes + 1 }
     var sendCount: Int { lock.withLock { sends } }
     func send(_ message: Data) -> Bool { lock.withLock { sends += 1 }; return true }
     func close() { lock.withLock { closeHandler }?() }

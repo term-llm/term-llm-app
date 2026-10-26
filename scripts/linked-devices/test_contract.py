@@ -166,6 +166,15 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertNotIn('term-llm/pairing/v1', source)
         self.assertNotIn('offer_sdp: LinkedDevicesB64', source)
 
+    def test_native_regressions_preserve_signature_and_backpressure_coverage(self):
+        protocol_tests = (ROOT / "TermLLMTests/LinkedDevicesProtocolTests.swift").read_text()
+        self.assertIn("verifier.isValidSignature(generated, for: transcript)", protocol_tests)
+        self.assertIn("verifier.isValidSignature(try data(frozen), for: transcript)", protocol_tests)
+        self.assertNotIn("LinkedDevicesBase64URL.encode(attempt.request.sig.data)", protocol_tests)
+        runtime_tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
+        self.assertIn("PeerWireLimits.default.sendHighWaterBytes + 1", runtime_tests)
+        self.assertIn("cancelled parked owner must never send its request", runtime_tests)
+
     def test_webrtc_callbacks_copy_sdk_objects_before_continuation_resume(self):
         source = (ROOT / "TermLLM/PeerWebRTCSession.swift").read_text()
         self.assertIn("let offerSDP: String = try await withCheckedThrowingContinuation", source)
