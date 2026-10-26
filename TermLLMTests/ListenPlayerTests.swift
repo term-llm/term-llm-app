@@ -303,6 +303,73 @@ final class ListenPlayerTests: XCTestCase {
         XCTAssertNil(listen.player.notice)
     }
 
+    func testFailedLoadStopsPreviousPlayback() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([draft("a"), draft("b")], placement: .now, download: .never)
+        engine.loadError = ListenError.playbackFailed("could not load")
+        do {
+            try await listen.player.play(items[1].id)
+            XCTFail("expected a load failure")
+        } catch {}
+        XCTAssertFalse(engine.playing)
+        XCTAssertEqual(engine.stops, 1)
+        XCTAssertEqual(listen.player.status, .failed(ListenError.playbackFailed("could not load").localizedDescription))
+    }
+
+    func testPlaybackFailureUnloadsEngine() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        _ = try await listen.add([draft("a")], placement: .now, download: .never)
+        engine.currentTime = 42
+        engine.send(.failed("stream failed"))
+        XCTAssertFalse(engine.playing)
+        XCTAssertEqual(engine.stops, 1)
+        XCTAssertEqual(listen.player.position, 42)
+        XCTAssertEqual(listen.player.status, .failed("stream failed"))
+        XCTAssertFalse(listen.player.streaming)
+    }
+
+    func testStopWinsAgainstQueuedDownloadRecovery() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let items = try await listen.add([draft("ep")], placement: .now, download: .never)
+        try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
+        engine.send(.failed("stream failed"))
+        listen.player.stop()
+        await settle()
+        XCTAssertEqual(engine.loads.count, 1, "a queued recovery must not restart stopped playback")
+        XCTAssertFalse(engine.playing)
+        XCTAssertEqual(listen.player.status, .idle)
+    }
+
+    func testOldEndEventDoesNotFinishNewPlayback() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([draft("a"), draft("b")], placement: .now, download: .never)
+        engine.send(.ended)
+        listen.player.stop()
+        try await listen.player.play(items[1].id)
+        await settle()
+        XCTAssertEqual(listen.player.currentID, items[1].id)
+        XCTAssertEqual(listen.player.status, .playing)
+        XCTAssertEqual(listen.store.item(items[1].id)?.status, .inProgress)
+    }
+
+    func testPauseAndStopWinAgainstQueuedInterruptionResume() async throws {
+        for stop in [false, true] {
+            let engine = FakeListenEngine()
+            let listen = makeListen(engine: engine)
+            _ = try await listen.add([draft("a")], placement: .now, download: .never)
+            engine.send(.interrupted)
+            engine.send(.interruptionEnded(shouldResume: true))
+            if stop { listen.player.stop() } else { listen.player.pause() }
+            await settle()
+            XCTAssertEqual(engine.rates.count, 1, "interruption recovery must not restart playback")
+            XCTAssertEqual(listen.player.status, stop ? .idle : .paused)
+        }
+    }
+
     func testClosingStopsAndKeepsTheItemQueued() async throws {
         let engine = FakeListenEngine()
         let listen = makeListen(engine: engine)

@@ -211,6 +211,169 @@ final class MusicPlayerTests: XCTestCase {
         XCTAssertEqual(engine.playCount, 1)
     }
 
+    func testPauseWhileLoadingPreventsStart() async {
+        let engine = FakeEngine()
+        let gate = MusicTestGate()
+        let loading = expectation(description: "load suspended")
+        gate.onWait = { loading.fulfill() }
+        engine.beforeLoad = { try await gate.wait() }
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        let mix = playlist(["1"])
+        let pending = Task { try await player.play(mix) }
+        await fulfillment(of: [loading], timeout: 2)
+
+        XCTAssertEqual(player.startingEntryID, mix.entries[0].id)
+        player.pause()
+        XCTAssertNil(player.startingEntryID)
+        gate.finish()
+        do {
+            _ = try await pending.value
+            XCTFail("paused start must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(engine.playCount, 0)
+        XCTAssertEqual(engine.pauseCount, 1)
+        XCTAssertEqual(player.status, .paused)
+        XCTAssertTrue(player.queue.isEmpty)
+        XCTAssertNil(player.playlistID)
+        XCTAssertNil(player.notice)
+    }
+
+    func testLateLoadErrorDoesNotOverwritePause() async {
+        let engine = FakeEngine()
+        let gate = MusicTestGate()
+        let loading = expectation(description: "load suspended")
+        gate.onWait = { loading.fulfill() }
+        engine.beforeLoad = { try await gate.wait() }
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        let pending = Task { try await player.play([track("1")]) }
+        await fulfillment(of: [loading], timeout: 2)
+
+        player.pause()
+        gate.finish(.failure(MusicError.noPlayableSongs))
+        do {
+            _ = try await pending.value
+            XCTFail("paused load must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(player.status, .paused)
+        XCTAssertNil(player.notice)
+        XCTAssertEqual(engine.playCount, 0)
+    }
+
+    func testPauseDuringStartPollingPreventsRetryAndFailure() async {
+        let engine = FakeEngine()
+        engine.neverStarts = true
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults(),
+                                 startCheck: .init(polls: 30, interval: .milliseconds(10)))
+        let polling = expectation(description: "polling for playback")
+        engine.onSnapshot = {
+            engine.onSnapshot = nil
+            // Pause on the first poll, before the polling loop can retry play.
+            player.pause()
+            polling.fulfill()
+        }
+        let pending = Task { try await player.play([track("1")]) }
+        await fulfillment(of: [polling], timeout: 2)
+        do {
+            _ = try await pending.value
+            XCTFail("paused polling must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(engine.playCount, 1)
+        XCTAssertEqual(player.status, .paused)
+        XCTAssertNil(player.notice)
+    }
+
+    func testPauseDuringResumeIgnoresLatePlayError() async throws {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        try await player.play([track("1")])
+        player.pause()
+        let gate = MusicTestGate()
+        let starting = expectation(description: "resume suspended in play")
+        gate.onWait = { starting.fulfill() }
+        engine.beforePlay = { try await gate.wait() }
+        let pending = Task { try await player.resume() }
+        await fulfillment(of: [starting], timeout: 2)
+
+        player.pause()
+        gate.finish(.failure(MusicError.cannotPlayCatalog))
+        do {
+            try await pending.value
+            XCTFail("paused resume must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(player.status, .paused)
+        XCTAssertNil(player.notice)
+        XCTAssertEqual(engine.playCount, 2)
+    }
+
+    func testOlderLoadFailureDoesNotClearNewerSpinnerOrStatus() async throws {
+        let engine = FakeEngine()
+        let oldGate = MusicTestGate()
+        let newGate = MusicTestGate()
+        let oldLoading = expectation(description: "old load suspended")
+        let newLoading = expectation(description: "new load suspended")
+        oldGate.onWait = { oldLoading.fulfill() }
+        newGate.onWait = { newLoading.fulfill() }
+        engine.beforeLoad = { try await oldGate.wait() }
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        let old = Task { try await player.play(self.playlist(["1"])) }
+        await fulfillment(of: [oldLoading], timeout: 2)
+
+        let mix = playlist(["2"])
+        engine.beforeLoad = { try await newGate.wait() }
+        let newer = Task { try await player.play(mix) }
+        await fulfillment(of: [newLoading], timeout: 2)
+        oldGate.finish(.failure(MusicError.noPlayableSongs))
+        do {
+            _ = try await old.value
+            XCTFail("superseded load must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(player.status, .loading)
+        XCTAssertEqual(player.startingEntryID, mix.entries[0].id)
+        XCTAssertNil(player.notice)
+        newGate.finish()
+        _ = try await newer.value
+        XCTAssertEqual(player.status, .playing)
+        XCTAssertEqual(player.queue.map(\.id), ["2"])
+        XCTAssertEqual(player.playlistID, mix.id)
+        XCTAssertNil(player.startingEntryID)
+        XCTAssertEqual(engine.playCount, 1)
+    }
+
+    func testStalePlayCompletionDoesNotPauseOrOverwriteNewerPlayback() async throws {
+        let engine = FakeEngine()
+        let gate = MusicTestGate()
+        let starting = expectation(description: "old play suspended")
+        gate.onWait = { starting.fulfill() }
+        engine.beforePlay = { try await gate.wait() }
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        let old = Task { try await player.play([track("1"), track("missing")]) }
+        engine.unavailable = ["missing"]
+        await fulfillment(of: [starting], timeout: 2)
+
+        player.pause()
+        engine.beforePlay = nil
+        let mix = playlist(["2"])
+        try await player.play(mix)
+        gate.finish()
+        do {
+            _ = try await old.value
+            XCTFail("superseded play must be cancelled")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertEqual(player.status, .playing)
+        XCTAssertEqual(player.queue.map(\.id), ["2"])
+        XCTAssertEqual(player.nowPlaying?.id, "2")
+        XCTAssertEqual(player.playlistID, mix.id)
+        XCTAssertNil(player.notice, "stale skipped-song notices are suppressed too")
+        XCTAssertEqual(engine.playCount, 2)
+        XCTAssertEqual(engine.pauseCount, 1, "stale completion must not pause the newer request")
+    }
+
     func testReportsPlaybackThatNeverStarts() async throws {
         let engine = FakeEngine()
         engine.neverStarts = true

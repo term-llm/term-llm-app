@@ -43,6 +43,10 @@ final class FakeCatalog: MusicCatalog, @unchecked Sendable {
 @MainActor
 final class FakeEngine: MusicPlaybackEngine {
     var onChange: (@MainActor () -> Void)?
+    /// Suspension points for exercising superseded requests before side effects.
+    var beforeLoad: (() async throws -> Void)?
+    var beforePlay: (() async throws -> Void)?
+    var onSnapshot: (() -> Void)?
     /// Song ids Apple Music "can't find".
     var unavailable: Set<String> = []
     var playError: Error?
@@ -55,6 +59,7 @@ final class FakeEngine: MusicPlaybackEngine {
 
     var snapshot: PlaybackSnapshot {
         get {
+            onSnapshot?()
             if pendingReads > 0 {
                 pendingReads -= 1
                 if pendingReads == 0 { stored.state = .playing }
@@ -73,6 +78,7 @@ final class FakeEngine: MusicPlaybackEngine {
     func load(_ tracks: [MusicTrack], startingAt index: Int, shuffle: Bool) async throws -> [MusicTrack] {
         loads.append((tracks, index, shuffle))
         onLoad?()
+        try await beforeLoad?()
         loaded = tracks.filter { !unavailable.contains($0.id) }
         guard !loaded.isEmpty else { throw MusicError.noPlayableSongs }
         let start = tracks.indices.contains(index) && !unavailable.contains(tracks[index].id) ? tracks[index] : loaded[0]
@@ -83,6 +89,7 @@ final class FakeEngine: MusicPlaybackEngine {
     func play() async throws {
         if let playError { throw playError }
         playCount += 1
+        try await beforePlay?()
         if neverStarts { return }
         if startLag > 0 {
             pendingReads = startLag
@@ -93,7 +100,8 @@ final class FakeEngine: MusicPlaybackEngine {
 
     func pause() {
         pauseCount += 1
-        snapshot.state = .paused
+        pendingReads = 0
+        stored.state = .paused
     }
 
     func skipToNext() async throws {
@@ -118,6 +126,28 @@ final class FakeEngine: MusicPlaybackEngine {
         guard let current = snapshot.current, let index = loaded.firstIndex(of: current) else { return }
         let next = index + offset
         if loaded.indices.contains(next) { snapshot.current = loaded[next] }
+    }
+}
+
+/// A single-use suspension point; completion can succeed or fail after pause.
+@MainActor
+final class MusicTestGate {
+    var onWait: (() -> Void)?
+    private var result: Result<Void, Error>?
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    func wait() async throws {
+        if let result { return try result.get() }
+        try await withCheckedThrowingContinuation {
+            continuation = $0
+            onWait?()
+        }
+    }
+
+    func finish(_ result: Result<Void, Error> = .success(())) {
+        self.result = result
+        continuation?.resume(with: result)
+        continuation = nil
     }
 }
 

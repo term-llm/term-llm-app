@@ -175,6 +175,8 @@ final class AppleMusicEngine: MusicPlaybackEngine {
     private let player = SystemMusicPlayer.shared
     private let catalog: AppleMusicCatalog
     private var observers: Set<AnyCancellable> = []
+    /// A newer load/play or explicit pause supersedes work suspended in MusicKit.
+    private var playbackRequest = UUID()
 
     init(catalog: AppleMusicCatalog = AppleMusicCatalog()) {
         self.catalog = catalog
@@ -206,7 +208,11 @@ final class AppleMusicEngine: MusicPlaybackEngine {
     }
 
     func load(_ tracks: [MusicTrack], startingAt index: Int, shuffle: Bool) async throws -> [MusicTrack] {
+        let request = UUID()
+        playbackRequest = request
+        try checkRequest(request)
         let songs = try await catalog.songs(ids: tracks.map(\.id))
+        try checkRequest(request)
         guard !songs.isEmpty else { throw MusicError.noPlayableSongs }
         let wanted = tracks.indices.contains(index) ? tracks[index].id : nil
         let start = songs.first { $0.id.rawValue == wanted } ?? songs[0]
@@ -216,7 +222,12 @@ final class AppleMusicEngine: MusicPlaybackEngine {
     }
 
     func play() async throws {
-        guard try await MusicSubscription.current.canPlayCatalogContent else {
+        let request = UUID()
+        playbackRequest = request
+        try checkRequest(request)
+        let canPlay = try await MusicSubscription.current.canPlayCatalogContent
+        try checkRequest(request)
+        guard canPlay else {
             musicLog.error("Apple Music subscription can't play catalog content")
             throw MusicError.cannotPlayCatalog
         }
@@ -224,20 +235,37 @@ final class AppleMusicEngine: MusicPlaybackEngine {
         // swap ("Failed to prepare to play"); prepare and retry briefly.
         var lastError: Error?
         for attempt in 1...3 {
+            try checkRequest(request)
             try? await player.prepareToPlay()
+            try checkRequest(request)
             do {
                 try await player.play()
+                // MusicKit cannot reliably revoke an already-submitted play().
+                // Do not compensate with pause here: it could stop a newer play
+                // (or intentional playback from Music/Control Center).
+                try checkRequest(request)
                 return
             } catch {
+                try checkRequest(request)
+                if error is CancellationError { throw error }
                 lastError = error
                 musicLog.error("Apple Music play attempt \(attempt) failed: \(String(reflecting: error), privacy: .public)")
-                try? await Task.sleep(for: .milliseconds(attempt == 1 ? 200 : 500))
+                try await Task.sleep(for: .milliseconds(attempt == 1 ? 200 : 500))
+                try checkRequest(request)
             }
         }
         throw MusicError.playbackFailed(lastError?.localizedDescription ?? "unknown error")
     }
 
-    func pause() { player.pause() }
+    private func checkRequest(_ request: UUID) throws {
+        try Task.checkCancellation()
+        guard playbackRequest == request else { throw CancellationError() }
+    }
+
+    func pause() {
+        playbackRequest = UUID()
+        player.pause()
+    }
     func skipToNext() async throws { try await player.skipToNextEntry() }
     func skipToPrevious() async throws { try await player.skipToPreviousEntry() }
     func setShuffle(_ enabled: Bool) { player.state.shuffleMode = enabled ? .songs : .off }

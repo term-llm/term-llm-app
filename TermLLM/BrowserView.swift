@@ -156,6 +156,9 @@ struct BrowserView: UIViewRepresentable {
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
+#if DEBUG
+        view.isInspectable = true
+#endif
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in

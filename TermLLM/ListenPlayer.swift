@@ -153,6 +153,9 @@ final class ListenPlayer {
             if streaming { didStartStreaming?(id) }
         } catch {
             guard attempt == generation else { return }
+            generation += 1
+            engine.stop()
+            nowPlaying?.clear()
             loadedID = nil
             resetNetworkState()
             let message = error.localizedDescription
@@ -197,8 +200,9 @@ final class ListenPlayer {
 
     func pause() {
         pausedByInterruption = false
+        generation += 1
         guard status == .playing || status == .loading else { return }
-        if status == .loading { generation += 1; loadedID = nil }
+        if status == .loading { loadedID = nil }
         engine.pause()
         status = .paused
         savePosition()
@@ -207,6 +211,7 @@ final class ListenPlayer {
 
     /// Unloads everything; the mini player goes away.
     func stop() {
+        pausedByInterruption = false
         if loadedID != nil { savePosition() }
         generation += 1
         engine.stop()
@@ -323,17 +328,26 @@ final class ListenPlayer {
                 pause()
             }
         case .ended:
-            Task { await finishCurrent() }
+            let attempt = generation
+            Task {
+                guard attempt == generation else { return }
+                await finishCurrent()
+            }
         case .failed(let message):
             savePosition()
             if streaming, let id = currentID, store.item(id)?.download == .downloaded {
                 // The stream dropped, but the file is here: carry on from it.
                 let resumeAt = position
+                let attempt = generation
                 Task {
+                    guard attempt == generation else { return }
                     do { try await load(id, from: resumeAt) } catch {}
                 }
                 return
             }
+            generation += 1
+            engine.stop()
+            nowPlaying?.clear()
             loadedID = nil
             resetNetworkState()
             status = .failed(message)
@@ -347,7 +361,13 @@ final class ListenPlayer {
         case .interruptionEnded(let shouldResume):
             guard pausedByInterruption else { return }
             pausedByInterruption = false
-            if shouldResume { Task { try? await resume() } }
+            if shouldResume {
+                let attempt = generation
+                Task {
+                    guard attempt == generation, status == .paused else { return }
+                    try? await resume()
+                }
+            }
         case .outputLost:
             pause()
         case .buffer:

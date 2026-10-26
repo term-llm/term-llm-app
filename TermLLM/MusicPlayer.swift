@@ -35,6 +35,8 @@ final class MusicPlayer {
     @ObservationIgnored private let engine: MusicPlaybackEngine
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let startCheck: StartCheck
+    /// Invalidated by pause or a newer start/resume, independently of task lifetime.
+    @ObservationIgnored private var playbackRequest = UUID()
     static let shuffleKey = "music.shuffle"
 
     /// How long to wait for the system player to report playing after play().
@@ -66,9 +68,8 @@ final class MusicPlayer {
     func play(_ playlist: Playlist, startingAt entryID: UUID? = nil, shuffle: Bool? = nil) async throws -> [MusicTrack] {
         guard !playlist.entries.isEmpty else { throw MusicError.emptyPlaylist(playlist.name) }
         let index = entryID.flatMap { id in playlist.entries.firstIndex { $0.id == id } } ?? 0
-        startingEntryID = entryID ?? playlist.entries[index].id
-        defer { startingEntryID = nil }
-        return try await start(playlist.tracks, at: index, playlistID: playlist.id, shuffle: shuffle)
+        return try await start(playlist.tracks, at: index, playlistID: playlist.id, shuffle: shuffle,
+                               entryID: entryID ?? playlist.entries[index].id)
     }
 
     @discardableResult
@@ -77,7 +78,7 @@ final class MusicPlayer {
         return try await start(tracks, at: index, playlistID: nil, shuffle: shuffle)
     }
 
-    private func start(_ tracks: [MusicTrack], at index: Int, playlistID: UUID?, shuffle: Bool?) async throws -> [MusicTrack] {
+    private func start(_ tracks: [MusicTrack], at index: Int, playlistID: UUID?, shuffle: Bool?, entryID: UUID? = nil) async throws -> [MusicTrack] {
         // Reject the entire queue, including mixed playlists, before touching
         // audio, permissions, shuffle preferences, or willStartPlayback.
         guard !tracks.contains(where: \.isSample) else {
@@ -85,20 +86,32 @@ final class MusicPlayer {
             post(error.localizedDescription, isError: true)
             throw error
         }
+        let request = UUID()
+        playbackRequest = request
+        startingEntryID = entryID
+        defer { if playbackRequest == request { startingEntryID = nil } }
         if let shuffle { rememberShuffle(shuffle) }
         willStartPlayback?()
         status = .loading
         do {
+            try checkRequest(request)
             let loaded = try await engine.load(tracks, startingAt: index, shuffle: self.shuffle)
+            try checkRequest(request)
             queue = loaded
             self.playlistID = playlistID
-            try await startPlaying()
+            try await startPlaying(request: request)
+            try checkRequest(request)
             let skipped = tracks.count - loaded.count
             if skipped > 0 {
                 post("\(skipped) song\(skipped == 1 ? " isn't" : "s aren't") available on Apple Music", isError: false)
             }
             return loaded
         } catch {
+            guard playbackRequest == request else { throw CancellationError() }
+            if error is CancellationError {
+                status = .paused
+                throw error
+            }
             let message = error.localizedDescription
             status = .failed(message)
             post(message, isError: true)
@@ -109,21 +122,27 @@ final class MusicPlayer {
     // MARK: Transport
 
     func pause() {
+        playbackRequest = UUID()
+        startingEntryID = nil
         engine.pause()
         status = .paused
     }
 
     func resume() async throws {
         guard nowPlaying != nil || !queue.isEmpty else { throw MusicError.nothingToResume }
+        let request = UUID()
+        playbackRequest = request
+        startingEntryID = nil
         willStartPlayback?()
         let previous = status
         status = .loading
         do {
-            try await startPlaying()
+            try await startPlaying(request: request)
         } catch {
+            guard playbackRequest == request else { throw CancellationError() }
             status = previous == .loading ? .paused : previous
             sync()
-            post(error.localizedDescription, isError: true)
+            if !(error is CancellationError) { post(error.localizedDescription, isError: true) }
             throw error
         }
     }
@@ -131,10 +150,13 @@ final class MusicPlayer {
     /// Plays and waits until the system player actually reports playing: it
     /// only does so a moment after play() returns, and occasionally not at
     /// all until asked again. Callers (and tool results) then see the truth.
-    private func startPlaying() async throws {
+    private func startPlaying(request: UUID) async throws {
         for attempt in 1...2 {
+            try checkRequest(request)
             try await engine.play()
+            try checkRequest(request)
             for _ in 0..<startCheck.polls {
+                try checkRequest(request)
                 if engine.snapshot.state == .playing {
                     status = .playing
                     sync()
@@ -142,9 +164,15 @@ final class MusicPlayer {
                 }
                 try await Task.sleep(for: startCheck.interval)
             }
+            try checkRequest(request)
             musicLog.error("Apple Music didn't report playing after play() attempt \(attempt)")
         }
         throw MusicError.didNotStart
+    }
+
+    private func checkRequest(_ request: UUID) throws {
+        try Task.checkCancellation()
+        guard playbackRequest == request else { throw CancellationError() }
     }
 
     func togglePlayPause() async {
