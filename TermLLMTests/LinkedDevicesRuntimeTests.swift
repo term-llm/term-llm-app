@@ -364,8 +364,11 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         let runtime = LinkedDevicesRuntime(identities: identities, connector: nil,
                                            makeListener: { ControlledLoopbackListener() })
         let catalog = HubConnectionStore(defaults: defaults)
-        await XCTAssertThrowsErrorAsync(try await runtime.enroll(
-            .init(credential: credential, live: nil), fallbackName: "Desk", in: catalog, token: UUID()))
+        do {
+            _ = try await runtime.enroll(
+                .init(credential: credential, live: nil), fallbackName: "Desk", in: catalog, token: UUID())
+            XCTFail("Invalid host base path must reject enrollment")
+        } catch {}
         XCTAssertTrue(catalog.connections.isEmpty)
     }
 
@@ -398,7 +401,10 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         catalog.remove(existing.id)
         runtime.synchronize(catalog.connections)
         listener.resume(port: 43223)
-        await XCTAssertThrowsErrorAsync(try await task.value)
+        do {
+            _ = try await task.value
+            XCTFail("Removing the source must invalidate in-flight enrollment")
+        } catch {}
 
         XCTAssertTrue(catalog.connections.isEmpty, "removed source must not be recreated by late enrollment")
         XCTAssertNil(runtime.statuses[existing.id])
@@ -436,8 +442,11 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.status(for: source.id), .revoked)
         XCTAssertTrue(connector.closed.value)
         let transport = try XCTUnwrap(runtime.transport(for: source))
-        await XCTAssertThrowsErrorAsync(try await transport.execute(
-            URLRequest(url: source.url.appendingPathComponent("v1/sessions")), onUnauthorized: nil))
+        do {
+            _ = try await transport.execute(
+                URLRequest(url: source.url.appendingPathComponent("v1/sessions")), onUnauthorized: nil)
+            XCTFail("A revoked source must reject transport requests")
+        } catch {}
     }
 
     func testReconnectBackoffIsBounded() {
