@@ -65,6 +65,7 @@ jobs:
             -only-testing:TermLLMTests/LinkedDevicesProtocolTests \
             -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
             -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
+            -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
             -only-testing:TermLLMTests/PeerTransportTests \
             -only-testing:TermLLMTests/DirectNodeClientTests \
             -only-testing:TermLLMTests/HubConnectionStoreTests \

@@ -65,6 +65,7 @@ jobs:
             -only-testing:TermLLMTests/LinkedDevicesProtocolTests \
             -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
             -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
+            -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
             -only-testing:TermLLMTests/PeerTransportTests \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
             2>&1 | tee "$NATIVE_TEST_DIR/xcodebuild.log"

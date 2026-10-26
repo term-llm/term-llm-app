@@ -14,11 +14,11 @@ class WorkflowBudgetTests(unittest.TestCase):
             "NotificationMetadataTests", "NativeNotificationLifecycleTests", "ActualProducerFixtureTests",
             "NotificationReviewRegressionTests", "BrowserLifecycleTests", "VoiceShortcutTests",
             "LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests", "LinkedDevicesRuntimeTests",
-            "PeerTransportTests",
+            "LinkedDevicesDiagnosticsTests", "PeerTransportTests",
         },
         "linked-devices-native.yml": {
             "LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests", "LinkedDevicesRuntimeTests",
-            "PeerTransportTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
+            "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
         },
     }
 
@@ -63,7 +63,7 @@ class WorkflowBudgetTests(unittest.TestCase):
         self.assertNotRegex(combined, r"simctl\s+(?:shutdown|delete|erase)\s+(?:all|unavailable)\b")
         self.assertNotIn("--delete-unavailable", combined)
 
-    def test_native_test_suite_selections_are_unchanged(self):
+    def test_native_test_suite_selections_include_required_regressions(self):
         for filename, expected in self.NATIVE_WORKFLOWS.items():
             text = (ROOT / ".github/workflows" / filename).read_text()
             actual = set(re.findall(r"-only-testing:TermLLMTests/([A-Za-z0-9_]+)", text))
