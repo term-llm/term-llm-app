@@ -11,10 +11,13 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
 
     private let identities: LinkedDevicesIdentityStore
     private let clock: @Sendable () -> Date
+    private let diagnostics: LinkedDevicesDiagnostics?
 
-    init(identities: LinkedDevicesIdentityStore, clock: @escaping @Sendable () -> Date = { Date() }) {
+    init(identities: LinkedDevicesIdentityStore, clock: @escaping @Sendable () -> Date = { Date() },
+         diagnostics: LinkedDevicesDiagnostics? = nil) {
         self.identities = identities
         self.clock = clock
+        self.diagnostics = diagnostics
     }
 
     func pair(link: LinkedDevicesPairingLink, deviceName: String,
@@ -61,9 +64,12 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
 
     func reconnect(credential: LinkedDevicesCredential,
                    closed: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
+        let diagnostic = diagnostics?.connection()
+        diagnostic?.emit(.recoveryAttempt)
         guard let brokerURL = credential.brokerURL,
               let deviceID = credential.deviceID,
               let capability = credential.reconnectCapability else {
+            diagnostic?.emit(.recoveryFailed(.other))
             throw LinkedDevicesStorageError.corrupt
         }
         let capabilityString = LinkedDevicesBase64URL.encode(capability)
@@ -74,21 +80,29 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
                                            capability: capabilityString)
             let socket = try await broker.dial(hostID: hostID, kind: "device", peerID: deviceID,
                                                capability: capabilityString)
+            diagnostic?.emit(.brokerConnected)
             do {
                 return try await establish(credential: credential, socket: socket,
-                                           ice: ice.ice_servers, closed: closed)
+                                           ice: ice.ice_servers, diagnostic: diagnostic, closed: closed)
             } catch {
                 socket.close()
+                let reason = Self.diagnosticReason(error)
+                diagnostic?.emit(.brokerDisconnected(reason))
                 throw error
             }
         } catch LinkedDevicesBrokerError.unauthorized {
+            diagnostic?.emit(.recoveryFailed(.revoked))
             // For a previously paired device this frozen broker result means
             // revoked/changed credentials or target reset, never mere offline.
             throw LinkedDevicesProtocolError.revoked
+        } catch {
+            diagnostic?.emit(.recoveryFailed(Self.diagnosticReason(error)))
+            throw error
         }
     }
 
-    private func establish(credential: LinkedDevicesCredential, socket: LinkedDevicesBrokerSocket, ice: [PeerICEServer],
+    private func establish(credential: LinkedDevicesCredential, socket: LinkedDevicesBrokerSocket,
+                           ice: [PeerICEServer], diagnostic: LinkedDevicesDiagnosticConnection?,
                            closed: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
         let hello = try LinkedDevicesTransportAttempt.hello(credential: credential)
         try await socket.send(hello)
@@ -98,6 +112,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
             timeout: 30)
 
         let webRTC = try PeerWebRTCSession(iceServers: ice)
+        webRTC.onPhaseChange = { phase in diagnostic?.emit(.peerPhase(.init(phase))) }
         webRTC.onClose = { socket.close(); closed() }
         do {
             let offer = try await webRTC.createOffer()
@@ -109,15 +124,19 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
                 fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_nonce", "request_hash", "device_id", "answer_sdp", "sig"],
                 timeout: 30)
             let verifiedSDP = try attempt.verify(answer)
+            diagnostic?.emit(.identityVerified)
             let authorization = PeerAuthorizationState(PeerAuthorization(
                 peerID: LinkedDevicesBase64URL.encode(credential.hostKey),
                 sessionID: UUID().uuidString, expiresAt: .distantFuture,
                 scopePrefix: credential.basePath ?? "/"))
             try await webRTC.acceptVerifiedAnswer(verifiedSDP, authorization: authorization)
             let channel = try await withTimeout(20) { try await webRTC.openChannel() }
-            let multiplexer = PeerHTTPMultiplexer(channel: channel)
+            diagnostic?.emit(.dataChannelOpen)
+            let multiplexer = PeerHTTPMultiplexer(channel: channel, diagnostics: diagnostic)
             socket.close()
+            diagnostic?.emit(.brokerDisconnected(.completed))
             return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
+                                                diagnostics: diagnostic,
                                                 stats: { await webRTC.stats() }, close: {
                 multiplexer.close()
                 authorization.revoke()
@@ -188,6 +207,21 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
             defer { group.cancelAll() }
             guard let value = try await group.next() else { throw LinkedDevicesBrokerError.peerOffline }
             return value
+        }
+    }
+
+    private static func diagnosticReason(_ error: Error) -> LinkedDevicesDiagnosticEvent.Reason {
+        switch error {
+        case is CancellationError: return .cancelled
+        case LinkedDevicesProtocolError.revoked: return .revoked
+        case LinkedDevicesProtocolError.hostIdentityChanged, LinkedDevicesProtocolError.badMAC,
+             LinkedDevicesProtocolError.badSignature:
+            return .identityChanged
+        case LinkedDevicesProtocolError.expired, LinkedDevicesBrokerError.peerOffline,
+             LinkedDevicesBrokerError.notFound:
+            return .networkUnavailable
+        case LinkedDevicesBrokerError.unauthorized: return .unauthorized
+        default: return .other
         }
     }
 

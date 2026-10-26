@@ -99,6 +99,7 @@ struct PeerBodyStream: AsyncSequence, Sendable {
 final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     let limits: PeerWireLimits
     private let channel: PeerFrameChannel
+    private let diagnostics: LinkedDevicesDiagnosticConnection?
     private let lock = NSLock()
     private var streams: [String: StreamState] = [:]
     private var nextID: UInt64 = 1
@@ -131,11 +132,18 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         /// is actually handed to the channel.  Cancel frames are sent only
         /// for streams whose request was sent.
         var requestSent = false
+        var diagnosticStarted = false
+        var diagnosticRequest: UInt64?
+        var diagnosticMethod: LinkedDevicesDiagnosticEvent.Method?
+        var diagnosticRoute: LinkedDevicesDiagnosticEvent.Route?
+        var diagnosticBytes = 0
     }
 
-    init(channel: PeerFrameChannel, limits: PeerWireLimits = .default) {
+    init(channel: PeerFrameChannel, limits: PeerWireLimits = .default,
+         diagnostics: LinkedDevicesDiagnosticConnection? = nil) {
         self.channel = channel
         self.limits = limits
+        self.diagnostics = diagnostics
         channel.setHandlers(
             onMessage: { [weak self] data in self?.receive(data) },
             onClose: { [weak self] in self?.close(.channelClosed, closeChannel: false) },
@@ -155,12 +163,23 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
 
     func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval? = nil) async throws -> PeerHTTPResponse {
         try request.validate(limits: limits)
+        let diagnostic = diagnostics.map { _ in
+            (LinkedDevicesDiagnosticEvent.Method(request.method),
+             LinkedDevicesDiagnosticEvent.Route.classify(request.path))
+        }
         let id: String = try lock.withLock {
             if closed { throw closeError }
             guard streams.count < limits.maxConcurrentStreams else { throw PeerWireError.tooManyStreams }
-            let id = "r\(String(nextID, radix: 16))"
+            let sequence = nextID
+            let id = "r\(String(sequence, radix: 16))"
             nextID += 1
-            streams[id] = StreamState()
+            let state = StreamState()
+            if let diagnostic {
+                state.diagnosticRequest = sequence
+                state.diagnosticMethod = diagnostic.0
+                state.diagnosticRoute = diagnostic.1
+            }
+            streams[id] = state
             return id
         }
         let frame = PeerFrame(type: .request, id: id, method: request.method, path: request.path,
@@ -224,7 +243,11 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             bufferWaiters.removeAll()
             return (v, w)
         }
-        for s in victims { s.sendTask?.cancel(); Self.finish(s, error: error) }
+        for s in victims {
+            s.sendTask?.cancel()
+            if let event = Self.terminalEvent(for: s, error: error) { diagnostics?.emit(event) }
+            Self.finish(s, error: error)
+        }
         for w in waiters { w.resume(throwing: error) }
         if closeChannel { channel.close() }
         onClose?(error)
@@ -257,7 +280,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
 
     private func handleStart(_ frame: PeerFrame) {
         let id = frame.id
-        let result: (CheckedContinuation<PeerHTTPResponse, Error>, PeerHTTPResponse)?? = lock.withLock {
+        let result: (CheckedContinuation<PeerHTTPResponse, Error>, PeerHTTPResponse, LinkedDevicesDiagnosticEvent?)?? = lock.withLock {
             guard let s = streams[id] else { return .some(nil) }  // late frame after cancel
             if s.started { return nil }                           // duplicate start
             s.started = true
@@ -276,14 +299,18 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
                 cancel: { [weak self] in self?.fail(id: id, error: .cancelled, sendCancel: true) })
             guard let head = s.headContinuation else { return nil }
             s.headContinuation = nil
-            return .some((head, response))
+            let event = s.diagnosticStarted ? s.diagnosticRequest.map {
+                LinkedDevicesDiagnosticEvent.responseHeaders(request: $0, status: frame.status ?? 0)
+            } : nil
+            return .some((head, response, event))
         }
         switch result {
         case .none:
             fail(id: id, error: .protocolViolation("duplicate response_start"), sendCancel: true)
         case .some(.none):
             break
-        case .some(.some(let (cont, response))):
+        case .some(.some(let (cont, response, event))):
+            if let event { diagnostics?.emit(event) }
             cont.resume(returning: response)
         }
     }
@@ -301,6 +328,10 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             guard s.started, let c = s.bodyContinuation else { return .violation }
             if s.buffered + chunk.count > limits.maxBufferedResponseBytes { return .overflow }
             s.buffered += chunk.count
+            if s.diagnosticStarted {
+                let (total, overflow) = s.diagnosticBytes.addingReportingOverflow(chunk.count)
+                s.diagnosticBytes = overflow ? Int.max : total
+            }
             return .deliver(c)
         }
         switch outcome {
@@ -314,11 +345,22 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     private func handleEnd(_ frame: PeerFrame) {
         let state: StreamState? = lock.withLock { streams.removeValue(forKey: frame.id) }
         guard let state else { return }
+        let terminalError: PeerWireError?
         if let message = frame.error, !message.isEmpty {
-            Self.finish(state, error: .remoteError(message))
+            terminalError = .remoteError(message)
         } else if !state.started {
-            Self.finish(state, error: .protocolViolation("end before start"))
+            terminalError = .protocolViolation("end before start")
         } else {
+            terminalError = nil
+        }
+        if let terminalError {
+            if let event = Self.terminalEvent(for: state, error: terminalError) { diagnostics?.emit(event) }
+            Self.finish(state, error: terminalError)
+        } else {
+            if state.diagnosticStarted, let request = state.diagnosticRequest {
+                diagnostics?.emit(.requestTerminal(request: request, outcome: .finished,
+                                                    reason: .completed, bytes: state.diagnosticBytes))
+            }
             state.timeoutTask?.cancel()
             state.bodyContinuation?.finish()
         }
@@ -334,9 +376,8 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         // Taking sendLock first waits out an in-progress request send, so the
         // removal below and the sender's ownership check are totally ordered.
         sendLock.lock()
-        defer { sendLock.unlock() }
         let state: StreamState? = lock.withLock { streams.removeValue(forKey: id) }
-        guard let state else { return }
+        guard let state else { sendLock.unlock(); return }
         state.sendTask?.cancel()
         // Never announce a cancel for a request the node has not seen.  The
         // cancel is on the wire BEFORE the caller observes the failure.
@@ -345,9 +386,33 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             // Best effort, never blocks on buffer: cancel is tiny.
             if channel.isOpen { _ = channel.send(data) }
         }
+        sendLock.unlock()
+        if let event = Self.terminalEvent(for: state, error: error) { diagnostics?.emit(event) }
         Self.finish(state, error: error)
         // A request parked on backpressure must re-check ownership now.
         wakeBufferWaiters()
+    }
+
+    private static func terminalEvent(for state: StreamState,
+                                      error: PeerWireError) -> LinkedDevicesDiagnosticEvent? {
+        guard state.diagnosticStarted, let request = state.diagnosticRequest else { return nil }
+        let outcome: LinkedDevicesDiagnosticEvent.RequestOutcome
+        if error == .cancelled { outcome = .cancelled }
+        else { outcome = state.started ? .truncated : .failed }
+        return .requestTerminal(request: request, outcome: outcome,
+                                reason: diagnosticReason(error), bytes: state.diagnosticBytes)
+    }
+
+    private static func diagnosticReason(_ error: PeerWireError) -> LinkedDevicesDiagnosticEvent.Reason {
+        switch error {
+        case .channelClosed: return .channelClosed
+        case .cancelled: return .cancelled
+        case .timedOut: return .timeout
+        case .unauthorized: return .unauthorized
+        case .responseBufferOverflow, .frameTooLarge, .requestBodyTooLarge, .tooManyStreams: return .bufferLimit
+        case .protocolViolation, .malformedFrame, .unsupportedVersion, .invalidRequest: return .protocolViolation
+        case .remoteError: return .remoteFailure
+        }
     }
 
     private static func finish(_ s: StreamState, error: PeerWireError) {
@@ -373,15 +438,27 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             // deliver inbound frames (re-entrant SDK/test callbacks) that call
             // fail() -> sendLock on this same thread.
             let verdict: Int = sendLock.withLock {
-                let v: Int = lock.withLock {
-                    if closed { return 2 }
+                let decision: (Int, LinkedDevicesDiagnosticEvent?) = lock.withLock {
+                    if closed { return (2, nil) }
                     guard let state = streams[id], state.ownershipToken == ownershipToken,
-                          !Task.isCancelled else { return 2 }
-                    if channel.bufferedAmount > limits.sendHighWaterBytes { return 1 }  // refilled: wait again
+                          !Task.isCancelled else { return (2, nil) }
+                    if channel.bufferedAmount > limits.sendHighWaterBytes { return (1, nil) }  // refilled: wait again
                     state.requestSent = true
-                    return 0
+                    state.diagnosticStarted = state.diagnosticRequest != nil
+                    let event: LinkedDevicesDiagnosticEvent?
+                    if state.diagnosticStarted, let request = state.diagnosticRequest,
+                       let method = state.diagnosticMethod, let route = state.diagnosticRoute {
+                        event = .requestStarted(request: request, method: method, route: route)
+                    } else {
+                        event = nil
+                    }
+                    return (0, event)
                 }
-                guard v == 0 else { return v }
+                guard decision.0 == 0 else { return decision.0 }
+                // This is the one ordering-critical observer call kept under the
+                // recursive send lock: a test/in-process channel may deliver a
+                // response re-entrantly from send(), and start must precede it.
+                if let event = decision.1 { diagnostics?.emit(event) }
                 return channel.send(data) ? 0 : 3
             }
             switch verdict {

@@ -13,8 +13,20 @@ struct LinkedDevicesUnavailable: Error, LocalizedError, Equatable {
 struct LinkedDevicesLiveConnection: @unchecked Sendable {
     let forwarder: PeerHTTPMultiplexer
     let authorization: PeerAuthorizationState
+    let diagnostics: LinkedDevicesDiagnosticConnection?
     let stats: @Sendable () async -> PeerSessionStats
     let close: @Sendable () -> Void
+
+    init(forwarder: PeerHTTPMultiplexer, authorization: PeerAuthorizationState,
+         diagnostics: LinkedDevicesDiagnosticConnection? = nil,
+         stats: @escaping @Sendable () async -> PeerSessionStats,
+         close: @escaping @Sendable () -> Void) {
+        self.forwarder = forwarder
+        self.authorization = authorization
+        self.diagnostics = diagnostics
+        self.stats = stats
+        self.close = close
+    }
 }
 
 protocol LinkedDevicesSessionConnecting: Sendable {
@@ -153,7 +165,9 @@ final class LinkedDevicesRuntime: ObservableObject {
     #if canImport(Security)
     convenience init() {
         let identities = LinkedDevicesIdentityStore()
-        self.init(identities: identities, connector: LinkedDevicesConnector(identities: identities))
+        let diagnostics = LinkedDevicesDiagnostics.configured()
+        self.init(identities: identities,
+                  connector: LinkedDevicesConnector(identities: identities, diagnostics: diagnostics))
     }
     #endif
 
@@ -627,6 +641,10 @@ final class LinkedDevicesRuntime: ObservableObject {
             let stats = await live.stats()
             guard let self, let entry, self.entries[entry.connection.id] === entry,
                   let current = entry.live, current.authorization === live.authorization else { return }
+            if let diagnostic = live.diagnostics {
+                diagnostic.emit(.candidate(
+                    local: .init(stats.localCandidateType), remote: .init(stats.remoteCandidateType)))
+            }
             let known = stats.localCandidateType != nil || stats.remoteCandidateType != nil
             self.statuses[entry.connection.id] = .connected(relayed: known ? stats.isRelayed : nil)
         }
@@ -688,11 +706,13 @@ final class LinkedDevicesRuntime: ObservableObject {
         entry.task?.cancel()
         entry.task = nil
         entry.activeToken = nil
+        let live = entry.live
+        entry.live = nil
         entry.transport.disconnect()
+        live?.diagnostics?.emit(.retired)
         entry.bridge?.revoke()
         entry.bridge = nil
-        entry.live?.close()
-        entry.live = nil
+        live?.close()
     }
 
     private func hostKey(_ connection: HubConnection) -> Data? {

@@ -124,6 +124,7 @@
 		A2000000000000000000000C /* LinkedDevicesConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000C /* LinkedDevicesConnector.swift */; };
 		A2000000000000000000000D /* LinkedDevicesRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* LinkedDevicesRuntime.swift */; };
 		A2000000000000000000000E /* LinkedDevicesPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* LinkedDevicesPairingView.swift */; };
+		A2000000000000000000000F /* LinkedDevicesDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */; };
 		A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */; };
 		A21000000000000000000002 /* LinkedDevicesProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */; };
 		A21000000000000000000003 /* LinkedDevicesRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000003 /* LinkedDevicesRuntimeTests.swift */; };
@@ -285,6 +286,7 @@
 		A1000000000000000000000C /* LinkedDevicesConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesConnector.swift; sourceTree = "<group>"; };
 		A1000000000000000000000D /* LinkedDevicesRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesRuntime.swift; sourceTree = "<group>"; };
 		A1000000000000000000000E /* LinkedDevicesPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesPairingView.swift; sourceTree = "<group>"; };
+		A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesDiagnostics.swift; sourceTree = "<group>"; };
 		A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesIdentityTests.swift; sourceTree = "<group>"; };
 		A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesProtocolTests.swift; sourceTree = "<group>"; };
 		A11000000000000000000003 /* LinkedDevicesRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesRuntimeTests.swift; sourceTree = "<group>"; };
@@ -424,6 +426,7 @@
 				A1000000000000000000000C /* LinkedDevicesConnector.swift */,
 				A1000000000000000000000D /* LinkedDevicesRuntime.swift */,
 				A1000000000000000000000E /* LinkedDevicesPairingView.swift */,
+				A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -737,6 +740,7 @@
 				A2000000000000000000000C /* LinkedDevicesConnector.swift in Sources */,
 				A2000000000000000000000D /* LinkedDevicesRuntime.swift in Sources */,
 				A2000000000000000000000E /* LinkedDevicesPairingView.swift in Sources */,
+				A2000000000000000000000F /* LinkedDevicesDiagnostics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

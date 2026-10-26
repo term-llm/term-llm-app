@@ -172,6 +172,11 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertIn("verifier.isValidSignature(try data(frozen), for: transcript)", protocol_tests)
         self.assertNotIn("LinkedDevicesBase64URL.encode(attempt.request.sig.data)", protocol_tests)
         runtime_tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
+        self.assertNotRegex(
+            runtime_tests,
+            r"\bXCTAssert(?:Equal|NotEqual|True|False|Nil|NotNil|NoThrow|GreaterThan|LessThan)\(\s*(?:try[!?]?\s+)?await\b",
+            "Await values before passing them to synchronous XCTest autoclosures",
+        )
         self.assertIn("PeerWireLimits.default.sendHighWaterBytes + 1", runtime_tests)
         self.assertIn("cancelled parked owner must never send its request", runtime_tests)
         for regression in (
@@ -193,6 +198,48 @@ class LinkedDevicesContractTests(unittest.TestCase):
         content = (ROOT / "TermLLM/ContentView.swift").read_text()
         self.assertIn("linkedDevices.setForeground(false)", content)
         self.assertIn("linkedDevices.setForeground(true)", content)
+
+    def test_native_diagnostics_are_opt_in_closed_redacted_and_use_existing_hooks(self):
+        diagnostics = (ROOT / "TermLLM/LinkedDevicesDiagnostics.swift").read_text()
+        self.assertIn('static let defaultsKey = "linkedDevicesDiagnostics"', diagnostics)
+        self.assertIn("guard defaults.bool(forKey: defaultsKey) else { return nil }", diagnostics)
+        self.assertIn('Logger(subsystem: "com.termllm.app", category: "linked-devices")', diagnostics)
+        self.assertIn("enum LinkedDevicesDiagnosticEvent: Sendable, Equatable", diagnostics)
+        self.assertIn("static func classify(_ path: String) -> Route", diagnostics)
+        self.assertIn('default: self = .other', diagnostics)
+        self.assertIn('default: self = .unknown', diagnostics)
+        self.assertIn("private static let maximumActiveRequests = 1_024", diagnostics)
+        self.assertIn("requestStarts.count < Self.maximumActiveRequests", diagnostics)
+        self.assertNotIn("localizedDescription", diagnostics)
+        self.assertNotIn("URLSession", diagnostics)
+        self.assertNotIn("STREAM_WATCHDOG", diagnostics)
+        record = diagnostics.split("struct LinkedDevicesDiagnosticRecord", 1)[1].split(
+            "struct LinkedDevicesDiagnosticConnection", 1)[0]
+        self.assertNotRegex(record, r"let\s+\w+:\s*String")
+
+        connector = (ROOT / "TermLLM/LinkedDevicesConnector.swift").read_text()
+        for hook in (".recoveryAttempt", ".brokerConnected", ".identityVerified",
+                     ".peerPhase(.init(phase))", ".dataChannelOpen"):
+            self.assertIn(hook, connector)
+        runtime = (ROOT / "TermLLM/LinkedDevicesRuntime.swift").read_text()
+        self.assertIn("let diagnostics = LinkedDevicesDiagnostics.configured()", runtime)
+        self.assertIn("diagnostic.emit(.candidate(", runtime)
+        self.assertIn("live?.diagnostics?.emit(.retired)", runtime)
+        multiplexer = (ROOT / "TermLLM/PeerHTTPMultiplexer.swift").read_text()
+        for hook in (".requestStarted(", ".responseHeaders(", ".requestTerminal("):
+            self.assertIn(hook, multiplexer)
+
+        tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
+        for regression in (
+            "testDefaultOffCreatesNoRecorderOrEmissionPath",
+            "testClosedRecordsClampValuesAndEmitTerminalExactlyOnce",
+            "testRetiredConnectionsCannotAttributeOldCompletionToNewGeneration",
+            "testOptInTimelineUsesActualMultiplexerEventsAndRedactsAdversarialInput",
+            "testArbitraryRemoteErrorMapsToFixedReasonWithoutLeak",
+        ):
+            self.assertIn(f"func {regression}", tests)
+        project = (ROOT / "TermLLM.xcodeproj/project.pbxproj").read_text()
+        self.assertIn("LinkedDevicesDiagnostics.swift in Sources", project)
 
     def test_webrtc_callbacks_copy_sdk_objects_before_continuation_resume(self):
         source = (ROOT / "TermLLM/PeerWebRTCSession.swift").read_text()
