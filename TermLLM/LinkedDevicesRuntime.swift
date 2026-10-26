@@ -67,12 +67,11 @@ final class LinkedDevicesSourceTransport: HubTransport, @unchecked Sendable {
         }
         do {
             let result = try await transport.execute(request, onUnauthorized: guardedUnauthorized)
-            guard lock.withLock({ generation == expectedGeneration }) else {
-                // A stale authorization response belongs to the retired peer
-                // generation. Never let DirectNodeClient/HubStore interpret it
-                // as authorization loss for the replacement workspace.
+            guard lock.withLock({ generation == expectedGeneration && current === transport }) else {
+                // No result from a retired connection may publish into the
+                // replacement generation. In particular, a completed old GET
+                // is not proof that its state still belongs to the live host.
                 if result.1.statusCode == 401 { throw CancellationError() }
-                if ["GET", "HEAD"].contains(request.httpMethod?.uppercased() ?? "GET") { return result }
                 throw LinkedDevicesUnavailable(message: "The linked host reconnected while the request was running. It was not retried.")
             }
             return result
@@ -498,7 +497,10 @@ final class LinkedDevicesRuntime: ObservableObject {
         return entry
     }
 
-    private func networkChanged(_ available: Bool) {
+    /// Handles the production path monitor callback. Internal so lifecycle
+    /// regressions can deterministically prove that reachability wakes a
+    /// currently armed backoff without mutating the host network.
+    func networkChanged(_ available: Bool) {
         guard networkAvailable != available else { return }
         networkAvailable = available
         if available { reconnectEligibleSources(immediate: true) }

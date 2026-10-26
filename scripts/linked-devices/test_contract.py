@@ -166,7 +166,7 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertNotIn('term-llm/pairing/v1', source)
         self.assertNotIn('offer_sdp: LinkedDevicesB64', source)
 
-    def test_native_regressions_preserve_signature_and_backpressure_coverage(self):
+    def test_native_regressions_preserve_signature_backpressure_and_historic_failure_coverage(self):
         protocol_tests = (ROOT / "TermLLMTests/LinkedDevicesProtocolTests.swift").read_text()
         self.assertIn("verifier.isValidSignature(generated, for: transcript)", protocol_tests)
         self.assertIn("verifier.isValidSignature(try data(frozen), for: transcript)", protocol_tests)
@@ -174,6 +174,25 @@ class LinkedDevicesContractTests(unittest.TestCase):
         runtime_tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
         self.assertIn("PeerWireLimits.default.sendHighWaterBytes + 1", runtime_tests)
         self.assertIn("cancelled parked owner must never send its request", runtime_tests)
+        for regression in (
+            "testOversizedRequestsDoNotPoisonChannelAndSmallRequestStillSucceeds",
+            "testChannelDropBeforeHeadersFailsPendingRequestAndDrainsStream",
+            "testChannelDropMidFiniteBodyAndMidSSEFailsWithoutSuccessfulEnd",
+            "testLoopbackAbortsFiniteAndSSEWithoutSuccessTerminatorAfterBodyFailure",
+            "testCancellationAfterRequestSendEmitsOneCancelAndIgnoresLateResponse",
+            "testPendingRequestDropThenReplacementReadSucceedsWithoutReplay",
+            "testConcurrentOldGenerationResultsCannotPublishOrReplayAfterRecovery",
+            "testForegroundWakeCancelsExistingBackoffAndReconnectsImmediately",
+            "testReachabilityWakeCancelsExistingBackoffAndReconnectsImmediately",
+        ):
+            self.assertIn(f"func {regression}", runtime_tests)
+        runtime = (ROOT / "TermLLM/LinkedDevicesRuntime.swift").read_text()
+        self.assertIn("generation == expectedGeneration && current === transport", runtime)
+        self.assertNotIn('if ["GET", "HEAD"].contains', runtime)
+        self.assertIn("self?.networkChanged(path.status == .satisfied)", runtime)
+        content = (ROOT / "TermLLM/ContentView.swift").read_text()
+        self.assertIn("linkedDevices.setForeground(false)", content)
+        self.assertIn("linkedDevices.setForeground(true)", content)
 
     def test_webrtc_callbacks_copy_sdk_objects_before_continuation_resume(self):
         source = (ROOT / "TermLLM/PeerWebRTCSession.swift").read_text()

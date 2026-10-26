@@ -61,6 +61,98 @@ private final class BackpressuredRuntimeTestChannel: PeerFrameChannel, @unchecke
     }
 }
 
+private final class ControlledRuntimeTestChannel: PeerFrameChannel, @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = true
+    private var messages: [Data] = []
+    private var sentWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var messageHandler: ((Data) -> Void)?
+    private var closeHandler: (() -> Void)?
+
+    var isOpen: Bool { lock.withLock { open } }
+    var bufferedAmount: UInt64 { 0 }
+    var sentFrames: [PeerFrame] {
+        lock.withLock { messages }.compactMap { try? PeerFrameCodec.decode($0) }
+    }
+
+    func send(_ message: Data) -> Bool {
+        let outcome: (Bool, [CheckedContinuation<Void, Never>]) = lock.withLock {
+            guard open else { return (false, []) }
+            messages.append(message)
+            let ready = sentWaiters.filter { $0.0 <= messages.count }.map { $0.1 }
+            sentWaiters.removeAll { $0.0 <= messages.count }
+            return (true, ready)
+        }
+        outcome.1.forEach { $0.resume() }
+        return outcome.0
+    }
+
+    func waitForSentFrames(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            let ready: Bool = lock.withLock {
+                if messages.count >= count { return true }
+                sentWaiters.append((count, continuation))
+                return false
+            }
+            if ready { continuation.resume() }
+        }
+    }
+
+    func close() { remoteClose() }
+
+    func setHandlers(onMessage: @escaping (Data) -> Void, onClose: @escaping () -> Void,
+                     onBufferedAmountChange: @escaping () -> Void) {
+        lock.withLock {
+            messageHandler = onMessage
+            closeHandler = onClose
+        }
+    }
+
+    func deliver(_ frame: PeerFrame, limits: PeerWireLimits = .default) throws {
+        let handler = lock.withLock { messageHandler }
+        handler?(try PeerFrameCodec.encode(frame, limits: limits))
+    }
+
+    func remoteClose() {
+        let handler: (() -> Void)? = lock.withLock {
+            guard open else { return nil }
+            open = false
+            return closeHandler
+        }
+        handler?()
+    }
+}
+
+private final class FailingRuntimeTestConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    var attemptCount: Int { lock.withLock { attempts } }
+
+    func reconnect(credential: LinkedDevicesCredential,
+                   closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
+        let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
+            attempts += 1
+            let ready = waiters.filter { $0.0 <= attempts }.map { $0.1 }
+            waiters.removeAll { $0.0 <= attempts }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+        throw LinkedDevicesUnavailable(message: "controlled reconnect failure")
+    }
+
+    func waitForAttempts(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            let ready: Bool = lock.withLock {
+                if attempts >= count { return true }
+                waiters.append((count, continuation))
+                return false
+            }
+            if ready { continuation.resume() }
+        }
+    }
+}
+
 private final class RuntimeTestConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
     let closed = LockedFlag()
     func reconnect(credential: LinkedDevicesCredential,
@@ -92,6 +184,47 @@ private final class DelayedLinkedDevicesForwarder: PeerHTTPForwarding, @unchecke
         let continuation = lock.withLock { let value = self.continuation; self.continuation = nil; return value }
         continuation?.resume(returning: PeerHTTPResponse(status: status, header: PeerHeader(),
                                                          body: .fixed([Data("ok".utf8)]), cancel: {}))
+    }
+}
+
+private final class ConcurrentDelayedLinkedDevicesForwarder: PeerHTTPForwarding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [CheckedContinuation<PeerHTTPResponse, Never>] = []
+    private var requests: [PeerHTTPRequest] = []
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    var dispatchCount: Int { lock.withLock { requests.count } }
+    var methods: [String] { lock.withLock { requests.map(\.method) } }
+
+    func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
+        await withCheckedContinuation { continuation in
+            let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
+                requests.append(request)
+                continuations.append(continuation)
+                let ready = waiters.filter { $0.0 <= requests.count }.map { $0.1 }
+                waiters.removeAll { $0.0 <= requests.count }
+                return ready
+            }
+            ready.forEach { $0.resume() }
+        }
+    }
+
+    func waitForDispatches(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            let ready: Bool = lock.withLock {
+                if requests.count >= count { return true }
+                waiters.append((count, continuation))
+                return false
+            }
+            if ready { continuation.resume() }
+        }
+    }
+
+    func finishAll(status: Int = 200, body: Data = Data("old".utf8)) {
+        let pending = lock.withLock { let value = continuations; continuations.removeAll(); return value }
+        for continuation in pending {
+            continuation.resume(returning: PeerHTTPResponse(status: status, header: PeerHeader(),
+                                                             body: .fixed([body]), cancel: {}))
+        }
     }
 }
 
@@ -137,17 +270,22 @@ private final class LinkedDevicesForwarder: PeerHTTPForwarding, @unchecked Senda
     private var recordedPaths: [String] = []
     let status: Int
     let chunks: [Data]
-    init(status: Int = 200, chunks: [Data] = [Data("{\"ok\":true}".utf8)]) {
+    let bodyError: Error?
+    let contentType: String
+    init(status: Int = 200, chunks: [Data] = [Data("{\"ok\":true}".utf8)],
+         bodyError: Error? = nil, contentType: String = "application/json") {
         self.status = status
         self.chunks = chunks
+        self.bodyError = bodyError
+        self.contentType = contentType
     }
     var paths: [String] { lock.withLock { recordedPaths } }
     func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
         lock.withLock { recordedPaths.append(request.path) }
         var header = PeerHeader()
-        header.set("Content-Type", "application/json")
+        header.set("Content-Type", contentType)
         return PeerHTTPResponse(status: status, header: header,
-                                body: .fixed(chunks), cancel: {})
+                                body: .fixed(chunks, error: bodyError), cancel: {})
     }
 }
 
@@ -458,9 +596,186 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         XCTAssertFalse(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.notFound))
         XCTAssertFalse(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.peerOffline))
     }
+
+    func testForegroundWakeCancelsExistingBackoffAndReconnectsImmediately() async throws {
+        let connector = FailingRuntimeTestConnector()
+        let (runtime, source) = try reconnectWakeFixture(connector: connector, seed: 0x52)
+        runtime.synchronize([source])
+        await connector.waitForAttempts(1)
+
+        runtime.setForeground(false)
+        runtime.setForeground(true)
+        await connector.waitForAttempts(2)
+
+        XCTAssertEqual(connector.attemptCount, 2)
+        runtime.setForeground(false)
+    }
+
+    func testReachabilityWakeCancelsExistingBackoffAndReconnectsImmediately() async throws {
+        let connector = FailingRuntimeTestConnector()
+        let (runtime, source) = try reconnectWakeFixture(connector: connector, seed: 0x62)
+        runtime.synchronize([source])
+        await connector.waitForAttempts(1)
+
+        runtime.networkChanged(false)
+        runtime.networkChanged(true)
+        await connector.waitForAttempts(2)
+
+        XCTAssertEqual(connector.attemptCount, 2)
+        runtime.setForeground(false)
+    }
+
+    private func reconnectWakeFixture(connector: FailingRuntimeTestConnector, seed: UInt8) throws
+        -> (LinkedDevicesRuntime, HubConnection) {
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
+        let host = Data(repeating: seed, count: 32)
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: seed &+ 1, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: seed &+ 2, count: 16))
+        credential.reconnectCapability = Data(repeating: seed &+ 3, count: 32)
+        credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
+        credential.scope = "web-v1"
+        credential.basePath = "/chat"
+        try identities.save(credential)
+        let source = HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                                   url: try XCTUnwrap(URL(string: "http://localhost:43225/chat/")),
+                                   needsKindReview: nil,
+                                   linkedDevicesHostKey: LinkedDevicesBase64URL.encode(host))
+        return (LinkedDevicesRuntime(identities: identities, connector: connector,
+                                     makeListener: { ControlledLoopbackListener() }), source)
+    }
 }
 
 final class PeerTransportTests: XCTestCase {
+    func testOversizedRequestsDoNotPoisonChannelAndSmallRequestStillSucceeds() async throws {
+        var limits = PeerWireLimits.default
+        limits.maxFrameBytes = 512
+        limits.maxRequestBodyBytes = 256
+        let channel = ControlledRuntimeTestChannel()
+        let multiplexer = PeerHTTPMultiplexer(channel: channel, limits: limits)
+
+        do {
+            _ = try await multiplexer.forward(PeerHTTPRequest(
+                method: "POST", path: "/chat/v1/responses", body: Data(repeating: 0x61, count: 257)))
+            XCTFail("Body above the normalized request limit must be rejected before dispatch")
+        } catch {
+            XCTAssertEqual(error as? PeerWireError, .requestBodyTooLarge(257))
+        }
+
+        var largeHeader = PeerHeader()
+        largeHeader.set("X-Padding", String(repeating: "h", count: 300))
+        do {
+            _ = try await multiplexer.forward(PeerHTTPRequest(
+                method: "POST", path: "/chat/v1/responses", header: largeHeader,
+                body: Data(repeating: 0x62, count: limits.maxRequestBodyBytes)))
+            XCTFail("Encoded request plus header/base64 overhead must respect the frame limit")
+        } catch {
+            guard case .frameTooLarge(let size)? = error as? PeerWireError else {
+                return XCTFail("Expected frameTooLarge, got \(error)")
+            }
+            XCTAssertGreaterThan(size, limits.maxFrameBytes)
+        }
+        XCTAssertTrue(channel.sentFrames.isEmpty)
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        XCTAssertFalse(multiplexer.isClosed)
+
+        let small = Task {
+            try await multiplexer.forward(PeerHTTPRequest(
+                method: "POST", path: "/chat/v1/responses", body: Data("ok".utf8)))
+        }
+        await channel.waitForSentFrames(1)
+        let id = try XCTUnwrap(channel.sentFrames.first?.id)
+        try channel.deliver(PeerFrame(type: .responseStart, id: id, status: 200), limits: limits)
+        try channel.deliver(PeerFrame(type: .responseEnd, id: id), limits: limits)
+        let response = try await small.value
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(try await response.collect(limit: 16), Data())
+        XCTAssertEqual(channel.sentFrames.filter { $0.type == .request }.count, 1)
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        await XCTAssertPeerSendersDrained(multiplexer)
+        XCTAssertFalse(multiplexer.isClosed)
+        multiplexer.close()
+    }
+
+    func testChannelDropBeforeHeadersFailsPendingRequestAndDrainsStream() async throws {
+        let channel = ControlledRuntimeTestChannel()
+        let multiplexer = PeerHTTPMultiplexer(channel: channel)
+        let task = Task {
+            try await multiplexer.forward(PeerHTTPRequest(method: "GET", path: "/chat/v1/sessions"))
+        }
+        await channel.waitForSentFrames(1)
+
+        channel.remoteClose()
+        do {
+            _ = try await task.value
+            XCTFail("A dropped channel must not invent response headers")
+        } catch {
+            XCTAssertEqual(error as? PeerWireError, .channelClosed)
+        }
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        await XCTAssertPeerSendersDrained(multiplexer)
+        XCTAssertTrue(multiplexer.isClosed)
+    }
+
+    func testChannelDropMidFiniteBodyAndMidSSEFailsWithoutSuccessfulEnd() async throws {
+        let cases = [
+            ("application/json", Data("{\"partial\":".utf8)),
+            ("text/event-stream", Data("event: response.output_text.delta\ndata: {\"delta\":\"part\"}\n\n".utf8)),
+        ]
+        for (contentType, partial) in cases {
+            let channel = ControlledRuntimeTestChannel()
+            let multiplexer = PeerHTTPMultiplexer(channel: channel)
+            let task = Task {
+                try await multiplexer.forward(PeerHTTPRequest(method: "GET", path: "/chat/v1/stream"))
+            }
+            await channel.waitForSentFrames(1)
+            let id = try XCTUnwrap(channel.sentFrames.first?.id)
+            var header = PeerHeader()
+            header.set("Content-Type", contentType)
+            try channel.deliver(PeerFrame(type: .responseStart, id: id, header: header, status: 200))
+            let response = try await task.value
+            try channel.deliver(PeerFrame(type: .responseBody, id: id, body: partial))
+            var iterator = response.body.makeAsyncIterator()
+            XCTAssertEqual(try await iterator.next(), partial)
+
+            channel.remoteClose()
+            do {
+                _ = try await iterator.next()
+                XCTFail("A truncated \(contentType) response must fail, not report a successful end")
+            } catch {
+                XCTAssertEqual(error as? PeerWireError, .channelClosed)
+            }
+            XCTAssertEqual(multiplexer.openStreamCount, 0)
+            await XCTAssertPeerSendersDrained(multiplexer)
+            XCTAssertTrue(multiplexer.isClosed)
+        }
+    }
+
+    func testCancellationAfterRequestSendEmitsOneCancelAndIgnoresLateResponse() async throws {
+        let channel = ControlledRuntimeTestChannel()
+        let multiplexer = PeerHTTPMultiplexer(channel: channel)
+        let task = Task {
+            try await multiplexer.forward(PeerHTTPRequest(
+                method: "POST", path: "/chat/v1/responses", body: Data("mutation".utf8)))
+        }
+        await channel.waitForSentFrames(1)
+        let id = try XCTUnwrap(channel.sentFrames.first?.id)
+
+        task.cancel()
+        await XCTAssertThrowsErrorAsync(try await task.value)
+        await channel.waitForSentFrames(2)
+        XCTAssertEqual(channel.sentFrames.map(\.type), [.request, .cancel])
+        XCTAssertEqual(channel.sentFrames.map(\.id), [id, id])
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        await XCTAssertPeerSendersDrained(multiplexer)
+
+        try channel.deliver(PeerFrame(type: .responseStart, id: id, status: 200))
+        try channel.deliver(PeerFrame(type: .responseEnd, id: id))
+        XCTAssertEqual(channel.sentFrames.map(\.type), [.request, .cancel],
+                       "late response frames must not resurrect or re-cancel a retired request")
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        multiplexer.close()
+    }
+
     func testCancellingBackpressuredSenderReleasesTaskWithoutSending() async throws {
         let channel = BackpressuredRuntimeTestChannel()
         let multiplexer = PeerHTTPMultiplexer(channel: channel)
@@ -593,6 +908,42 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertTrue(stream.closed)
     }
 
+    func testLoopbackAbortsFiniteAndSSEWithoutSuccessTerminatorAfterBodyFailure() async throws {
+        let cases = [
+            ("application/json", Data("{\"partial\":".utf8)),
+            ("text/event-stream", Data("event: response.output_text.delta\ndata: {\"delta\":\"part\"}\n\n".utf8)),
+        ]
+        for (contentType, partial) in cases {
+            let port: UInt16 = 43226
+            let capability = "secret"
+            let request = Data([
+                "GET /chat/v1/stream HTTP/1.1\r\n",
+                "Host: localhost:\(port)\r\n",
+                "Cookie: termllm_peer_\(port)=\(capability)\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+            ].joined().utf8)
+            let stream = MemoryPeerByteStream(input: request)
+            let forwarder = LinkedDevicesForwarder(
+                chunks: [partial], bodyError: PeerWireError.channelClosed, contentType: contentType)
+            let connection = PeerLoopbackConnection(
+                stream: stream, forwarder: forwarder,
+                configuration: .init(gate: PeerLoopbackGate(
+                    port: port, capability: capability, scopePrefix: "/chat")),
+                isAuthorized: { true })
+
+            await connection.serve()
+
+            var chunk = Data("\(String(partial.count, radix: 16))\r\n".utf8)
+            chunk.append(partial)
+            chunk.append(Data("\r\n".utf8))
+            XCTAssertEqual(Data(stream.written.suffix(chunk.count)), chunk)
+            XCTAssertNil(stream.written.range(of: Data("0\r\n\r\n".utf8)),
+                         "A failed \(contentType) stream must remain observably truncated")
+            XCTAssertTrue(stream.closed)
+        }
+    }
+
     func testPeerBrowserRevokesOnlyTaggedRemoteAuthorizationLoss() throws {
         let url = try XCTUnwrap(URL(string: "http://localhost:43212/chat/"))
         func response(_ status: Int, _ fields: [String: String] = [:]) throws -> HTTPURLResponse {
@@ -633,22 +984,94 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertTrue(authorization.check())
     }
 
-    func testCompletedGETSurvivesGenerationChangeWithoutReplay() async throws {
+    func testPendingRequestDropThenReplacementReadSucceedsWithoutReplay() async throws {
         let source = LinkedDevicesSourceTransport()
-        let url = try XCTUnwrap(URL(string: "http://localhost:43217/v1/sessions"))
-        let forwarder = DelayedLinkedDevicesForwarder()
-        let authorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "session",
-                                                                      expiresAt: .distantFuture))
-        source.install(WebRTCHubTransport(forwarder: forwarder, authorization: authorization,
-                                          hubBaseURL: URL(string: "http://localhost:43217/")!))
-        let request = URLRequest(url: url)
-        let task = Task { try await source.execute(request, onUnauthorized: nil) }
-        for _ in 0..<100 where !forwarder.started { try await Task.sleep(nanoseconds: 2_000_000) }
-        source.disconnect()
-        forwarder.finish()
-        let (body, response) = try await task.value
+        let base = try XCTUnwrap(URL(string: "http://localhost:43227/"))
+        let request = URLRequest(url: try XCTUnwrap(URL(string: "http://localhost:43227/v1/sessions")))
+
+        let oldChannel = ControlledRuntimeTestChannel()
+        let oldMultiplexer = PeerHTTPMultiplexer(channel: oldChannel)
+        let oldAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "old", expiresAt: .distantFuture))
+        source.install(WebRTCHubTransport(forwarder: oldMultiplexer, authorization: oldAuthorization,
+                                          hubBaseURL: base))
+        let dropped = Task { try await source.execute(request, onUnauthorized: nil) }
+        await oldChannel.waitForSentFrames(1)
+        oldChannel.remoteClose()
+        await XCTAssertThrowsErrorAsync(try await dropped.value)
+        XCTAssertEqual(oldChannel.sentFrames.filter { $0.type == .request }.count, 1)
+        XCTAssertEqual(oldMultiplexer.openStreamCount, 0)
+
+        let newChannel = ControlledRuntimeTestChannel()
+        let newMultiplexer = PeerHTTPMultiplexer(channel: newChannel)
+        let newAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "new", expiresAt: .distantFuture))
+        source.install(WebRTCHubTransport(forwarder: newMultiplexer, authorization: newAuthorization,
+                                          hubBaseURL: base))
+        let recovered = Task { try await source.execute(request, onUnauthorized: nil) }
+        await newChannel.waitForSentFrames(1)
+        let id = try XCTUnwrap(newChannel.sentFrames.first?.id)
+        var header = PeerHeader()
+        header.set("Content-Type", "application/json")
+        try newChannel.deliver(PeerFrame(type: .responseStart, id: id, header: header, status: 200))
+        try newChannel.deliver(PeerFrame(type: .responseBody, id: id, body: Data("{}".utf8)))
+        try newChannel.deliver(PeerFrame(type: .responseEnd, id: id))
+
+        let (data, response) = try await recovered.value
         XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(body, Data("ok".utf8))
+        XCTAssertEqual(data, Data("{}".utf8))
+        XCTAssertEqual(newChannel.sentFrames.filter { $0.type == .request }.count, 1)
+        XCTAssertEqual(oldChannel.sentFrames.filter { $0.type == .request }.count, 1,
+                       "recovery must not replay the dropped request")
+        newMultiplexer.close()
+    }
+
+    func testConcurrentOldGenerationResultsCannotPublishOrReplayAfterRecovery() async throws {
+        let source = LinkedDevicesSourceTransport()
+        let base = try XCTUnwrap(URL(string: "http://localhost:43217/"))
+        let oldForwarder = ConcurrentDelayedLinkedDevicesForwarder()
+        let oldAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "old", expiresAt: .distantFuture))
+        source.install(WebRTCHubTransport(forwarder: oldForwarder, authorization: oldAuthorization,
+                                          hubBaseURL: base))
+
+        let readURL = try XCTUnwrap(URL(string: "http://localhost:43217/v1/sessions"))
+        let mutationURL = try XCTUnwrap(URL(string: "http://localhost:43217/v1/responses"))
+        var mutation = URLRequest(url: mutationURL)
+        mutation.httpMethod = "POST"
+        mutation.httpBody = Data("{}".utf8)
+        let oldRead = Task { try await source.execute(URLRequest(url: readURL), onUnauthorized: nil) }
+        let oldMutation = Task { [mutation] in try await source.execute(mutation, onUnauthorized: nil) }
+        await oldForwarder.waitForDispatches(2)
+
+        let replacement = LinkedDevicesForwarder()
+        let replacementAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "new", expiresAt: .distantFuture))
+        source.install(WebRTCHubTransport(forwarder: replacement, authorization: replacementAuthorization,
+                                          hubBaseURL: base))
+        oldForwarder.finishAll()
+
+        do {
+            _ = try await oldRead.value
+            XCTFail("An old-generation read must not publish after replacement")
+        } catch {
+            XCTAssertTrue(error is LinkedDevicesUnavailable)
+        }
+        do {
+            _ = try await oldMutation.value
+            XCTFail("An uncertain mutation must not publish or replay after replacement")
+        } catch {
+            XCTAssertTrue(error is LinkedDevicesUnavailable)
+        }
+        XCTAssertEqual(oldForwarder.dispatchCount, 2)
+        XCTAssertEqual(oldForwarder.methods.sorted(), ["GET", "POST"])
+        XCTAssertTrue(replacement.paths.isEmpty, "replacement transport must not replay old work")
+
+        let (data, response) = try await source.execute(URLRequest(url: readURL), onUnauthorized: nil)
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(data, Data("{\"ok\":true}".utf8))
+        XCTAssertEqual(replacement.paths, ["/v1/sessions"], "a new read should dispatch once on the live generation")
+        XCTAssertEqual(oldForwarder.dispatchCount, 2)
     }
 
     func testStaleUnauthorizedGETCannotRevokeReplacementGeneration() async throws {
@@ -734,6 +1157,13 @@ final class PeerTransportTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await source.execute(request, onUnauthorized: nil))
         XCTAssertEqual(forwarder.paths, ["/v1/sessions"], "offline execution must not replay on an old transport")
     }
+}
+
+private func XCTAssertPeerSendersDrained(_ multiplexer: PeerHTTPMultiplexer,
+                                         file: StaticString = #filePath, line: UInt = #line) async {
+    for _ in 0..<1_000 where multiplexer.activeSenderCount != 0 { await Task.yield() }
+    XCTAssertEqual(multiplexer.activeSenderCount, 0, "request sender slot did not drain", file: file, line: line)
+    XCTAssertEqual(multiplexer.parkedSenderCount, 0, "parked sender slot did not drain", file: file, line: line)
 }
 
 private func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> T,
