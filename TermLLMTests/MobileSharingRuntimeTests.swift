@@ -626,6 +626,7 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertTrue(replacementAuthorization.check())
     }
 
+    @MainActor
     func testStaleUnauthorizedGETCannotPurgeProductionDirectWorkspace() async throws {
         let id = UUID()
         let hostKey = MobileSharingBase64URL.encode(Data(repeating: 0x44, count: 32))
