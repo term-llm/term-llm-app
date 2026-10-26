@@ -46,6 +46,21 @@ private final class RuntimeTestChannel: PeerFrameChannel, @unchecked Sendable {
     }
 }
 
+private final class BackpressuredRuntimeTestChannel: PeerFrameChannel, @unchecked Sendable {
+    private let lock = NSLock()
+    private var closeHandler: (() -> Void)?
+    private var sends = 0
+    var isOpen: Bool { true }
+    var bufferedAmount: UInt64 { 1_000_000 }
+    var sendCount: Int { lock.withLock { sends } }
+    func send(_ message: Data) -> Bool { lock.withLock { sends += 1 }; return true }
+    func close() { lock.withLock { closeHandler }?() }
+    func setHandlers(onMessage: @escaping (Data) -> Void, onClose: @escaping () -> Void,
+                     onBufferedAmountChange: @escaping () -> Void) {
+        lock.withLock { closeHandler = onClose }
+    }
+}
+
 private final class RuntimeTestConnector: MobileSharingSessionConnecting, @unchecked Sendable {
     let closed = LockedFlag()
     func reconnect(credential: MobileSharingCredential,
@@ -437,6 +452,32 @@ final class MobileSharingRuntimeTests: XCTestCase {
 }
 
 final class PeerTransportTests: XCTestCase {
+    func testCancellingBackpressuredSenderReleasesTaskWithoutSending() async throws {
+        let channel = BackpressuredRuntimeTestChannel()
+        let multiplexer = PeerHTTPMultiplexer(channel: channel)
+        let task = Task {
+            try await multiplexer.forward(PeerHTTPRequest(method: "POST", path: "/chat/v1/responses",
+                                                            header: PeerHeader(), body: Data("body".utf8)),
+                                          headTimeout: nil)
+        }
+        for _ in 0..<100 where multiplexer.parkedSenderCount == 0 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertEqual(multiplexer.parkedSenderCount, 1)
+        XCTAssertEqual(multiplexer.activeSenderCount, 1)
+
+        task.cancel()
+        await XCTAssertThrowsErrorAsync(try await task.value)
+        for _ in 0..<100 where multiplexer.activeSenderCount != 0 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertEqual(multiplexer.parkedSenderCount, 0)
+        XCTAssertEqual(multiplexer.activeSenderCount, 0)
+        XCTAssertEqual(channel.sendCount, 0, "cancelled parked owner must never send its request")
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        multiplexer.close()
+    }
+
     func testCancelledPendingPeerRequestReleasesContinuationAndStream() async throws {
         let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
         let task = Task {

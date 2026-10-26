@@ -116,6 +116,10 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     var onClose: (@Sendable (PeerWireError) -> Void)?
 
     private final class StreamState {
+        /// Immutable Sendable identity captured by sender tasks. The task never
+        /// captures this mutable state object; all state lookup/mutation remains
+        /// behind the multiplexer locks.
+        let ownershipToken = UUID()
         var headContinuation: CheckedContinuation<PeerHTTPResponse, Error>?
         var bodyContinuation: AsyncThrowingStream<Data, Error>.Continuation?
         var started = false
@@ -185,11 +189,12 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
                     }
                 }
                 lock.withLock { activeSenders += 1 }
-                let task = Task { [weak self] in
+                let ownershipToken = state.ownershipToken
+                let task = Task { [weak self, data, id, ownershipToken] in
                     guard let self else { return }
                     defer { self.lock.withLock { self.activeSenders -= 1 } }
                     do {
-                        try await self.sendRequest(data, id: id, owner: state)
+                        try await self.sendRequest(data, id: id, ownershipToken: ownershipToken)
                     } catch {
                         self.fail(id: id, error: (error as? PeerWireError) ?? .channelClosed, sendCancel: false)
                     }
@@ -357,12 +362,12 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
 
     // MARK: Outbound backpressure
 
-    /// Sends a request frame only while `owner` is still the live stream for
-    /// `id`.  Ownership is re-checked under `sendLock` immediately before
-    /// `channel.send`, after any backpressure wait.
-    private func sendRequest(_ data: Data, id: String, owner: StreamState) async throws {
+    /// Sends a request frame only while `ownershipToken` still identifies the
+    /// live stream for `id`. Ownership is re-checked under `sendLock`
+    /// immediately before `channel.send`, after any backpressure wait.
+    private func sendRequest(_ data: Data, id: String, ownershipToken: UUID) async throws {
         while true {
-            try await waitForBufferSpace(id: id, owner: owner)
+            try await waitForBufferSpace(id: id, ownershipToken: ownershipToken)
             // Synchronous critical section (never held across an await).
             // sendLock is RECURSIVE on purpose: channel.send may synchronously
             // deliver inbound frames (re-entrant SDK/test callbacks) that call
@@ -370,9 +375,10 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             let verdict: Int = sendLock.withLock {
                 let v: Int = lock.withLock {
                     if closed { return 2 }
-                    guard streams[id] === owner, !Task.isCancelled else { return 2 }
+                    guard let state = streams[id], state.ownershipToken == ownershipToken,
+                          !Task.isCancelled else { return 2 }
                     if channel.bufferedAmount > limits.sendHighWaterBytes { return 1 }  // refilled: wait again
-                    owner.requestSent = true
+                    state.requestSent = true
                     return 0
                 }
                 guard v == 0 else { return v }
@@ -387,17 +393,18 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         }
     }
 
-    private func waitForBufferSpace(id: String, owner: StreamState) async throws {
+    private func waitForBufferSpace(id: String, ownershipToken: UUID) async throws {
         while true {
             if lock.withLock({ closed }) { throw closeError }
-            guard lock.withLock({ streams[id] === owner }), !Task.isCancelled else { throw PeerWireError.cancelled }
+            guard lock.withLock({ streams[id]?.ownershipToken == ownershipToken }),
+                  !Task.isCancelled else { throw PeerWireError.cancelled }
             guard channel.isOpen else { throw PeerWireError.channelClosed }
             if channel.bufferedAmount <= limits.sendHighWaterBytes { break }
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                 // Ownership is checked under the same lock as parking, and
                 // fail() removes-then-wakes under it: no lost wake-up.
                 let parked: Bool = lock.withLock {
-                    if closed || streams[id] !== owner { return false }
+                    if closed || streams[id]?.ownershipToken != ownershipToken { return false }
                     bufferWaiters.append(c)
                     return true
                 }
