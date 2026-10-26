@@ -688,7 +688,8 @@ final class PeerTransportTests: XCTestCase {
         try channel.deliver(PeerFrame(type: .responseEnd, id: id), limits: limits)
         let response = try await small.value
         XCTAssertEqual(response.status, 200)
-        XCTAssertEqual(try await response.collect(limit: 16), Data())
+        let collected = try await response.collect(limit: 16)
+        XCTAssertEqual(collected, Data())
         XCTAssertEqual(channel.sentFrames.filter { $0.type == .request }.count, 1)
         XCTAssertEqual(multiplexer.openStreamCount, 0)
         await XCTAssertPeerSendersDrained(multiplexer)
@@ -735,7 +736,8 @@ final class PeerTransportTests: XCTestCase {
             let response = try await task.value
             try channel.deliver(PeerFrame(type: .responseBody, id: id, body: partial))
             var iterator = response.body.makeAsyncIterator()
-            XCTAssertEqual(try await iterator.next(), partial)
+            let first = try await iterator.next()
+            XCTAssertEqual(first, partial)
 
             channel.remoteClose()
             do {
