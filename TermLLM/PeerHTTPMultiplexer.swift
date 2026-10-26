@@ -137,6 +137,58 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         var diagnosticMethod: LinkedDevicesDiagnosticEvent.Method?
         var diagnosticRoute: LinkedDevicesDiagnosticEvent.Route?
         var diagnosticBytes = 0
+        var diagnosticOrdering: DiagnosticOrdering?
+    }
+
+    /// Serializes a request's diagnostic start and terminal callbacks without
+    /// invoking the recorder (clock/sink) while holding this lock. Reserving
+    /// the start while the stream is still owned prevents close/fail from
+    /// publishing a terminal before the recorder has registered its start.
+    private final class DiagnosticOrdering: @unchecked Sendable {
+        private let lock = NSLock()
+        private var start: LinkedDevicesDiagnosticEvent?
+        private var terminal: LinkedDevicesDiagnosticEvent?
+        private var startIsEmitting = false
+        private var startWasEmitted = false
+        private var terminalWasClaimed = false
+
+        func reserveStart(_ event: LinkedDevicesDiagnosticEvent) {
+            lock.withLock {
+                guard start == nil, !startIsEmitting, !startWasEmitted else { return }
+                start = event
+            }
+        }
+
+        func emitReservedStart(using diagnostics: LinkedDevicesDiagnosticConnection) {
+            let event: LinkedDevicesDiagnosticEvent? = lock.withLock {
+                guard !startIsEmitting, !startWasEmitted, let event = start else { return nil }
+                start = nil
+                startIsEmitting = true
+                return event
+            }
+            guard let event else { return }
+            diagnostics.emit(event)
+            let queuedTerminal: LinkedDevicesDiagnosticEvent? = lock.withLock {
+                startIsEmitting = false
+                startWasEmitted = true
+                let event = terminal
+                terminal = nil
+                return event
+            }
+            if let queuedTerminal { diagnostics.emit(queuedTerminal) }
+        }
+
+        func emitTerminal(_ event: LinkedDevicesDiagnosticEvent,
+                          using diagnostics: LinkedDevicesDiagnosticConnection) {
+            let immediate: Bool = lock.withLock {
+                guard !terminalWasClaimed else { return false }
+                terminalWasClaimed = true
+                if startWasEmitted { return true }
+                terminal = event
+                return false
+            }
+            if immediate { diagnostics.emit(event) }
+        }
     }
 
     init(channel: PeerFrameChannel, limits: PeerWireLimits = .default,
@@ -178,6 +230,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
                 state.diagnosticRequest = sequence
                 state.diagnosticMethod = diagnostic.0
                 state.diagnosticRoute = diagnostic.1
+                state.diagnosticOrdering = DiagnosticOrdering()
             }
             streams[id] = state
             return id
@@ -245,7 +298,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         }
         for s in victims {
             s.sendTask?.cancel()
-            if let event = Self.terminalEvent(for: s, error: error) { diagnostics?.emit(event) }
+            emitTerminal(Self.terminalEvent(for: s, error: error), for: s)
             Self.finish(s, error: error)
         }
         for w in waiters { w.resume(throwing: error) }
@@ -354,12 +407,13 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             terminalError = nil
         }
         if let terminalError {
-            if let event = Self.terminalEvent(for: state, error: terminalError) { diagnostics?.emit(event) }
+            emitTerminal(Self.terminalEvent(for: state, error: terminalError), for: state)
             Self.finish(state, error: terminalError)
         } else {
             if state.diagnosticStarted, let request = state.diagnosticRequest {
-                diagnostics?.emit(.requestTerminal(request: request, outcome: .finished,
-                                                    reason: .completed, bytes: state.diagnosticBytes))
+                emitTerminal(.requestTerminal(request: request, outcome: .finished,
+                                              reason: .completed, bytes: state.diagnosticBytes),
+                             for: state)
             }
             state.timeoutTask?.cancel()
             state.bodyContinuation?.finish()
@@ -387,10 +441,15 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             if channel.isOpen { _ = channel.send(data) }
         }
         sendLock.unlock()
-        if let event = Self.terminalEvent(for: state, error: error) { diagnostics?.emit(event) }
+        emitTerminal(Self.terminalEvent(for: state, error: error), for: state)
         Self.finish(state, error: error)
         // A request parked on backpressure must re-check ownership now.
         wakeBufferWaiters()
+    }
+
+    private func emitTerminal(_ event: LinkedDevicesDiagnosticEvent?, for state: StreamState) {
+        guard let event, let diagnostics, let ordering = state.diagnosticOrdering else { return }
+        ordering.emitTerminal(event, using: diagnostics)
     }
 
     private static func terminalEvent(for state: StreamState,
@@ -438,27 +497,28 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             // deliver inbound frames (re-entrant SDK/test callbacks) that call
             // fail() -> sendLock on this same thread.
             let verdict: Int = sendLock.withLock {
-                let decision: (Int, LinkedDevicesDiagnosticEvent?) = lock.withLock {
+                let decision: (Int, DiagnosticOrdering?) = lock.withLock {
                     if closed { return (2, nil) }
                     guard let state = streams[id], state.ownershipToken == ownershipToken,
                           !Task.isCancelled else { return (2, nil) }
                     if channel.bufferedAmount > limits.sendHighWaterBytes { return (1, nil) }  // refilled: wait again
                     state.requestSent = true
                     state.diagnosticStarted = state.diagnosticRequest != nil
-                    let event: LinkedDevicesDiagnosticEvent?
                     if state.diagnosticStarted, let request = state.diagnosticRequest,
-                       let method = state.diagnosticMethod, let route = state.diagnosticRoute {
-                        event = .requestStarted(request: request, method: method, route: route)
-                    } else {
-                        event = nil
+                       let method = state.diagnosticMethod, let route = state.diagnosticRoute,
+                       let ordering = state.diagnosticOrdering {
+                        ordering.reserveStart(.requestStarted(request: request, method: method, route: route))
+                        return (0, ordering)
                     }
-                    return (0, event)
+                    return (0, nil)
                 }
                 guard decision.0 == 0 else { return decision.0 }
                 // This is the one ordering-critical observer call kept under the
                 // recursive send lock: a test/in-process channel may deliver a
                 // response re-entrantly from send(), and start must precede it.
-                if let event = decision.1 { diagnostics?.emit(event) }
+                if let ordering = decision.1, let diagnostics {
+                    ordering.emitReservedStart(using: diagnostics)
+                }
                 return channel.send(data) ? 0 : 3
             }
             switch verdict {

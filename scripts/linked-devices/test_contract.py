@@ -235,6 +235,7 @@ class LinkedDevicesContractTests(unittest.TestCase):
             "testClosedRecordsClampValuesAndEmitTerminalExactlyOnce",
             "testRetiredConnectionsCannotAttributeOldCompletionToNewGeneration",
             "testOptInTimelineUsesActualMultiplexerEventsAndRedactsAdversarialInput",
+            "testConcurrentCloseQueuesTerminalUntilDiagnosticStartWithoutDeadlockOrOrphan",
             "testArbitraryRemoteErrorMapsToFixedReasonWithoutLeak",
         ):
             self.assertIn(f"func {regression}", tests)

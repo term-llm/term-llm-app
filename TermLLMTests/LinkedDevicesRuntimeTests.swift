@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import TermLLM
 
@@ -15,6 +16,51 @@ private final class DiagnosticTestClock: @unchecked Sendable {
     func now() -> UInt64 { lock.withLock { value } }
     func set(_ value: UInt64) { lock.withLock { self.value = value } }
     func advance(milliseconds: UInt64) { lock.withLock { value += milliseconds * 1_000_000 } }
+}
+
+private final class PausingDiagnosticTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let releaseStart = DispatchSemaphore(value: 0)
+    private var calls = 0
+    private var startPaused = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    func now() -> UInt64 {
+        let waiters: [CheckedContinuation<Void, Never>]? = lock.withLock {
+            calls += 1
+            guard calls == 2 else { return nil } // recorder initialization is the first call
+            startPaused = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            return waiters
+        }
+        if let waiters {
+            waiters.forEach { $0.resume() }
+            releaseStart.wait()
+        }
+        return 1_000_000_000
+    }
+
+    func waitForStart() async {
+        await withCheckedContinuation { continuation in
+            let ready: Bool = lock.withLock {
+                if startPaused { return true }
+                startWaiters.append(continuation)
+                return false
+            }
+            if ready { continuation.resume() }
+        }
+    }
+
+    func resumeStart() {
+        let shouldSignal: Bool = lock.withLock {
+            guard !released else { return false }
+            released = true
+            return true
+        }
+        if shouldSignal { releaseStart.signal() }
+    }
 }
 
 private final class DiagnosticTestCollector: @unchecked Sendable {
@@ -787,6 +833,40 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertTrue(rendered.contains("method=other"))
         XCTAssertTrue(rendered.contains("route=response_events"))
         multiplexer.close()
+    }
+
+    func testConcurrentCloseQueuesTerminalUntilDiagnosticStartWithoutDeadlockOrOrphan() async throws {
+        let clock = PausingDiagnosticTestClock()
+        let collector = DiagnosticTestCollector()
+        let diagnostics = LinkedDevicesDiagnostics(clock: { clock.now() }, sink: { collector.append($0) })
+        let channel = ControlledRuntimeTestChannel()
+        let multiplexer = PeerHTTPMultiplexer(channel: channel, diagnostics: diagnostics.connection())
+        let task = Task.detached {
+            try await multiplexer.forward(PeerHTTPRequest(method: "GET", path: "/chat/v1/sessions"))
+        }
+
+        await clock.waitForStart()
+        defer { clock.resumeStart() }
+
+        // close() runs while requestStarted is paused before the recorder's
+        // active-request insertion. It must return without waiting on the
+        // recorder callback, while its terminal remains causally queued.
+        multiplexer.close()
+        XCTAssertTrue(collector.records.isEmpty)
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+
+        clock.resumeStart()
+        await XCTAssertThrowsErrorAsync(try await task.value)
+        await XCTAssertPeerSendersDrained(multiplexer)
+
+        let records = collector.records
+        XCTAssertEqual(records.map(\.stage), [.requestStarted, .requestTerminal])
+        XCTAssertEqual(records.filter { $0.stage == .requestStarted }.count, 1)
+        XCTAssertEqual(records.filter { $0.stage == .requestTerminal }.count, 1)
+        XCTAssertEqual(records.last?.outcome, .failed)
+        XCTAssertEqual(records.last?.reason, .channelClosed)
+        XCTAssertTrue(channel.sentFrames.isEmpty,
+                      "closing during start recording must not send after channel retirement")
     }
 
     func testArbitraryRemoteErrorMapsToFixedReasonWithoutLeak() async throws {
