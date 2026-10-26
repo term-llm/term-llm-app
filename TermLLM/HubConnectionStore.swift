@@ -55,8 +55,12 @@ final class HubConnectionStore: ObservableObject {
 
     /// Single, side-effect-free validation path for UI and credential readers.
     /// A missing catalog is not permission to borrow the ambient WebKit jar.
+    static func validatedDocument(_ raw: Any?) throws -> Document {
+        try validatedDocument(raw, canonicalOrdinaryURL: { canonicalURL($0) })
+    }
+
     static func validatedDocument(_ raw: Any?,
-                                  canonicalOrdinaryURL: (String) -> URL? = canonicalURL) throws -> Document {
+                                  canonicalOrdinaryURL: (String) -> URL?) throws -> Document {
         guard let data = raw as? Data,
               var doc = try? JSONDecoder().decode(Document.self, from: data),
               Set(doc.connections.map(\.id)).count == doc.connections.count,

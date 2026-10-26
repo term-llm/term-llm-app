@@ -95,6 +95,44 @@ struct HubKeychainBearerStorage: HubBearerStorage {
     }
 }
 
+@MainActor
+final class HubWebsiteDataBarrier {
+    private static var sharedBarriers: [UUID: HubWebsiteDataBarrier] = [:]
+    private var tail: Task<Void, Never>?
+
+    static func shared(for id: UUID) -> HubWebsiteDataBarrier {
+        if let barrier = sharedBarriers[id] { return barrier }
+        let barrier = HubWebsiteDataBarrier()
+        sharedBarriers[id] = barrier
+        return barrier
+    }
+
+    /// Enqueue synchronously on MainActor so a workspace replacement cannot
+    /// overtake a purge whose WebKit completion will arrive later.
+    @discardableResult
+    func enqueue(_ operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let previous = tail
+        let task = Task { @MainActor in
+            await previous?.value
+            await operation()
+        }
+        tail = task
+        return task
+    }
+
+    func perform<Result: Sendable>(_ operation: @escaping @MainActor () async -> Result) async -> Result {
+        let previous = tail
+        let task = Task { @MainActor in
+            await previous?.value
+            return await operation()
+        }
+        tail = Task { _ = await task.value }
+        return await task.value
+    }
+
+    func wait() async { await tail?.value }
+}
+
 /// Explicitly used only for tests and simulator protocol fixtures.
 final class HubMemoryBearerStorage: HubBearerStorage {
     private var tokens: [UUID: String] = [:]
@@ -112,15 +150,21 @@ final class HubConnectionSecurity {
     private(set) var epoch: UInt64 = 0
     private(set) var cookiesReadable = true
     private(set) var bearer: String?
-    private var cookieTail: Task<Void, Never>?
+    private let websiteDataBarrier: HubWebsiteDataBarrier
     private let cookieWriter: (@MainActor (HTTPCookie) async -> Void)?
+    private let dataPurger: (@MainActor () async -> Void)?
 
     init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(),
-         dataStore: WKWebsiteDataStore? = nil, cookieWriter: (@MainActor (HTTPCookie) async -> Void)? = nil) {
+         dataStore: WKWebsiteDataStore? = nil,
+         websiteDataBarrier: HubWebsiteDataBarrier? = nil,
+         cookieWriter: (@MainActor (HTTPCookie) async -> Void)? = nil,
+         dataPurger: (@MainActor () async -> Void)? = nil) {
         self.cookieWriter = cookieWriter
+        self.dataPurger = dataPurger
         id = connection.id
         server = connection.url
         self.bearerStorage = bearerStorage
+        self.websiteDataBarrier = websiteDataBarrier ?? .shared(for: connection.id)
         self.dataStore = dataStore ?? (PhoneHubFixture.isEnabled ? .nonPersistent() : WKWebsiteDataStore(forIdentifier: connection.id))
         bearer = try? bearerStorage.read(id: connection.id)
     }
@@ -128,6 +172,8 @@ final class HubConnectionSecurity {
     func cookies() async -> [HTTPCookie] {
         guard active, cookiesReadable else { return [] }
         let expected = epoch
+        await websiteDataBarrier.wait()
+        guard active, cookiesReadable, epoch == expected else { return [] }
         let cookies = await withCheckedContinuation { continuation in
             dataStore.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
         }
@@ -153,27 +199,30 @@ final class HubConnectionSecurity {
             }
         }
     }
-    @discardableResult
-    func clearData(epoch expected: UInt64) async -> Bool {
-        await performCookieOperation(epoch: expected, isCurrent: { true }) { [self] in
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
+    private func purgeWebsiteData() async {
+        if let dataPurger { await dataPurger(); return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+                continuation.resume()
             }
         }
     }
+
+    @discardableResult
+    func clearData(epoch expected: UInt64) async -> Bool {
+        await performCookieOperation(epoch: expected, isCurrent: { true }) { [self] in
+            await purgeWebsiteData()
+        }
+    }
     private func performCookieOperation(epoch expected: UInt64, isCurrent: @escaping @Sendable () -> Bool,
-                                        operation: @escaping @MainActor () async -> Void) async -> Bool {
-        let previous = cookieTail
-        let task = Task { @MainActor [self] in
-            await previous?.value
+                                         operation: @escaping @MainActor () async -> Void) async -> Bool {
+        await websiteDataBarrier.perform { [self] in
             guard active, epoch == expected, isCurrent(), !Task.isCancelled else { return false }
             await operation()
             return active && epoch == expected && isCurrent() && !Task.isCancelled
         }
-        cookieTail = Task { _ = await task.value }
-        return await task.value
     }
-    func waitForCookies() async { await cookieTail?.value }
+    func waitForCookies() async { await websiteDataBarrier.wait() }
     func setBearer(_ token: String?) throws {
         guard active else { throw CancellationError() }
         try bearerStorage.write(token, id: id)
@@ -190,13 +239,10 @@ final class HubConnectionSecurity {
         if removeCredentials {
             try? bearerStorage.write(nil, id: id)
             bearer = nil
-            // This store is UUID-owned. Never clear the ambient/default jar.
-            let previous = cookieTail
-            cookieTail = Task { @MainActor [self] in
-                await previous?.value
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
-                }
+            // This store is UUID-owned. Enqueue synchronously so a replacement
+            // security object sharing the UUID cannot overtake this purge.
+            websiteDataBarrier.enqueue { [self] in
+                await purgeWebsiteData()
             }
         }
     }

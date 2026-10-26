@@ -79,12 +79,14 @@ struct MobileSharingKeychainStorage: MobileSharingSecureStorage {
 
     func write(_ data: Data, account: String) throws {
         let base = query(account)
-        let updates = [kSecValueData as String: data,
-                       kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let updates: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
         var status = SecItemUpdate(base as CFDictionary, updates as CFDictionary)
         if status == errSecItemNotFound {
             var item = base
-            item[kSecValueData as String] = data
+            item.merge(updates) { _, new in new }
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw MobileSharingStorageError.unavailable(status) }

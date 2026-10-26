@@ -20,7 +20,7 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
 
     func start(port preferredPort: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16 {
         var lastError: Error = PeerWireError.channelClosed
-        let attempts = preferredPort == nil ? maxAttempts : 4
+        let attempts = maxAttempts
         for attempt in 0..<attempts {
             try Task.checkCancellation()
             let requested = preferredPort.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any
@@ -32,7 +32,7 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
                 v4.cancel()
                 lastError = error
                 if preferredPort != nil, attempt < attempts - 1 {
-                    try await Task.sleep(nanoseconds: 50_000_000)
+                    try await Task.sleep(nanoseconds: 500_000_000)
                 }
                 continue
             }
@@ -62,7 +62,7 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
                 lastError = error
             }
             if preferredPort != nil, attempt < attempts - 1 {
-                try await Task.sleep(nanoseconds: 50_000_000)
+                try await Task.sleep(nanoseconds: 500_000_000)
             }
         }
         throw lastError
@@ -73,7 +73,10 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: host, port: port)
         parameters.acceptLocalOnly = true
-        parameters.allowLocalEndpointReuse = true
+        // Do not permit simultaneous same-port binds: the loopback origin
+        // carries an HttpOnly capability cookie. Bounded retries handle a
+        // recently closed listener without SO_REUSEPORT-style sharing.
+        parameters.allowLocalEndpointReuse = false
         let listener = try NWListener(using: parameters)
         listener.newConnectionHandler = { connection in
             guard Self.isLoopback(connection.endpoint) else {

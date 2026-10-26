@@ -53,17 +53,25 @@ final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
         guard let (transport, expectedGeneration) = snapshot else {
             throw MobileSharingUnavailable(message: "This shared host is offline. The request was not retried.")
         }
-        let guardedUnauthorized: (@Sendable () async -> Void)? = onUnauthorized.map { callback in
-            { [weak self] in
-                guard let self, self.lock.withLock({ self.current === transport && self.generation == expectedGeneration }) else {
-                    return
-                }
+        let guardedUnauthorized: (@Sendable () async -> Void)?
+        if let callback = onUnauthorized {
+            let guarded: @Sendable () async -> Void = { [weak self, transport, expectedGeneration] in
+                guard let self, self.lock.withLock({
+                    self.current === transport && self.generation == expectedGeneration
+                }) else { return }
                 await callback()
             }
+            guardedUnauthorized = guarded
+        } else {
+            guardedUnauthorized = nil
         }
         do {
             let result = try await transport.execute(request, onUnauthorized: guardedUnauthorized)
             guard lock.withLock({ generation == expectedGeneration }) else {
+                // A stale authorization response belongs to the retired peer
+                // generation. Never let DirectNodeClient/HubStore interpret it
+                // as authorization loss for the replacement workspace.
+                if result.1.statusCode == 401 { throw CancellationError() }
                 if ["GET", "HEAD"].contains(request.httpMethod?.uppercased() ?? "GET") { return result }
                 throw MobileSharingUnavailable(message: "The shared host reconnected while the request was running. It was not retried.")
             }
@@ -73,6 +81,13 @@ final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
             throw error
         }
     }
+}
+
+private final class MobileSharingEnrollmentTransportState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    var isClosed: Bool { lock.withLock { closed } }
+    func markClosed() { lock.withLock { closed = true } }
 }
 
 private final class MobileSharingOfflineForwarder: PeerHTTPForwarding, @unchecked Sendable {
@@ -118,6 +133,9 @@ final class MobileSharingRuntime: ObservableObject {
         var live: MobileSharingLiveConnection?
         var bridge: PeerLoopbackBridge?
         var activeToken: UUID?
+        var enrollmentToken: UUID?
+        var enrollmentExistingSource = false
+        var enrollmentTransportLost = false
         var attempt = 0
         var terminal = false
         var enrolling = false
@@ -168,14 +186,21 @@ final class MobileSharingRuntime: ObservableObject {
 
     func status(for sourceID: UUID) -> Status { statuses[sourceID] ?? .offline }
 
+    private func installCapability(_ endpoint: PeerLoopbackEndpoint, for sourceID: UUID) async {
+        let dataStore = WKWebsiteDataStore(forIdentifier: sourceID)
+        let barrier = HubWebsiteDataBarrier.shared(for: sourceID)
+        await barrier.perform {
+            await endpoint.installCapability(in: dataStore.httpCookieStore)
+        }
+    }
+
     /// Reinstalls only the capability owned by the still-current bridge. Used
     /// after a source authorization purge during approved re-pair restoration.
     func reinstallCapability(for sourceID: UUID) async -> Bool {
         guard let entry = entries[sourceID], !entry.terminal,
               let endpoint = entry.bridge?.currentEndpoint,
               let token = entry.activeToken else { return false }
-        let dataStore = WKWebsiteDataStore(forIdentifier: sourceID)
-        await endpoint.installCapability(in: dataStore.httpCookieStore)
+        await installCapability(endpoint, for: sourceID)
         return entries[sourceID] === entry && entry.activeToken == token && !entry.terminal &&
             entry.bridge?.currentEndpoint == endpoint
     }
@@ -184,13 +209,23 @@ final class MobileSharingRuntime: ObservableObject {
     /// credentials and isolated browser data. Offline/revoked sources remain.
     func synchronize(_ connections: [HubConnection]) {
         let peers = Dictionary(uniqueKeysWithValues: connections.filter(\.isMobileSharing).map { ($0.id, $0) })
-        for (id, entry) in entries where peers[id] == nil && !entry.enrolling {
+        for (id, entry) in entries where peers[id] == nil {
+            // A brand-new approved grant has no catalog row until enrollment
+            // commits. An existing row disappearing during re-pair is explicit
+            // invalidation and must cancel rather than resurrect the source.
+            if entry.enrolling && !entry.enrollmentExistingSource { continue }
             entries[id] = nil
             statuses[id] = nil
             tearDown(entry)
             if let key = hostKey(entry.connection) { try? identities.remove(hostKey: key) }
             let store = WKWebsiteDataStore(forIdentifier: id)
-            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+            HubWebsiteDataBarrier.shared(for: id).enqueue {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+                        continuation.resume()
+                    }
+                }
+            }
         }
         for connection in peers.values {
             let entry = entry(for: connection)
@@ -230,26 +265,33 @@ final class MobileSharingRuntime: ObservableObject {
         }
         let hostKey = link.hostKey
         let token = UUID()
+        let transportState = MobileSharingEnrollmentTransportState()
         let paired = try await connector.pair(link: link, deviceName: deviceName, sasReady: sasReady) { [weak self] in
+            transportState.markClosed()
             Task { @MainActor [weak self] in
-                guard let self, let entry = self.entries.values.first(where: { self.hostKey($0.connection) == hostKey }) else { return }
-                self.connectionClosed(entry, token: token)
+                self?.pairingTransportClosed(hostKey: hostKey, token: token)
             }
         }
         // Once pair_answer is verified the host grant is durable. Enrollment is
         // an independently owned transaction and must finish even if the sheet
         // task is cancelled immediately afterward.
         let enrollment = Task { @MainActor [self] in
-            try await enroll(paired, fallbackName: link.hostLabel ?? "Shared host", in: catalog, token: token)
+            try await enroll(paired, fallbackName: link.hostLabel ?? "Shared host", in: catalog, token: token,
+                             initialTransportClosed: transportState.isClosed)
         }
         return try await enrollment.value
+    }
+
+    private func ownsEnrollment(_ entry: Entry, sourceID: UUID, token: UUID) -> Bool {
+        entries[sourceID] === entry && entry.enrolling && entry.enrollmentToken == token && !entry.terminal
     }
 
     /// Reserves runtime ownership, loopback origin and capability cookie before
     /// publishing the catalog entry. A verified grant is always represented,
     /// even when its first transport attempt failed or was cancelled.
     func enroll(_ paired: MobileSharingConnector.Paired, fallbackName: String,
-                in catalog: HubConnectionStore, token: UUID) async throws -> HubConnection {
+                in catalog: HubConnectionStore, token: UUID,
+                initialTransportClosed: Bool = false) async throws -> HubConnection {
         let encodedKey = MobileSharingBase64URL.encode(paired.credential.hostKey)
         let existing = catalog.connections.first { $0.mobileSharingHostKey == encodedKey }
         let sourceID = existing?.id ?? UUID()
@@ -258,98 +300,178 @@ final class MobileSharingRuntime: ObservableObject {
         let normalized = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let path = normalized.isEmpty ? "/" : "/" + normalized + "/"
         let name = paired.credential.hostLabel?.isEmpty == false ? paired.credential.hostLabel! : fallbackName
+        guard let provisionalURL = existing?.url ?? HubConnectionStore.canonicalMobileSharingBridgeURL(
+            "http://localhost:\(preferred ?? 1024)\(path)") else {
+            paired.live?.close()
+            throw MobileSharingUnavailable(message: "The shared browser origin is invalid.")
+        }
 
-        let provisionalURL = existing?.url ?? URL(string: "http://localhost:\(preferred ?? 1024)\(path)")!
         let provisional = HubConnection(id: sourceID, name: name, kind: .directNode, url: provisionalURL,
                                         needsKindReview: nil, mobileSharingHostKey: encodedKey)
         let reservedEntry = entry(for: provisional)
         tearDownConnection(reservedEntry)
         reservedEntry.connection = provisional
         reservedEntry.enrolling = true
+        reservedEntry.enrollmentToken = token
+        reservedEntry.enrollmentExistingSource = existing != nil
+        reservedEntry.enrollmentTransportLost = initialTransportClosed
         reservedEntry.terminal = false
         reservedEntry.activeToken = token
 
-        let authorization = paired.live?.authorization ?? PeerAuthorizationState(PeerAuthorization(
-            peerID: encodedKey, sessionID: "offline-\(UUID().uuidString)", expiresAt: .distantFuture,
-            scopePrefix: basePath))
-        let forwarder: any PeerHTTPForwarding
-        if let live = paired.live { forwarder = live.forwarder }
-        else { forwarder = MobileSharingOfflineForwarder() }
-        let bridge = PeerLoopbackBridge(forwarder: forwarder, authorization: authorization,
-                                        listener: makeListener(), cookiePolicy: .isolate,
-                                        preferredPort: preferred)
+        var enrollmentLive = paired.live
+        var pendingBridge: PeerLoopbackBridge?
         do {
-            let endpoint = try await bridge.startPaused()
-            if let preferred, endpoint.port != preferred {
-                throw MobileSharingUnavailable(message: "The saved browser origin could not be restored.")
-            }
-            guard let url = HubConnectionStore.canonicalMobileSharingBridgeURL(
-                "http://localhost:\(endpoint.port)\(path)") else {
-                throw MobileSharingUnavailable(message: "The shared browser origin is invalid.")
-            }
-            let candidate = HubConnection(id: sourceID, name: name, kind: .directNode, url: url,
-                                          needsKindReview: nil, mobileSharingHostKey: encodedKey)
-            let entry = reservedEntry
-            guard entries[sourceID] === entry, entry.activeToken == token, entry.enrolling else {
-                throw CancellationError()
-            }
-            entry.connection = candidate
-            entry.live = paired.live
-            entry.bridge = bridge
-            entry.task = nil
+            while true {
+                guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
+                    throw CancellationError()
+                }
+                if let live = enrollmentLive,
+                   reservedEntry.enrollmentTransportLost || !live.authorization.check() {
+                    live.close()
+                    enrollmentLive = nil
+                    reservedEntry.enrollmentTransportLost = false
+                    continue
+                }
 
-            let dataStore = WKWebsiteDataStore(forIdentifier: sourceID)
-            await endpoint.installCapability(in: dataStore.httpCookieStore)
-            guard entries[sourceID] === entry, entry.activeToken == token, entry.enrolling else {
-                throw CancellationError()
-            }
-            try bridge.activate()
+                let authorization = enrollmentLive?.authorization ?? PeerAuthorizationState(PeerAuthorization(
+                    peerID: encodedKey, sessionID: "offline-\(UUID().uuidString)", expiresAt: .distantFuture,
+                    scopePrefix: basePath))
+                let forwarder: any PeerHTTPForwarding
+                if let live = enrollmentLive { forwarder = live.forwarder }
+                else { forwarder = MobileSharingOfflineForwarder() }
+                let bridge = PeerLoopbackBridge(forwarder: forwarder, authorization: authorization,
+                                                listener: makeListener(), cookiePolicy: .isolate,
+                                                preferredPort: preferred)
+                pendingBridge = bridge
+                reservedEntry.bridge = bridge
+                reservedEntry.live = enrollmentLive
+                let endpoint: PeerLoopbackEndpoint
+                do {
+                    endpoint = try await bridge.startPaused()
+                } catch {
+                    if let live = enrollmentLive,
+                       reservedEntry.enrollmentTransportLost || !live.authorization.check() {
+                        bridge.revoke()
+                        live.close()
+                        enrollmentLive = nil
+                        reservedEntry.bridge = nil
+                        reservedEntry.live = nil
+                        reservedEntry.enrollmentTransportLost = false
+                        pendingBridge = nil
+                        continue
+                    }
+                    throw error
+                }
+                if let preferred, endpoint.port != preferred {
+                    throw MobileSharingUnavailable(message: "The saved browser origin could not be restored.")
+                }
+                guard let url = HubConnectionStore.canonicalMobileSharingBridgeURL(
+                    "http://localhost:\(endpoint.port)\(path)") else {
+                    throw MobileSharingUnavailable(message: "The shared browser origin is invalid.")
+                }
+                guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
+                    throw CancellationError()
+                }
+                if let live = enrollmentLive,
+                   reservedEntry.enrollmentTransportLost || !live.authorization.check() {
+                    bridge.revoke()
+                    live.close()
+                    enrollmentLive = nil
+                    reservedEntry.bridge = nil
+                    reservedEntry.live = nil
+                    reservedEntry.enrollmentTransportLost = false
+                    pendingBridge = nil
+                    continue
+                }
 
-            let connection = try catalog.saveMobileSharing(id: sourceID, name: name,
-                                                             hostKey: paired.credential.hostKey,
-                                                             bridgePort: endpoint.port, basePath: basePath)
-            guard entries[sourceID] === entry, entry.activeToken == token, entry.enrolling else {
-                throw CancellationError()
+                reservedEntry.connection = HubConnection(id: sourceID, name: name, kind: .directNode, url: url,
+                                                          needsKindReview: nil, mobileSharingHostKey: encodedKey)
+                reservedEntry.live = enrollmentLive
+                reservedEntry.bridge = bridge
+                reservedEntry.task = nil
+
+                await installCapability(endpoint, for: sourceID)
+                guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
+                    throw CancellationError()
+                }
+                if let live = enrollmentLive,
+                   reservedEntry.enrollmentTransportLost || !live.authorization.check() {
+                    bridge.revoke()
+                    live.close()
+                    reservedEntry.bridge = nil
+                    reservedEntry.live = nil
+                    enrollmentLive = nil
+                    reservedEntry.enrollmentTransportLost = false
+                    pendingBridge = nil
+                    continue
+                }
+                try bridge.activate()
+                guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
+                    throw CancellationError()
+                }
+
+                // Existing-source removal during the awaits invalidates this
+                // transaction. Never recreate a source the user removed.
+                if let existing {
+                    guard catalog.connections.contains(where: {
+                        $0.id == existing.id && $0.mobileSharingHostKey == encodedKey
+                    }) else { throw CancellationError() }
+                }
+                let connection = try catalog.saveMobileSharing(id: sourceID, name: name,
+                                                                 hostKey: paired.credential.hostKey,
+                                                                 bridgePort: endpoint.port, basePath: basePath)
+                guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
+                    throw CancellationError()
+                }
+                reservedEntry.connection = connection
+                reservedEntry.enrolling = false
+                reservedEntry.enrollmentToken = nil
+                reservedEntry.enrollmentExistingSource = false
+                reservedEntry.enrollmentTransportLost = false
+                reservedEntry.attempt = 0
+                pendingBridge = nil
+                if let live = enrollmentLive {
+                    reservedEntry.transport.install(WebRTCHubTransport(forwarder: live.forwarder,
+                                                                       authorization: live.authorization,
+                                                                       hubBaseURL: connection.url))
+                    statuses[sourceID] = .connected(relayed: nil)
+                    updateSelectedPair(for: reservedEntry, live: live)
+                } else {
+                    statuses[sourceID] = .offline
+                    startIfEligible(reservedEntry, immediate: true)
+                }
+                return connection
             }
-            entry.connection = connection
-            entry.enrolling = false
-            entry.attempt = 0
-            if let live = paired.live {
-                entry.transport.install(WebRTCHubTransport(forwarder: live.forwarder,
-                                                            authorization: live.authorization,
-                                                            hubBaseURL: connection.url))
-                statuses[sourceID] = .connected(relayed: nil)
-                updateSelectedPair(for: entry, live: live)
-            } else {
-                statuses[sourceID] = .offline
-                startIfEligible(entry, immediate: true)
-            }
-            return connection
         } catch {
-            bridge.revoke()
-            paired.live?.close()
+            pendingBridge?.revoke()
+            enrollmentLive?.close()
             let entry = reservedEntry
-            guard entries[sourceID] === entry, entry.activeToken == token else { throw CancellationError() }
+            guard ownsEnrollment(entry, sourceID: sourceID, token: token) else { throw CancellationError() }
             entry.enrolling = false
-            if existing == nil { entries[sourceID] = nil; statuses[sourceID] = nil }
-            if let existing, let port = existing.url.port.flatMap({ UInt16(exactly: $0) }) {
+            entry.enrollmentToken = nil
+            entry.enrollmentExistingSource = false
+            entry.enrollmentTransportLost = false
+            entry.bridge = nil
+            entry.live = nil
+            if let existing, let port = existing.url.port.flatMap({ UInt16(exactly: $0) }),
+               catalog.connections.contains(where: {
+                   $0.id == existing.id && $0.mobileSharingHostKey == encodedKey
+               }) {
                 // Re-pairing an existing workspace must never destroy its only
                 // visible recovery path. Keep it offline and let normal bounded
                 // reconnect restore the same origin.
                 let connection = try catalog.saveMobileSharing(id: existing.id, name: name,
                                                                  hostKey: paired.credential.hostKey,
                                                                  bridgePort: port, basePath: basePath)
-                let entry = reservedEntry
                 entry.connection = connection
-                entry.bridge = nil
-                entry.live = nil
-                entry.enrolling = false
                 entry.terminal = false
                 entry.activeToken = token
                 statuses[sourceID] = .offline
                 startIfEligible(entry, immediate: true)
                 return connection
             }
+            entries[sourceID] = nil
+            statuses[sourceID] = nil
             if existing == nil, !catalog.connections.contains(where: { $0.id == sourceID }) {
                 try? identities.remove(hostKey: paired.credential.hostKey)
                 throw MobileSharingUnavailable(message: "The approved source could not be saved on this phone. Revoke this device on the host before scanning another QR code.")
@@ -474,8 +596,7 @@ final class MobileSharingRuntime: ObservableObject {
                   live.authorization.check(), !Task.isCancelled else {
                 throw CancellationError()
             }
-            let dataStore = WKWebsiteDataStore(forIdentifier: sourceID)
-            await endpoint.installCapability(in: dataStore.httpCookieStore)
+            await installCapability(endpoint, for: sourceID)
             guard owns(entry, sourceID: sourceID, token: token), live.authorization.check(),
                   !Task.isCancelled else { throw CancellationError() }
             try bridge.activate()
@@ -507,22 +628,46 @@ final class MobileSharingRuntime: ObservableObject {
         }
     }
 
+    /// Routes the first transport's close independently from enrollment
+    /// ownership. Internal so controlled lifecycle tests can deliver the same
+    /// callback interleaving as the production connector.
+    func pairingTransportClosed(hostKey: Data, token: UUID) {
+        guard let entry = entries.values.first(where: { self.hostKey($0.connection) == hostKey }) else { return }
+        connectionClosed(entry, token: token)
+    }
+
     private func connectionClosed(_ entry: Entry?, token: UUID) {
-        guard let entry, entries[entry.connection.id] === entry, entry.activeToken == token else { return }
+        guard let entry, entries[entry.connection.id] === entry else { return }
+        if entry.enrolling, entry.enrollmentToken == token {
+            // The verified enrollment transaction owns catalog publication;
+            // loss of only its first transport downgrades it to offline.
+            entry.enrollmentTransportLost = true
+            return
+        }
+        guard entry.activeToken == token else { return }
         tearDownConnection(entry)
         guard !entry.terminal else { return }
         statuses[entry.connection.id] = foreground ? .offline : .suspended
         startIfEligible(entry, immediate: false)
     }
 
+    private func invalidateEnrollment(_ entry: Entry) {
+        entry.enrolling = false
+        entry.enrollmentToken = nil
+        entry.enrollmentExistingSource = false
+        entry.enrollmentTransportLost = false
+    }
+
     private func markTerminal(_ entry: Entry, _ status: Status) {
         entry.terminal = true
+        invalidateEnrollment(entry)
         tearDownConnection(entry)
         statuses[entry.connection.id] = status
     }
 
     private func tearDown(_ entry: Entry) {
         entry.terminal = true
+        invalidateEnrollment(entry)
         entry.task?.cancel()
         entry.task = nil
         tearDownConnection(entry)

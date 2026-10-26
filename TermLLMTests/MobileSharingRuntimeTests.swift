@@ -11,12 +11,17 @@ private final class LockedFlag: @unchecked Sendable {
 private final class ControlledLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<UInt16, Error>?
+    private var starts = 0
     private(set) var stopped = false
     var started: Bool { lock.withLock { continuation != nil } }
+    var startCount: Int { lock.withLock { starts } }
 
     func start(port: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16 {
         try await withCheckedThrowingContinuation { continuation in
-            lock.withLock { self.continuation = continuation }
+            lock.withLock {
+                starts += 1
+                self.continuation = continuation
+            }
         }
     }
 
@@ -72,6 +77,29 @@ private final class DelayedMobileSharingForwarder: PeerHTTPForwarding, @unchecke
         let continuation = lock.withLock { let value = self.continuation; self.continuation = nil; return value }
         continuation?.resume(returning: PeerHTTPResponse(status: status, header: PeerHeader(),
                                                          body: .fixed([Data("ok".utf8)]), cancel: {}))
+    }
+}
+
+private final class ProductionStaleAuthorizationForwarder: PeerHTTPForwarding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<PeerHTTPResponse, Never>?
+    var started: Bool { lock.withLock { continuation != nil } }
+
+    func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
+        if request.path.contains("/v1/sessions/status") {
+            return await withCheckedContinuation { continuation in
+                lock.withLock { self.continuation = continuation }
+            }
+        }
+        return PeerHTTPResponse(status: 500, header: PeerHeader(),
+                                body: .fixed([Data("{}".utf8)]), cancel: {})
+    }
+
+    func finishUnauthorized() {
+        let continuation = lock.withLock { let value = self.continuation; self.continuation = nil; return value }
+        continuation?.resume(returning: PeerHTTPResponse(status: 401, header: PeerHeader(),
+                                                         body: .fixed([Data("{\"message\":\"old\"}".utf8)]),
+                                                         cancel: {}))
     }
 }
 
@@ -170,6 +198,48 @@ final class MobileSharingRuntimeTests: XCTestCase {
         XCTAssertTrue(HubAggregateStore.shouldRemoveCredentialsWhenReplacing(old, with: nil))
     }
 
+    func testUUIDBarrierWaitsForOldPurgeBeforeReplacementCookieWrite() async throws {
+        let id = UUID()
+        let oldConnection = HubConnection(id: id, name: "Desk", kind: .directNode,
+                                          url: try XCTUnwrap(URL(string: "http://localhost:43210/chat/")))
+        var replacementConnection = oldConnection
+        replacementConnection.url = try XCTUnwrap(URL(string: "http://localhost:43210/changed/"))
+        let barrier = HubWebsiteDataBarrier()
+        var events: [String] = []
+        var releasePurge: CheckedContinuation<Void, Never>?
+        let old = HubConnectionSecurity(connection: oldConnection, bearerStorage: HubMemoryBearerStorage(),
+                                        dataStore: .nonPersistent(), websiteDataBarrier: barrier,
+                                        dataPurger: {
+            events.append("purge-start")
+            await withCheckedContinuation { releasePurge = $0 }
+            events.append("purge-end")
+        })
+        let purge = Task { @MainActor in await old.clearData(epoch: old.epoch) }
+        for _ in 0..<100 where releasePurge == nil { await Task.yield() }
+        XCTAssertEqual(events, ["purge-start"])
+        old.dispose(removeCredentials: false)
+
+        let replacement = HubConnectionSecurity(connection: replacementConnection,
+                                                  bearerStorage: HubMemoryBearerStorage(),
+                                                  dataStore: .nonPersistent(), websiteDataBarrier: barrier,
+                                                  cookieWriter: { _ in events.append("replacement-write") })
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [
+            .name: "term_llm_peer", .value: "capability", .domain: "localhost", .path: "/",
+        ]))
+        let write = Task { @MainActor in
+            await replacement.saveCookies([cookie], epoch: replacement.epoch)
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(events, ["purge-start"], "replacement write must remain behind admitted old purge")
+
+        releasePurge?.resume()
+        _ = await purge.value
+        let wrote = await write.value
+        XCTAssertTrue(wrote)
+        XCTAssertEqual(events, ["purge-start", "purge-end", "replacement-write"])
+        replacement.dispose(removeCredentials: false)
+    }
+
     @MainActor
     func testCatalogRejectsDuplicateLoopbackOriginAndCorruptHostKey() throws {
         let suite = "MobileSharingRuntimeTests.\(UUID().uuidString)"
@@ -220,6 +290,104 @@ final class MobileSharingRuntimeTests: XCTestCase {
         XCTAssertEqual(catalog.connections, [source])
         XCTAssertEqual(source.url.absoluteString, "http://localhost:43218/chat/")
         XCTAssertEqual(runtime.status(for: source.id), .offline)
+    }
+
+    func testConnectionLossDuringEnrollmentFinalizesApprovedGrantOffline() async throws {
+        let suite = "MobileSharingEnrollLoss.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let host = Data(repeating: 0x71, count: 32)
+        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x72, count: 32))
+        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x73, count: 16))
+        credential.reconnectCapability = Data(repeating: 0x74, count: 32)
+        credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
+        credential.scope = "web-v1"
+        credential.basePath = "/chat"
+        try identities.save(credential)
+        let catalog = HubConnectionStore(defaults: defaults)
+        let listener = ControlledLoopbackListener()
+        let runtime = MobileSharingRuntime(identities: identities, connector: nil, makeListener: { listener })
+        let authorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: MobileSharingBase64URL.encode(host), sessionID: "first", expiresAt: .distantFuture,
+            scopePrefix: "/chat"))
+        let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
+        let live = MobileSharingLiveConnection(forwarder: multiplexer, authorization: authorization,
+                                               stats: { PeerSessionStats() }, close: {
+            multiplexer.close(); authorization.revoke()
+        })
+        let token = UUID()
+        let task = Task { @MainActor in
+            try await runtime.enroll(.init(credential: credential, live: live), fallbackName: "Desk",
+                                     in: catalog, token: token)
+        }
+        for _ in 0..<100 where listener.startCount < 1 { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(listener.startCount, 1)
+
+        authorization.revoke()
+        runtime.pairingTransportClosed(hostKey: host, token: token)
+        listener.resume(port: 43221)
+        for _ in 0..<100 where listener.startCount < 2 { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(listener.startCount, 2, "dead first transport must be replaced by an offline bridge")
+        listener.resume(port: 43222)
+
+        let source = try await task.value
+        XCTAssertEqual(catalog.connections, [source])
+        XCTAssertEqual(source.url.absoluteString, "http://localhost:43222/chat/")
+        XCTAssertEqual(runtime.status(for: source.id), .offline)
+        XCTAssertNoThrow(try identities.load(hostKey: host))
+    }
+
+    func testHostControlledInvalidBasePathFailsWithoutConstructingURL() async throws {
+        let suite = "MobileSharingInvalidPath.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let host = Data(repeating: 0x79, count: 32)
+        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x7A, count: 32))
+        credential.basePath = "/host controlled space"
+        let runtime = MobileSharingRuntime(identities: identities, connector: nil,
+                                           makeListener: { ControlledLoopbackListener() })
+        let catalog = HubConnectionStore(defaults: defaults)
+        await XCTAssertThrowsErrorAsync(try await runtime.enroll(
+            .init(credential: credential, live: nil), fallbackName: "Desk", in: catalog, token: UUID()))
+        XCTAssertTrue(catalog.connections.isEmpty)
+    }
+
+    func testRemovingExistingSourceDuringRepairInvalidatesEnrollment() async throws {
+        let suite = "MobileSharingEnrollRemoval.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let host = Data(repeating: 0x75, count: 32)
+        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x76, count: 32))
+        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x77, count: 16))
+        credential.reconnectCapability = Data(repeating: 0x78, count: 32)
+        credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
+        credential.scope = "web-v1"
+        credential.basePath = "/changed"
+        try identities.save(credential)
+        let catalog = HubConnectionStore(defaults: defaults)
+        let existing = try catalog.saveMobileSharing(name: "Desk", hostKey: host,
+                                                      bridgePort: 43223, basePath: "/chat")
+        let listener = ControlledLoopbackListener()
+        let runtime = MobileSharingRuntime(identities: identities, connector: nil, makeListener: { listener })
+        runtime.synchronize([existing])
+        let task = Task { @MainActor in
+            try await runtime.enroll(.init(credential: credential, live: nil), fallbackName: "Desk",
+                                     in: catalog, token: UUID())
+        }
+        for _ in 0..<100 where listener.startCount < 1 { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(listener.startCount, 1)
+
+        catalog.remove(existing.id)
+        runtime.synchronize(catalog.connections)
+        listener.resume(port: 43223)
+        await XCTAssertThrowsErrorAsync(try await task.value)
+
+        XCTAssertTrue(catalog.connections.isEmpty, "removed source must not be recreated by late enrollment")
+        XCTAssertNil(runtime.statuses[existing.id])
+        XCTAssertThrowsError(try identities.load(hostKey: host))
     }
 
     func testLateAttachmentCannotResurrectRevokedSource() async throws {
@@ -349,13 +517,14 @@ final class PeerTransportTests: XCTestCase {
         let port: UInt16 = 43215
         let capability = "secret"
         let target = "/chat/v1/responses?stream=1%2B2"
-        let request = Data("""
-        GET \(target) HTTP/1.1\r
-        Host: localhost:\(port)\r
-        Cookie: termllm_peer_\(port)=\(capability)\r
-        Connection: close\r
-        \r
-        """.utf8)
+        let request = Data([
+            "GET \(target) HTTP/1.1\r\n",
+            "Host: localhost:\(port)\r\n",
+            "Cookie: termllm_peer_\(port)=\(capability)\r\n",
+            "Connection: close\r\n",
+            "\r\n",
+        ].joined().utf8)
+        XCTAssertEqual(Data(request.suffix(4)), Data([0x0D, 0x0A, 0x0D, 0x0A]))
         let stream = MemoryPeerByteStream(input: request)
         let forwarder = MobileSharingForwarder(chunks: [Data("one".utf8), Data("two".utf8)])
         let configuration = PeerLoopbackConnection.Configuration(
@@ -368,8 +537,9 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertEqual(forwarder.paths, [target], "the signed mount and encoded query must cross unchanged")
         let response = try XCTUnwrap(String(data: stream.written, encoding: .utf8))
         XCTAssertTrue(response.contains("Transfer-Encoding: chunked\r\n"))
-        XCTAssertTrue(response.hasSuffix("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"),
-                      "the loopback bridge must preserve streaming chunk boundaries and termination")
+        let expectedSuffix = Data("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n".utf8)
+        XCTAssertEqual(Data(stream.written.suffix(expectedSuffix.count)), expectedSuffix,
+                       "the loopback bridge must preserve streaming chunk boundaries and termination")
         XCTAssertTrue(stream.closed)
     }
 
@@ -451,9 +621,47 @@ final class PeerTransportTests: XCTestCase {
                                           hubBaseURL: URL(string: "http://localhost:43217/")!))
         forwarder.finish()
 
-        let (_, response) = try await task.value
-        XCTAssertEqual(response.statusCode, 401)
+        await XCTAssertThrowsErrorAsync(try await task.value)
         XCTAssertFalse(callback.value, "an old generation must not purge the replacement workspace")
+        XCTAssertTrue(replacementAuthorization.check())
+    }
+
+    func testStaleUnauthorizedGETCannotPurgeProductionDirectWorkspace() async throws {
+        let id = UUID()
+        let hostKey = MobileSharingBase64URL.encode(Data(repeating: 0x44, count: 32))
+        let baseURL = try XCTUnwrap(URL(string: "http://localhost:43224/chat/"))
+        let connection = HubConnection(id: id, name: "Desk", kind: .directNode, url: baseURL,
+                                       needsKindReview: nil, mobileSharingHostKey: hostKey)
+        let sourceTransport = MobileSharingSourceTransport()
+        let forwarder = ProductionStaleAuthorizationForwarder()
+        let oldAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: hostKey, sessionID: "old", expiresAt: .distantFuture, scopePrefix: "/chat"))
+        sourceTransport.install(WebRTCHubTransport(forwarder: forwarder, authorization: oldAuthorization,
+                                                    hubBaseURL: baseURL))
+        let workspace = HubSourceWorkspace(connection: connection, bearerStorage: HubMemoryBearerStorage(),
+                                           dataStore: .nonPersistent(), transport: sourceTransport)
+        defer { workspace.dispose(removeCredentials: true) }
+        let browserIdentity = workspace.browserIdentity
+        let workspaceEpoch = workspace.authEpoch
+        let storeEpoch = workspace.store.authEpoch
+        let refresh = Task { @MainActor in await workspace.store.refresh() }
+        for _ in 0..<100 where !forwarder.started { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertTrue(forwarder.started)
+
+        let replacementAuthorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: hostKey, sessionID: "new", expiresAt: .distantFuture, scopePrefix: "/chat"))
+        sourceTransport.install(WebRTCHubTransport(forwarder: MobileSharingForwarder(),
+                                                    authorization: replacementAuthorization,
+                                                    hubBaseURL: baseURL))
+        forwarder.finishUnauthorized()
+        await refresh.value
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertFalse(workspace.store.unauthorized)
+        XCTAssertFalse(workspace.browserRevoked)
+        XCTAssertEqual(workspace.authEpoch, workspaceEpoch)
+        XCTAssertEqual(workspace.store.authEpoch, storeEpoch)
+        XCTAssertEqual(workspace.browserIdentity, browserIdentity)
         XCTAssertTrue(replacementAuthorization.check())
     }
 

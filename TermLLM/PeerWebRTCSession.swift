@@ -11,6 +11,27 @@ enum PeerWebRTCError: Error, Equatable {
     case gatheringTimedOut
 }
 
+/// libwebrtc's Objective-C factory is not annotated Sendable. This wrapper is
+/// the sole owner and serializes every factory call; peer connections returned
+/// from it retain their own SDK lifetime and are never read through the factory.
+private final class PeerWebRTCFactoryStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private let factory: RTCPeerConnectionFactory
+
+    init() {
+        RTCInitializeSSL()
+        factory = RTCPeerConnectionFactory()
+    }
+
+    func makePeerConnection(configuration: RTCConfiguration,
+                            constraints: RTCMediaConstraints,
+                            delegate: RTCPeerConnectionDelegate) -> RTCPeerConnection? {
+        lock.withLock {
+            factory.peerConnection(with: configuration, constraints: constraints, delegate: delegate)
+        }
+    }
+}
+
 /// Native libwebrtc peer session carrying exactly one reliable, ordered
 /// `term-llm-http-v1` DataChannel.  Data-only: no audio/video tracks.
 ///
@@ -20,10 +41,7 @@ enum PeerWebRTCError: Error, Equatable {
 /// produced a ``PeerAuthorizationState``; the channel is only handed out while
 /// that authorization is valid, and revoke closes the connection.
 final class PeerWebRTCSession: NSObject, @unchecked Sendable {
-    private static let factory: RTCPeerConnectionFactory = {
-        RTCInitializeSSL()
-        return RTCPeerConnectionFactory()
-    }()
+    private static let factoryStore = PeerWebRTCFactoryStore()
 
     private var authorization: PeerAuthorizationState?
     private let lock = NSLock()
@@ -56,7 +74,9 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
         if relayOnly { config.iceTransportPolicy = .relay }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil,
                                               optionalConstraints: ["DtlsSrtpKeyAgreement": "true"])
-        guard let pc = Self.factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
+        guard let pc = Self.factoryStore.makePeerConnection(configuration: config,
+                                                             constraints: constraints,
+                                                             delegate: self) else {
             throw PeerWebRTCError.factoryFailed
         }
         peerConnection = pc
