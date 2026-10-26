@@ -44,7 +44,7 @@ jobs:
           python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
           python3 -m unittest discover -s scripts/native-hub -p 'test_*.py' -v
           python3 -m unittest discover -s scripts/phone-hub -p 'test_*.py' -v
-          python3 -m unittest discover -s scripts/mobile-sharing -p 'test_*.py' -v
+          python3 -m unittest discover -s scripts/linked-devices -p 'test_*.py' -v
           python3 scripts/test_select_ios_simulator.py
           bash -n scripts/native-hub/capture.sh
           bash -n scripts/phone-hub/capture.sh

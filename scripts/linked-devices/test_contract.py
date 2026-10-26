@@ -29,7 +29,7 @@ def transcript(label, *fields):
     return b"".join(struct.pack(">I", len(value)) + value for value in values)
 
 
-class MobileSharingContractTests(unittest.TestCase):
+class LinkedDevicesContractTests(unittest.TestCase):
     def test_pair_request_vector(self):
         value = transcript(
             "pair-request", b"device", b64(V["invitation_id"]), b64(V["host_key"]),
@@ -79,20 +79,62 @@ class MobileSharingContractTests(unittest.TestCase):
 
     def test_xcode_membership_and_pinned_sdk(self):
         project = (ROOT / "TermLLM.xcodeproj/project.pbxproj").read_text()
-        for path in sorted((ROOT / "TermLLM").glob("*Sharing*.swift")) + sorted((ROOT / "TermLLM").glob("Peer*.swift")) + [ROOT / "TermLLM/WebRTCHubTransport.swift"]:
+        for path in sorted((ROOT / "TermLLM").glob("LinkedDevices*.swift")) + sorted((ROOT / "TermLLM").glob("Peer*.swift")) + [ROOT / "TermLLM/WebRTCHubTransport.swift"]:
             self.assertIn(path.name, project, path.name)
-        for path in sorted((ROOT / "TermLLMTests").glob("MobileSharing*.swift")):
+        for path in sorted((ROOT / "TermLLMTests").glob("LinkedDevices*.swift")):
             self.assertIn(path.name, project, path.name)
         self.assertIn("44f36788497f701bc8c0306de3a1c2511d56019d", project)
         resolved = (ROOT / "TermLLM.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved").read_text()
         self.assertIn("44f36788497f701bc8c0306de3a1c2511d56019d", resolved)
-        native_fixture = ROOT / "TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json"
+        native_fixture = ROOT / "TermLLMTests/Fixtures/linked-devices-vectors-v2.json"
         self.assertEqual(native_fixture.read_bytes(),
                          (Path(__file__).parent / "fixtures/vectors_v2.json").read_bytes())
         self.assertIn(native_fixture.name, project)
 
+    def test_feature_naming_and_user_copy_are_client_generic(self):
+        roots = [ROOT / "TermLLM", ROOT / "TermLLMTests", ROOT / "scripts",
+                 ROOT / "docs", ROOT / ".github/workflows"]
+        stale = []
+        stale_tokens = ("Mobile" + "Sharing", "mobile" + "Sharing", "mobile" + "-sharing",
+                        "Mobile" + " Sharing", "Mobile" + " sharing", "mobile" + " sharing")
+        for root in roots:
+            for path in root.rglob("*"):
+                if path.is_file():
+                    try:
+                        text = path.read_text()
+                    except UnicodeDecodeError:
+                        continue
+                    if any(token in text for token in stale_tokens):
+                        stale.append(str(path.relative_to(ROOT)))
+        self.assertEqual(stale, [])
+        old_path = "mobile" + "-sharing"
+        self.assertFalse(any(old_path in str(path.relative_to(ROOT)).lower()
+                             for root in roots for path in root.rglob("*")))
+
+        pairing = (ROOT / "TermLLM/LinkedDevicesPairingView.swift").read_text()
+        self.assertIn('.navigationTitle("Linked devices")', pairing)
+        self.assertIn('Text("Enter this confirmation code on the host")', pairing)
+        self.assertIn('accessibilityIdentifier("linkedDevices.confirmationCode")', pairing)
+        self.assertNotIn("Authenticating this iPhone", pairing)
+
+        connections = (ROOT / "TermLLM/PhoneHubView.swift").read_text()
+        self.assertIn('Text("Linked device ·', connections)
+        self.assertIn('Button("Connect") { linkedDevices.reconnectNow', connections)
+        self.assertIn('source.connection.isLinkedDevices ? "Forget" : "Remove"', connections)
+
+        identity = (ROOT / "TermLLM/LinkedDevicesIdentityStore.swift").read_text()
+        self.assertIn('"com.termllm.app.linked-devices.v2"', identity)
+        catalog = (ROOT / "TermLLM/HubConnectionStore.swift").read_text()
+        self.assertIn("linkedDevicesHostKey", catalog)
+        self.assertNotIn("mobile" + "SharingHostKey", catalog)
+
+        workflow = (ROOT / ".github/workflows/linked-devices-native.yml").read_text()
+        for suite in ("LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests",
+                      "LinkedDevicesRuntimeTests"):
+            self.assertIn(f"-only-testing:TermLLMTests/{suite}", workflow)
+
     def test_swift_declares_frozen_v2_names_and_no_pilot_pairing(self):
-        source = (ROOT / "TermLLM/MobileSharingProtocol.swift").read_text()
+        source = (ROOT / "TermLLM/LinkedDevicesProtocol.swift").read_text()
         for token in ('static let version = 2', 'required: ["v", "b", "h", "i", "e"]',
                       'query["b"]', 'invitation_id:', 'reconnect_capability:',
                       'static let maxBrokerFrameBytes = maxMessageBytes + 512',
@@ -101,25 +143,28 @@ class MobileSharingContractTests(unittest.TestCase):
             self.assertIn(token, source)
         self.assertNotIn('query["broker"]', source)
         self.assertNotIn('required: ["v", "broker"', source)
-        broker = (ROOT / "TermLLM/MobileSharingBroker.swift").read_text()
+        broker = (ROOT / "TermLLM/LinkedDevicesBroker.swift").read_text()
         for token in ('case "not_found": return .notFound',
                       'case "unauthorized": return .unauthorized',
-                      'MobileSharingWire.maxBrokerFrameBytes'):
+                      'LinkedDevicesWire.maxBrokerFrameBytes'):
             self.assertIn(token, broker)
-        connector = (ROOT / "TermLLM/MobileSharingConnector.swift").read_text()
-        self.assertIn('catch MobileSharingBrokerError.unauthorized', connector)
-        self.assertIn('throw MobileSharingProtocolError.revoked', connector)
+        connector = (ROOT / "TermLLM/LinkedDevicesConnector.swift").read_text()
+        self.assertIn('catch LinkedDevicesBrokerError.unauthorized', connector)
+        self.assertIn('throw LinkedDevicesProtocolError.revoked', connector)
         catalog = (ROOT / "TermLLM/HubConnectionStore.swift").read_text()
-        self.assertIn('canonicalMobileSharingBridgeURL(source.url.absoluteString)', catalog)
+        self.assertIn('canonicalLinkedDevicesBridgeURL(source.url.absoluteString)', catalog)
         self.assertIn('does not call `ServerAddress.parse`', catalog)
-        runtime = (ROOT / "TermLLM/MobileSharingRuntime.swift").read_text()
+        runtime = (ROOT / "TermLLM/LinkedDevicesRuntime.swift").read_text()
         self.assertIn('await endpoint.installCapability', runtime)
         self.assertNotIn('await bridge.installCapability', runtime)
+        self.assertIn('connectionClosed(sourceID: sourceID, token: token)', runtime)
+        self.assertIn('guard let entry = entries[sourceID], entry.activeToken == token', runtime)
+        self.assertNotIn('connector.reconnect(credential: credential) { [weak self, weak entry]', runtime)
         peer = (ROOT / "TermLLM/PeerWireProtocol.swift").read_text()
         self.assertIn("var maxRequestBodyBytes = 48_384", peer)
         self.assertIn('static let channelLabel = "term-llm-http-v1"', peer)
         self.assertNotIn('term-llm/pairing/v1', source)
-        self.assertNotIn('offer_sdp: MobileSharingB64', source)
+        self.assertNotIn('offer_sdp: LinkedDevicesB64', source)
 
 
 if __name__ == "__main__":

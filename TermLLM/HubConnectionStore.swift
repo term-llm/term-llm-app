@@ -11,10 +11,10 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
     var kind: Kind
     var url: URL
     var needsKindReview: Bool?
-    /// Present only for a Mobile Sharing source. This pinned Ed25519 host key,
+    /// Present only for a Linked devices source. This pinned Ed25519 host key,
     /// not the loopback browser URL, is the durable source/trust identity.
-    var mobileSharingHostKey: String? = nil
-    var isMobileSharing: Bool { mobileSharingHostKey != nil }
+    var linkedDevicesHostKey: String? = nil
+    var isLinkedDevices: Bool { linkedDevicesHostKey != nil }
     var mountPath: String {
         let prefix = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return prefix.isEmpty ? "/" : "/" + prefix + "/"
@@ -69,17 +69,17 @@ final class HubConnectionStore: ObservableObject {
         var endpoints = Set<String>()
         for index in doc.connections.indices {
             let source = doc.connections[index]
-            let url = source.mobileSharingHostKey == nil
+            let url = source.linkedDevicesHostKey == nil
                 ? canonicalOrdinaryURL(source.url.absoluteString)
-                : canonicalMobileSharingBridgeURL(source.url.absoluteString)
+                : canonicalLinkedDevicesBridgeURL(source.url.absoluteString)
             guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let url, endpoints.insert(url.absoluteString).inserted else {
                 throw ValidationError.corrupt
             }
-            if let encodedKey = source.mobileSharingHostKey {
+            if let encodedKey = source.linkedDevicesHostKey {
                 guard source.kind == .directNode, source.needsKindReview != true,
-                      let key = MobileSharingBase64URL.decode(encodedKey, maximumBytes: 32), key.count == 32,
-                      Self.isMobileSharingBridgeURL(url), identities.insert("peer:\(encodedKey)").inserted else {
+                      let key = LinkedDevicesBase64URL.decode(encodedKey, maximumBytes: 32), key.count == 32,
+                      Self.isLinkedDevicesBridgeURL(url), identities.insert("peer:\(encodedKey)").inserted else {
                     throw ValidationError.corrupt
                 }
             } else {
@@ -131,7 +131,7 @@ final class HubConnectionStore: ObservableObject {
     /// Dedicated validator for the app-owned loopback bridge. It deliberately
     /// does not call `ServerAddress.parse`: physical devices reject arbitrary
     /// HTTP servers, while this narrowly constrained URL is local metadata.
-    static func canonicalMobileSharingBridgeURL(_ input: String) -> URL? {
+    static func canonicalLinkedDevicesBridgeURL(_ input: String) -> URL? {
         guard var parts = URLComponents(string: input),
               parts.scheme?.lowercased() == "http", parts.host?.lowercased() == "localhost",
               let port = parts.port, (1024...65535).contains(port),
@@ -147,28 +147,28 @@ final class HubConnectionStore: ObservableObject {
         return parts.url
     }
 
-    static func isMobileSharingBridgeURL(_ url: URL) -> Bool {
-        canonicalMobileSharingBridgeURL(url.absoluteString) == url
+    static func isLinkedDevicesBridgeURL(_ url: URL) -> Bool {
+        canonicalLinkedDevicesBridgeURL(url.absoluteString) == url
     }
 
     /// Adds or updates a paired source by its pinned host identity. The local
     /// bridge URL is presentation/transport metadata and never its identity.
     @discardableResult
-    func saveMobileSharing(id: UUID? = nil, name: String, hostKey: Data, bridgePort: UInt16,
+    func saveLinkedDevices(id: UUID? = nil, name: String, hostKey: Data, bridgePort: UInt16,
                            basePath: String = "/") throws -> HubConnection {
         let normalizedPath = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let path = normalizedPath.isEmpty ? "/" : "/" + normalizedPath + "/"
         guard persistenceError == nil, hostKey.count == 32, bridgePort >= 1024,
-              MobileSharingCrypto.validBasePath(basePath),
+              LinkedDevicesCrypto.validBasePath(basePath),
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let url = URL(string: "http://localhost:\(bridgePort)\(path)") else { throw ValidationError.invalid }
-        let encodedKey = MobileSharingBase64URL.encode(hostKey)
-        if let index = connections.firstIndex(where: { $0.mobileSharingHostKey == encodedKey }) {
+        let encodedKey = LinkedDevicesBase64URL.encode(hostKey)
+        if let index = connections.firstIndex(where: { $0.linkedDevicesHostKey == encodedKey }) {
             connections[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             // Keep the original port/origin but follow the newly signed mount.
             guard let oldPort = connections[index].url.port,
                   let updated = URL(string: "http://localhost:\(oldPort)\(path)"),
-                  let canonical = Self.canonicalMobileSharingBridgeURL(updated.absoluteString) else {
+                  let canonical = Self.canonicalLinkedDevicesBridgeURL(updated.absoluteString) else {
                 throw ValidationError.corrupt
             }
             connections[index].url = canonical
@@ -179,7 +179,7 @@ final class HubConnectionStore: ObservableObject {
         guard !connections.contains(where: { $0.url == url }) else { throw ValidationError.duplicate }
         let source = HubConnection(id: id ?? UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                                    kind: .directNode, url: url, needsKindReview: nil,
-                                   mobileSharingHostKey: encodedKey)
+                                   linkedDevicesHostKey: encodedKey)
         connections.append(source)
         if selectedID == nil { selectedID = source.id }
         persist()

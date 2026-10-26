@@ -7,7 +7,7 @@ import WebKit
 /// (Network.framework, loopback only: 127.0.0.1 + ::1 on one port).  Tests inject in-memory.
 protocol PeerLoopbackListening: AnyObject {
     /// Starts listening on both loopback families. A non-nil port is required
-    /// for Mobile Sharing's stable per-source browser origin and must fail
+    /// for Linked devices' stable per-source browser origin and must fail
     /// rather than silently move to another origin.
     func start(port: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16
     func stop()

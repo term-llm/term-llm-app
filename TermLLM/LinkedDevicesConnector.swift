@@ -3,31 +3,31 @@ import Foundation
 import UIKit
 
 #if canImport(WebRTC)
-final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked Sendable {
+final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
     struct Paired: @unchecked Sendable {
-        let credential: MobileSharingCredential
-        let live: MobileSharingLiveConnection?
+        let credential: LinkedDevicesCredential
+        let live: LinkedDevicesLiveConnection?
     }
 
-    private let identities: MobileSharingIdentityStore
+    private let identities: LinkedDevicesIdentityStore
     private let clock: @Sendable () -> Date
 
-    init(identities: MobileSharingIdentityStore, clock: @escaping @Sendable () -> Date = { Date() }) {
+    init(identities: LinkedDevicesIdentityStore, clock: @escaping @Sendable () -> Date = { Date() }) {
         self.identities = identities
         self.clock = clock
     }
 
-    func pair(link: MobileSharingPairingLink, deviceName: String,
+    func pair(link: LinkedDevicesPairingLink, deviceName: String,
               sasReady: @escaping @Sendable (String) -> Void,
               closed: @escaping @Sendable () -> Void) async throws -> Paired {
-        guard !link.isExpired(at: clock()) else { throw MobileSharingProtocolError.expired }
+        guard !link.isExpired(at: clock()) else { throw LinkedDevicesProtocolError.expired }
         guard let capability = link.invitationCapability else {
-            throw MobileSharingProtocolError.invalidLink
+            throw LinkedDevicesProtocolError.invalidLink
         }
         let prepared = try identities.prepare(hostKey: link.hostKey)
-        let attempt = try MobileSharingPairingAttempt(link: link, credential: prepared,
+        let attempt = try LinkedDevicesPairingAttempt(link: link, credential: prepared,
                                                        deviceName: Self.safeDeviceName(deviceName), now: clock())
-        let broker = try MobileSharingBrokerClient(baseURL: link.broker)
+        let broker = try LinkedDevicesBrokerClient(baseURL: link.broker)
         let socket = try await broker.dial(hostID: link.hostID, kind: "invitation",
                                            peerID: link.invitationIDString, capability: capability)
         do {
@@ -43,7 +43,7 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
             // carries SDP; close it, then use the durable device slot for the
             // first signed transport handshake exactly like every reconnect.
             socket.close()
-            let live: MobileSharingLiveConnection?
+            let live: LinkedDevicesLiveConnection?
             do {
                 live = try await reconnect(credential: credential, closed: closed)
             } catch {
@@ -59,17 +59,17 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
         }
     }
 
-    func reconnect(credential: MobileSharingCredential,
-                   closed: @escaping @Sendable () -> Void) async throws -> MobileSharingLiveConnection {
+    func reconnect(credential: LinkedDevicesCredential,
+                   closed: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
         guard let brokerURL = credential.brokerURL,
               let deviceID = credential.deviceID,
               let capability = credential.reconnectCapability else {
-            throw MobileSharingStorageError.corrupt
+            throw LinkedDevicesStorageError.corrupt
         }
-        let capabilityString = MobileSharingBase64URL.encode(capability)
+        let capabilityString = LinkedDevicesBase64URL.encode(capability)
         do {
-            let broker = try MobileSharingBrokerClient(baseURL: brokerURL)
-            let hostID = MobileSharingBase64URL.encode(Data(SHA256.hash(data: credential.hostKey)))
+            let broker = try LinkedDevicesBrokerClient(baseURL: brokerURL)
+            let hostID = LinkedDevicesBase64URL.encode(Data(SHA256.hash(data: credential.hostKey)))
             let ice = try await broker.ice(hostID: hostID, kind: "device", peerID: deviceID,
                                            capability: capabilityString)
             let socket = try await broker.dial(hostID: hostID, kind: "device", peerID: deviceID,
@@ -81,18 +81,18 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
                 socket.close()
                 throw error
             }
-        } catch MobileSharingBrokerError.unauthorized {
+        } catch LinkedDevicesBrokerError.unauthorized {
             // For a previously paired device this frozen broker result means
             // revoked/changed credentials or target reset, never mere offline.
-            throw MobileSharingProtocolError.revoked
+            throw LinkedDevicesProtocolError.revoked
         }
     }
 
-    private func establish(credential: MobileSharingCredential, socket: MobileSharingBrokerSocket, ice: [PeerICEServer],
-                           closed: @escaping @Sendable () -> Void) async throws -> MobileSharingLiveConnection {
-        let hello = try MobileSharingTransportAttempt.hello(credential: credential)
+    private func establish(credential: LinkedDevicesCredential, socket: LinkedDevicesBrokerSocket, ice: [PeerICEServer],
+                           closed: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
+        let hello = try LinkedDevicesTransportAttempt.hello(credential: credential)
         try await socket.send(hello)
-        let challenge: MobileSharingTransportChallenge = try await waitForSignal(
+        let challenge: LinkedDevicesTransportChallenge = try await waitForSignal(
             socket, expectedType: "transport_challenge",
             fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_id", "expires_at", "sig"],
             timeout: 30)
@@ -101,23 +101,23 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
         webRTC.onClose = { socket.close(); closed() }
         do {
             let offer = try await webRTC.createOffer()
-            let attempt = try MobileSharingTransportAttempt(challenge: challenge, credential: credential,
+            let attempt = try LinkedDevicesTransportAttempt(challenge: challenge, credential: credential,
                                                              offerSDP: offer.sdp, now: clock())
             try await socket.send(attempt.request)
-            let answer: MobileSharingTransportAnswer = try await waitForSignal(
+            let answer: LinkedDevicesTransportAnswer = try await waitForSignal(
                 socket, expectedType: "transport_answer",
                 fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_nonce", "request_hash", "device_id", "answer_sdp", "sig"],
                 timeout: 30)
             let verifiedSDP = try attempt.verify(answer)
             let authorization = PeerAuthorizationState(PeerAuthorization(
-                peerID: MobileSharingBase64URL.encode(credential.hostKey),
+                peerID: LinkedDevicesBase64URL.encode(credential.hostKey),
                 sessionID: UUID().uuidString, expiresAt: .distantFuture,
                 scopePrefix: credential.basePath ?? "/"))
             try await webRTC.acceptVerifiedAnswer(verifiedSDP, authorization: authorization)
             let channel = try await withTimeout(20) { try await webRTC.openChannel() }
             let multiplexer = PeerHTTPMultiplexer(channel: channel)
             socket.close()
-            return MobileSharingLiveConnection(forwarder: multiplexer, authorization: authorization,
+            return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
                                                 stats: { await webRTC.stats() }, close: {
                 multiplexer.close()
                 authorization.revoke()
@@ -130,36 +130,36 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
         }
     }
 
-    private func waitForPairAnswer(_ socket: MobileSharingBrokerSocket, invitationID: Data,
-                                   deadline: Date) async throws -> MobileSharingPairAnswer {
+    private func waitForPairAnswer(_ socket: LinkedDevicesBrokerSocket, invitationID: Data,
+                                   deadline: Date) async throws -> LinkedDevicesPairAnswer {
         var count = 0
         while clock() < deadline {
             let remaining = max(0.1, deadline.timeIntervalSince(clock()))
             let frame = try await withTimeout(remaining) { try await socket.receive() }
             guard frame.type == "signal" else { continue }
             count += 1
-            guard count <= 32, let body = frame.body else { throw MobileSharingBrokerError.malformed }
+            guard count <= 32, let body = frame.body else { throw LinkedDevicesBrokerError.malformed }
             let encoded = body.encoded()
             guard let object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
-                  let type = object["type"] as? String else { throw MobileSharingBrokerError.malformed }
+                  let type = object["type"] as? String else { throw LinkedDevicesBrokerError.malformed }
             if type == "pair_reject" {
-                let reject = try MobileSharingMessageCodec.decode(
-                    MobileSharingPairReject.self, data: encoded, expectedType: "pair_reject",
+                let reject = try LinkedDevicesMessageCodec.decode(
+                    LinkedDevicesPairReject.self, data: encoded, expectedType: "pair_reject",
                     fields: ["v", "type", "invitation_id", "reason"])
-                guard reject.invitation_id.data == invitationID else { throw MobileSharingProtocolError.invalid("pair rejection") }
+                guard reject.invitation_id.data == invitationID else { throw LinkedDevicesProtocolError.invalid("pair rejection") }
                 let safe = ["denied", "expired", "invalid"].contains(reject.reason) ? reject.reason : "invalid"
-                throw MobileSharingProtocolError.rejected(safe)
+                throw LinkedDevicesProtocolError.rejected(safe)
             }
             if type == "pair_answer" {
-                return try MobileSharingMessageCodec.decode(
-                    MobileSharingPairAnswer.self, data: encoded, expectedType: "pair_answer",
+                return try LinkedDevicesMessageCodec.decode(
+                    LinkedDevicesPairAnswer.self, data: encoded, expectedType: "pair_answer",
                     fields: ["v", "type", "invitation_id", "host_key", "device_key", "device_nonce", "request_hash", "device_id", "reconnect_capability", "scope", "base_path", "host_label", "mac", "sig"])
             }
         }
-        throw MobileSharingProtocolError.expired
+        throw LinkedDevicesProtocolError.expired
     }
 
-    private func waitForSignal<T: Decodable>(_ socket: MobileSharingBrokerSocket,
+    private func waitForSignal<T: Decodable>(_ socket: LinkedDevicesBrokerSocket,
                                               expectedType: String, fields: Set<String>,
                                               timeout: TimeInterval) async throws -> T {
         let deadline = clock().addingTimeInterval(timeout)
@@ -168,13 +168,13 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
             let frame = try await withTimeout(max(0.1, deadline.timeIntervalSince(clock()))) { try await socket.receive() }
             guard frame.type == "signal", let body = frame.body else { continue }
             count += 1
-            guard count <= 32 else { throw MobileSharingBrokerError.malformed }
+            guard count <= 32 else { throw LinkedDevicesBrokerError.malformed }
             let encoded = body.encoded()
             guard let object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
                   object["type"] as? String == expectedType else { continue }
-            return try MobileSharingMessageCodec.decode(T.self, data: encoded, expectedType: expectedType, fields: fields)
+            return try LinkedDevicesMessageCodec.decode(T.self, data: encoded, expectedType: expectedType, fields: fields)
         }
-        throw MobileSharingBrokerError.peerOffline
+        throw LinkedDevicesBrokerError.peerOffline
     }
 
     private func withTimeout<T: Sendable>(_ seconds: TimeInterval,
@@ -183,18 +183,18 @@ final class MobileSharingConnector: MobileSharingSessionConnecting, @unchecked S
             group.addTask { try await operation() }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(max(0.1, seconds) * 1_000_000_000))
-                throw MobileSharingBrokerError.peerOffline
+                throw LinkedDevicesBrokerError.peerOffline
             }
             defer { group.cancelAll() }
-            guard let value = try await group.next() else { throw MobileSharingBrokerError.peerOffline }
+            guard let value = try await group.next() else { throw LinkedDevicesBrokerError.peerOffline }
             return value
         }
     }
 
     static func safeDeviceName(_ value: String) -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.utf8.count <= MobileSharingWire.maxLabelBytes,
-           (try? MobileSharingPairingLink.validateLabel(normalized)) != nil { return normalized }
+        if normalized.utf8.count <= LinkedDevicesWire.maxLabelBytes,
+           (try? LinkedDevicesPairingLink.validateLabel(normalized)) != nil { return normalized }
         return "iPhone"
     }
 }

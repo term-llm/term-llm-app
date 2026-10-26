@@ -3,30 +3,30 @@ import Foundation
 import Network
 import WebKit
 
-struct MobileSharingUnavailable: Error, LocalizedError, Equatable {
+struct LinkedDevicesUnavailable: Error, LocalizedError, Equatable {
     let message: String
     var errorDescription: String? { message }
 }
 
 /// One authenticated WebRTC connection after the signed v2 transport
 /// handshake has completed. Pairing/reconnect code is the only producer.
-struct MobileSharingLiveConnection: @unchecked Sendable {
+struct LinkedDevicesLiveConnection: @unchecked Sendable {
     let forwarder: PeerHTTPMultiplexer
     let authorization: PeerAuthorizationState
     let stats: @Sendable () async -> PeerSessionStats
     let close: @Sendable () -> Void
 }
 
-protocol MobileSharingSessionConnecting: Sendable {
-    func reconnect(credential: MobileSharingCredential,
-                   closed: @escaping @Sendable () -> Void) async throws -> MobileSharingLiveConnection
+protocol LinkedDevicesSessionConnecting: Sendable {
+    func reconnect(credential: LinkedDevicesCredential,
+                   closed: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection
 }
 
 /// A stable HubTransport injected into DirectNodeClient. The underlying peer
 /// connection may be replaced after suspend/network loss, while callers keep
 /// source identity. Requests are attempted exactly once: this layer never
 /// replays an uncertain mutation on a replacement connection.
-final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
+final class LinkedDevicesSourceTransport: HubTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var current: WebRTCHubTransport?
     private var generation: UInt64 = 0
@@ -51,7 +51,7 @@ final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
             current.map { ($0, generation) }
         }
         guard let (transport, expectedGeneration) = snapshot else {
-            throw MobileSharingUnavailable(message: "This shared host is offline. The request was not retried.")
+            throw LinkedDevicesUnavailable(message: "This linked host is offline. The request was not retried.")
         }
         let guardedUnauthorized: (@Sendable () async -> Void)?
         if let callback = onUnauthorized {
@@ -73,7 +73,7 @@ final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
                 // as authorization loss for the replacement workspace.
                 if result.1.statusCode == 401 { throw CancellationError() }
                 if ["GET", "HEAD"].contains(request.httpMethod?.uppercased() ?? "GET") { return result }
-                throw MobileSharingUnavailable(message: "The shared host reconnected while the request was running. It was not retried.")
+                throw LinkedDevicesUnavailable(message: "The linked host reconnected while the request was running. It was not retried.")
             }
             return result
         } catch {
@@ -83,25 +83,25 @@ final class MobileSharingSourceTransport: HubTransport, @unchecked Sendable {
     }
 }
 
-private final class MobileSharingEnrollmentTransportState: @unchecked Sendable {
+private final class LinkedDevicesEnrollmentTransportState: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
     var isClosed: Bool { lock.withLock { closed } }
     func markClosed() { lock.withLock { closed = true } }
 }
 
-private final class MobileSharingOfflineForwarder: PeerHTTPForwarding, @unchecked Sendable {
+private final class LinkedDevicesOfflineForwarder: PeerHTTPForwarding, @unchecked Sendable {
     func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
         var header = PeerHeader()
         header.set("Content-Type", "text/plain; charset=utf-8")
         return PeerHTTPResponse(status: 503, header: header,
-                                body: .fixed([Data("Shared host is offline.\n".utf8)]), cancel: {})
+                                body: .fixed([Data("Linked host is offline.\n".utf8)]), cancel: {})
     }
 }
 
 @MainActor
-final class MobileSharingRuntime: ObservableObject {
-    static let shared = MobileSharingRuntime()
+final class LinkedDevicesRuntime: ObservableObject {
+    static let shared = LinkedDevicesRuntime()
 
     enum Status: Equatable, Sendable {
         case offline
@@ -128,9 +128,9 @@ final class MobileSharingRuntime: ObservableObject {
     @Published private(set) var statuses: [UUID: Status] = [:]
     private final class Entry {
         var connection: HubConnection
-        let transport = MobileSharingSourceTransport()
+        let transport = LinkedDevicesSourceTransport()
         var task: Task<Void, Never>?
-        var live: MobileSharingLiveConnection?
+        var live: LinkedDevicesLiveConnection?
         var bridge: PeerLoopbackBridge?
         var activeToken: UUID?
         var enrollmentToken: UUID?
@@ -143,23 +143,23 @@ final class MobileSharingRuntime: ObservableObject {
     }
 
     private var entries: [UUID: Entry] = [:]
-    private let identities: MobileSharingIdentityStore
-    private var connector: (any MobileSharingSessionConnecting)?
+    private let identities: LinkedDevicesIdentityStore
+    private var connector: (any LinkedDevicesSessionConnecting)?
     private let pathMonitor: NWPathMonitor
     private let makeListener: () -> any PeerLoopbackListening
-    private let monitorQueue = DispatchQueue(label: "com.termllm.mobile-sharing.path")
+    private let monitorQueue = DispatchQueue(label: "com.termllm.linked-devices.path")
     private var networkAvailable = true
     private var foreground = true
 
     #if canImport(Security)
     convenience init() {
-        let identities = MobileSharingIdentityStore()
-        self.init(identities: identities, connector: MobileSharingConnector(identities: identities))
+        let identities = LinkedDevicesIdentityStore()
+        self.init(identities: identities, connector: LinkedDevicesConnector(identities: identities))
     }
     #endif
 
-    init(identities: MobileSharingIdentityStore,
-         connector: (any MobileSharingSessionConnecting)?,
+    init(identities: LinkedDevicesIdentityStore,
+         connector: (any LinkedDevicesSessionConnecting)?,
          pathMonitor: NWPathMonitor = NWPathMonitor(),
          makeListener: @escaping () -> any PeerLoopbackListening = { PeerNWLoopbackListener() }) {
         self.identities = identities
@@ -174,13 +174,13 @@ final class MobileSharingRuntime: ObservableObject {
 
     deinit { pathMonitor.cancel() }
 
-    func setConnector(_ connector: any MobileSharingSessionConnecting) {
+    func setConnector(_ connector: any LinkedDevicesSessionConnecting) {
         self.connector = connector
         reconnectEligibleSources(immediate: true)
     }
 
     func transport(for connection: HubConnection) -> (any HubTransport)? {
-        guard connection.isMobileSharing else { return nil }
+        guard connection.isLinkedDevices else { return nil }
         return entry(for: connection).transport
     }
 
@@ -208,7 +208,7 @@ final class MobileSharingRuntime: ObservableObject {
     /// Mirrors the saved catalog. Removed sources lose their runtime,
     /// credentials and isolated browser data. Offline/revoked sources remain.
     func synchronize(_ connections: [HubConnection]) {
-        let peers = Dictionary(uniqueKeysWithValues: connections.filter(\.isMobileSharing).map { ($0.id, $0) })
+        let peers = Dictionary(uniqueKeysWithValues: connections.filter(\.isLinkedDevices).map { ($0.id, $0) })
         for (id, entry) in entries where peers[id] == nil {
             // A brand-new approved grant has no catalog row until enrollment
             // commits. An existing row disappearing during re-pair is explicit
@@ -229,7 +229,7 @@ final class MobileSharingRuntime: ObservableObject {
         }
         for connection in peers.values {
             let entry = entry(for: connection)
-            if entry.connection.mobileSharingHostKey != connection.mobileSharingHostKey {
+            if entry.connection.linkedDevicesHostKey != connection.linkedDevicesHostKey {
                 markTerminal(entry, .identityChanged)
                 continue
             }
@@ -257,15 +257,15 @@ final class MobileSharingRuntime: ObservableObject {
         startIfEligible(entry, immediate: true)
     }
 
-    func pair(link: MobileSharingPairingLink, deviceName: String,
+    func pair(link: LinkedDevicesPairingLink, deviceName: String,
               catalog: HubConnectionStore,
               sasReady: @escaping @Sendable (String) -> Void) async throws -> HubConnection {
-        guard let connector = connector as? MobileSharingConnector else {
-            throw MobileSharingUnavailable(message: "The WebRTC transport is not available in this build.")
+        guard let connector = connector as? LinkedDevicesConnector else {
+            throw LinkedDevicesUnavailable(message: "The WebRTC transport is not available in this build.")
         }
         let hostKey = link.hostKey
         let token = UUID()
-        let transportState = MobileSharingEnrollmentTransportState()
+        let transportState = LinkedDevicesEnrollmentTransportState()
         let paired = try await connector.pair(link: link, deviceName: deviceName, sasReady: sasReady) { [weak self] in
             transportState.markClosed()
             Task { @MainActor [weak self] in
@@ -276,7 +276,7 @@ final class MobileSharingRuntime: ObservableObject {
         // an independently owned transaction and must finish even if the sheet
         // task is cancelled immediately afterward.
         let enrollment = Task { @MainActor [self] in
-            try await enroll(paired, fallbackName: link.hostLabel ?? "Shared host", in: catalog, token: token,
+            try await enroll(paired, fallbackName: link.hostLabel ?? "Linked host", in: catalog, token: token,
                              initialTransportClosed: transportState.isClosed)
         }
         return try await enrollment.value
@@ -289,25 +289,25 @@ final class MobileSharingRuntime: ObservableObject {
     /// Reserves runtime ownership, loopback origin and capability cookie before
     /// publishing the catalog entry. A verified grant is always represented,
     /// even when its first transport attempt failed or was cancelled.
-    func enroll(_ paired: MobileSharingConnector.Paired, fallbackName: String,
+    func enroll(_ paired: LinkedDevicesConnector.Paired, fallbackName: String,
                 in catalog: HubConnectionStore, token: UUID,
                 initialTransportClosed: Bool = false) async throws -> HubConnection {
-        let encodedKey = MobileSharingBase64URL.encode(paired.credential.hostKey)
-        let existing = catalog.connections.first { $0.mobileSharingHostKey == encodedKey }
+        let encodedKey = LinkedDevicesBase64URL.encode(paired.credential.hostKey)
+        let existing = catalog.connections.first { $0.linkedDevicesHostKey == encodedKey }
         let sourceID = existing?.id ?? UUID()
         let preferred = existing?.url.port.flatMap { UInt16(exactly: $0) }
         let basePath = paired.credential.basePath ?? "/"
         let normalized = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let path = normalized.isEmpty ? "/" : "/" + normalized + "/"
         let name = paired.credential.hostLabel?.isEmpty == false ? paired.credential.hostLabel! : fallbackName
-        guard let provisionalURL = existing?.url ?? HubConnectionStore.canonicalMobileSharingBridgeURL(
+        guard let provisionalURL = existing?.url ?? HubConnectionStore.canonicalLinkedDevicesBridgeURL(
             "http://localhost:\(preferred ?? 1024)\(path)") else {
             paired.live?.close()
-            throw MobileSharingUnavailable(message: "The shared browser origin is invalid.")
+            throw LinkedDevicesUnavailable(message: "The linked browser origin is invalid.")
         }
 
         let provisional = HubConnection(id: sourceID, name: name, kind: .directNode, url: provisionalURL,
-                                        needsKindReview: nil, mobileSharingHostKey: encodedKey)
+                                        needsKindReview: nil, linkedDevicesHostKey: encodedKey)
         let reservedEntry = entry(for: provisional)
         tearDownConnection(reservedEntry)
         reservedEntry.connection = provisional
@@ -338,7 +338,7 @@ final class MobileSharingRuntime: ObservableObject {
                     scopePrefix: basePath))
                 let forwarder: any PeerHTTPForwarding
                 if let live = enrollmentLive { forwarder = live.forwarder }
-                else { forwarder = MobileSharingOfflineForwarder() }
+                else { forwarder = LinkedDevicesOfflineForwarder() }
                 let bridge = PeerLoopbackBridge(forwarder: forwarder, authorization: authorization,
                                                 listener: makeListener(), cookiePolicy: .isolate,
                                                 preferredPort: preferred)
@@ -363,11 +363,11 @@ final class MobileSharingRuntime: ObservableObject {
                     throw error
                 }
                 if let preferred, endpoint.port != preferred {
-                    throw MobileSharingUnavailable(message: "The saved browser origin could not be restored.")
+                    throw LinkedDevicesUnavailable(message: "The saved browser origin could not be restored.")
                 }
-                guard let url = HubConnectionStore.canonicalMobileSharingBridgeURL(
+                guard let url = HubConnectionStore.canonicalLinkedDevicesBridgeURL(
                     "http://localhost:\(endpoint.port)\(path)") else {
-                    throw MobileSharingUnavailable(message: "The shared browser origin is invalid.")
+                    throw LinkedDevicesUnavailable(message: "The linked browser origin is invalid.")
                 }
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
                     throw CancellationError()
@@ -385,7 +385,7 @@ final class MobileSharingRuntime: ObservableObject {
                 }
 
                 reservedEntry.connection = HubConnection(id: sourceID, name: name, kind: .directNode, url: url,
-                                                          needsKindReview: nil, mobileSharingHostKey: encodedKey)
+                                                          needsKindReview: nil, linkedDevicesHostKey: encodedKey)
                 reservedEntry.live = enrollmentLive
                 reservedEntry.bridge = bridge
                 reservedEntry.task = nil
@@ -414,10 +414,10 @@ final class MobileSharingRuntime: ObservableObject {
                 // transaction. Never recreate a source the user removed.
                 if let existing {
                     guard catalog.connections.contains(where: {
-                        $0.id == existing.id && $0.mobileSharingHostKey == encodedKey
+                        $0.id == existing.id && $0.linkedDevicesHostKey == encodedKey
                     }) else { throw CancellationError() }
                 }
-                let connection = try catalog.saveMobileSharing(id: sourceID, name: name,
+                let connection = try catalog.saveLinkedDevices(id: sourceID, name: name,
                                                                  hostKey: paired.credential.hostKey,
                                                                  bridgePort: endpoint.port, basePath: basePath)
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
@@ -455,12 +455,12 @@ final class MobileSharingRuntime: ObservableObject {
             entry.live = nil
             if let existing, let port = existing.url.port.flatMap({ UInt16(exactly: $0) }),
                catalog.connections.contains(where: {
-                   $0.id == existing.id && $0.mobileSharingHostKey == encodedKey
+                   $0.id == existing.id && $0.linkedDevicesHostKey == encodedKey
                }) {
                 // Re-pairing an existing workspace must never destroy its only
                 // visible recovery path. Keep it offline and let normal bounded
                 // reconnect restore the same origin.
-                let connection = try catalog.saveMobileSharing(id: existing.id, name: name,
+                let connection = try catalog.saveLinkedDevices(id: existing.id, name: name,
                                                                  hostKey: paired.credential.hostKey,
                                                                  bridgePort: port, basePath: basePath)
                 entry.connection = connection
@@ -474,7 +474,7 @@ final class MobileSharingRuntime: ObservableObject {
             statuses[sourceID] = nil
             if existing == nil, !catalog.connections.contains(where: { $0.id == sourceID }) {
                 try? identities.remove(hostKey: paired.credential.hostKey)
-                throw MobileSharingUnavailable(message: "The approved source could not be saved on this phone. Revoke this device on the host before scanning another QR code.")
+                throw LinkedDevicesUnavailable(message: "The approved connection could not be saved on this device. Revoke this device on the host before opening another pairing link.")
             }
             throw error
         }
@@ -522,7 +522,7 @@ final class MobileSharingRuntime: ObservableObject {
             markTerminal(entry, .identityChanged)
             return
         }
-        let credential: MobileSharingCredential
+        let credential: LinkedDevicesCredential
         do { credential = try identities.load(hostKey: key) }
         catch {
             statuses[entry.connection.id] = .failed(error.localizedDescription)
@@ -542,8 +542,10 @@ final class MobileSharingRuntime: ObservableObject {
             guard !Task.isCancelled, let self, let entry, self.entries[sourceID] === entry,
                   let connector = self.connector else { return }
             do {
-                let live = try await connector.reconnect(credential: credential) { [weak self, weak entry] in
-                    Task { @MainActor in self?.connectionClosed(entry, token: token) }
+                let live = try await connector.reconnect(credential: credential) { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.connectionClosed(sourceID: sourceID, token: token)
+                    }
                 }
                 guard !Task.isCancelled, self.entries[sourceID] === entry, entry.activeToken == token else { live.close(); return }
                 try await self.attach(live, to: entry, sourceID: sourceID, token: token)
@@ -551,12 +553,12 @@ final class MobileSharingRuntime: ObservableObject {
                 guard !Task.isCancelled, self.entries[sourceID] === entry, !entry.terminal,
                       entry.activeToken == token else { return }
                 entry.task = nil
-                if let protocolError = error as? MobileSharingProtocolError,
+                if let protocolError = error as? LinkedDevicesProtocolError,
                    protocolError == .hostIdentityChanged || protocolError == .badSignature {
                     self.markTerminal(entry, .identityChanged)
                     return
                 }
-                if let protocolError = error as? MobileSharingProtocolError,
+                if let protocolError = error as? LinkedDevicesProtocolError,
                    protocolError == .revoked {
                     self.markTerminal(entry, .revoked)
                     return
@@ -576,7 +578,7 @@ final class MobileSharingRuntime: ObservableObject {
         entries[sourceID] === entry && entry.activeToken == token && !entry.terminal && !entry.enrolling
     }
 
-    private func attach(_ live: MobileSharingLiveConnection, to entry: Entry,
+    private func attach(_ live: LinkedDevicesLiveConnection, to entry: Entry,
                         sourceID: UUID, token: UUID) async throws {
         guard owns(entry, sourceID: sourceID, token: token),
               let port = entry.connection.url.port, let preferredPort = UInt16(exactly: port) else {
@@ -618,7 +620,7 @@ final class MobileSharingRuntime: ObservableObject {
         }
     }
 
-    private func updateSelectedPair(for entry: Entry, live: MobileSharingLiveConnection) {
+    private func updateSelectedPair(for entry: Entry, live: LinkedDevicesLiveConnection) {
         Task { @MainActor [weak self, weak entry] in
             let stats = await live.stats()
             guard let self, let entry, self.entries[entry.connection.id] === entry,
@@ -633,6 +635,13 @@ final class MobileSharingRuntime: ObservableObject {
     /// callback interleaving as the production connector.
     func pairingTransportClosed(hostKey: Data, token: UUID) {
         guard let entry = entries.values.first(where: { self.hostKey($0.connection) == hostKey }) else { return }
+        connectionClosed(entry, token: token)
+    }
+
+    private func connectionClosed(sourceID: UUID, token: UUID) {
+        // The Sendable SDK callback carries only immutable generation identity.
+        // Resolve mutable Entry state after hopping back to the MainActor.
+        guard let entry = entries[sourceID], entry.activeToken == token else { return }
         connectionClosed(entry, token: token)
     }
 
@@ -685,8 +694,8 @@ final class MobileSharingRuntime: ObservableObject {
     }
 
     private func hostKey(_ connection: HubConnection) -> Data? {
-        guard let encoded = connection.mobileSharingHostKey,
-              let key = MobileSharingBase64URL.decode(encoded, maximumBytes: 32), key.count == 32 else { return nil }
+        guard let encoded = connection.linkedDevicesHostKey,
+              let key = LinkedDevicesBase64URL.decode(encoded, maximumBytes: 32), key.count == 32 else { return nil }
         return key
     }
 
@@ -697,10 +706,10 @@ final class MobileSharingRuntime: ObservableObject {
 
     static func shouldStopAutomatically(_ error: Error) -> Bool {
         switch error {
-        case MobileSharingBrokerError.superseded, MobileSharingBrokerError.rateLimited,
-             MobileSharingBrokerError.quotaExceeded, MobileSharingBrokerError.badRequest,
-             MobileSharingBrokerError.tooLarge, MobileSharingBrokerError.malformed,
-             MobileSharingBrokerError.invalidAddress, MobileSharingProtocolError.invalid(_):
+        case LinkedDevicesBrokerError.superseded, LinkedDevicesBrokerError.rateLimited,
+             LinkedDevicesBrokerError.quotaExceeded, LinkedDevicesBrokerError.badRequest,
+             LinkedDevicesBrokerError.tooLarge, LinkedDevicesBrokerError.malformed,
+             LinkedDevicesBrokerError.invalidAddress, LinkedDevicesProtocolError.invalid(_):
             return true
         default:
             return false
@@ -709,14 +718,14 @@ final class MobileSharingRuntime: ObservableObject {
 
     static func safeMessage(_ error: Error) -> String {
         switch error {
-        case let value as MobileSharingUnavailable: return value.message
-        case MobileSharingStorageError.hostMismatch, MobileSharingProtocolError.hostIdentityChanged: return "Host identity changed"
-        case MobileSharingStorageError.missing: return "Pairing credentials are missing. Pair again."
-        case MobileSharingStorageError.corrupt: return "Pairing credentials are unreadable. Remove the source and pair again."
-        case MobileSharingProtocolError.invalid(_): return "The host returned invalid transport data. Reconnect manually or pair again."
-        case let value as MobileSharingBrokerError where shouldStopAutomatically(value):
+        case let value as LinkedDevicesUnavailable: return value.message
+        case LinkedDevicesStorageError.hostMismatch, LinkedDevicesProtocolError.hostIdentityChanged: return "Host identity changed"
+        case LinkedDevicesStorageError.missing: return "Linked device credentials are missing. Pair again."
+        case LinkedDevicesStorageError.corrupt: return "Linked device credentials are unreadable. Forget the connection and pair again."
+        case LinkedDevicesProtocolError.invalid(_): return "The host returned invalid transport data. Connect manually or pair again."
+        case let value as LinkedDevicesBrokerError where shouldStopAutomatically(value):
             return value.localizedDescription
-        default: return "Shared host is unavailable. It will reconnect without replaying requests."
+        default: return "Linked host is unavailable. It will reconnect without replaying requests."
         }
     }
 }

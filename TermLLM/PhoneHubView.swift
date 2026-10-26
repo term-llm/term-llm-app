@@ -491,7 +491,7 @@ struct PhoneHubView: View {
 struct PhoneHubConnectionsView: View {
     @ObservedObject var connections: HubConnectionStore
     @ObservedObject var aggregate: HubAggregateStore
-    @ObservedObject private var mobileSharing = MobileSharingRuntime.shared
+    @ObservedObject private var linkedDevices = LinkedDevicesRuntime.shared
     /// Opening a chat from Hub management leaves Settings.
     let onOpenChat: (UUID, URL) -> Void
     @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
@@ -579,21 +579,21 @@ struct PhoneHubConnectionsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(source.connection.name).font(.headline)
                 .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-            if source.connection.isMobileSharing {
-                Text("Mobile Sharing · \(source.connection.mobileSharingHostKey?.prefix(12) ?? "unknown identity")…")
+            if source.connection.isLinkedDevices {
+                Text("Linked device · \(source.connection.linkedDevicesHostKey?.prefix(12) ?? "unknown identity")…")
                     .font(.caption).foregroundStyle(.secondary)
-                Text(mobileSharing.status(for: source.id).label)
+                Text(linkedDevices.status(for: source.id).label)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(mobileSharingStatusColor(source.id))
+                    .foregroundStyle(linkedDevicesStatusColor(source.id))
             } else {
                 Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if source.store.unauthorized && !source.connection.isMobileSharing {
+            if source.store.unauthorized && !source.connection.isLinkedDevices {
                 Text("Needs sign-in").foregroundStyle(.orange)
                 Button("Sign in") { showAuthentication(source) }
                     .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
-            } else if !source.connection.isMobileSharing {
+            } else if !source.connection.isLinkedDevices {
                 sourceSyncStatus(source)
                 if let error = source.error {
                     Text(error).font(.caption).foregroundStyle(.secondary)
@@ -602,16 +602,16 @@ struct PhoneHubConnectionsView: View {
             HStack {
                 Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
                     .accessibilityIdentifier("phoneHub.select.\(source.id.uuidString)")
-                if !source.connection.isMobileSharing {
+                if !source.connection.isLinkedDevices {
                     Button("Edit") { editor = PhoneHubView.Editor(source: source.connection) }
                         .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
                 }
-                Button("Remove", role: .destructive) { connections.remove(source.id) }
+                Button(source.connection.isLinkedDevices ? "Forget" : "Remove", role: .destructive) { connections.remove(source.id) }
                     .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
             }.buttonStyle(.borderless)
             HStack {
-                if source.connection.isMobileSharing {
-                    Button("Reconnect") { mobileSharing.reconnectNow(source.id) }
+                if source.connection.isLinkedDevices {
+                    Button("Connect") { linkedDevices.reconnectNow(source.id) }
                         .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
                 } else {
                     Button(source.error == nil ? "Refresh" : "Retry") {
@@ -632,8 +632,8 @@ struct PhoneHubConnectionsView: View {
         }.padding(.vertical, 4)
     }
 
-    private func mobileSharingStatusColor(_ sourceID: UUID) -> Color {
-        switch mobileSharing.status(for: sourceID) {
+    private func linkedDevicesStatusColor(_ sourceID: UUID) -> Color {
+        switch linkedDevices.status(for: sourceID) {
         case .connected(_): .green
         case .connecting: .secondary
         case .revoked, .identityChanged, .failed(_): .orange

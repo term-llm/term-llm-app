@@ -61,23 +61,23 @@ private final class BackpressuredRuntimeTestChannel: PeerFrameChannel, @unchecke
     }
 }
 
-private final class RuntimeTestConnector: MobileSharingSessionConnecting, @unchecked Sendable {
+private final class RuntimeTestConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
     let closed = LockedFlag()
-    func reconnect(credential: MobileSharingCredential,
-                   closed callback: @escaping @Sendable () -> Void) async throws -> MobileSharingLiveConnection {
+    func reconnect(credential: LinkedDevicesCredential,
+                   closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
         let authorization = PeerAuthorizationState(PeerAuthorization(
-            peerID: MobileSharingBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
+            peerID: LinkedDevicesBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
             expiresAt: .distantFuture, scopePrefix: credential.basePath ?? "/"))
         let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
         let closedFlag = closed
-        return MobileSharingLiveConnection(forwarder: multiplexer, authorization: authorization,
+        return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
                                            stats: { PeerSessionStats() }, close: {
             closedFlag.set(); multiplexer.close(); authorization.revoke(); callback()
         })
     }
 }
 
-private final class DelayedMobileSharingForwarder: PeerHTTPForwarding, @unchecked Sendable {
+private final class DelayedLinkedDevicesForwarder: PeerHTTPForwarding, @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<PeerHTTPResponse, Never>?
     private let status: Int
@@ -132,7 +132,7 @@ private final class MemoryPeerByteStream: PeerByteStream, @unchecked Sendable {
     var written: Data { lock.withLock { output } }
 }
 
-private final class MobileSharingForwarder: PeerHTTPForwarding, @unchecked Sendable {
+private final class LinkedDevicesForwarder: PeerHTTPForwarding, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedPaths: [String] = []
     let status: Int
@@ -152,26 +152,26 @@ private final class MobileSharingForwarder: PeerHTTPForwarding, @unchecked Senda
 }
 
 @MainActor
-final class MobileSharingRuntimeTests: XCTestCase {
+final class LinkedDevicesRuntimeTests: XCTestCase {
     @MainActor
     func testCatalogKeysPeerByHostIdentityAndKeepsStableOrigin() throws {
-        let suite = "MobileSharingRuntimeTests.\(UUID().uuidString)"
+        let suite = "LinkedDevicesRuntimeTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = HubConnectionStore(defaults: defaults)
         let host = Data(repeating: 7, count: 32)
-        let first = try store.saveMobileSharing(name: "Desk", hostKey: host, bridgePort: 43210, basePath: "/agent")
-        XCTAssertTrue(first.isMobileSharing)
+        let first = try store.saveLinkedDevices(name: "Desk", hostKey: host, bridgePort: 43210, basePath: "/agent")
+        XCTAssertTrue(first.isLinkedDevices)
         XCTAssertEqual(first.url.absoluteString, "http://localhost:43210/agent/")
 
-        let renamed = try store.saveMobileSharing(name: "Renamed", hostKey: host, bridgePort: 54321, basePath: "/other")
+        let renamed = try store.saveLinkedDevices(name: "Renamed", hostKey: host, bridgePort: 54321, basePath: "/other")
         XCTAssertEqual(renamed.id, first.id)
         XCTAssertEqual(renamed.url.absoluteString, "http://localhost:43210/other/",
                        "re-pairing keeps the stable port but adopts the newly signed mount")
         XCTAssertEqual(store.connections.count, 1)
 
         let document = try HubConnectionStore.validatedDocument(defaults.object(forKey: HubConnectionStore.storageKey))
-        XCTAssertEqual(document.connections.first?.mobileSharingHostKey, MobileSharingBase64URL.encode(host))
+        XCTAssertEqual(document.connections.first?.linkedDevicesHostKey, LinkedDevicesBase64URL.encode(host))
     }
 
     @MainActor
@@ -181,7 +181,7 @@ final class MobileSharingRuntimeTests: XCTestCase {
         let peer = HubConnection(id: UUID(), name: "Phone peer", kind: .directNode,
                                  url: try XCTUnwrap(URL(string: "http://localhost:43216/chat/")),
                                  needsKindReview: nil,
-                                 mobileSharingHostKey: MobileSharingBase64URL.encode(Data(repeating: 9, count: 32)))
+                                 linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: 9, count: 32)))
         let raw = try JSONEncoder().encode(HubConnectionStore.Document(connections: [https, peer], selectedID: https.id))
         let decoded = try HubConnectionStore.validatedDocument(raw) { input in
             // Force physical-device semantics: no ordinary HTTP URL is valid.
@@ -199,10 +199,10 @@ final class MobileSharingRuntimeTests: XCTestCase {
 
     func testPeerMountReplacementKeepsUUIDOwnedCapabilityStore() throws {
         let id = UUID()
-        let hostKey = MobileSharingBase64URL.encode(Data(repeating: 0x19, count: 32))
+        let hostKey = LinkedDevicesBase64URL.encode(Data(repeating: 0x19, count: 32))
         let old = HubConnection(id: id, name: "Desk", kind: .directNode,
                                 url: try XCTUnwrap(URL(string: "http://localhost:43210/chat/")),
-                                needsKindReview: nil, mobileSharingHostKey: hostKey)
+                                needsKindReview: nil, linkedDevicesHostKey: hostKey)
         var movedMount = old
         movedMount.url = try XCTUnwrap(URL(string: "http://localhost:43210/deep/mount/"))
         XCTAssertFalse(HubAggregateStore.shouldRemoveCredentialsWhenReplacing(old, with: movedMount))
@@ -257,18 +257,18 @@ final class MobileSharingRuntimeTests: XCTestCase {
 
     @MainActor
     func testCatalogRejectsDuplicateLoopbackOriginAndCorruptHostKey() throws {
-        let suite = "MobileSharingRuntimeTests.\(UUID().uuidString)"
+        let suite = "LinkedDevicesRuntimeTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = HubConnectionStore(defaults: defaults)
-        _ = try store.saveMobileSharing(name: "One", hostKey: Data(repeating: 1, count: 32), bridgePort: 43211)
-        XCTAssertThrowsError(try store.saveMobileSharing(name: "Two", hostKey: Data(repeating: 2, count: 32), bridgePort: 43211))
+        _ = try store.saveLinkedDevices(name: "One", hostKey: Data(repeating: 1, count: 32), bridgePort: 43211)
+        XCTAssertThrowsError(try store.saveLinkedDevices(name: "Two", hostKey: Data(repeating: 2, count: 32), bridgePort: 43211))
     }
 
     func testPeerSourceCannotOwnNativePushRoute() throws {
         let peer = HubConnection(id: UUID(), name: "Peer", kind: .directNode,
                                  url: try XCTUnwrap(URL(string: "http://localhost:43214/")),
-                                 mobileSharingHostKey: MobileSharingBase64URL.encode(Data(repeating: 8, count: 32)))
+                                 linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: 8, count: 32)))
         XCTAssertNil(PushCenter.owningConnection(for: peer.url.appendingPathComponent("chat/1"),
                                                   in: [peer], selectedID: peer.id))
         XCTAssertNil(PushCenter.resolveDestination(peer.url.appendingPathComponent("chat/1"), scope: "/",
@@ -276,13 +276,13 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testApprovedOfflineEnrollmentPublishesOnlyAfterOriginReservation() async throws {
-        let suite = "MobileSharingEnroll.\(UUID().uuidString)"
+        let suite = "LinkedDevicesEnroll.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
         let host = Data(repeating: 0x21, count: 32)
-        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x22, count: 32))
-        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x23, count: 16))
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: 0x22, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: 0x23, count: 16))
         credential.reconnectCapability = Data(repeating: 0x24, count: 32)
         credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
         credential.scope = "web-v1"
@@ -291,10 +291,10 @@ final class MobileSharingRuntimeTests: XCTestCase {
         try identities.save(credential)
         let catalog = HubConnectionStore(defaults: defaults)
         let listener = ControlledLoopbackListener()
-        let runtime = MobileSharingRuntime(identities: identities, connector: nil,
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: nil,
                                            makeListener: { listener })
         let task = Task { @MainActor in
-            try await runtime.enroll(.init(credential: credential, live: nil), fallbackName: "Shared host",
+            try await runtime.enroll(.init(credential: credential, live: nil), fallbackName: "Linked host",
                                      in: catalog, token: UUID())
         }
         for _ in 0..<100 where !listener.started { try await Task.sleep(nanoseconds: 5_000_000) }
@@ -308,13 +308,13 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testConnectionLossDuringEnrollmentFinalizesApprovedGrantOffline() async throws {
-        let suite = "MobileSharingEnrollLoss.\(UUID().uuidString)"
+        let suite = "LinkedDevicesEnrollLoss.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
         let host = Data(repeating: 0x71, count: 32)
-        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x72, count: 32))
-        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x73, count: 16))
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: 0x72, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: 0x73, count: 16))
         credential.reconnectCapability = Data(repeating: 0x74, count: 32)
         credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
         credential.scope = "web-v1"
@@ -322,12 +322,12 @@ final class MobileSharingRuntimeTests: XCTestCase {
         try identities.save(credential)
         let catalog = HubConnectionStore(defaults: defaults)
         let listener = ControlledLoopbackListener()
-        let runtime = MobileSharingRuntime(identities: identities, connector: nil, makeListener: { listener })
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: nil, makeListener: { listener })
         let authorization = PeerAuthorizationState(PeerAuthorization(
-            peerID: MobileSharingBase64URL.encode(host), sessionID: "first", expiresAt: .distantFuture,
+            peerID: LinkedDevicesBase64URL.encode(host), sessionID: "first", expiresAt: .distantFuture,
             scopePrefix: "/chat"))
         let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
-        let live = MobileSharingLiveConnection(forwarder: multiplexer, authorization: authorization,
+        let live = LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
                                                stats: { PeerSessionStats() }, close: {
             multiplexer.close(); authorization.revoke()
         })
@@ -354,14 +354,14 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testHostControlledInvalidBasePathFailsWithoutConstructingURL() async throws {
-        let suite = "MobileSharingInvalidPath.\(UUID().uuidString)"
+        let suite = "LinkedDevicesInvalidPath.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
         let host = Data(repeating: 0x79, count: 32)
-        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x7A, count: 32))
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: 0x7A, count: 32))
         credential.basePath = "/host controlled space"
-        let runtime = MobileSharingRuntime(identities: identities, connector: nil,
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: nil,
                                            makeListener: { ControlledLoopbackListener() })
         let catalog = HubConnectionStore(defaults: defaults)
         await XCTAssertThrowsErrorAsync(try await runtime.enroll(
@@ -370,23 +370,23 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testRemovingExistingSourceDuringRepairInvalidatesEnrollment() async throws {
-        let suite = "MobileSharingEnrollRemoval.\(UUID().uuidString)"
+        let suite = "LinkedDevicesEnrollRemoval.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let identities = MobileSharingIdentityStore(storage: MobileSharingMemoryStorage())
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
         let host = Data(repeating: 0x75, count: 32)
-        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x76, count: 32))
-        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x77, count: 16))
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: 0x76, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: 0x77, count: 16))
         credential.reconnectCapability = Data(repeating: 0x78, count: 32)
         credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
         credential.scope = "web-v1"
         credential.basePath = "/changed"
         try identities.save(credential)
         let catalog = HubConnectionStore(defaults: defaults)
-        let existing = try catalog.saveMobileSharing(name: "Desk", hostKey: host,
+        let existing = try catalog.saveLinkedDevices(name: "Desk", hostKey: host,
                                                       bridgePort: 43223, basePath: "/chat")
         let listener = ControlledLoopbackListener()
-        let runtime = MobileSharingRuntime(identities: identities, connector: nil, makeListener: { listener })
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: nil, makeListener: { listener })
         runtime.synchronize([existing])
         let task = Task { @MainActor in
             try await runtime.enroll(.init(credential: credential, live: nil), fallbackName: "Desk",
@@ -406,24 +406,24 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testLateAttachmentCannotResurrectRevokedSource() async throws {
-        let suite = "MobileSharingRace.\(UUID().uuidString)"
+        let suite = "LinkedDevicesRace.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let storage = MobileSharingMemoryStorage()
-        let identities = MobileSharingIdentityStore(storage: storage)
+        let storage = LinkedDevicesMemoryStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
         let host = Data(repeating: 0x31, count: 32)
-        var credential = MobileSharingCredential(hostKey: host, deviceSeed: Data(repeating: 0x41, count: 32))
-        credential.deviceID = MobileSharingBase64URL.encode(Data(repeating: 0x51, count: 16))
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: 0x41, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: 0x51, count: 16))
         credential.reconnectCapability = Data(repeating: 0x61, count: 32)
         credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
         credential.scope = "web-v1"
         credential.basePath = "/chat"
         try identities.save(credential)
         let catalog = HubConnectionStore(defaults: defaults)
-        let source = try catalog.saveMobileSharing(name: "Desk", hostKey: host, bridgePort: 43219, basePath: "/chat")
+        let source = try catalog.saveLinkedDevices(name: "Desk", hostKey: host, bridgePort: 43219, basePath: "/chat")
         let listener = ControlledLoopbackListener()
         let connector = RuntimeTestConnector()
-        let runtime = MobileSharingRuntime(identities: identities, connector: connector,
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
                                            makeListener: { listener })
         runtime.synchronize([source])
         for _ in 0..<100 where !listener.started { try await Task.sleep(nanoseconds: 5_000_000) }
@@ -441,13 +441,13 @@ final class MobileSharingRuntimeTests: XCTestCase {
     }
 
     func testReconnectBackoffIsBounded() {
-        XCTAssertEqual(MobileSharingRuntime.backoffNanoseconds(attempt: 0), 1_000_000_000)
-        XCTAssertEqual(MobileSharingRuntime.backoffNanoseconds(attempt: 5), 30_000_000_000)
-        XCTAssertEqual(MobileSharingRuntime.backoffNanoseconds(attempt: 100), 30_000_000_000)
-        XCTAssertTrue(MobileSharingRuntime.shouldStopAutomatically(MobileSharingBrokerError.superseded))
-        XCTAssertTrue(MobileSharingRuntime.shouldStopAutomatically(MobileSharingBrokerError.quotaExceeded))
-        XCTAssertFalse(MobileSharingRuntime.shouldStopAutomatically(MobileSharingBrokerError.notFound))
-        XCTAssertFalse(MobileSharingRuntime.shouldStopAutomatically(MobileSharingBrokerError.peerOffline))
+        XCTAssertEqual(LinkedDevicesRuntime.backoffNanoseconds(attempt: 0), 1_000_000_000)
+        XCTAssertEqual(LinkedDevicesRuntime.backoffNanoseconds(attempt: 5), 30_000_000_000)
+        XCTAssertEqual(LinkedDevicesRuntime.backoffNanoseconds(attempt: 100), 30_000_000_000)
+        XCTAssertTrue(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.superseded))
+        XCTAssertTrue(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.quotaExceeded))
+        XCTAssertFalse(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.notFound))
+        XCTAssertFalse(LinkedDevicesRuntime.shouldStopAutomatically(LinkedDevicesBrokerError.peerOffline))
     }
 }
 
@@ -496,7 +496,7 @@ final class PeerTransportTests: XCTestCase {
         let listener = ControlledLoopbackListener()
         let authorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "session",
                                                                       expiresAt: .distantFuture))
-        let bridge = PeerLoopbackBridge(forwarder: MobileSharingForwarder(), authorization: authorization,
+        let bridge = PeerLoopbackBridge(forwarder: LinkedDevicesForwarder(), authorization: authorization,
                                         listener: listener)
         let task = Task { try await bridge.startPaused() }
         for _ in 0..<100 where !listener.started { try await Task.sleep(nanoseconds: 2_000_000) }
@@ -534,9 +534,9 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testEmptyICEConfigurationIsValidForHostCandidates() throws {
-        let value = MobileSharingICECredentials(ice_servers: [], expires_at: nil)
-        XCTAssertEqual(try MobileSharingBrokerClient.validateICE(value), value)
-        XCTAssertThrowsError(try MobileSharingBrokerClient.validateICE(.init(
+        let value = LinkedDevicesICECredentials(ice_servers: [], expires_at: nil)
+        XCTAssertEqual(try LinkedDevicesBrokerClient.validateICE(value), value)
+        XCTAssertThrowsError(try LinkedDevicesBrokerClient.validateICE(.init(
             ice_servers: [PeerICEServer(urls: [], username: nil, credential: nil)], expires_at: nil)))
     }
 
@@ -567,7 +567,7 @@ final class PeerTransportTests: XCTestCase {
         ].joined().utf8)
         XCTAssertEqual(Data(request.suffix(4)), Data([0x0D, 0x0A, 0x0D, 0x0A]))
         let stream = MemoryPeerByteStream(input: request)
-        let forwarder = MobileSharingForwarder(chunks: [Data("one".utf8), Data("two".utf8)])
+        let forwarder = LinkedDevicesForwarder(chunks: [Data("one".utf8), Data("two".utf8)])
         let configuration = PeerLoopbackConnection.Configuration(
             gate: PeerLoopbackGate(port: port, capability: capability, scopePrefix: "/chat"))
         let connection = PeerLoopbackConnection(stream: stream, forwarder: forwarder,
@@ -589,12 +589,12 @@ final class PeerTransportTests: XCTestCase {
         func response(_ status: Int, _ fields: [String: String] = [:]) throws -> HTTPURLResponse {
             try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: fields))
         }
-        XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(403), isMobileSharing: true))
-        XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(401), isMobileSharing: true))
+        XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(403), isLinkedDevices: true))
+        XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(401), isLinkedDevices: true))
         XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(401, [
             PeerAuthorizationLoss.headerName: PeerAuthorizationLoss.headerValue,
-        ]), isMobileSharing: true))
-        XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(403), isMobileSharing: false))
+        ]), isLinkedDevices: true))
+        XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(403), isLinkedDevices: false))
     }
 
     func testNativePeerRequestStripsCredentialsAndProxyMetadata() throws {
@@ -613,11 +613,11 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testRouteForbiddenDoesNotRevokePeerIdentity() async throws {
-        let forwarder = MobileSharingForwarder(status: 403)
+        let forwarder = LinkedDevicesForwarder(status: 403)
         let authorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "session", expiresAt: .distantFuture))
         let transport = WebRTCHubTransport(forwarder: forwarder, authorization: authorization,
                                             hubBaseURL: URL(string: "http://localhost:43215/")!)
-        let request = URLRequest(url: URL(string: "http://localhost:43215/v1/mobile-sharing")!)
+        let request = URLRequest(url: URL(string: "http://localhost:43215/v1/linked-devices")!)
         let callback = LockedFlag()
         await XCTAssertThrowsErrorAsync(try await transport.execute(request, onUnauthorized: { callback.set() }))
         XCTAssertFalse(callback.value)
@@ -625,9 +625,9 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testCompletedGETSurvivesGenerationChangeWithoutReplay() async throws {
-        let source = MobileSharingSourceTransport()
+        let source = LinkedDevicesSourceTransport()
         let url = try XCTUnwrap(URL(string: "http://localhost:43217/v1/sessions"))
-        let forwarder = DelayedMobileSharingForwarder()
+        let forwarder = DelayedLinkedDevicesForwarder()
         let authorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "session",
                                                                       expiresAt: .distantFuture))
         source.install(WebRTCHubTransport(forwarder: forwarder, authorization: authorization,
@@ -643,9 +643,9 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testStaleUnauthorizedGETCannotRevokeReplacementGeneration() async throws {
-        let source = MobileSharingSourceTransport()
+        let source = LinkedDevicesSourceTransport()
         let url = try XCTUnwrap(URL(string: "http://localhost:43217/v1/sessions"))
-        let forwarder = DelayedMobileSharingForwarder(status: 401)
+        let forwarder = DelayedLinkedDevicesForwarder(status: 401)
         let oldAuthorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "old",
                                                                          expiresAt: .distantFuture))
         source.install(WebRTCHubTransport(forwarder: forwarder, authorization: oldAuthorization,
@@ -657,7 +657,7 @@ final class PeerTransportTests: XCTestCase {
         for _ in 0..<100 where !forwarder.started { try await Task.sleep(nanoseconds: 2_000_000) }
         let replacementAuthorization = PeerAuthorizationState(PeerAuthorization(
             peerID: "host", sessionID: "new", expiresAt: .distantFuture))
-        source.install(WebRTCHubTransport(forwarder: MobileSharingForwarder(),
+        source.install(WebRTCHubTransport(forwarder: LinkedDevicesForwarder(),
                                           authorization: replacementAuthorization,
                                           hubBaseURL: URL(string: "http://localhost:43217/")!))
         forwarder.finish()
@@ -670,11 +670,11 @@ final class PeerTransportTests: XCTestCase {
     @MainActor
     func testStaleUnauthorizedGETCannotPurgeProductionDirectWorkspace() async throws {
         let id = UUID()
-        let hostKey = MobileSharingBase64URL.encode(Data(repeating: 0x44, count: 32))
+        let hostKey = LinkedDevicesBase64URL.encode(Data(repeating: 0x44, count: 32))
         let baseURL = try XCTUnwrap(URL(string: "http://localhost:43224/chat/"))
         let connection = HubConnection(id: id, name: "Desk", kind: .directNode, url: baseURL,
-                                       needsKindReview: nil, mobileSharingHostKey: hostKey)
-        let sourceTransport = MobileSharingSourceTransport()
+                                       needsKindReview: nil, linkedDevicesHostKey: hostKey)
+        let sourceTransport = LinkedDevicesSourceTransport()
         let forwarder = ProductionStaleAuthorizationForwarder()
         let oldAuthorization = PeerAuthorizationState(PeerAuthorization(
             peerID: hostKey, sessionID: "old", expiresAt: .distantFuture, scopePrefix: "/chat"))
@@ -692,7 +692,7 @@ final class PeerTransportTests: XCTestCase {
 
         let replacementAuthorization = PeerAuthorizationState(PeerAuthorization(
             peerID: hostKey, sessionID: "new", expiresAt: .distantFuture, scopePrefix: "/chat"))
-        sourceTransport.install(WebRTCHubTransport(forwarder: MobileSharingForwarder(),
+        sourceTransport.install(WebRTCHubTransport(forwarder: LinkedDevicesForwarder(),
                                                     authorization: replacementAuthorization,
                                                     hubBaseURL: baseURL))
         forwarder.finishUnauthorized()
@@ -708,12 +708,12 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testSourceTransportNeverRetriesAcrossConnections() async throws {
-        let source = MobileSharingSourceTransport()
+        let source = LinkedDevicesSourceTransport()
         let url = try XCTUnwrap(URL(string: "http://localhost:43213/v1/sessions"))
         let request = URLRequest(url: url)
         await XCTAssertThrowsErrorAsync(try await source.execute(request, onUnauthorized: nil))
 
-        let forwarder = MobileSharingForwarder()
+        let forwarder = LinkedDevicesForwarder()
         let authorization = PeerAuthorizationState(PeerAuthorization(peerID: "host", sessionID: "session", expiresAt: .distantFuture))
         source.install(WebRTCHubTransport(forwarder: forwarder, authorization: authorization,
                                           hubBaseURL: URL(string: "http://localhost:43213/")!))

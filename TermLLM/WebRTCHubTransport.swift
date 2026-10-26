@@ -12,7 +12,7 @@ struct PeerScopeDenied: LocalizedError, Equatable, Sendable {
     let path: String
 
     var errorDescription: String? {
-        "This action is not available over the Mobile Sharing connection. Manage it from the host's own browser."
+        "This action is not available for a linked device. Manage it from the host's own browser."
     }
 }
 

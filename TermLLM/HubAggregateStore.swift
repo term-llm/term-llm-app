@@ -205,21 +205,21 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
                 try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
             }
         }
-        let mobileSharingSource = connection.isMobileSharing
+        let linkedDevicesSource = connection.isLinkedDevices
         let sourceID = id
         directClient?.on_unauthorized = { [weak self] in
-            if mobileSharingSource {
-                await MainActor.run { MobileSharingRuntime.shared.markRevoked(sourceID) }
+            if linkedDevicesSource {
+                await MainActor.run { LinkedDevicesRuntime.shared.markRevoked(sourceID) }
             }
             await self?.revokeAuthorization(expected: expected)
         }
     }
 
-    /// Mobile Sharing restoration is two-phase: finish any authorization purge
+    /// Linked devices restoration is two-phase: finish any authorization purge
     /// first, then let the runtime reinstall its current bridge capability,
     /// then expose the browser/native workspace again.
-    func prepareMobileSharingAuthorizationRestore() async -> UInt64? {
-        guard active, connection.isMobileSharing else { return nil }
+    func prepareLinkedDevicesAuthorizationRestore() async -> UInt64? {
+        guard active, connection.isLinkedDevices else { return nil }
         await resetTask?.value
         guard active else { return nil }
         authenticationEpoch &+= 1
@@ -230,8 +230,8 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     }
 
     @discardableResult
-    func completeMobileSharingAuthorizationRestore(epoch: UInt64) async -> Bool {
-        guard active, connection.isMobileSharing, authenticationEpoch == epoch else { return false }
+    func completeLinkedDevicesAuthorizationRestore(epoch: UInt64) async -> Bool {
+        guard active, connection.isLinkedDevices, authenticationEpoch == epoch else { return false }
         browserRevoked = false
         browserReady = true
         browserIdentity = UUID()
@@ -390,14 +390,14 @@ final class HubAggregateStore: ObservableObject {
     init(makeSource: @escaping @MainActor (HubConnection) -> HubSourceWorkspace = { connection in
         HubSourceWorkspace(connection: connection,
                            bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage(),
-                           transport: MobileSharingRuntime.shared.transport(for: connection))
+                           transport: LinkedDevicesRuntime.shared.transport(for: connection))
     }) { self.makeSource = makeSource }
 
     static func shouldRemoveCredentialsWhenReplacing(_ old: HubConnection,
                                                      with replacement: HubConnection?) -> Bool {
         guard let replacement, old.id == replacement.id,
-              old.isMobileSharing, replacement.isMobileSharing,
-              old.mobileSharingHostKey == replacement.mobileSharingHostKey,
+              old.isLinkedDevices, replacement.isLinkedDevices,
+              old.linkedDevicesHostKey == replacement.linkedDevicesHostKey,
               old.url.scheme?.lowercased() == replacement.url.scheme?.lowercased(),
               old.url.host?.lowercased() == replacement.url.host?.lowercased(),
               old.url.port == replacement.url.port else { return true }

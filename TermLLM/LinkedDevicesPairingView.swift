@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 @MainActor
-final class MobileSharingPairingModel: ObservableObject {
+final class LinkedDevicesPairingModel: ObservableObject {
     enum Phase: Equatable {
         case idle
         case review
@@ -13,7 +13,7 @@ final class MobileSharingPairingModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
-    @Published private(set) var link: MobileSharingPairingLink?
+    @Published private(set) var link: LinkedDevicesPairingLink?
     private var task: Task<Void, Never>?
 
     var isPresented: Bool { phase != .idle }
@@ -31,8 +31,8 @@ final class MobileSharingPairingModel: ObservableObject {
         guard url.scheme?.lowercased() == "termllm", url.host?.lowercased() == "pair" else { return false }
         task?.cancel()
         do {
-            let parsed = try MobileSharingPairingLink.parse(url.absoluteString)
-            guard !parsed.isExpired() else { throw MobileSharingProtocolError.expired }
+            let parsed = try LinkedDevicesPairingLink.parse(url.absoluteString)
+            guard !parsed.isExpired() else { throw LinkedDevicesProtocolError.expired }
             link = parsed
             phase = .review
         } catch {
@@ -42,7 +42,7 @@ final class MobileSharingPairingModel: ObservableObject {
         return true
     }
 
-    func begin(catalog: HubConnectionStore, runtime: MobileSharingRuntime) {
+    func begin(catalog: HubConnectionStore, runtime: LinkedDevicesRuntime) {
         guard let link, phase == .review else { return }
         phase = .requesting
         let deviceName = UIDevice.current.name
@@ -82,10 +82,10 @@ final class MobileSharingPairingModel: ObservableObject {
     }
 }
 
-struct MobileSharingPairingView: View {
-    @ObservedObject var model: MobileSharingPairingModel
+struct LinkedDevicesPairingView: View {
+    @ObservedObject var model: LinkedDevicesPairingModel
     @ObservedObject var catalog: HubConnectionStore
-    @ObservedObject var runtime: MobileSharingRuntime
+    @ObservedObject var runtime: LinkedDevicesRuntime
 
     var body: some View {
         NavigationStack {
@@ -94,7 +94,7 @@ struct MobileSharingPairingView: View {
                 Spacer(minLength: 0)
             }
             .padding(24)
-            .navigationTitle("Mobile Sharing")
+            .navigationTitle("Linked devices")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -114,31 +114,31 @@ struct MobileSharingPairingView: View {
         case .idle:
             EmptyView()
         case .review:
-            Image(systemName: "iphone.and.arrow.forward").font(.system(size: 48)).foregroundStyle(.blue)
+            Image(systemName: "link.circle").font(.system(size: 48)).foregroundStyle(.blue)
             Text("Connect to this host?").font(.title2.bold())
             if let link = model.link {
                 detail("Host", link.hostLabel ?? "Unnamed host")
                 detail("Host identity", link.hostFingerprint)
                 detail("Rendezvous", link.broker.host ?? "Unknown")
-                Text("Only continue if this is the host whose QR code you scanned. The host can show this app its conversations and run tools under its configured approval mode.")
+                Text("Only continue if this is the host whose QR code or pairing link you opened. The host can show this app its conversations and run tools under its configured approval mode.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("Request access") { model.begin(catalog: catalog, runtime: runtime) }
                     .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("mobileSharing.request")
+                    .accessibilityIdentifier("linkedDevices.request")
             }
         case .requesting:
             ProgressView()
-            Text("Authenticating this iPhone…").font(.headline)
+            Text("Authenticating this device…").font(.headline)
             Text("No host has been saved yet.").font(.footnote).foregroundStyle(.secondary)
         case .waitingForOwner(let sas):
             ProgressView()
-            Text("Enter this code on the host").font(.headline)
+            Text("Enter this confirmation code on the host").font(.headline)
             Text(sas)
                 .font(.system(.largeTitle, design: .monospaced).weight(.bold))
                 .tracking(6)
                 .accessibilityLabel(sas.map(String.init).joined(separator: " "))
-                .accessibilityIdentifier("mobileSharing.sas")
-            Text("The code is derived from both device identities and this one-use invitation. Keep this screen open while the owner approves it in Mobile Sharing settings.")
+                .accessibilityIdentifier("linkedDevices.confirmationCode")
+            Text("The confirmation code is derived from both device identities and this one-use invitation. Keep this screen open while the owner approves it in Linked devices settings.")
                 .font(.footnote).foregroundStyle(.secondary)
         case .connected(let name):
             Image(systemName: "checkmark.shield.fill").font(.system(size: 48)).foregroundStyle(.green)
@@ -146,7 +146,7 @@ struct MobileSharingPairingView: View {
             Text("The verified host is saved and will reconnect without another QR code if it is currently offline.")
                 .multilineTextAlignment(.center).foregroundStyle(.secondary)
             Button("Done") { model.dismiss() }.buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("mobileSharing.done")
+                .accessibilityIdentifier("linkedDevices.done")
         case .failed(let message):
             Image(systemName: "exclamationmark.shield.fill").font(.system(size: 48)).foregroundStyle(.orange)
             Text("Couldn’t connect").font(.title2.bold())
