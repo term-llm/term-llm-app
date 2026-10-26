@@ -97,12 +97,17 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
         }
         adopt(dc)
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        let offer: RTCSessionDescription = try await withCheckedThrowingContinuation { cont in
+        let offerSDP: String = try await withCheckedThrowingContinuation { cont in
             pc.offer(for: constraints) { sdp, error in
-                if let sdp { cont.resume(returning: sdp) } else { cont.resume(throwing: PeerWebRTCError.sdp(error?.localizedDescription ?? "offer")) }
+                if let sdp {
+                    let ownedSDP = String(decoding: sdp.sdp.utf8, as: UTF8.self)
+                    cont.resume(returning: ownedSDP)
+                } else {
+                    cont.resume(throwing: PeerWebRTCError.sdp(error?.localizedDescription ?? "offer"))
+                }
             }
         }
-        try await setLocal(offer, on: pc)
+        try await setLocal(RTCSessionDescription(type: .offer, sdp: offerSDP), on: pc)
         return PeerSessionDescription(type: .offer, sdp: try await gatheredLocalSDP(pc))
     }
 
@@ -166,12 +171,17 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
         guard authorized(), let pc = lock.withLock({ peerConnection }) else { throw PeerWebRTCError.unauthorized }
         try await setRemote(RTCSessionDescription(type: .offer, sdp: offer.sdp), on: pc)
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        let answer: RTCSessionDescription = try await withCheckedThrowingContinuation { cont in
+        let answerSDP: String = try await withCheckedThrowingContinuation { cont in
             pc.answer(for: constraints) { sdp, error in
-                if let sdp { cont.resume(returning: sdp) } else { cont.resume(throwing: PeerWebRTCError.sdp(error?.localizedDescription ?? "answer")) }
+                if let sdp {
+                    let ownedSDP = String(decoding: sdp.sdp.utf8, as: UTF8.self)
+                    cont.resume(returning: ownedSDP)
+                } else {
+                    cont.resume(throwing: PeerWebRTCError.sdp(error?.localizedDescription ?? "answer"))
+                }
             }
         }
-        try await setLocal(answer, on: pc)
+        try await setLocal(RTCSessionDescription(type: .answer, sdp: answerSDP), on: pc)
         return PeerSessionDescription(type: .answer, sdp: try await gatheredLocalSDP(pc))
     }
 
@@ -216,13 +226,22 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
 
     func stats() async -> PeerSessionStats {
         guard let pc = lock.withLock({ peerConnection }) else { return PeerSessionStats() }
-        let report: RTCStatisticsReport = await withCheckedContinuation { cont in
-            pc.statistics { cont.resume(returning: $0) }
+        return await withCheckedContinuation { cont in
+            pc.statistics { report in
+                // RTCStatisticsReport and its Objective-C values remain on the
+                // SDK callback. Only our immutable Sendable snapshot crosses.
+                let entries = report.statistics.values.map { statistic in
+                    PeerStatsEntry(
+                        id: statistic.id,
+                        type: statistic.type,
+                        values: statistic.values.reduce(into: [String: Any]()) { values, item in
+                            values[item.key] = item.value
+                        }
+                    )
+                }
+                cont.resume(returning: PeerSessionStats.parse(entries))
+            }
         }
-        let entries = report.statistics.values.map { s in
-            PeerStatsEntry(id: s.id, type: s.type, values: s.values.reduce(into: [String: Any]()) { $0[$1.key] = $1.value })
-        }
-        return PeerSessionStats.parse(entries)
     }
 
     func restartIce() { lock.withLock { peerConnection }?.restartIce() }

@@ -166,6 +166,19 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertNotIn('term-llm/pairing/v1', source)
         self.assertNotIn('offer_sdp: LinkedDevicesB64', source)
 
+    def test_webrtc_callbacks_copy_sdk_objects_before_continuation_resume(self):
+        source = (ROOT / "TermLLM/PeerWebRTCSession.swift").read_text()
+        self.assertIn("let offerSDP: String = try await withCheckedThrowingContinuation", source)
+        self.assertIn("let answerSDP: String = try await withCheckedThrowingContinuation", source)
+        self.assertEqual(source.count("String(decoding: sdp.sdp.utf8, as: UTF8.self)"), 2)
+        self.assertIn("setLocal(RTCSessionDescription(type: .offer, sdp: offerSDP)", source)
+        self.assertIn("setLocal(RTCSessionDescription(type: .answer, sdp: answerSDP)", source)
+        self.assertIn("cont.resume(returning: PeerSessionStats.parse(entries))", source)
+        self.assertNotIn("let offer: RTCSessionDescription = try await", source)
+        self.assertNotIn("let answer: RTCSessionDescription = try await", source)
+        self.assertNotIn("let report: RTCStatisticsReport = await", source)
+        self.assertNotIn("pc.statistics { cont.resume(returning:", source)
+
 
 if __name__ == "__main__":
     unittest.main()
