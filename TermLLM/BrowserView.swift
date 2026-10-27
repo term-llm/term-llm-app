@@ -147,7 +147,8 @@ struct BrowserView: UIViewRepresentable {
     /// Isolated source pages may never commit an ancestor/sibling same-origin
     /// document: direct frontend token storage is origin-wide, not path-wide.
     var connectionMount: URL? = nil
-    /// Peer sources are text/data only and must never gain camera or microphone.
+    /// Explicit capture master switch. Linked sources additionally require the
+    /// validated bridge's main-frame microphone-only policy below.
     var allowsMediaCapture = true
     /// Uses authenticated bridge metadata to distinguish remote 401 from local
     /// capability/scope failures. Ordinary HTTP sources keep legacy behavior.
@@ -155,6 +156,34 @@ struct BrowserView: UIViewRepresentable {
     var onAuthorizationRevoked: () -> Void = {}
     /// Committed main document only; provisional destinations are not retained context.
     var onDocumentCommitted: (URL) -> Void = { _ in }
+
+    /// Pure WebKit permission policy; granting here does not bypass iOS's
+    /// app-level microphone authorization. No capture API is called natively.
+    func mediaCaptureDecision(originScheme: String, originHost: String, originPort: Int,
+                              frameURL: URL?, isMainFrame: Bool,
+                              type: WKMediaCaptureType) -> WKPermissionDecision {
+        guard allowsMediaCapture else { return .deny }
+        let matchesOrigin = isHubOrigin(scheme: originScheme, host: originHost, port: originPort)
+        if isLinkedDevices {
+            guard type == .microphone, isMainFrame, matchesOrigin,
+                  let mount = connectionMount, HubConnectionStore.isLinkedDevicesBridgeURL(mount),
+                  HubNavigation.isWithinMount(url, server: mount),
+                  let frameURL, HubNavigation.isWithinMount(frameURL, server: mount) else { return .deny }
+            // Pairing is not microphone consent. Keep WebKit's per-origin
+            // permission prompt as well as iOS's app-level authorization.
+            return .prompt
+        }
+        // Preserve the ordinary HTTP/HTTPS policy, including WebKit prompts
+        // for cameras, other origins and combined capture requests.
+        return type == .microphone && matchesOrigin ? .grant : .prompt
+    }
+
+    private func isHubOrigin(scheme originScheme: String, host originHost: String, port originPort: Int) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
+        let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : 0
+        return originScheme.lowercased() == scheme && originHost.lowercased() == host &&
+            (originPort == 0 ? defaultPort : originPort) == (url.port ?? defaultPort)
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -728,19 +757,14 @@ struct BrowserView: UIViewRepresentable {
             return nil
         }
 
-        // The configured hub already has app-level microphone permission; don't re-prompt on every live session.
+        // Ordinary configured microphone origins keep their existing grant;
+        // linked sources retain a per-origin prompt. iOS owns app authorization.
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
-            guard parent.allowsMediaCapture else {
-                decisionHandler(.deny)
-                return
-            }
-            guard type == .microphone, isHubOrigin(origin) else {
-                decisionHandler(.prompt)
-                return
-            }
-            decisionHandler(.grant)
+            decisionHandler(parent.mediaCaptureDecision(
+                originScheme: origin.protocol, originHost: origin.host, originPort: origin.port,
+                frameURL: frame.request.url, isMainFrame: frame.isMainFrame, type: type))
         }
 
         // iOS owns the one-time location authorization; skip WebKit's per-page prompt for the hub.
@@ -756,14 +780,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         private func isHubOrigin(_ origin: WKSecurityOrigin) -> Bool {
-            guard let scheme = parent.url.scheme?.lowercased(), let host = parent.url.host?.lowercased() else {
-                return false
-            }
-            let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : 0
-            let expectedPort = parent.url.port ?? defaultPort
-            let originPort = origin.port == 0 ? defaultPort : origin.port
-            return origin.protocol.lowercased() == scheme && origin.host.lowercased() == host &&
-                originPort == expectedPort
+            parent.isHubOrigin(scheme: origin.protocol, host: origin.host, port: origin.port)
         }
 
         private func isLoginRoute(_ destination: URL) -> Bool {

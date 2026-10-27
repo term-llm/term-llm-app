@@ -69,6 +69,111 @@ final class BrowserLifecycleTests: XCTestCase {
         return view
     }
 
+    private func linkedMediaBrowser() -> BrowserView {
+        var parent = browser(State(), url: URL(string: "http://localhost:43212/ui/")!)
+        parent.connectionMount = parent.url
+        parent.isLinkedDevices = true
+        return parent
+    }
+
+    private func linkedCapture(_ parent: BrowserView, scheme: String = "http", host: String = "localhost",
+                               port: Int = 43212, frame: String? = "http://localhost:43212/ui/chat/7",
+                               mainFrame: Bool = true, type: WKMediaCaptureType = .microphone) -> WKPermissionDecision {
+        parent.mediaCaptureDecision(originScheme: scheme, originHost: host, originPort: port,
+                                    frameURL: frame.flatMap(URL.init(string:)), isMainFrame: mainFrame, type: type)
+    }
+
+    func testLinkedMicrophonePromptsOnlyForMainFrameWithinConfiguredMount() {
+        let parent = linkedMediaBrowser()
+        for path in ["/ui", "/ui/", "/ui/chat/7?new=1"] {
+            XCTAssertEqual(linkedCapture(parent, frame: "http://localhost:43212" + path), .prompt)
+        }
+        XCTAssertEqual(linkedCapture(parent, mainFrame: false), .deny)
+        XCTAssertEqual(linkedCapture(parent, frame: nil), .deny)
+        for path in ["/", "/other/", "/ui-other/", "/ui/../other", "/ui/%2e%2e/other",
+                     "/ui/chat%2f7", "/ui/%252e%252e/other"] {
+            XCTAssertEqual(linkedCapture(parent, frame: "http://localhost:43212" + path), .deny, path)
+        }
+    }
+
+    func testLinkedMicrophoneRequiresExactSecurityOriginAndFrameOrigin() {
+        let parent = linkedMediaBrowser()
+        XCTAssertEqual(linkedCapture(parent, scheme: "https"), .deny)
+        XCTAssertEqual(linkedCapture(parent, host: "other.example"), .deny)
+        XCTAssertEqual(linkedCapture(parent, host: "127.0.0.1"), .deny)
+        XCTAssertEqual(linkedCapture(parent, port: 43213), .deny)
+        XCTAssertEqual(linkedCapture(parent, port: 0), .deny)
+        for frame in ["https://localhost:43212/ui/", "http://localhost:43213/ui/",
+                      "http://localhost/ui/", "http://127.0.0.1:43212/ui/",
+                      "http://other.example:43212/ui/", "http://user@localhost:43212/ui/"] {
+            XCTAssertEqual(linkedCapture(parent, frame: frame), .deny, frame)
+        }
+    }
+
+    func testLinkedCaptureDeniesCameraAndCombinedRequestsEvenForTrustedMainFrame() {
+        let parent = linkedMediaBrowser()
+        for type: WKMediaCaptureType in [.camera, .cameraAndMicrophone] {
+            XCTAssertEqual(linkedCapture(parent, type: type), .deny)
+            XCTAssertEqual(linkedCapture(parent, mainFrame: false, type: type), .deny)
+        }
+    }
+
+    func testLinkedCaptureFailsClosedWithoutValidatedConfiguredBridgeMount() {
+        var parent = linkedMediaBrowser()
+        parent.connectionMount = nil
+        XCTAssertEqual(linkedCapture(parent), .deny)
+        for mount in ["https://localhost:43212/ui/", "http://127.0.0.1:43212/ui/",
+                      "http://other.example:43212/ui/", "http://localhost/ui/",
+                      "http://localhost:80/ui/", "http://localhost:43213/ui/",
+                      "http://localhost:43212/other/", "http://localhost:43212/ui/?scope=1"] {
+            parent.connectionMount = URL(string: mount)!
+            XCTAssertEqual(linkedCapture(parent), .deny, mount)
+        }
+        // A valid mount alone cannot authorize a differently configured page.
+        parent = browser(State(), url: URL(string: "http://localhost:43213/ui/")!)
+        parent.isLinkedDevices = true
+        parent.connectionMount = URL(string: "http://localhost:43212/ui/")!
+        XCTAssertEqual(linkedCapture(parent, port: 43213, frame: "http://localhost:43213/ui/"), .deny)
+    }
+
+    func testMediaCaptureMasterSwitchDeniesBothLinkedAndOrdinarySources() {
+        for var parent in [linkedMediaBrowser(), browser(State())] {
+            parent.allowsMediaCapture = false
+            for type: WKMediaCaptureType in [.microphone, .camera, .cameraAndMicrophone] {
+                XCTAssertEqual(parent.mediaCaptureDecision(originScheme: parent.url.scheme!, originHost: parent.url.host!,
+                                                          originPort: parent.url.port ?? 443, frameURL: parent.url,
+                                                          isMainFrame: true, type: type), .deny)
+            }
+        }
+    }
+
+    func testOrdinaryMediaCapturePolicyRemainsUnchanged() {
+        for address in ["https://example.com/ui/", "http://example.com/ui/"] {
+            let parent = browser(State(), url: URL(string: address)!)
+            let scheme = parent.url.scheme!
+            // Existing ordinary-source behavior does not require a main frame,
+            // request URL or configured mount, and accepts the default origin port.
+            for mainFrame in [true, false] {
+                for port in [0, scheme == "https" ? 443 : 80] {
+                    XCTAssertEqual(parent.mediaCaptureDecision(originScheme: scheme, originHost: "example.com",
+                                                              originPort: port, frameURL: nil, isMainFrame: mainFrame,
+                                                              type: .microphone), .grant)
+                }
+            }
+            for type: WKMediaCaptureType in [.camera, .cameraAndMicrophone] {
+                XCTAssertEqual(parent.mediaCaptureDecision(originScheme: scheme, originHost: "example.com",
+                                                          originPort: 0, frameURL: parent.url, isMainFrame: true,
+                                                          type: type), .prompt)
+            }
+            for (originScheme, host, port) in [(scheme, "other.example", 0), (scheme, "example.com", 43212),
+                                             (scheme == "https" ? "http" : "https", "example.com", 0)] {
+                XCTAssertEqual(parent.mediaCaptureDecision(originScheme: originScheme, originHost: host,
+                                                          originPort: port, frameURL: parent.url, isMainFrame: true,
+                                                          type: .microphone), .prompt)
+            }
+        }
+    }
+
     func testRetainedChatContextIsReportedOnlyForCommittedDocuments() {
         let state = State()
         var commits: [URL] = []

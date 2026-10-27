@@ -539,7 +539,7 @@ struct ContentView: View {
                         websiteDataStore: HubFixture.isEnabled ? nil : selectedWorkspace?.security?.dataStore,
                         authenticationScript: browserAuthenticationScript,
                         connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
-                        allowsMediaCapture: !isLinkedDevices,
+                        allowsMediaCapture: true,
                         isLinkedDevices: isLinkedDevices,
                         onAuthorizationRevoked: {
                             guard !HubFixture.isEnabled, let source, source.isActive,

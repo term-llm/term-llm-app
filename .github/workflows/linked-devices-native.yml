@@ -67,6 +67,7 @@ jobs:
             -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
             -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
             -only-testing:TermLLMTests/PeerNWLoopbackListenerTests \
+            -only-testing:TermLLMTests/LinkedDevicesLiveWebKitTests \
             -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
             -only-testing:TermLLMTests/PeerTransportTests \
             -only-testing:TermLLMTests/DirectNodeClientTests \
