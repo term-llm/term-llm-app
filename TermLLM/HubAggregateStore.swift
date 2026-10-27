@@ -205,7 +205,39 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
                 try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
             }
         }
-        directClient?.on_unauthorized = { [weak self] in await self?.revokeAuthorization(expected: expected) }
+        let linkedDevicesSource = connection.isLinkedDevices
+        let sourceID = id
+        directClient?.on_unauthorized = { [weak self] in
+            if linkedDevicesSource {
+                await MainActor.run { LinkedDevicesRuntime.shared.markRevoked(sourceID) }
+            }
+            await self?.revokeAuthorization(expected: expected)
+        }
+    }
+
+    /// Linked devices restoration is two-phase: finish any authorization purge
+    /// first, then let the runtime reinstall its current bridge capability,
+    /// then expose the browser/native workspace again.
+    func prepareLinkedDevicesAuthorizationRestore() async -> UInt64? {
+        guard active, connection.isLinkedDevices else { return nil }
+        await resetTask?.value
+        guard active else { return nil }
+        authenticationEpoch &+= 1
+        security?.nextEpoch()
+        security?.authorizeCookieReads()
+        installAuthorizationContext()
+        return authenticationEpoch
+    }
+
+    @discardableResult
+    func completeLinkedDevicesAuthorizationRestore(epoch: UInt64) async -> Bool {
+        guard active, connection.isLinkedDevices, authenticationEpoch == epoch else { return false }
+        browserRevoked = false
+        browserReady = true
+        browserIdentity = UUID()
+        authenticationError = nil
+        await store.resumeAfterAuthentication()
+        return active && authenticationEpoch == epoch && !store.unauthorized
     }
 
     func revokeAuthorization(expected: UInt64? = nil) {
@@ -356,13 +388,31 @@ final class HubAggregateStore: ObservableObject {
     private let makeSource: @MainActor (HubConnection) -> HubSourceWorkspace
 
     init(makeSource: @escaping @MainActor (HubConnection) -> HubSourceWorkspace = { connection in
-        HubSourceWorkspace(connection: connection, bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage())
+        HubSourceWorkspace(connection: connection,
+                           bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage(),
+                           transport: LinkedDevicesRuntime.shared.transport(for: connection))
     }) { self.makeSource = makeSource }
+
+    static func shouldRemoveCredentialsWhenReplacing(_ old: HubConnection,
+                                                     with replacement: HubConnection?) -> Bool {
+        guard let replacement, old.id == replacement.id,
+              old.isLinkedDevices, replacement.isLinkedDevices,
+              old.linkedDevicesHostKey == replacement.linkedDevicesHostKey,
+              old.url.scheme?.lowercased() == replacement.url.scheme?.lowercased(),
+              old.url.host?.lowercased() == replacement.url.host?.lowercased(),
+              old.url.port == replacement.url.port else { return true }
+        // A re-pair may update only the signed mount while retaining the same
+        // UUID-owned WebKit store and loopback origin. Clearing that store here
+        // would race and erase the newly installed capability cookie.
+        return false
+    }
 
     func synchronize(_ connections: [HubConnection]) {
         let old = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         for source in sources where !connections.contains(where: { $0.id == source.id && $0.url == source.connection.url && $0.kind == source.connection.kind }) {
-            source.dispose(removeCredentials: true)
+            let replacement = connections.first { $0.id == source.id }
+            source.dispose(removeCredentials: Self.shouldRemoveCredentialsWhenReplacing(source.connection,
+                                                                                         with: replacement))
             observations[source.id] = nil
         }
         let updated = connections.map { connection in

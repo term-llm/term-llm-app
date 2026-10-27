@@ -118,7 +118,14 @@ def check_native_review_contract():
     assert 'padding(toLength: 3, withPad: "0"' in metadata
     assert "(metadata.runEpoch ?? 0) > 0" in metadata
     voice = (ROOT / "TermLLM/ContentView.swift").read_text()
-    assert "isKeyScene: push.isKeyScene(pushWindowID)" in voice
+    launch = voice.split("    private func beginVoiceLaunch(", 1)[1].split("    private func finishVoiceLaunch(", 1)[0]
+    assert "voiceRequest == nil, scenePhase == .active" in launch
+    assert 'let windowID = pushWindowID ?? (isFixture ? "fixture" : nil)' in launch
+    assert "voiceLaunches.claim(id, windowID: windowID, isKeyScene: isFixture || push.isKeyScene(windowID))" in launch
+    assert "guard let pushWindowID, push.isKeyScene(pushWindowID) else { return false }" in voice
+    shortcut = (ROOT / "TermLLM/VoiceShortcut.swift").read_text()
+    claim = shortcut.split("    func claim(", 1)[1].split("    func requestLaunch()", 1)[0]
+    assert "guard request == id, isKeyScene, ownerWindowID == nil else { return false }" in claim
     print("PASS: safe native-ID vectors and scoped source guards for journal-first writes, bounded locks, commit-only invalidation and manual/key-scene routing (structural, NOT Swift execution)")
 
 

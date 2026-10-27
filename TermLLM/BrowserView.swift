@@ -106,6 +106,13 @@ struct BrowserView: UIViewRepresentable {
         return .httpError(response.statusCode)
     }
 
+    nonisolated static func shouldRevokeAuthorization(for response: HTTPURLResponse,
+                                                      isLinkedDevices: Bool) -> Bool {
+        guard isLinkedDevices else { return response.statusCode == 401 || response.statusCode == 403 }
+        return response.statusCode == 401 &&
+            response.value(forHTTPHeaderField: PeerAuthorizationLoss.headerName) == PeerAuthorizationLoss.headerValue
+    }
+
     let url: URL
     @Binding var loading: Bool
     @Binding var canGoBack: Bool
@@ -140,6 +147,11 @@ struct BrowserView: UIViewRepresentable {
     /// Isolated source pages may never commit an ancestor/sibling same-origin
     /// document: direct frontend token storage is origin-wide, not path-wide.
     var connectionMount: URL? = nil
+    /// Peer sources are text/data only and must never gain camera or microphone.
+    var allowsMediaCapture = true
+    /// Uses authenticated bridge metadata to distinguish remote 401 from local
+    /// capability/scope failures. Ordinary HTTP sources keep legacy behavior.
+    var isLinkedDevices = false
     var onAuthorizationRevoked: () -> Void = {}
     /// Committed main document only; provisional destinations are not retained context.
     var onDocumentCommitted: (URL) -> Void = { _ in }
@@ -591,7 +603,10 @@ struct BrowserView: UIViewRepresentable {
             }
             rejectedHTTPResponse = true
             parent.loading = false
-            if response.statusCode == 401 || response.statusCode == 403 { parent.onAuthorizationRevoked() }
+            if BrowserView.shouldRevokeAuthorization(for: response,
+                                                      isLinkedDevices: parent.isLinkedDevices) {
+                parent.onAuthorizationRevoked()
+            }
             switch recovery {
             case .signIn:
                 parent.loginRequired = true
@@ -672,6 +687,10 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
+            guard parent.allowsMediaCapture else {
+                decisionHandler(.deny)
+                return
+            }
             guard type == .microphone, isHubOrigin(origin) else {
                 decisionHandler(.prompt)
                 return
@@ -684,7 +703,11 @@ struct BrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo,
                      decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
-            decisionHandler(isHubOrigin(origin) ? .grant : .prompt)
+            if parent.isLinkedDevices {
+                decisionHandler(.deny)
+            } else {
+                decisionHandler(isHubOrigin(origin) ? .grant : .prompt)
+            }
         }
 
         private func isHubOrigin(_ origin: WKSecurityOrigin) -> Bool {

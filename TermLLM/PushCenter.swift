@@ -620,7 +620,7 @@ final class PushCenter: NSObject, ObservableObject {
     /// ties. Connections awaiting kind review cannot open pages, so never own.
     static func owningConnection(for url: URL, in connections: [HubConnection], selectedID: UUID?) -> HubConnection? {
         connections
-            .filter { $0.needsKindReview != true && HubNavigation.isWithinMount(url, server: $0.url) }
+            .filter { !$0.isLinkedDevices && $0.needsKindReview != true && HubNavigation.isWithinMount(url, server: $0.url) }
             .max { a, b in
                 if a.mountPath.count != b.mountPath.count { return a.mountPath.count < b.mountPath.count }
                 return a.id != selectedID && b.id == selectedID
@@ -659,7 +659,7 @@ final class PushCenter: NSObject, ObservableObject {
     /// or the connection root, never on a 404.
     static func resolveDestination(_ url: URL, scope: String?, in connections: [HubConnection],
                                    selectedID: UUID?) -> (url: URL, connection: HubConnection)? {
-        let candidates = connections.filter { $0.needsKindReview != true && sameOrigin($0.url, url) }
+        let candidates = connections.filter { !$0.isLinkedDevices && $0.needsKindReview != true && sameOrigin($0.url, url) }
         guard !candidates.isEmpty else { return nil }
         let intent = PushIntent.parse(path: url.path, scope: scope)
         if let owner = owningConnection(for: url, in: candidates, selectedID: selectedID) {

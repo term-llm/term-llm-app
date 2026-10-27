@@ -27,12 +27,15 @@ jobs:
           source scripts/ci/bootstrap-macos.sh
           printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
           printf 'NATIVE_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-native.XXXXXX")" >> "$GITHUB_ENV"
-      - name: Select an existing available iPhone simulator
+      - name: Create and boot a job-owned disposable iPhone simulator
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/test_select_ios_simulator.py
-          udid="$(python3 scripts/select-ios-simulator.py)"
+          python3 scripts/ci/test_owned_ios_simulator.py
+          simulator_name="term-llm-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          udid="$(python3 scripts/ci/owned-ios-simulator.py create \
+            --name "$simulator_name" \
+            --state-file "$NATIVE_TEST_DIR/owned-simulator.json")"
           printf 'SIMULATOR_UDID=%s\n' "$udid" >> "$GITHUB_ENV"
           xcodebuild -version
       - name: Build and run isolated notification regressions without signing
@@ -59,8 +62,22 @@ jobs:
             -only-testing:TermLLMTests/NotificationReviewRegressionTests \
             -only-testing:TermLLMTests/BrowserLifecycleTests \
             -only-testing:TermLLMTests/VoiceShortcutTests \
+            -only-testing:TermLLMTests/LinkedDevicesProtocolTests \
+            -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
+            -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
+            -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
+            -only-testing:TermLLMTests/PeerTransportTests \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
             2>&1 | tee "$NATIVE_TEST_DIR/xcodebuild.log"
+      - name: Delete only the job-owned simulator
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-native.* ]]; then
+            python3 scripts/ci/owned-ios-simulator.py cleanup \
+              --state-file "$NATIVE_TEST_DIR/owned-simulator.json"
+          fi
       # Keep logs in the job output; do not incur GitHub artifact storage charges.
       - name: Clean temporary native build results
         if: always()

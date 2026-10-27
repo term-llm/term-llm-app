@@ -11,6 +11,10 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
     var kind: Kind
     var url: URL
     var needsKindReview: Bool?
+    /// Present only for a Linked devices source. This pinned Ed25519 host key,
+    /// not the loopback browser URL, is the durable source/trust identity.
+    var linkedDevicesHostKey: String? = nil
+    var isLinkedDevices: Bool { linkedDevicesHostKey != nil }
     var mountPath: String {
         let prefix = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return prefix.isEmpty ? "/" : "/" + prefix + "/"
@@ -52,16 +56,35 @@ final class HubConnectionStore: ObservableObject {
     /// Single, side-effect-free validation path for UI and credential readers.
     /// A missing catalog is not permission to borrow the ambient WebKit jar.
     static func validatedDocument(_ raw: Any?) throws -> Document {
+        try validatedDocument(raw, canonicalOrdinaryURL: { canonicalURL($0) })
+    }
+
+    static func validatedDocument(_ raw: Any?,
+                                  canonicalOrdinaryURL: (String) -> URL?) throws -> Document {
         guard let data = raw as? Data,
               var doc = try? JSONDecoder().decode(Document.self, from: data),
               Set(doc.connections.map(\.id)).count == doc.connections.count,
               doc.selectedID == nil || doc.connections.contains(where: { $0.id == doc.selectedID }) else { throw ValidationError.corrupt }
+        var identities = Set<String>()
         var endpoints = Set<String>()
         for index in doc.connections.indices {
             let source = doc.connections[index]
-            guard let url = canonicalURL(source.url.absoluteString),
-                  !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  endpoints.insert(url.absoluteString).inserted else { throw ValidationError.corrupt }
+            let url = source.linkedDevicesHostKey == nil
+                ? canonicalOrdinaryURL(source.url.absoluteString)
+                : canonicalLinkedDevicesBridgeURL(source.url.absoluteString)
+            guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let url, endpoints.insert(url.absoluteString).inserted else {
+                throw ValidationError.corrupt
+            }
+            if let encodedKey = source.linkedDevicesHostKey {
+                guard source.kind == .directNode, source.needsKindReview != true,
+                      let key = LinkedDevicesBase64URL.decode(encodedKey, maximumBytes: 32), key.count == 32,
+                      Self.isLinkedDevicesBridgeURL(url), identities.insert("peer:\(encodedKey)").inserted else {
+                    throw ValidationError.corrupt
+                }
+            } else {
+                guard identities.insert("http:\(url.absoluteString)").inserted else { throw ValidationError.corrupt }
+            }
             doc.connections[index].url = url
         }
         return doc
@@ -103,6 +126,64 @@ final class HubConnectionStore: ObservableObject {
         normalized.path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         normalized.path = normalized.path.isEmpty ? "/" : "/" + normalized.path + "/"
         return normalized.url
+    }
+
+    /// Dedicated validator for the app-owned loopback bridge. It deliberately
+    /// does not call `ServerAddress.parse`: physical devices reject arbitrary
+    /// HTTP servers, while this narrowly constrained URL is local metadata.
+    static func canonicalLinkedDevicesBridgeURL(_ input: String) -> URL? {
+        guard var parts = URLComponents(string: input),
+              parts.scheme?.lowercased() == "http", parts.host?.lowercased() == "localhost",
+              let port = parts.port, (1024...65535).contains(port),
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              !parts.percentEncodedPath.contains("%"), !parts.path.contains("\\"),
+              !parts.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              !parts.path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0 == "." || $0 == ".." }),
+              !parts.path.contains("//") else { return nil }
+        parts.scheme = "http"
+        parts.host = "localhost"
+        let path = parts.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        parts.path = path.isEmpty ? "/" : "/" + path + "/"
+        return parts.url
+    }
+
+    static func isLinkedDevicesBridgeURL(_ url: URL) -> Bool {
+        canonicalLinkedDevicesBridgeURL(url.absoluteString) == url
+    }
+
+    /// Adds or updates a paired source by its pinned host identity. The local
+    /// bridge URL is presentation/transport metadata and never its identity.
+    @discardableResult
+    func saveLinkedDevices(id: UUID? = nil, name: String, hostKey: Data, bridgePort: UInt16,
+                           basePath: String = "/") throws -> HubConnection {
+        let normalizedPath = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let path = normalizedPath.isEmpty ? "/" : "/" + normalizedPath + "/"
+        guard persistenceError == nil, hostKey.count == 32, bridgePort >= 1024,
+              LinkedDevicesCrypto.validBasePath(basePath),
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let url = URL(string: "http://localhost:\(bridgePort)\(path)") else { throw ValidationError.invalid }
+        let encodedKey = LinkedDevicesBase64URL.encode(hostKey)
+        if let index = connections.firstIndex(where: { $0.linkedDevicesHostKey == encodedKey }) {
+            connections[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Keep the original port/origin but follow the newly signed mount.
+            guard let oldPort = connections[index].url.port,
+                  let updated = URL(string: "http://localhost:\(oldPort)\(path)"),
+                  let canonical = Self.canonicalLinkedDevicesBridgeURL(updated.absoluteString) else {
+                throw ValidationError.corrupt
+            }
+            connections[index].url = canonical
+            connections[index].needsKindReview = nil
+            persist()
+            return connections[index]
+        }
+        guard !connections.contains(where: { $0.url == url }) else { throw ValidationError.duplicate }
+        let source = HubConnection(id: id ?? UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                   kind: .directNode, url: url, needsKindReview: nil,
+                                   linkedDevicesHostKey: encodedKey)
+        connections.append(source)
+        if selectedID == nil { selectedID = source.id }
+        persist()
+        return source
     }
 
     /// Discover new endpoints without borrowing credentials or guessing on failure.

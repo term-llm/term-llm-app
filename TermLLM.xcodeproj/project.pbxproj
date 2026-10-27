@@ -103,12 +103,32 @@
 		0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */; };
 		182D89182D17BAE1087A6D03 /* HubCookieScopeRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9D71BAC8F7FF2161C7259C /* HubCookieScopeRegistry.swift */; };
 		19A6D3E3F8A79E718425112C /* HubConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */; };
+		2D965D04B8979858890EE276 /* linked-devices-vectors-v2.json in Resources */ = {isa = PBXBuildFile; fileRef = 1F6C9A57657458DF79A98E6A /* linked-devices-vectors-v2.json */; };
 		3AF4906EC6C114D388E8B6CA /* HubConnectionSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */; };
 		69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */; };
 		73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */; };
 		759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */; };
 		7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */; };
 		9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */; };
+		A20000000000000000000001 /* PeerWireProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* PeerWireProtocol.swift */; };
+		A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* PeerHTTPMultiplexer.swift */; };
+		A20000000000000000000003 /* PeerSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* PeerSession.swift */; };
+		A20000000000000000000004 /* PeerWebRTCSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* PeerWebRTCSession.swift */; };
+		A20000000000000000000005 /* WebRTCHubTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* WebRTCHubTransport.swift */; };
+		A20000000000000000000006 /* PeerLoopbackBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* PeerLoopbackBridge.swift */; };
+		A20000000000000000000007 /* PeerLoopbackHTTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* PeerLoopbackHTTP.swift */; };
+		A20000000000000000000008 /* PeerLoopbackListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* PeerLoopbackListener.swift */; };
+		A20000000000000000000009 /* LinkedDevicesIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* LinkedDevicesIdentityStore.swift */; };
+		A2000000000000000000000A /* LinkedDevicesProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000A /* LinkedDevicesProtocol.swift */; };
+		A2000000000000000000000B /* LinkedDevicesBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* LinkedDevicesBroker.swift */; };
+		A2000000000000000000000C /* LinkedDevicesConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000C /* LinkedDevicesConnector.swift */; };
+		A2000000000000000000000D /* LinkedDevicesRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* LinkedDevicesRuntime.swift */; };
+		A2000000000000000000000E /* LinkedDevicesPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* LinkedDevicesPairingView.swift */; };
+		A2000000000000000000000F /* LinkedDevicesDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */; };
+		A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */; };
+		A21000000000000000000002 /* LinkedDevicesProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */; };
+		A21000000000000000000003 /* LinkedDevicesRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000003 /* LinkedDevicesRuntimeTests.swift */; };
+		A30200000000000000000001 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = A30100000000000000000001 /* WebRTC */; };
 		ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */; };
 		FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */; };
 /* End PBXBuildFile section */
@@ -247,10 +267,29 @@
 		000000000000000000000807 /* HubNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubNavigationTests.swift; sourceTree = "<group>"; };
 		006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionSecurity.swift; sourceTree = "<group>"; };
 		0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStore.swift; sourceTree = "<group>"; };
+		1F6C9A57657458DF79A98E6A /* linked-devices-vectors-v2.json */ = {isa = PBXFileReference; includeInIndex = 1; path = "linked-devices-vectors-v2.json"; sourceTree = "<group>"; };
 		44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubUITests.swift; sourceTree = "<group>"; };
 		630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClientTests.swift; sourceTree = "<group>"; };
 		693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionSecurityTests.swift; sourceTree = "<group>"; };
 		74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000001 /* PeerWireProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerWireProtocol.swift; sourceTree = "<group>"; };
+		A10000000000000000000002 /* PeerHTTPMultiplexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerHTTPMultiplexer.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* PeerSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerSession.swift; sourceTree = "<group>"; };
+		A10000000000000000000004 /* PeerWebRTCSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerWebRTCSession.swift; sourceTree = "<group>"; };
+		A10000000000000000000005 /* WebRTCHubTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCHubTransport.swift; sourceTree = "<group>"; };
+		A10000000000000000000006 /* PeerLoopbackBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackBridge.swift; sourceTree = "<group>"; };
+		A10000000000000000000007 /* PeerLoopbackHTTP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackHTTP.swift; sourceTree = "<group>"; };
+		A10000000000000000000008 /* PeerLoopbackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLoopbackListener.swift; sourceTree = "<group>"; };
+		A10000000000000000000009 /* LinkedDevicesIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesIdentityStore.swift; sourceTree = "<group>"; };
+		A1000000000000000000000A /* LinkedDevicesProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesProtocol.swift; sourceTree = "<group>"; };
+		A1000000000000000000000B /* LinkedDevicesBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesBroker.swift; sourceTree = "<group>"; };
+		A1000000000000000000000C /* LinkedDevicesConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesConnector.swift; sourceTree = "<group>"; };
+		A1000000000000000000000D /* LinkedDevicesRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesRuntime.swift; sourceTree = "<group>"; };
+		A1000000000000000000000E /* LinkedDevicesPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesPairingView.swift; sourceTree = "<group>"; };
+		A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesDiagnostics.swift; sourceTree = "<group>"; };
+		A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesIdentityTests.swift; sourceTree = "<group>"; };
+		A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesProtocolTests.swift; sourceTree = "<group>"; };
+		A11000000000000000000003 /* LinkedDevicesRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedDevicesRuntimeTests.swift; sourceTree = "<group>"; };
 		BA9D71BAC8F7FF2161C7259C /* HubCookieScopeRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubCookieScopeRegistry.swift; sourceTree = "<group>"; };
 		C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClient.swift; sourceTree = "<group>"; };
 		D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStoreTests.swift; sourceTree = "<group>"; };
@@ -263,6 +302,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30200000000000000000001 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -372,6 +412,21 @@
 				0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */,
 				C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */,
 				FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */,
+				A10000000000000000000001 /* PeerWireProtocol.swift */,
+				A10000000000000000000002 /* PeerHTTPMultiplexer.swift */,
+				A10000000000000000000003 /* PeerSession.swift */,
+				A10000000000000000000004 /* PeerWebRTCSession.swift */,
+				A10000000000000000000005 /* WebRTCHubTransport.swift */,
+				A10000000000000000000006 /* PeerLoopbackBridge.swift */,
+				A10000000000000000000007 /* PeerLoopbackHTTP.swift */,
+				A10000000000000000000008 /* PeerLoopbackListener.swift */,
+				A10000000000000000000009 /* LinkedDevicesIdentityStore.swift */,
+				A1000000000000000000000A /* LinkedDevicesProtocol.swift */,
+				A1000000000000000000000B /* LinkedDevicesBroker.swift */,
+				A1000000000000000000000C /* LinkedDevicesConnector.swift */,
+				A1000000000000000000000D /* LinkedDevicesRuntime.swift */,
+				A1000000000000000000000E /* LinkedDevicesPairingView.swift */,
+				A1000000000000000000000F /* LinkedDevicesDiagnostics.swift */,
 			);
 			path = TermLLM;
 			sourceTree = "<group>";
@@ -412,6 +467,10 @@
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
 				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
+				A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */,
+				A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */,
+				A11000000000000000000003 /* LinkedDevicesRuntimeTests.swift */,
+				F14AEF5FF6B7438F3BECB5DE /* Fixtures */,
 			);
 			path = TermLLMTests;
 			sourceTree = "<group>";
@@ -448,6 +507,15 @@
 			path = TermLLMUITests;
 			sourceTree = "<group>";
 		};
+		F14AEF5FF6B7438F3BECB5DE /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				1F6C9A57657458DF79A98E6A /* linked-devices-vectors-v2.json */,
+			);
+			name = Fixtures;
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -466,6 +534,9 @@
 				000000000000000000000478 /* PBXTargetDependency */,
 			);
 			name = TermLLM;
+			packageProductDependencies = (
+				A30100000000000000000001 /* WebRTC */,
+			);
 			productName = TermLLM;
 			productReference = 000000000000000000000030 /* TermLLM.app */;
 			productType = "com.apple.product-type.application";
@@ -541,6 +612,9 @@
 				Base,
 			);
 			mainGroup = 000000000000000000000002;
+			packageReferences = (
+				A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */,
+			);
 			productRefGroup = 000000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -575,6 +649,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000521 /* ProducerFixtures in Resources */,
+				2D965D04B8979858890EE276 /* linked-devices-vectors-v2.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -651,6 +726,21 @@
 				ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */,
 				0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */,
 				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
+				A20000000000000000000001 /* PeerWireProtocol.swift in Sources */,
+				A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */,
+				A20000000000000000000003 /* PeerSession.swift in Sources */,
+				A20000000000000000000004 /* PeerWebRTCSession.swift in Sources */,
+				A20000000000000000000005 /* WebRTCHubTransport.swift in Sources */,
+				A20000000000000000000006 /* PeerLoopbackBridge.swift in Sources */,
+				A20000000000000000000007 /* PeerLoopbackHTTP.swift in Sources */,
+				A20000000000000000000008 /* PeerLoopbackListener.swift in Sources */,
+				A20000000000000000000009 /* LinkedDevicesIdentityStore.swift in Sources */,
+				A2000000000000000000000A /* LinkedDevicesProtocol.swift in Sources */,
+				A2000000000000000000000B /* LinkedDevicesBroker.swift in Sources */,
+				A2000000000000000000000C /* LinkedDevicesConnector.swift in Sources */,
+				A2000000000000000000000D /* LinkedDevicesRuntime.swift in Sources */,
+				A2000000000000000000000E /* LinkedDevicesPairingView.swift in Sources */,
+				A2000000000000000000000F /* LinkedDevicesDiagnostics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -690,6 +780,9 @@
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
 				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
+				A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */,
+				A21000000000000000000002 /* LinkedDevicesProtocolTests.swift in Sources */,
+				A21000000000000000000003 /* LinkedDevicesRuntimeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1027,6 +1120,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = revision;
+				revision = 44f36788497f701bc8c0306de3a1c2511d56019d;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A30100000000000000000001 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000001 /* Project object */;
 }
