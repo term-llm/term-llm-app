@@ -50,7 +50,9 @@ struct ContentView: View {
     @State private var voiceLaunchError: String?
     private let listen = Listen.shared
 
-    private var address: URL? { ServerAddress.parse(serverURL) }
+    private var address: URL? {
+        ServerAddress.browserURL(serverURL, selectedConnection: connections.selected)
+    }
     private var selectedWorkspace: HubSourceWorkspace? { connections.selectedID.flatMap { aggregate.source($0) } }
     private var isFixture: Bool { HubFixture.isEnabled || PhoneHubFixture.isEnabled }
     private var browserIsRevoked: Bool { hubBrowserRevoked || (!HubFixture.isEnabled && selectedWorkspace?.browserRevoked == true) }

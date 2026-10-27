@@ -19,6 +19,20 @@ enum ServerAddress {
         return components.url ?? url
     }
 
+    /// Browser entry point for a saved source. Ordinary input keeps the HTTPS
+    /// policy; only a matching, validated, host-keyed source may use the app's
+    /// HTTP loopback bridge on a physical iPhone.
+    @MainActor
+    static func browserURL(_ input: String, selectedConnection: HubConnection?) -> URL? {
+        guard let source = selectedConnection, source.isLinkedDevices else { return parse(input) }
+        guard source.kind == .directNode, source.needsKindReview != true,
+              let encodedKey = source.linkedDevicesHostKey,
+              let hostKey = LinkedDevicesBase64URL.decode(encodedKey, maximumBytes: 32), hostKey.count == 32,
+              HubConnectionStore.canonicalLinkedDevicesBridgeURL(source.url.absoluteString) == source.url,
+              HubConnectionStore.canonicalLinkedDevicesBridgeURL(input) == source.url else { return nil }
+        return source.url
+    }
+
     static func allowsLocalHTTP(host: String) -> Bool {
         #if targetEnvironment(simulator)
         return host.lowercased() == "localhost"

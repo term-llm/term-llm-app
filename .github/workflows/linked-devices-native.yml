@@ -62,9 +62,11 @@ jobs:
             -resultBundlePath "$NATIVE_TEST_DIR/Tests.xcresult" \
             -parallel-testing-enabled NO \
             -maximum-concurrent-test-simulator-destinations 1 \
+            -only-testing:TermLLMTests/ServerAddressTests \
             -only-testing:TermLLMTests/LinkedDevicesProtocolTests \
             -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
             -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
+            -only-testing:TermLLMTests/PeerNWLoopbackListenerTests \
             -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
             -only-testing:TermLLMTests/PeerTransportTests \
             -only-testing:TermLLMTests/DirectNodeClientTests \

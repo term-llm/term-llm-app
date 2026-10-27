@@ -35,6 +35,53 @@ final class ServerAddressTests: XCTestCase {
         #endif
     }
 
+    @MainActor
+    func testLinkedDeviceBrowserUsesOnlyItsSavedLoopbackOrigin() throws {
+        let url = try XCTUnwrap(URL(string: "http://localhost:43210/chat/"))
+        let source = HubConnection(id: UUID(), name: "Desk", kind: .directNode, url: url,
+                                   linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: 1, count: 32)))
+        // This is the address handed to the Chat shell, not user-entered HTTP.
+        XCTAssertEqual(ServerAddress.browserURL(url.absoluteString, selectedConnection: source), url)
+        let chat = try XCTUnwrap(HubNavigation.chatDestination("/chat/?new=1", server: url,
+                                                              nodeID: "direct-node", direct: true))
+        XCTAssertNotNil(ChatTabContext.resolve(connection: source, browserIdentity: UUID(), url: chat, agents: []))
+        #if !targetEnvironment(simulator)
+        XCTAssertNil(ServerAddress.parse(url.absoluteString), "Ordinary HTTP input must stay rejected on device")
+        XCTAssertNil(ServerAddress.browserURL(url.absoluteString, selectedConnection: nil))
+        #endif
+        for other in ["http://localhost:43211/chat/", "http://localhost:43210/other/",
+                      "http://127.0.0.1:43210/chat/", "http://localhost.evil.com:43210/chat/",
+                      "http://localhost:43210/chat/?new=1", "http://localhost:43210/chat/#fragment",
+                      "http://user:password@localhost:43210/chat/", "https://example.com/"] {
+            XCTAssertNil(ServerAddress.browserURL(other, selectedConnection: source), other)
+        }
+    }
+
+    @MainActor
+    func testLinkedDeviceBrowserRejectsUnvalidatedSourceMetadata() throws {
+        let url = try XCTUnwrap(URL(string: "http://localhost:43210/chat/"))
+        let key = LinkedDevicesBase64URL.encode(Data(repeating: 1, count: 32))
+        let sources = [
+            HubConnection(id: UUID(), name: "Desk", kind: .hub, url: url, linkedDevicesHostKey: key),
+            HubConnection(id: UUID(), name: "Desk", kind: .directNode, url: url, needsKindReview: true, linkedDevicesHostKey: key),
+            HubConnection(id: UUID(), name: "Desk", kind: .directNode, url: url, linkedDevicesHostKey: "invalid"),
+            HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                          url: URL(string: "http://localhost:80/chat/")!, linkedDevicesHostKey: key)
+        ]
+        for source in sources {
+            XCTAssertNil(ServerAddress.browserURL(source.url.absoluteString, selectedConnection: source))
+        }
+    }
+
+    @MainActor
+    func testBrowserURLKeepsOrdinaryServerPolicy() {
+        let url = URL(string: "https://example.com/hub/")!
+        let source = HubConnection(id: UUID(), name: "Work", kind: .hub, url: url)
+        XCTAssertEqual(ServerAddress.browserURL(url.absoluteString, selectedConnection: source), url)
+        XCTAssertEqual(ServerAddress.browserURL(url.absoluteString, selectedConnection: nil), url)
+        XCTAssertNil(ServerAddress.browserURL("http://example.com/", selectedConnection: source))
+    }
+
     func testBackgroundAudioEnabledForLiveVoice() {
         let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]
         XCTAssertTrue(modes?.contains("audio") == true)

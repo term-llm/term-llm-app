@@ -65,6 +65,7 @@ private func makeClient(
     base: String = "http://localhost:8767/direct/",
     cookies: [HTTPCookie] = [],
     bearer: String? = nil,
+    displayNameSource: @escaping @Sendable () async -> String? = { nil },
     handler: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 ) -> (DirectNodeClient, DirectMockTransport) {
     let t = DirectMockTransport(handler: handler)
@@ -72,7 +73,8 @@ private func makeClient(
         base_url: URL(string: base)!,
         cookie_source: { cookies },
         bearer_source: { bearer },
-        transport: t
+        transport: t,
+        display_name_source: displayNameSource
     )
     return (c, t)
 }
@@ -946,7 +948,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListNodesHealthIdentityUsedAsName() async throws {
         // When /healthz returns identity markers, node name = health.agent
-        let (client, _) = makeClient { req in
+        let (client, _) = makeClient(displayNameSource: { "Saved connection" }) { req in
             if req.url?.path.hasSuffix("/healthz") == true {
                 return jsonHTTP(#"{"status":"ok","version":"2.1","agent":"my-server","capabilities":["api"]}"#)
             }
@@ -970,6 +972,114 @@ final class DirectNodeClientTests: XCTestCase {
         let result = try await client.list_nodes()
         XCTAssertEqual(result.nodes[0].name, "direct-node")
         XCTAssertEqual(result.nodes[0].status.agent, "direct-node")
+    }
+
+    func testListNodesBlankOrMissingHealthAgentUsesSavedDisplayName() async throws {
+        let healthResponses: [(String, Int)] = [
+            (#"{"status":"ok","agent":"","version":"2.1","capabilities":["api"]}"#, 200),
+            (#"{"status":"ok","agent":" \t\n ","version":"2.1"}"#, 200),
+            (#"{"status":"ok"}"#, 200),
+            (#"{"status":"ok","agent":null}"#, 200),
+            (#"{"message":"Unavailable"}"#, 503),
+        ]
+        for (healthJSON, statusCode) in healthResponses {
+            let (client, _) = makeClient(displayNameSource: { "  Saved laptop \n" }) { req in
+                if req.url?.path.hasSuffix("/healthz") == true {
+                    return jsonHTTP(healthJSON, status: statusCode)
+                }
+                return jsonHTTP(emptyStatusJSON)
+            }
+            let result = try await client.list_nodes()
+            XCTAssertEqual(result.nodes[0].name, "Saved laptop", healthJSON)
+            XCTAssertEqual(result.nodes[0].status.agent, "Saved laptop", healthJSON)
+            XCTAssertEqual(result.nodes[0].id, "direct-node")
+        }
+    }
+
+    func testListNodesHealthTransportFailureUsesSavedDisplayName() async throws {
+        let (client, _) = makeClient(displayNameSource: { "Saved laptop" }) { req in
+            if req.url?.path.hasSuffix("/healthz") == true {
+                throw URLError(.timedOut)
+            }
+            return jsonHTTP(emptyStatusJSON)
+        }
+        let result = try await client.list_nodes()
+        XCTAssertEqual(result.nodes[0].name, "Saved laptop")
+        XCTAssertEqual(result.nodes[0].status.agent, "Saved laptop")
+    }
+
+    func testListNodesBlankNamesFallBackToSentinel() async throws {
+        let displayNames: [String?] = [nil, "", " \t\n "]
+        for displayName in displayNames {
+            let (client, _) = makeClient(displayNameSource: { displayName }) { req in
+                if req.url?.path.hasSuffix("/healthz") == true {
+                    return jsonHTTP(#"{"status":"ok","agent":" \t\n "}"#)
+                }
+                return jsonHTTP(emptyStatusJSON)
+            }
+            let result = try await client.list_nodes()
+            XCTAssertEqual(result.nodes[0].name, "direct-node")
+            XCTAssertEqual(result.nodes[0].status.agent, "direct-node")
+        }
+    }
+
+    func testListNodesTrimsValidHealthAgentAndRetainsNumericName() async throws {
+        for agent in ["  my-agent \n", "200"] {
+            let healthData = try JSONEncoder().encode(DirectNodeHealth(
+                status: "ok", agent: agent, version: "2.1", capabilities: nil
+            ))
+            let healthJSON = String(decoding: healthData, as: UTF8.self)
+            let (client, _) = makeClient(displayNameSource: { "Saved laptop" }) { req in
+                if req.url?.path.hasSuffix("/healthz") == true {
+                    return jsonHTTP(healthJSON)
+                }
+                return jsonHTTP(emptyStatusJSON)
+            }
+            let result = try await client.list_nodes()
+            let expected = agent.trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(result.nodes[0].name, expected)
+            XCTAssertEqual(result.nodes[0].status.agent, expected)
+        }
+    }
+
+    @MainActor
+    func testListNodesUsesLiveWorkspaceDisplayNameAfterMetadataRename() async throws {
+        var connection = HubConnection(id: UUID(), name: "Original laptop", kind: .directNode,
+                                       url: URL(string: "https://direct.example/")!)
+        let transport = DirectMockTransport { req in
+            if req.url?.path.hasSuffix("/healthz") == true {
+                return jsonHTTP(#"{"status":"ok","agent":"","version":"2.1"}"#)
+            }
+            return jsonHTTP(emptyStatusJSON)
+        }
+        let source = HubSourceWorkspace(connection: connection, bearerStorage: HubMemoryBearerStorage(),
+                                        dataStore: .nonPersistent(), transport: transport)
+        defer { source.dispose(removeCredentials: true) }
+        let client = try XCTUnwrap(source.directClient)
+        let initial = try await client.list_nodes()
+        XCTAssertEqual(initial.nodes[0].name, "Original laptop")
+
+        connection.name = "Renamed laptop"
+        source.updateMetadata(connection)
+        let renamed = try await client.list_nodes()
+        XCTAssertEqual(renamed.nodes[0].name, "Renamed laptop")
+        XCTAssertEqual(renamed.nodes[0].status.agent, "Renamed laptop")
+    }
+
+    func testListNodesConversationCountLabels() async throws {
+        for count in [0, 1, 2, 200] {
+            let sessions = (0..<count).map { #"{"id":"s\#($0)","short_title":"Session"}"# }
+            let statusJSON = "{\"sessions\":[\(sessions.joined(separator: ","))]}"
+            let (client, _) = makeClient { req in
+                if req.url?.path.hasSuffix("/healthz") == true {
+                    return jsonHTTP(#"{"status":"ok"}"#)
+                }
+                return jsonHTTP(statusJSON)
+            }
+            let result = try await client.list_nodes()
+            let expected = count == 1 ? "1 conversation" : "\(count) conversations"
+            XCTAssertEqual(result.nodes[0].sessions?.count_label, expected)
+        }
     }
 
     // MARK: list_attention aggregates

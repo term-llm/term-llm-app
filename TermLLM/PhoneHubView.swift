@@ -61,9 +61,20 @@ struct PhoneHubView: View {
                             Text("Your agents, all in one place").font(.title3.bold())
                             Text("Add a connection to bring your agents together.")
                                 .foregroundStyle(.secondary)
-                            Button("Add Connection", systemImage: "plus") { editor = Editor() }
-                                .buttonStyle(.borderedProminent)
-                                .accessibilityIdentifier("phoneHub.addConnection")
+                            Button { editor = Editor() } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "plus")
+                                        .accessibilityHidden(true)
+                                    Text("Add Connection")
+                                }
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .buttonBorderShape(.roundedRectangle(radius: 16))
+                            .frame(maxWidth: 320)
+                            .accessibilityIdentifier("phoneHub.addConnection")
                             Button("Try demo") {
                                 do {
                                     let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)

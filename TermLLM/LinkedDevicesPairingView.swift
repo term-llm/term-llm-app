@@ -37,7 +37,7 @@ final class LinkedDevicesPairingModel: ObservableObject {
             phase = .review
         } catch {
             link = nil
-            phase = .failed(error.localizedDescription)
+            phase = .failed(LinkedDevicesPairingFailure(stage: .openingInvitation, error: error).localizedDescription)
         }
         return true
     }
@@ -62,7 +62,8 @@ final class LinkedDevicesPairingModel: ObservableObject {
                 self.link = nil
             } catch {
                 guard !Task.isCancelled else { return }
-                phase = .failed(error.localizedDescription)
+                phase = .failed((error as? LinkedDevicesPairingFailure)?.localizedDescription
+                    ?? LinkedDevicesPairingFailure(stage: .preparingIdentity, error: error).localizedDescription)
             }
             task = nil
         }
@@ -89,11 +90,12 @@ struct LinkedDevicesPairingView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                content
-                Spacer(minLength: 0)
+            ScrollView {
+                VStack(spacing: 20) {
+                    content
+                }
+                .padding(24)
             }
-            .padding(24)
             .navigationTitle("Linked devices")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -149,7 +151,7 @@ struct LinkedDevicesPairingView: View {
                 .accessibilityIdentifier("linkedDevices.done")
         case .failed(let message):
             Image(systemName: "exclamationmark.shield.fill").font(.system(size: 48)).foregroundStyle(.orange)
-            Text("Couldn’t connect").font(.title2.bold())
+            Text("Couldn’t finish linking").font(.title2.bold())
             Text(message).multilineTextAlignment(.center).foregroundStyle(.secondary)
             Button("Close") { model.dismiss() }.buttonStyle(.bordered)
         }

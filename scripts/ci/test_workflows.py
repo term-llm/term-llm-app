@@ -14,11 +14,11 @@ class WorkflowBudgetTests(unittest.TestCase):
             "NotificationMetadataTests", "NativeNotificationLifecycleTests", "ActualProducerFixtureTests",
             "NotificationReviewRegressionTests", "BrowserLifecycleTests", "VoiceShortcutTests",
             "LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests", "LinkedDevicesRuntimeTests",
-            "LinkedDevicesDiagnosticsTests", "PeerTransportTests",
+            "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "PeerNWLoopbackListenerTests", "ServerAddressTests",
         },
         "linked-devices-native.yml": {
             "LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests", "LinkedDevicesRuntimeTests",
-            "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
+            "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "PeerNWLoopbackListenerTests", "ServerAddressTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
         },
     }
 

@@ -23,42 +23,53 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
     func pair(link: LinkedDevicesPairingLink, deviceName: String,
               sasReady: @escaping @Sendable (String) -> Void,
               closed: @escaping @Sendable () -> Void) async throws -> Paired {
-        guard !link.isExpired(at: clock()) else { throw LinkedDevicesProtocolError.expired }
-        guard let capability = link.invitationCapability else {
-            throw LinkedDevicesProtocolError.invalidLink
-        }
-        let prepared = try identities.prepare(hostKey: link.hostKey)
-        let attempt = try LinkedDevicesPairingAttempt(link: link, credential: prepared,
-                                                       deviceName: Self.safeDeviceName(deviceName), now: clock())
-        let broker = try LinkedDevicesBrokerClient(baseURL: link.broker)
-        let socket = try await broker.dial(hostID: link.hostID, kind: "invitation",
-                                           peerID: link.invitationIDString, capability: capability)
+        var stage = LinkedDevicesPairingFailure.Stage.preparingIdentity
         do {
-            try await socket.send(attempt.request)
-            sasReady(attempt.sas)
-            let answer = try await waitForPairAnswer(socket, invitationID: link.invitationID,
-                                                     deadline: link.expiresAt)
-            var credential = try attempt.verify(answer)
-            // PairingAttempt preserves the identity already durably prepared.
-            credential.deviceSeed = prepared.deviceSeed
-            try identities.save(credential)
-            // Pairing is identity-only. The consumed invitation socket never
-            // carries SDP; close it, then use the durable device slot for the
-            // first signed transport handshake exactly like every reconnect.
-            socket.close()
-            let live: LinkedDevicesLiveConnection?
-            do {
-                live = try await reconnect(credential: credential, closed: closed)
-            } catch {
-                // Approval is durable and revocation-only. Preserve the source
-                // even when this first transport attempt is cancelled/offline;
-                // the runtime will expose it and reconnect without another QR.
-                live = nil
+            guard !link.isExpired(at: clock()) else { throw LinkedDevicesProtocolError.expired }
+            guard let capability = link.invitationCapability else {
+                throw LinkedDevicesProtocolError.invalidLink
             }
-            return Paired(credential: credential, live: live)
+            let prepared = try identities.prepare(hostKey: link.hostKey)
+            let attempt = try LinkedDevicesPairingAttempt(link: link, credential: prepared,
+                                                           deviceName: Self.safeDeviceName(deviceName), now: clock())
+            stage = .contactingBroker
+            let broker = try LinkedDevicesBrokerClient(baseURL: link.broker)
+            let socket = try await broker.dial(hostID: link.hostID, kind: "invitation",
+                                               peerID: link.invitationIDString, capability: capability)
+            do {
+                try await socket.send(attempt.request)
+                sasReady(attempt.sas)
+                stage = .waitingForApproval
+                let answer = try await waitForPairAnswer(socket, invitationID: link.invitationID,
+                                                         deadline: link.expiresAt)
+                stage = .verifyingHost
+                var credential = try attempt.verify(answer)
+                // PairingAttempt preserves the identity already durably prepared.
+                credential.deviceSeed = prepared.deviceSeed
+                stage = .savingIdentity
+                try identities.save(credential)
+                // Pairing is identity-only. The consumed invitation socket never
+                // carries SDP; close it, then use the durable device slot for the
+                // first signed transport handshake exactly like every reconnect.
+                socket.close()
+                let live: LinkedDevicesLiveConnection?
+                do {
+                    live = try await reconnect(credential: credential, closed: closed)
+                } catch {
+                    // Approval is durable and revocation-only. Preserve the source
+                    // even when this first transport attempt is cancelled/offline;
+                    // the runtime will expose it and reconnect without another QR.
+                    live = nil
+                }
+                return Paired(credential: credential, live: live)
+            } catch {
+                socket.close()
+                throw error
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            socket.close()
-            throw error
+            throw LinkedDevicesPairingFailure(stage: stage, error: error)
         }
     }
 

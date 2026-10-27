@@ -95,6 +95,7 @@ struct PhoneHubAttention: Identifiable {
 @MainActor private final class SourceRevocationRelay {
     weak var owner: HubSourceWorkspace?
     func revoke() { owner?.revokeAuthorization() }
+    func displayName() -> String? { owner?.connection.name }
 }
 
 /// One native store, transport, protected WebKit jar and auth epoch per saved
@@ -134,7 +135,8 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             directClient = nil
             searcher = client
         } else {
-            let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport)
+            let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport,
+                                          display_name_source: { await relay.displayName() })
             directClient = client
             hubWorkspace = nil
             store = HubStore(client: client)

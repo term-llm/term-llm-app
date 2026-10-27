@@ -1,4 +1,5 @@
 import CryptoKit
+import Network
 import XCTest
 @testable import TermLLM
 
@@ -177,6 +178,66 @@ final class LinkedDevicesProtocolTests: XCTestCase {
                                                                    expectedType: "pair_request", fields: fields))
         XCTAssertEqual(LinkedDevicesWire.maxMessageBytes, 256 * 1024)
         XCTAssertEqual(LinkedDevicesWire.maxBrokerFrameBytes, 256 * 1024 + 512)
+    }
+
+    func testPairingFailuresIncludeStageAndSafeActionableDetails() {
+        let storage = LinkedDevicesPairingFailure(stage: .savingIdentity,
+            error: LinkedDevicesStorageError.unavailable(-25308)).localizedDescription
+        XCTAssertTrue(storage.contains("approval was verified"))
+        XCTAssertTrue(storage.contains("Keychain status -25308"))
+        XCTAssertTrue(storage.contains("Unlock the iPhone"))
+        XCTAssertTrue(storage.contains("Diagnostic stage: saving-identity"))
+
+        let timeout = LinkedDevicesPairingFailure(stage: .waitingForApproval,
+            error: LinkedDevicesBrokerError.peerOffline).localizedDescription
+        XCTAssertTrue(timeout.contains("Timed out waiting"))
+        XCTAssertFalse(timeout.contains("host is offline"))
+
+        let invitation = LinkedDevicesPairingFailure(stage: .contactingBroker,
+            error: LinkedDevicesBrokerError.unauthorized).localizedDescription
+        XCTAssertTrue(invitation.contains("invitation"))
+        XCTAssertFalse(invitation.contains("revoked"))
+
+        let localPort = LinkedDevicesPairingFailure(stage: .savingConnection,
+            error: NWError.posix(.EADDRINUSE)).localizedDescription
+        XCTAssertTrue(localPort.contains("port is already in use"))
+        XCTAssertTrue(localPort.contains("POSIX 48"))
+
+        let enrollment = LinkedDevicesPairingFailure(stage: .savingConnection,
+            error: NSError(domain: "test", code: 1)).localizedDescription
+        XCTAssertTrue(enrollment.contains("credentials were saved"))
+        XCTAssertTrue(enrollment.contains("check Connections"))
+    }
+
+    func testPairingFailuresNeverExposeArbitraryErrorsOrServerReasons() {
+        let secret = "PRIVATE-PAIRING-CAPABILITY"
+        let errors: [Error] = [
+            LinkedDevicesBrokerError.closed(1006, secret),
+            LinkedDevicesBrokerError.http(500, secret),
+            LinkedDevicesProtocolError.invalid(secret),
+            LinkedDevicesProtocolError.rejected(secret),
+            NSError(domain: secret, code: 1, userInfo: [NSLocalizedDescriptionKey: secret]),
+            URLError(.cannotConnectToHost, userInfo: [NSURLErrorFailingURLStringErrorKey: "https://\(secret)"])
+        ]
+        for error in errors {
+            let message = LinkedDevicesPairingFailure(stage: .waitingForApproval, error: error).localizedDescription
+            XCTAssertFalse(message.contains(secret))
+            XCTAssertTrue(message.contains("Diagnostic stage: waiting-for-approval"))
+        }
+        let closed = LinkedDevicesPairingFailure(stage: .waitingForApproval,
+            error: LinkedDevicesBrokerError.closed(1006, secret)).localizedDescription
+        XCTAssertTrue(closed.contains("code 1006"))
+    }
+
+    @MainActor
+    func testInvalidPairingLinkShowsActionableFailure() {
+        let model = LinkedDevicesPairingModel()
+        XCTAssertTrue(model.handle(URL(string: "termllm://pair?v=1")!))
+        guard case .failed(let message) = model.phase else {
+            return XCTFail("Invalid pairing links must show a failure")
+        }
+        XCTAssertTrue(message.contains("Diagnostic stage: opening-invitation"))
+        XCTAssertTrue(message.contains("new QR code"))
     }
 
     func testFrozenBrokerAdviceMappingDistinguishesRevocationFromOffline() {

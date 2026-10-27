@@ -137,6 +137,7 @@ final class DirectNodeClient: @unchecked Sendable {
 
     let cookie_source: @Sendable () async -> [HTTPCookie]
     let bearer_source: @Sendable () async -> String?
+    let display_name_source: @Sendable () async -> String?
 
     private let transport: any HubTransport
 
@@ -172,15 +173,19 @@ final class DirectNodeClient: @unchecked Sendable {
     ///     (e.g. from Keychain).  Injected for POST/PATCH/DELETE and GET /healthz.
     ///   - transport: Injectable transport for testing.  Defaults to
     ///     ``URLSessionHubTransport`` in production.
+    ///   - display_name_source: Current saved connection name, used when health
+    ///     does not supply a nonblank agent name.
     init(
         base_url: URL,
         cookie_source: @escaping @Sendable () async -> [HTTPCookie],
         bearer_source: @escaping @Sendable () async -> String?,
-        transport: (any HubTransport)? = nil
+        transport: (any HubTransport)? = nil,
+        display_name_source: @escaping @Sendable () async -> String? = { nil }
     ) {
         self.base_url = base_url
         self.cookie_source = cookie_source
         self.bearer_source = bearer_source
+        self.display_name_source = display_name_source
         self.is_https = base_url.scheme?.lowercased() == "https"
         self.expected_host = (base_url.host ?? "").lowercased()
         self.transport = transport ?? URLSessionHubTransport()
@@ -577,8 +582,9 @@ extension DirectNodeClient: HubServing {
     /// synthetic ``HubNode``.
     ///
     /// Health is fetched concurrently with sessions/status.  A health failure
-    /// does **not** fail the call — it only means `agent` falls back to
-    /// `"direct-node"`.  The node ID is the stable sentinel `"direct-node"`.
+    /// does **not** fail the call. A missing or blank agent falls back to the
+    /// current saved display name, then "direct-node". The node ID remains the
+    /// stable sentinel "direct-node".
     /// Sessions are split into `active` (running or input-required) and `recent`.
     func list_nodes() async throws -> NodesResponse {
         // Concurrent: sessions/status (required) + healthz identity (best-effort)
@@ -589,7 +595,14 @@ extension DirectNodeClient: HubServing {
         let health = try? await healthTask
 
         let entries = status.sessions
-        let agentName = health?.agent ?? "direct-node"
+        let healthAgent = health?.agent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let agentName: String
+        if !healthAgent.isEmpty {
+            agentName = healthAgent
+        } else {
+            let displayName = await display_name_source()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            agentName = displayName.isEmpty ? "direct-node" : displayName
+        }
 
         let activeSessions = entries.filter { $0.active_run == true || $0.interaction_required == true }
         let recentSessions = entries.filter { $0.active_run != true && $0.interaction_required != true }
@@ -599,7 +612,7 @@ extension DirectNodeClient: HubServing {
         let unseenCount  = entries.filter { $0.attention_unseen == true }.count
 
         let nodeSessions = HubNodeSessions(
-            count_label: "\(entries.count)",
+            count_label: "\(entries.count) \(entries.count == 1 ? "conversation" : "conversations")",
             has_more: false,
             active_count: activeCount,
             input_required_count: inputCount,

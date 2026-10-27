@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 
 // MARK: - Frozen core protocol v2
 
@@ -19,6 +20,114 @@ enum LinkedDevicesWire {
     static let maxCapabilityBytes = 128
     static let domain = "term-llm/pairing/v2"
     static let macKeyLabel = "term-llm/pairing/v2/mac-key"
+}
+
+/// User-visible pairing diagnostics deliberately exclude arbitrary server text,
+/// NSError userInfo and URLs: all can contain invitation or reconnect secrets.
+struct LinkedDevicesPairingFailure: LocalizedError {
+    enum Stage: String {
+        case openingInvitation = "opening-invitation"
+        case preparingIdentity = "preparing-identity"
+        case contactingBroker = "contacting-rendezvous"
+        case waitingForApproval = "waiting-for-approval"
+        case verifyingHost = "verifying-host"
+        case savingIdentity = "saving-identity"
+        case savingConnection = "saving-connection"
+        case startingLocalBridge = "starting-local-chat-bridge"
+        case activatingLocalBridge = "activating-local-chat-bridge"
+        case savingCatalog = "saving-connections-list"
+
+        var isEnrollment: Bool {
+            switch self {
+            case .savingConnection, .startingLocalBridge, .activatingLocalBridge, .savingCatalog: true
+            default: false
+            }
+        }
+
+        var summary: String {
+            switch self {
+            case .openingInvitation: "Could not open the pairing invitation."
+            case .preparingIdentity: "Could not prepare this iPhone’s secure device identity."
+            case .contactingBroker: "Could not contact the pairing rendezvous service."
+            case .waitingForApproval: "The iPhone did not receive a complete approval response from the host."
+            case .verifyingHost: "The host’s approval response could not be verified."
+            case .savingIdentity: "The host’s approval was verified, but its credentials could not be saved on this iPhone."
+            case .savingConnection: "The host’s approval and credentials were saved, but the local connection could not be set up."
+            case .startingLocalBridge: "The host approved this iPhone, but its local chat listener could not start."
+            case .activatingLocalBridge: "The host approved this iPhone, but its local chat bridge could not be activated."
+            case .savingCatalog: "The host approved this iPhone, but it could not be added to Connections."
+            }
+        }
+    }
+
+    let stage: Stage
+    let reason: String
+    let recovery: String
+    let enrollmentRolledBack: Bool
+
+    init(stage: Stage, error: Error, enrollmentRolledBack: Bool = false) {
+        self.enrollmentRolledBack = enrollmentRolledBack
+        self.stage = stage
+        switch error {
+        case let value as LinkedDevicesStorageError:
+            if case .unavailable(let status) = value {
+                reason = "Secure storage failed (Keychain status \(status))."
+            } else {
+                reason = value.localizedDescription
+            }
+            recovery = "Unlock the iPhone and try again. If the host already lists this device, remove that incomplete link there before creating a new QR code."
+        case LinkedDevicesProtocolError.invalid:
+            reason = "The host returned data that does not match Linked devices protocol v2."
+            recovery = "Check that the app and term-llm host are up to date, then create a new QR code."
+        case let value as LinkedDevicesProtocolError:
+            reason = value.localizedDescription
+            recovery = "Confirm you are linking to the intended host, then create a new QR code in its Linked devices settings."
+        case LinkedDevicesBrokerError.closed(let code, _):
+            reason = "The rendezvous WebSocket closed (code \(code)). Approval may not have reached this iPhone."
+            recovery = "Keep term-llm running and both devices online. Check Linked devices on the host before creating a new QR code."
+        case LinkedDevicesBrokerError.unauthorized:
+            reason = "The rendezvous service did not accept this invitation. It may have expired or already been used."
+            recovery = "Create a new QR code in the host’s Linked devices settings."
+        case LinkedDevicesBrokerError.peerOffline where stage == .waitingForApproval:
+            reason = "Timed out waiting for the host’s approval response. This does not confirm whether the host saved the device."
+            recovery = "Check Linked devices on the host. Keep both devices online and create a new QR code if necessary."
+        case let value as LinkedDevicesBrokerError:
+            reason = value.localizedDescription
+            recovery = "Keep term-llm running, check the iPhone’s network connection, and create a new QR code if the invitation expired."
+        case let value as NWError:
+            switch value {
+            case .posix(let code):
+                reason = code == .EADDRINUSE
+                    ? "The iPhone’s local chat connection could not start because its port is already in use (POSIX \(code.rawValue))."
+                    : "The network connection failed (POSIX \(code.rawValue))."
+            case .dns(let code): reason = "The network connection failed (DNS \(code))."
+            case .tls(let code): reason = "The secure network connection failed (TLS \(code))."
+            @unknown default: reason = "The network connection failed."
+            }
+            recovery = "Close this sheet and try again. If this repeats, report the error code and diagnostic stage below."
+        case let value as HubConnectionStore.ValidationError:
+            reason = value.localizedDescription
+            recovery = "Check the saved Connections list before trying to link again."
+        case let value as URLError:
+            reason = "A network request failed (URL error \(value.code.rawValue))."
+            recovery = "Check the iPhone’s internet connection and that the rendezvous service is reachable, then try a new QR code."
+        default:
+            reason = "An unexpected local error prevented linking."
+            recovery = "Try again. If this repeats, report the diagnostic stage below."
+        }
+    }
+
+    var errorDescription: String? {
+        let summary = enrollmentRolledBack
+            ? "The host approved this iPhone, but local connection setup failed. No connection was added."
+            : stage.summary
+        let guidance = enrollmentRolledBack
+            ? "Revoke this incomplete device link in the host’s Linked devices settings before scanning a new QR code. If this repeats, report the error code and diagnostic stage below."
+            : stage.isEnrollment
+                ? "Close this sheet and check Connections. If the host is missing there, try linking again; do not clear the app’s data."
+                : recovery
+        return "\(summary)\n\n\(reason)\n\n\(guidance)\n\nDiagnostic stage: \(stage.rawValue)"
+    }
 }
 
 enum LinkedDevicesProtocolError: Error, Equatable, LocalizedError {

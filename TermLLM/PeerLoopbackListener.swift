@@ -2,14 +2,11 @@
 import Foundation
 import Network
 
-/// Network.framework listener for the pair-only `http://localhost:<port>`
-/// bridge.  Binds 127.0.0.1 on an ephemeral port and also occupies ::1 on the
-/// SAME port: WebKit may resolve `localhost` to ::1 first, and an unrelated
-/// ::1 listener on that port would otherwise receive the capability cookie.
-/// If ::1 cannot be reserved (port taken) the attempt is discarded and a new
-/// port tried; if the host has no IPv6 loopback at all, IPv4-only is used.
-/// `acceptLocalOnly` plus an explicit remote-endpoint check reject anything
-/// that is not loopback.
+/// An exclusive localhost listener reservation. On device one dual-stack
+/// listener is restricted to the loopback interface: separate family listeners
+/// compete for iOS NECP's port reservation. Simulator lacks NECP local-only
+/// acceptance, so it uses explicit loopback-address binds for both families.
+/// Remote-endpoint checks provide defense in depth on both platforms.
 final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.termllm.peer.loopback")
     private let lock = NSLock()
@@ -24,41 +21,34 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
         for attempt in 0..<attempts {
             try Task.checkCancellation()
             let requested = preferredPort.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any
-            let v4 = try makeListener(host: .ipv4(.loopback), port: requested, onConnection: onConnection)
-            let port: UInt16
+            #if targetEnvironment(simulator)
+            let host: NWEndpoint.Host? = .ipv4(.loopback)
+            #else
+            let host: NWEndpoint.Host? = nil
+            #endif
+            let listener = try makeListener(host: host, port: requested, onConnection: onConnection)
             do {
-                port = try await Self.ready(v4, queue: queue)
-            } catch {
-                v4.cancel()
-                lastError = error
-                if preferredPort != nil, attempt < attempts - 1 {
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                }
-                continue
-            }
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else { v4.cancel(); continue }
-            do {
-                let v6 = try makeListener(host: .ipv6(.loopback), port: nwPort, onConnection: onConnection)
+                let port = try await Self.ready(listener, queue: queue)
+                var reserved = [listener]
+                #if targetEnvironment(simulator)
+                guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw PeerWireError.channelClosed }
+                let v6 = try makeListener(host: .ipv6(.loopback), port: nwPort,
+                                          onConnection: onConnection)
                 do {
                     _ = try await Self.ready(v6, queue: queue)
-                    lock.withLock { listeners = [v4, v6] }
-                    return port
-                } catch let error as NWError {
-                    v6.cancel()
-                    if case .posix(let code) = error, code == .EADDRNOTAVAIL || code == .EAFNOSUPPORT {
-                        // No IPv6 loopback: nothing can squat ::1 either.
-                        lock.withLock { listeners = [v4] }
-                        return port
-                    }
-                    v4.cancel()   // ::1:port held by someone else: pick another port
-                    lastError = error
+                    reserved.append(v6)
                 } catch {
                     v6.cancel()
-                    v4.cancel()
-                    lastError = error
+                    // If IPv6 is unavailable there is no ::1 origin to occupy.
+                    guard let networkError = error as? NWError,
+                          case .posix(let code) = networkError,
+                          code == .EADDRNOTAVAIL || code == .EAFNOSUPPORT else { throw error }
                 }
+                #endif
+                lock.withLock { listeners = reserved }
+                return port
             } catch {
-                v4.cancel()
+                listener.cancel()
                 lastError = error
             }
             if preferredPort != nil, attempt < attempts - 1 {
@@ -68,16 +58,31 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
         throw lastError
     }
 
-    private func makeListener(host: NWEndpoint.Host, port: NWEndpoint.Port,
+    private func makeListener(host: NWEndpoint.Host?, port: NWEndpoint.Port,
                               onConnection: @escaping @Sendable (PeerByteStream) -> Void) throws -> NWListener {
         let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: host, port: port)
+        if let host {
+            // Simulator lacks device NECP interface enforcement. Bind literal
+            // loopback addresses there rather than allowing a wildcard socket.
+            parameters.requiredLocalEndpoint = .hostPort(host: host, port: port)
+        } else {
+            // On device reserve both address families in one listener, without
+            // exposing the wildcard socket on Wi-Fi/cellular interfaces.
+            parameters.requiredInterfaceType = .loopback
+        }
+        #if !targetEnvironment(simulator)
+        // Simulator has no NECP listener attribution; this option rejects even
+        // loopback clients there. Its explicit loopback binds enforce locality.
         parameters.acceptLocalOnly = true
-        // Do not permit simultaneous same-port binds: the loopback origin
-        // carries an HttpOnly capability cookie. Bounded retries handle a
-        // recently closed listener without SO_REUSEPORT-style sharing.
+        #endif
+        // Never enable port sharing: this origin carries a capability cookie.
         parameters.allowLocalEndpointReuse = false
-        let listener = try NWListener(using: parameters)
+        let listener: NWListener
+        if host != nil {
+            listener = try NWListener(using: parameters)
+        } else {
+            listener = try NWListener(using: parameters, on: port)
+        }
         listener.newConnectionHandler = { connection in
             guard Self.isLoopback(connection.endpoint) else {
                 connection.cancel()
@@ -128,7 +133,10 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
         guard case .hostPort(let host, _) = endpoint else { return false }
         switch host {
         case .ipv4(let address): return address == .loopback
-        case .ipv6(let address): return address == .loopback
+        case .ipv6(let address):
+            // A dual-stack listener can report an IPv4 client as a mapped
+            // IPv6 address. Only accept mapped 127.0.0.1.
+            return address == .loopback || (address.isIPv4Mapped && address.asIPv4 == IPv4Address.loopback)
         default: return false
         }
     }

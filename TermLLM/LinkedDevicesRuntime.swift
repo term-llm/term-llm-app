@@ -292,7 +292,15 @@ final class LinkedDevicesRuntime: ObservableObject {
             try await enroll(paired, fallbackName: link.hostLabel ?? "Linked host", in: catalog, token: token,
                              initialTransportClosed: transportState.isClosed)
         }
-        return try await enrollment.value
+        do {
+            return try await enrollment.value
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as LinkedDevicesPairingFailure {
+            throw failure
+        } catch {
+            throw LinkedDevicesPairingFailure(stage: .savingConnection, error: error)
+        }
     }
 
     private func ownsEnrollment(_ entry: Entry, sourceID: UUID, token: UUID) -> Bool {
@@ -333,8 +341,10 @@ final class LinkedDevicesRuntime: ObservableObject {
 
         var enrollmentLive = paired.live
         var pendingBridge: PeerLoopbackBridge?
+        var stage = LinkedDevicesPairingFailure.Stage.startingLocalBridge
         do {
             while true {
+                stage = .startingLocalBridge
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
                     throw CancellationError()
                 }
@@ -418,6 +428,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                     pendingBridge = nil
                     continue
                 }
+                stage = .activatingLocalBridge
                 try bridge.activate()
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
                     throw CancellationError()
@@ -430,6 +441,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                         $0.id == existing.id && $0.linkedDevicesHostKey == encodedKey
                     }) else { throw CancellationError() }
                 }
+                stage = .savingCatalog
                 let connection = try catalog.saveLinkedDevices(id: sourceID, name: name,
                                                                  hostKey: paired.credential.hostKey,
                                                                  bridgePort: endpoint.port, basePath: basePath)
@@ -487,7 +499,10 @@ final class LinkedDevicesRuntime: ObservableObject {
             statuses[sourceID] = nil
             if existing == nil, !catalog.connections.contains(where: { $0.id == sourceID }) {
                 try? identities.remove(hostKey: paired.credential.hostKey)
-                throw LinkedDevicesUnavailable(message: "The approved connection could not be saved on this device. Revoke this device on the host before opening another pairing link.")
+                // Preserve the safe underlying cause: the generic rollback
+                // message used to hide listener and catalog failures entirely.
+                throw LinkedDevicesPairingFailure(stage: stage, error: error,
+                                                  enrollmentRolledBack: true)
             }
             throw error
         }
