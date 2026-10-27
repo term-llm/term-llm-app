@@ -118,6 +118,28 @@ final class WebMCPBridgeTests: XCTestCase {
         XCTAssertEqual(byName, "pong from term-llm iPhone app at 1970-01-01T00:00:00Z")
     }
 
+    func testTracksRunningCallsAndReportsWhenTheyHaveReplied() async throws {
+        let bridge = WebMCPBridge(serverURL: server, registry: DeviceToolRegistry(tools: [
+            DeviceTool(name: "slow", description: "Takes a moment") { _ in
+                try await Task.sleep(for: .milliseconds(300))
+                return DeviceToolResult(text: "done")
+            },
+        ]), device: "iPhone")
+        var settled = 0
+        bridge.onCallsSettled = { settled += 1 }
+        let webView = makeWebView(bridge: bridge)
+        try await load(webView, baseURL: server)
+        webView.evaluateJavaScript("document.modelContext.executeTool('slow', {}).then(r => window.slow = r); void 0;", completionHandler: nil)
+        for _ in 0..<50 where bridge.activeCalls == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(bridge.activeCalls, 1)
+        XCTAssertEqual(settled, 0)
+        for _ in 0..<100 where settled == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(settled, 1)
+        XCTAssertEqual(bridge.activeCalls, 0)
+        let reply = try await js(webView, "return window.slow") as? String
+        XCTAssertEqual(reply, "done")
+    }
+
     func testToolFailuresRejectInThePage() async throws {
         let webView = makeWebView(bridge: bridge())
         try await load(webView, baseURL: server)

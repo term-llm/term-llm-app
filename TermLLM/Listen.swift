@@ -104,11 +104,17 @@ final class Listen {
         downloader.removeFiles(for: removed)
     }
 
-    /// One Listen and Apple Music at a time: each pauses the other.
-    static func connectToMusic(_ music: MusicPlayer, listen: Listen) {
-        music.willStartPlayback = { [weak listen] in listen?.player.pause() }
+    /// One Listen and Apple Music at a time: each pauses the other. Either
+    /// starting also ends a live voice call (see `LiveHangUp`).
+    static func connectToMusic(_ music: MusicPlayer, listen: Listen,
+                               notificationCenter: NotificationCenter = .default) {
+        music.willStartPlayback = { [weak listen] in
+            listen?.player.pause()
+            notificationCenter.post(name: .appWillStartPlayback, object: nil)
+        }
         listen.player.willStartPlayback = { [weak music] in
             if music?.isPlaying == true { music?.pause() }
+            notificationCenter.post(name: .appWillStartPlayback, object: nil)
         }
     }
 }

@@ -18,7 +18,9 @@
 		000000000000000000000088 /* DeviceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000048 /* DeviceTools.swift */; };
 		00000000000000000000008C /* DeviceToolsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004C /* DeviceToolsSettings.swift */; };
 		00000000000000000000008D /* DeviceToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004D /* DeviceToolsTests.swift */; };
+		000000000000000000000A91 /* LiveHangUp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A90 /* LiveHangUp.swift */; };
 		0000000000000000000000B0 /* WebMCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A0 /* WebMCPBridge.swift */; };
+		000000000000000000000A93 /* LiveHangUpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A92 /* LiveHangUpTests.swift */; };
 		0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A1 /* WebMCPBridgeTests.swift */; };
 		0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A2 /* WebMCPLiveServerTests.swift */; };
 		0000000000000000000000D0 /* MusicModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C0 /* MusicModels.swift */; };
@@ -185,7 +187,9 @@
 		000000000000000000000048 /* DeviceTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTools.swift; sourceTree = "<group>"; };
 		00000000000000000000004C /* DeviceToolsSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsSettings.swift; sourceTree = "<group>"; };
 		00000000000000000000004D /* DeviceToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsTests.swift; sourceTree = "<group>"; };
+		000000000000000000000A90 /* LiveHangUp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHangUp.swift; sourceTree = "<group>"; };
 		0000000000000000000000A0 /* WebMCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridge.swift; sourceTree = "<group>"; };
+		000000000000000000000A92 /* LiveHangUpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHangUpTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000A1 /* WebMCPBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridgeTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000A2 /* WebMCPLiveServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPLiveServerTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000C0 /* MusicModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicModels.swift; sourceTree = "<group>"; };
@@ -377,6 +381,7 @@
 				000000000000000000000047 /* JSONValue.swift */,
 				000000000000000000000048 /* DeviceTools.swift */,
 				00000000000000000000004C /* DeviceToolsSettings.swift */,
+				000000000000000000000A90 /* LiveHangUp.swift */,
 				0000000000000000000000A0 /* WebMCPBridge.swift */,
 				0000000000000000000000C0 /* MusicModels.swift */,
 				0000000000000000000000C1 /* PlaylistStore.swift */,
@@ -442,6 +447,7 @@
 				000000000000000000000341 /* VoiceShortcutTests.swift */,
 				0000000000000000000000E3 /* BrowserLifecycleTests.swift */,
 				00000000000000000000004D /* DeviceToolsTests.swift */,
+				000000000000000000000A92 /* LiveHangUpTests.swift */,
 				0000000000000000000000A1 /* WebMCPBridgeTests.swift */,
 				0000000000000000000000A2 /* WebMCPLiveServerTests.swift */,
 				0000000000000000000000CA /* MusicTestSupport.swift */,
@@ -694,6 +700,7 @@
 				000000000000000000000087 /* JSONValue.swift in Sources */,
 				000000000000000000000088 /* DeviceTools.swift in Sources */,
 				00000000000000000000008C /* DeviceToolsSettings.swift in Sources */,
+				000000000000000000000A91 /* LiveHangUp.swift in Sources */,
 				0000000000000000000000B0 /* WebMCPBridge.swift in Sources */,
 				0000000000000000000000D0 /* MusicModels.swift in Sources */,
 				0000000000000000000000D1 /* PlaylistStore.swift in Sources */,
@@ -756,6 +763,7 @@
 				000000000000000000000343 /* VoiceShortcutTests.swift in Sources */,
 				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
 				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,
+				000000000000000000000A93 /* LiveHangUpTests.swift in Sources */,
 				0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */,
 				0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */,
 				0000000000000000000000DA /* MusicTestSupport.swift in Sources */,

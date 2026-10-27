@@ -16,6 +16,10 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// Weak: the controller retains its message handlers (this bridge).
     private weak var installedController: WKUserContentController?
     private var installedScript: WKUserScript?
+    /// Tool calls still running; their replies have not reached the page yet.
+    @MainActor private(set) var activeCalls = 0
+    /// Runs on the main actor after the last running call has replied.
+    @MainActor var onCallsSettled: (() -> Void)?
 
     init(serverURL: URL, registry: DeviceToolRegistry, device: String) {
         self.serverURL = serverURL
@@ -54,12 +58,15 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
         let isMainFrame = message.frameInfo.isMainFrame
         let registry = registry
         let expected = expectedOrigin
+        activeCalls += 1
         Task { @MainActor in
             switch await Self.handle(body: body, frameOrigin: frameOrigin, isMainFrame: isMainFrame,
                                      expectedOrigin: expected, registry: registry) {
             case .success(let text): replyHandler(text, nil)
             case .failure(let error): replyHandler(nil, error.message)
             }
+            activeCalls -= 1
+            if activeCalls == 0 { onCallsSettled?() }
         }
     }
 

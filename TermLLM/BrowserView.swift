@@ -165,9 +165,13 @@ struct BrowserView: UIViewRepresentable {
             configuration.userContentController.addUserScript(WKUserScript(source: authenticationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         configuration.allowsInlineMediaPlayback = true
+        configuration.userContentController.addUserScript(WKUserScript(source: LiveHangUp.userScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
+        context.coordinator.webView = view
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.appWillStartPlayback),
+                                               name: .appWillStartPlayback, object: nil)
 #if DEBUG
         view.isInspectable = true
 #endif
@@ -229,6 +233,10 @@ struct BrowserView: UIViewRepresentable {
         private var voiceID: UUID?
         private var voiceNavigated = false
         private var voiceClicked = false
+        weak var webView: WKWebView?
+        /// The app's audio started during a device tool call; hang up once it replies.
+        private var hangUpAfterToolCall = false
+        private var hangUpTask: Task<Void, Never>?
 
         init(_ parent: BrowserView) {
             self.parent = parent
@@ -244,6 +252,10 @@ struct BrowserView: UIViewRepresentable {
             controlsPull.reset()
             voiceTask?.cancel()
             voiceTask = nil
+            NotificationCenter.default.removeObserver(self, name: .appWillStartPlayback, object: nil)
+            hangUpTask?.cancel()
+            hangUpTask = nil
+            hangUpAfterToolCall = false
             backObservation?.invalidate()
             backObservation = nil
             urlObservation?.invalidate()
@@ -527,6 +539,36 @@ struct BrowserView: UIViewRepresentable {
             view.load(URLRequest(url: target))
         }
 
+        /// This app is about to play music or a podcast: end this page's live
+        /// call, which would otherwise keep listening over the audio.
+        @objc func appWillStartPlayback() {
+            guard let view = webView, let current = view.url, sameOrigin(current, parent.url) else { return }
+            if MainActor.assumeIsolated({ (bridge?.activeCalls ?? 0) > 0 }) {
+                // Likely the agent's own play tool: its result must reach the
+                // server first, or the voice turn records the tool as failed.
+                hangUpAfterToolCall = true
+            } else {
+                Self.runHangUpScript(LiveHangUp.requestScript(afterToolResult: false), in: view)
+            }
+        }
+
+        private func deviceToolCallsSettled() {
+            guard hangUpAfterToolCall else { return }
+            hangUpAfterToolCall = false
+            guard let view = webView, let current = view.url, sameOrigin(current, parent.url) else { return }
+            Self.runHangUpScript(LiveHangUp.requestScript(afterToolResult: true), in: view)
+            hangUpTask?.cancel()
+            hangUpTask = Task { @MainActor [weak view] in
+                do { try await Task.sleep(for: LiveHangUp.toolResultGrace) } catch { return }
+                if let view { Self.runHangUpScript(LiveHangUp.flushScript, in: view) }
+            }
+        }
+
+        /// Fire-and-forget; the scripts evaluate to undefined.
+        private static func runHangUpScript(_ script: String, in view: WKWebView) {
+            view.evaluateJavaScript(script, completionHandler: nil)
+        }
+
         /// Installs, replaces, or removes the WebMCP bridge. Returns true when
         /// the injected script changed, so the current page must reload.
         @discardableResult
@@ -537,6 +579,9 @@ struct BrowserView: UIViewRepresentable {
             bridge = nil
             if let registry {
                 let bridge = WebMCPBridge(serverURL: url, registry: registry, device: UIDevice.current.model)
+                MainActor.assumeIsolated {
+                    bridge.onCallsSettled = { [weak self] in self?.deviceToolCallsSettled() }
+                }
                 bridge.install(into: controller)
                 self.bridge = bridge
             }
