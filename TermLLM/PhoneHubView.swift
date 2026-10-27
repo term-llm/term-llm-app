@@ -496,21 +496,18 @@ struct PhoneHubView: View {
     }
 }
 
-/// Saved connections are app configuration, so they live in Settings. Owns
-/// its own editor, Hub management and direct sign-in sheets.
+/// Saved connections are app configuration, so they live in Settings. The list
+/// only shows identity and status; every action lives on a connection's detail
+/// page. Which connection Chat shows is navigation state, not a setting here.
 @MainActor
 struct PhoneHubConnectionsView: View {
     @ObservedObject var connections: HubConnectionStore
     @ObservedObject var aggregate: HubAggregateStore
-    @ObservedObject private var linkedDevices = LinkedDevicesRuntime.shared
-    /// Opening a chat from Hub management leaves Settings.
+    /// Opening a chat from a connection leaves Settings.
     let onOpenChat: (UUID, URL) -> Void
     @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
     @State private var editor: PhoneHubView.Editor?
-    @State private var detailID: UUID?
-    @State private var directSignInID: UUID?
     @State private var showingReset = false
-    @State private var navigationError: String?
 
     /// Connections needing the user: unidentified, signed out, failing, or an
     /// unreadable catalog. Badges Settings and its Connections row.
@@ -520,36 +517,60 @@ struct PhoneHubConnectionsView: View {
         (connections.persistenceError == nil ? 0 : 1)
     }
 
+    private var reviewSources: [HubConnection] { connections.connections.filter { $0.needsKindReview == true } }
+
     var body: some View {
         List {
-            if let navigationError {
-                Section { Text(navigationError).foregroundStyle(.orange) }
-            }
-            Section {
-                Button("Add Connection", systemImage: "plus") { editor = PhoneHubView.Editor() }
-                    .accessibilityIdentifier("phoneHub.connections.add")
-            }
-            Section("Connections") {
-                if let error = connections.persistenceError {
+            if let error = connections.persistenceError {
+                Section {
                     Text(error).foregroundStyle(.orange)
                     Button("Reset unreadable catalog", role: .destructive) { showingReset = true }
                         .accessibilityIdentifier("phoneHub.resetCatalog")
                 }
-                ForEach(connections.connections.filter { $0.needsKindReview == true }) { source in
-                    VStack(alignment: .leading) {
-                        Text(source.name).font(.headline).accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-                        Text("Could not identify this server. Check its address and retry detection.").font(.caption)
-                        Button("Review connection") { editor = PhoneHubView.Editor(source: source) }
-                            .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+            }
+            Section {
+                ForEach(reviewSources) { source in
+                    Button { editor = PhoneHubView.Editor(source: source) } label: {
+                        PhoneHubConnectionRowLabel(
+                            name: source.name, style: .init(source), showsChevron: true,
+                            subtitle: "Couldn’t identify server · Tap to review", tone: .warning)
+                    }
+                    .foregroundStyle(.primary)
+                    .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
+                    .swipeActions {
                         Button("Remove", role: .destructive) { connections.remove(source.id) }
-                            .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+                            .accessibilityIdentifier("phoneHub.swipeRemove.\(source.id.uuidString)")
                     }
                 }
-                ForEach(aggregate.sources) { source in sourceRow(source) }
+                ForEach(aggregate.sources) { source in
+                    NavigationLink {
+                        PhoneHubConnectionDetailView(source: source, store: source.store, connections: connections,
+                                                     aggregate: aggregate, onOpenChat: onOpenChat)
+                    } label: {
+                        PhoneHubConnectionRow(source: source, store: source.store)
+                    }
+                    .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
+                    .swipeActions {
+                        Button(source.connection.isLinkedDevices ? "Forget" : "Remove", role: .destructive) { connections.remove(source.id) }
+                            .accessibilityIdentifier("phoneHub.swipeRemove.\(source.id.uuidString)")
+                    }
+                }
+                if reviewSources.isEmpty && aggregate.sources.isEmpty {
+                    Text("No connections yet. Tap + to add a server.")
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Servers")
+            } footer: {
+                if !(reviewSources.isEmpty && aggregate.sources.isEmpty) {
+                    Text("Tap a connection to see its status, sign in, or manage it.")
+                }
             }
             Section {
                 Toggle("Show offline agents", isOn: $showOfflineNodes)
                     .accessibilityIdentifier("phoneHub.showOfflineAgents")
+            } header: {
+                Text("Agents")
             } footer: {
                 Text("Offline agents can’t be opened. When shown, they appear greyed out in the Agents list.")
             }
@@ -557,140 +578,348 @@ struct PhoneHubConnectionsView: View {
         .transaction { $0.animation = nil }
         .navigationTitle("Connections")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add Connection", systemImage: "plus") { editor = PhoneHubView.Editor() }
+                    .accessibilityIdentifier("phoneHub.connections.add")
+            }
+        }
         .sheet(item: $editor) { editor in
             PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
                 .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-        }
-        .sheet(isPresented: Binding(get: { detailID != nil }, set: { if !$0 { detailID = nil } })) {
-            if let id = detailID, let source = aggregate.source(id), let workspace = source.hubWorkspace {
-                VStack(spacing: 0) {
-                    Button("Back to Connections") { detailID = nil }
-                        .padding().accessibilityIdentifier("phoneHub.details.close")
-                    HubView(source: source, workspace: workspace, onOpenChat: { url in
-                        openDetailDestination(url, nodeID: nil, source: source)
-                    }, onOpenNodeChat: { url, nodeID in
-                        openDetailDestination(url, nodeID: nodeID, source: source)
-                    }, onSettings: { detailID = nil })
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-            }
-        }
-        .sheet(isPresented: Binding(get: { directSignInID != nil }, set: { if !$0 { directSignInID = nil } })) {
-            if let id = directSignInID, let source = aggregate.source(id) {
-                PhoneHubDirectAuthentication(source: source)
-                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-            }
         }
         .confirmationDialog("Reset the unreadable catalog?", isPresented: $showingReset, titleVisibility: .visible) {
             Button("Reset saved connections", role: .destructive) { connections.resetUnreadableCatalog() }
         } message: { Text("This explicitly replaces the preserved catalog. You will need to add your connections again.") }
     }
+}
 
-    private func sourceRow(_ source: HubSourceWorkspace) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(source.connection.name).font(.headline)
-                .accessibilityIdentifier("phoneHub.source.\(source.id.uuidString)")
-            if source.connection.isLinkedDevices {
-                Text("Linked device · \(source.connection.linkedDevicesHostKey?.prefix(12) ?? "unknown identity")…")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(linkedDevices.status(for: source.id).label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(linkedDevicesStatusColor(source.id))
-            } else {
-                Text("\(source.connection.kind.title) · \(source.connection.url.absoluteString)")
-                    .font(.caption).foregroundStyle(.secondary)
+/// Visual identity per connection kind, shared by the list and detail page.
+struct PhoneHubConnectionStyle {
+    let symbol: String
+    let colors: [Color]
+    let title: String
+
+    init(kind: HubConnection.Kind, linked: Bool) {
+        if linked {
+            symbol = "laptopcomputer"; title = "Linked device"
+            colors = [Color(red: 0.75, green: 0.35, blue: 0.95), Color(red: 0.54, green: 0.27, blue: 0.67)]
+        } else if kind == .hub {
+            symbol = "server.rack"; title = kind.title
+            colors = [Color(red: 0.37, green: 0.36, blue: 0.90), Color(red: 0.21, green: 0.20, blue: 0.64)]
+        } else {
+            symbol = "dot.radiowaves.left.and.right"; title = kind.title
+            colors = [Color(red: 0.19, green: 0.69, blue: 0.78), Color(red: 0.11, green: 0.50, blue: 0.57)]
+        }
+    }
+    init(_ connection: HubConnection) { self.init(kind: connection.kind, linked: connection.isLinkedDevices) }
+
+    /// Address without scheme or trailing slash; linked devices show a key prefix.
+    static func address(_ connection: HubConnection) -> String {
+        if connection.isLinkedDevices {
+            return (connection.linkedDevicesHostKey.map { String($0.prefix(12)) } ?? "unknown identity") + "…"
+        }
+        var text = connection.url.absoluteString
+        for scheme in ["https://", "http://"] where text.hasPrefix(scheme) { text.removeFirst(scheme.count) }
+        if text.hasSuffix("/") { text.removeLast() }
+        return text
+    }
+}
+
+struct PhoneHubConnectionIcon: View {
+    let style: PhoneHubConnectionStyle
+    var size: CGFloat = 36
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+            .fill(LinearGradient(colors: style.colors, startPoint: .top, endPoint: .bottom))
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: style.symbol)
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(.white)
             }
-            if source.store.unauthorized && !source.connection.isLinkedDevices {
-                Text("Needs sign-in").foregroundStyle(.orange)
-                Button("Sign in") { showAuthentication(source) }
-                    .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
-            } else if !source.connection.isLinkedDevices {
-                sourceSyncStatus(source)
-                if let error = source.error {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
-                }
+            .accessibilityHidden(true)
+    }
+}
+
+/// Status shown for a connection, in list and detail.
+struct PhoneHubConnectionStatus {
+    enum Tone { case ok, warning, neutral, busy }
+    let text: String
+    let tone: Tone
+
+    var color: Color {
+        switch tone {
+        case .ok: .green
+        case .warning: .orange
+        case .neutral: .secondary
+        case .busy: .blue
+        }
+    }
+
+    @MainActor
+    static func of(_ source: HubSourceWorkspace, linked: LinkedDevicesRuntime) -> Self {
+        if source.connection.isLinkedDevices {
+            let status = linked.status(for: source.id)
+            let tone: Tone = switch status {
+            case .connected(_): .ok
+            case .connecting: .busy
+            case .revoked, .identityChanged, .failed(_): .warning
+            case .offline, .suspended: .neutral
             }
-            HStack {
-                Button(connections.selectedID == source.id ? "Selected" : "Select") { connections.select(source.id) }
-                    .accessibilityIdentifier("phoneHub.select.\(source.id.uuidString)")
-                if !source.connection.isLinkedDevices {
-                    Button("Edit") { editor = PhoneHubView.Editor(source: source.connection) }
-                        .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+            return .init(text: status.label, tone: tone)
+        }
+        let store = source.store
+        if store.unauthorized { return .init(text: "Needs sign-in", tone: .warning) }
+        if source.error != nil { return .init(text: "Couldn’t update", tone: .warning) }
+        if store.nodesLoading || store.attentionLoading { return .init(text: "Updating…", tone: .busy) }
+        if store.nodesVerified && store.attentionVerified { return .init(text: "Up to date", tone: .ok) }
+        return .init(text: "Waiting for server…", tone: .neutral)
+    }
+}
+
+struct PhoneHubConnectionRowLabel: View {
+    let name: String
+    let style: PhoneHubConnectionStyle
+    var showsChevron = false
+    let subtitle: String
+    let tone: PhoneHubConnectionStatus.Tone
+
+    var body: some View {
+        HStack(spacing: 12) {
+            PhoneHubConnectionIcon(style: style)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).lineLimit(1)
+                HStack(spacing: 5) {
+                    Circle().fill(PhoneHubConnectionStatus(text: "", tone: tone).color).frame(width: 7, height: 7)
+                    Text(subtitle)
+                        .foregroundStyle(tone == .warning ? Color.orange : Color.secondary)
+                        .lineLimit(1)
                 }
-                Button(source.connection.isLinkedDevices ? "Forget" : "Remove", role: .destructive) { connections.remove(source.id) }
+                .font(.footnote)
+            }
+            Spacer(minLength: 0)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Observes the source and its store so status changes redraw only this row.
+@MainActor
+private struct PhoneHubConnectionRow: View {
+    @ObservedObject var source: HubSourceWorkspace
+    @ObservedObject var store: HubStore
+    @ObservedObject private var linkedDevices = LinkedDevicesRuntime.shared
+
+    var body: some View {
+        let status = PhoneHubConnectionStatus.of(source, linked: linkedDevices)
+        let style = PhoneHubConnectionStyle(source.connection)
+        // Problems replace the address; healthy rows keep a stable subtitle.
+        let subtitle = status.tone == .warning ? status.text
+            : (source.connection.isLinkedDevices ? "\(style.title) · \(status.text)"
+               : "\(style.title) · \(PhoneHubConnectionStyle.address(source.connection))")
+        PhoneHubConnectionRowLabel(name: source.connection.name, style: style, subtitle: subtitle, tone: status.tone)
+    }
+}
+
+/// One connection's status and every action for it, in Settings style:
+/// action rows, navigation rows, and one destructive row at the bottom.
+@MainActor
+private struct PhoneHubConnectionDetailView: View {
+    @ObservedObject var source: HubSourceWorkspace
+    @ObservedObject var store: HubStore
+    @ObservedObject var connections: HubConnectionStore
+    @ObservedObject var aggregate: HubAggregateStore
+    let onOpenChat: (UUID, URL) -> Void
+    @ObservedObject private var linkedDevices = LinkedDevicesRuntime.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var editor: PhoneHubView.Editor?
+    @State private var showingManage = false
+    @State private var showingDirectAuth = false
+    @State private var confirmingRemove = false
+    @State private var navigationError: String?
+
+    private var isLinked: Bool { source.connection.isLinkedDevices }
+    private var style: PhoneHubConnectionStyle { PhoneHubConnectionStyle(source.connection) }
+
+    var body: some View {
+        List {
+            Section { header }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+            if let navigationError {
+                Section { Text(navigationError).foregroundStyle(.orange) }
+            }
+            if isLinked { linkedSections } else { serverSections }
+            Section {
+                Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) { confirmingRemove = true }
+                    .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
-            }.buttonStyle(.borderless)
-            HStack {
-                if source.connection.isLinkedDevices {
-                    Button("Connect") { linkedDevices.reconnectNow(source.id) }
-                        .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
-                } else {
-                    Button(source.error == nil ? "Refresh" : "Retry") {
-                        if source.store.unauthorized { showAuthentication(source) }
-                        else { Task { await source.store.refresh() } }
-                    }
-                    .disabled(source.store.refreshing)
-                    .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
-                    if source.connection.kind == .hub {
-                        Button("Manage Server") { detailID = source.id }
-                            .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-                    } else {
-                        Button("Authentication") { directSignInID = source.id }
-                            .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-                    }
+            }
+        }
+        .accessibilityIdentifier("phoneHub.connectionDetail")
+        .navigationTitle(source.connection.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(isLinked ? "Forget \(source.connection.name)?" : "Remove \(source.connection.name)?",
+                            isPresented: $confirmingRemove, titleVisibility: .visible) {
+            Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) {
+                let id = source.id
+                dismiss()
+                connections.remove(id)
+            }
+            .accessibilityIdentifier("phoneHub.remove.confirm")
+        } message: {
+            Text(isLinked ? "This iPhone will need to be linked again to use this device."
+                 : "Its agents disappear from the app. You can add it again later.")
+        }
+        .sheet(item: $editor) { editor in
+            PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
+                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+        }
+        .sheet(isPresented: $showingManage) {
+            if let workspace = source.hubWorkspace {
+                VStack(spacing: 0) {
+                    Button("Back to \(source.connection.name)") { showingManage = false }
+                        .padding().accessibilityIdentifier("phoneHub.details.close")
+                    HubView(source: source, workspace: workspace, onOpenChat: { url in
+                        openDestination(url, nodeID: nil)
+                    }, onOpenNodeChat: { url, nodeID in
+                        openDestination(url, nodeID: nodeID)
+                    }, onSettings: { showingManage = false })
                 }
-            }.buttonStyle(.borderless)
-        }.padding(.vertical, 4)
-    }
-
-    private func linkedDevicesStatusColor(_ sourceID: UUID) -> Color {
-        switch linkedDevices.status(for: sourceID) {
-        case .connected(_): .green
-        case .connecting: .secondary
-        case .revoked, .identityChanged, .failed(_): .orange
-        case .offline, .suspended: .secondary
+                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            }
+        }
+        .sheet(isPresented: $showingDirectAuth) {
+            PhoneHubDirectAuthentication(source: source)
+                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
         }
     }
 
-    /// A permanent status slot: refreshing changes its contents, never the
-    /// number/height of rows above the node list or the user's scroll anchor.
-    private func sourceSyncStatus(_ source: HubSourceWorkspace) -> some View {
-        let busy = source.store.nodesLoading || source.store.attentionLoading
-        let verified = source.store.nodesVerified && source.store.attentionVerified
-        let failed = source.error != nil
-        let message = failed ? "Couldn’t update" : (busy ? "Updating…" : (verified ? "Up to date" : "Waiting for server…"))
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                ZStack {
-                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(failed ? Color.orange : Color.green)
-                        .opacity(busy || !verified && !failed ? 0 : 1)
-                    ProgressView().controlSize(.small).opacity(busy ? 1 : 0)
-                }
-                .frame(width: 18, height: 18)
-                Text(message).font(.caption.weight(.medium)).lineLimit(1)
+    private var header: some View {
+        let status = PhoneHubConnectionStatus.of(source, linked: linkedDevices)
+        return VStack(spacing: 6) {
+            PhoneHubConnectionIcon(style: style, size: 64)
+            Text(source.connection.name)
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+                .padding(.top, 6)
+            Text("\(style.title) · \(PhoneHubConnectionStyle.address(source.connection))")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            statusCapsule(status).padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// A fixed-shape status slot: refreshing changes its contents, not layout.
+    private func statusCapsule(_ status: PhoneHubConnectionStatus) -> some View {
+        HStack(spacing: 6) {
+            ZStack {
+                Circle().fill(status.color).frame(width: 7, height: 7).opacity(status.tone == .busy ? 0 : 1)
+                ProgressView().controlSize(.mini).opacity(status.tone == .busy ? 1 : 0)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier(source.store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
+            .frame(width: 12, height: 12)
             Group {
-                if let updated = source.store.lastNodesRefresh {
-                    Text("Updated \(updated, style: .relative) ago")
+                // Freshness only describes data the app could load.
+                if !isLinked, !store.unauthorized, let updated = store.lastNodesRefresh {
+                    Text("\(status.text) · \(updated, style: .relative) ago")
                 } else {
-                    Text("Waiting for first update")
+                    Text(status.text)
                 }
             }
-            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            .lineLimit(1)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(status.tone == .neutral ? Color.secondary : status.color)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill((status.tone == .neutral ? Color.secondary : status.color).opacity(0.14)))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
+    }
+
+    @ViewBuilder private var serverSections: some View {
+        if store.unauthorized {
+            Section {
+                Button("Sign in") { showAuthentication() }
+                    .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
+            } footer: {
+                Text("Sign in to see this server’s agents. Credentials are kept separately for each connection.")
+            }
+        } else if let error = source.error {
+            Section("Last error") {
+                Text(error).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        Section("Server") {
+            // Signed out: Sign in above is the one way forward.
+            if !store.unauthorized {
+                LabeledContent("Agents", value: agentsSummary)
+                Button("Open in Chat") { openDestination(source.connection.url, nodeID: nil) }
+                    .disabled(!source.isActive)
+                    .accessibilityIdentifier("phoneHub.openChat.\(source.id.uuidString)")
+                Button(source.error == nil ? "Refresh now" : "Retry") { Task { await store.refresh() } }
+                    .disabled(store.refreshing)
+                    .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+            }
+            if source.connection.kind == .hub {
+                navigationRow("Manage server") { showingManage = true }
+                    .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+            } else {
+                navigationRow("Authentication") { showingDirectAuth = true }
+                    .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+            }
+            navigationRow("Address & name", value: "Edit") { editor = PhoneHubView.Editor(source: source.connection) }
+                .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
         }
     }
 
-    private func showAuthentication(_ source: HubSourceWorkspace) {
-        if source.connection.kind == .hub { detailID = source.id }
-        else { directSignInID = source.id }
+    @ViewBuilder private var linkedSections: some View {
+        Section("Device") {
+            LabeledContent("Agents", value: agentsSummary)
+            Button("Connect now") { linkedDevices.reconnectNow(source.id) }
+                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+        }
     }
-    private func openDetailDestination(_ url: URL, nodeID: String?, source: HubSourceWorkspace) {
-        guard source.isActive, !source.store.unauthorized else { return }
+
+    private var agentsSummary: String {
+        let nodes = store.nodes
+        guard store.nodesVerified || !nodes.isEmpty else { return "—" }
+        let online = nodes.filter { $0.status.reachable }.count
+        return online == nodes.count ? "\(nodes.count) online" : "\(online) of \(nodes.count) online"
+    }
+
+    private func navigationRow(_ title: String, value: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                if let value { Text(value).foregroundStyle(.secondary) }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .foregroundStyle(.primary)
+    }
+
+    private func showAuthentication() {
+        if source.connection.kind == .hub { showingManage = true } else { showingDirectAuth = true }
+    }
+
+    private func openDestination(_ url: URL, nodeID: String?) {
+        guard source.isActive, !store.unauthorized else { return }
         if nodeID == nil, url == source.connection.url {
-            detailID = nil
+            showingManage = false
             onOpenChat(source.id, url)
             return
         }
@@ -701,7 +930,7 @@ struct PhoneHubConnectionsView: View {
             navigationError = "The source supplied an unsafe chat path. Navigation blocked."
             return
         }
-        detailID = nil
+        showingManage = false
         onOpenChat(source.id, url)
     }
 }

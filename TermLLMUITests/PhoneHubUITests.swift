@@ -69,7 +69,8 @@ final class PhoneHubUITests: XCTestCase {
                         file: StaticString = #filePath, line: UInt = #line) {
         // Inside the Settings sheet a downward swipe at the top dismisses the
         // sheet; Connections opens scrolled to the top, so only scroll down.
-        let inSheet = app.buttons["settings.done"].exists || app.navigationBars["Connections"].exists
+        let inSheet = app.buttons["settings.done"].exists || app.navigationBars["Connections"].exists ||
+            app.descendants(matching: .any)["phoneHub.connectionDetail"].firstMatch.exists
         for direction in inSheet ? [true] : [upwards, !upwards] {
             for _ in 0..<8 {
                 if element.exists {
@@ -90,6 +91,7 @@ final class PhoneHubUITests: XCTestCase {
     /// Connections are managed in Settings, not from the Agents header.
     @MainActor
     private func openConnections() {
+        backToConnections()
         if app.navigationBars["Connections"].exists { return }
         if !app.buttons["settings.done"].exists {
             required(app.buttons["phoneHub.settings"]).tap()
@@ -98,8 +100,27 @@ final class PhoneHubUITests: XCTestCase {
         _ = required(app.navigationBars["Connections"])
     }
 
+    /// Every connection action lives on its detail page, pushed from the list.
+    @MainActor
+    private func openConnection(_ id: String) {
+        openConnections()
+        backToConnections()
+        let row = app.buttons["phoneHub.source." + id]
+        reveal(row)
+        row.tap()
+        _ = required(app.descendants(matching: .any)["phoneHub.connectionDetail"].firstMatch)
+    }
+
+    @MainActor
+    private func backToConnections() {
+        guard app.descendants(matching: .any)["phoneHub.connectionDetail"].firstMatch.exists else { return }
+        app.navigationBars.buttons["Connections"].firstMatch.tap()
+        _ = required(app.navigationBars["Connections"])
+    }
+
     @MainActor
     private func closeConnections() {
+        backToConnections()
         let connectionsBar = app.navigationBars["Connections"]
         if connectionsBar.exists {
             connectionsBar.buttons["Settings"].tap()
@@ -263,8 +284,12 @@ final class PhoneHubUITests: XCTestCase {
         required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         required(app.tabBars.buttons["Agents"]).tap()
-        openConnections()
+        openConnection(work)
+        XCTAssertFalse(app.buttons["phoneHub.select." + work].exists, "Chat's connection is not a setting")
         required(app.buttons["phoneHub.remove." + work]).tap()
+        required(app.buttons["phoneHub.remove.confirm"].firstMatch).tap()
+        _ = required(app.navigationBars["Connections"])
+        XCTAssertFalse(app.buttons["phoneHub.source." + work].exists)
         closeConnections()
         required(app.tabBars.buttons["Chat"]).tap()
         _ = required(app.buttons["chat.chooseAgent"])
@@ -563,9 +588,13 @@ final class PhoneHubUITests: XCTestCase {
         let work = id("work"), home = id("home"), slow = id("slow")
         try await control("home", "pending-check")
         openConnections()
+        shot("connections-list")
+        openConnection(slow)
         let slowRetry = app.buttons["phoneHub.retry." + slow]
         reveal(slowRetry)
         slowRetry.tap()
+        openConnection(home)
+        shot("connection-detail")
         let initialHomeRetry = app.buttons["phoneHub.retry." + home]
         reveal(initialHomeRetry, upwards: false)
         initialHomeRetry.tap()
@@ -574,7 +603,7 @@ final class PhoneHubUITests: XCTestCase {
         let freshHome = app.staticTexts["Home pending-check refresh"].firstMatch
         reveal(freshHome)
         _ = required(freshHome, timeout: 10)
-        openConnections()
+        openConnection(slow)
         let slowLoading = app.descendants(matching: .any)["phoneHub.nodesLoading." + slow].firstMatch
         reveal(slowLoading, upwards: false)
         XCTAssertTrue(slowLoading.exists, "Slow's native nodes request must still be loading, not timed out")
@@ -583,10 +612,13 @@ final class PhoneHubUITests: XCTestCase {
         try await control("slow", "pending-asserted")
         shot("06-healthy-sources-visible-during-real-pending-request")
         try await control("work", "unauthorized")
+        openConnection(work)
         let retry = app.buttons["phoneHub.retry." + work]
         reveal(retry, upwards: false)
         retry.tap()
         _ = required(app.buttons["phoneHub.signIn." + work], timeout: 15)
+        shot("connection-detail-needs-sign-in")
+        openConnection(home)
         let homeRetry = app.buttons["phoneHub.retry." + home]
         reveal(homeRetry)
         homeRetry.tap()
