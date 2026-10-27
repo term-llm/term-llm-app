@@ -940,6 +940,10 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "term-llm";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access for web voice and attachments.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access for web voice sessions.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -963,6 +967,10 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "term-llm";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access for web voice and attachments.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access for web voice sessions.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
