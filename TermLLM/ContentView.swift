@@ -126,7 +126,12 @@ struct ContentView: View {
                                   await linkedDevices.reinstallCapability(for: id),
                                   await source.completeLinkedDevicesAuthorizationRestore(epoch: epoch) else { return }
                         }
-                        await source.store.refresh()
+                        // Polling that waited for this connection on return starts now.
+                        if !aggregate.isPollingSuspended && !source.store.isPolling {
+                            source.store.resumePolling()
+                        } else {
+                            await source.store.refresh()
+                        }
                     }
                 default:
                     break
@@ -233,8 +238,13 @@ struct ContentView: View {
                 linkedDevices.setForeground(false)
             }
             if phase == .active {
-                aggregate.setPollingSuspended(false)
+                // Reconnect first. A linked source that has to reconnect resumes
+                // polling once connected (see the statuses handler) instead of
+                // failing its first poll.
                 linkedDevices.setForeground(true)
+                aggregate.setPollingSuspended(false) { source in
+                    source.connection.isLinkedDevices && !linkedDevices.status(for: source.id).isConnected
+                }
                 Task { await push.refreshAuthorization() }
                 if let request = voiceLaunches.request { beginVoiceLaunch(request) }
                 push.routeManualToKeyScene()
@@ -549,6 +559,10 @@ struct ContentView: View {
                         }, onDocumentCommitted: { destination in
                             guard !HubFixture.isEnabled, let source, let browserIdentity else { return }
                             browserCommitted(destination, sourceID: source.id, browserIdentity: browserIdentity)
+                        }, onMediaCaptureChange: { capturing in
+                            // A Live call keeps a linked device connected while the phone is locked.
+                            guard let source, source.connection.isLinkedDevices else { return }
+                            linkedDevices.setMediaCaptureActive(capturing, for: source.id)
                         })
                 .id(HubFixture.isEnabled ? "legacy" : (selectedWorkspace?.id.uuidString ?? "none") + (selectedWorkspace?.browserIdentity.uuidString ?? ""))
                 .ignoresSafeArea(edges: HubFixture.isEnabled ? .bottom : [])

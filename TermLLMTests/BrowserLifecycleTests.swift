@@ -659,6 +659,22 @@ final class BrowserLifecycleTests: XCTestCase {
         XCTAssertNil(view.navigationDelegate)
         XCTAssertNil(view.uiDelegate)
     }
+
+    /// A linked device stays connected in the background while its page
+    /// captures (a Live call), so a capture must not outlive its view.
+    func testMediaCaptureIsReportedOnChangeAndEndsWithTheView() {
+        var reports: [Bool] = []
+        var parent = browser(State())
+        parent.onMediaCaptureChange = { reports.append($0) }
+        let coordinator = coordinator(parent)
+        coordinator.setMediaCapturing(true)
+        coordinator.setMediaCapturing(true)
+        coordinator.setMediaCapturing(false)
+        coordinator.setMediaCapturing(true)
+        BrowserView.dismantleUIView(webView(server), coordinator: coordinator)
+        coordinator.tearDown()
+        XCTAssertEqual(reports, [true, false, true, false])
+    }
 }
 
 @MainActor

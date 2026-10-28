@@ -35,6 +35,25 @@ final class HubAggregateStoreTests: XCTestCase {
     private func drain() async {
         for _ in 0..<30 { await Task.yield() }
     }
+    func testResumingPollingCanLeaveChosenSourcesPaused() throws {
+        let work = connection("work"), desk = connection("desk", kind: .directNode)
+        let aggregate = HubAggregateStore { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: MockHubClient(), pollInterval: 999))
+        }
+        aggregate.synchronize([work, desk])
+        defer { aggregate.synchronize([]) }
+        let workStore = try XCTUnwrap(aggregate.source(work.id)).store
+        let deskStore = try XCTUnwrap(aggregate.source(desk.id)).store
+        aggregate.setPollingSuspended(true)
+        XCTAssertTrue(aggregate.isPollingSuspended)
+        XCTAssertFalse(workStore.isPolling)
+        // A linked device that is still reconnecting waits for its connection.
+        aggregate.setPollingSuspended(false) { $0.id == desk.id }
+        XCTAssertFalse(aggregate.isPollingSuspended)
+        XCTAssertTrue(workStore.isPolling)
+        XCTAssertFalse(deskStore.isPolling)
+    }
+
     func testAttentionBadgeUsesServerTotalsNotTheLoadedWindow() async throws {
         let connection = connection("work")
         let client = MockHubClient()

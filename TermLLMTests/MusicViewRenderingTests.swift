@@ -70,4 +70,17 @@ final class MusicViewRenderingTests: XCTestCase {
                          named: "playlist-empty")
         try await render(MusicSearchView(library: library, playlistID: playlist.id), named: "add-songs")
     }
+
+    /// Core Animation moves the bars at a capped rate; nothing in the app
+    /// redraws them each frame, and they come to rest when playback stops.
+    func testPlayingBarsAnimateInCoreAnimationOnlyWhilePlaying() throws {
+        let view = PlayingBarsView()
+        XCTAssertTrue(view.bars.allSatisfy { $0.animationKeys() == nil })
+        view.animating = true
+        let animations = view.bars.compactMap { $0.animation(forKey: PlayingBarsView.animationKey) }
+        XCTAssertEqual(animations.count, 3)
+        XCTAssertTrue(animations.allSatisfy { $0.preferredFrameRateRange.maximum <= 20 && !$0.isRemovedOnCompletion })
+        view.animating = false
+        XCTAssertTrue(view.bars.allSatisfy { $0.animationKeys() == nil })
+    }
 }

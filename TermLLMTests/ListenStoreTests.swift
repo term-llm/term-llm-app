@@ -57,6 +57,40 @@ final class ListenStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.resolve("nope"))
     }
 
+    /// Playback records its position regularly. That must not rewrite the
+    /// library, which history and show notes make hundreds of KB.
+    func testPositionsAreSavedApartFromTheLibrary() throws {
+        let library = temporaryDirectory().appending(path: "library.json")
+        let positions = ListenStore.positionsURL(for: library)
+        let store = ListenStore(fileURL: library)
+        let items = store.add([draft("a"), draft("b")], placement: .end)
+        let saved = try Data(contentsOf: library)
+
+        store.setPosition(120, for: items[0].id)
+        store.setPosition(150, for: items[0].id)
+        XCTAssertEqual(try Data(contentsOf: library), saved, "the library isn't rewritten")
+        XCTAssertEqual(store.item(items[0].id)?.position, 150)
+        XCTAssertLessThan(try Data(contentsOf: positions).count, 200)
+        XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, 150, "a relaunch restores it")
+
+        // The next library save takes the position in and drops the small file.
+        try store.setStatus([items[1].id], .archived)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: positions.path(percentEncoded: false)))
+        XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, 150)
+    }
+
+    func testAnUnreadablePositionsFileFallsBackToTheLibrary() throws {
+        let library = temporaryDirectory().appending(path: "library.json")
+        let store = ListenStore(fileURL: library)
+        let items = store.add([draft("a")], placement: .end)
+        store.setPosition(30, for: items[0].id)
+        try store.setStatus([items[0].id], .inProgress)
+        try Data("{".utf8).write(to: ListenStore.positionsURL(for: library))
+        let reopened = ListenStore(fileURL: library)
+        XCTAssertEqual(reopened.item(items[0].id)?.position, 30)
+        XCTAssertNil(reopened.notice)
+    }
+
     func testPersistsAndRecoversFromAnUnreadableFile() throws {
         let directory = temporaryDirectory()
         let file = directory.appending(path: "library.json")

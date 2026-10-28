@@ -52,8 +52,11 @@ final class ListenPlayer {
     @ObservationIgnored private var ticksSinceSave = 0
     @ObservationIgnored private var pausedByInterruption = false
 
-    /// Positions are saved every this many seconds while playing.
-    static let saveInterval = 5
+    /// The position is saved every this many seconds while playing, so iOS
+    /// ending the app loses at most one skip back. It's also saved whenever
+    /// playback pauses, stops, seeks or moves on, and when the app leaves the
+    /// foreground.
+    static let saveInterval = 15
 
     init(store: ListenStore, engine: ListenEngine, sources: @escaping (ListenItem) async -> ListenSource,
          nowPlaying: ListenNowPlaying? = nil, defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
@@ -88,7 +91,7 @@ final class ListenPlayer {
     var current: ListenItem? { currentID.flatMap(store.item) }
     var isPlaying: Bool { status == .playing || status == .loading }
     /// Player state only, never the library: the root view reads this, and the
-    /// library changes every few seconds while playing (the position is saved).
+    /// library changes regularly while playing (the position is saved).
     /// The iOS 26 tab accessory rebuilds the whole shelf on each root update.
     var showsBar: Bool { currentID != nil && !barHidden }
 
@@ -233,7 +236,7 @@ final class ListenPlayer {
             }
             updateNetworkState()
         }
-        if let currentID { store.update(currentID) { $0.position = target } }
+        if let currentID { store.setPosition(target, for: currentID) }
         showNowPlaying()
     }
 
@@ -289,6 +292,12 @@ final class ListenPlayer {
     func cancelSleepTimer() {
         sleepAt = nil
         sleepAtEnd = false
+    }
+
+    /// Saves where the playing item is now; the app is leaving the foreground,
+    /// and iOS may end it later without notice.
+    func savePlayingPosition() {
+        if status == .playing { savePosition() }
     }
 
     func hideBar() { barHidden = true }
@@ -438,7 +447,7 @@ final class ListenPlayer {
         guard let currentID, loadedID == currentID else { return }
         let elapsed = engine.currentTime
         position = elapsed
-        store.update(currentID) { $0.position = elapsed }
+        store.setPosition(elapsed, for: currentID)
     }
 
     private func showNowPlaying() {

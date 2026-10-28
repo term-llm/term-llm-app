@@ -134,7 +134,21 @@ final class LinkedDevicesRuntime: ObservableObject {
             case .failed(let message): message
             }
         }
+
+        var isConnected: Bool {
+            if case .connected = self { return true }
+            return false
+        }
     }
+
+    /// A connection is closed this long after the app goes to the background,
+    /// unless its page is capturing (a Live call, which must keep working
+    /// while the phone is locked). Playing audio keeps the app running in the
+    /// background, and an open connection keeps the radio awake: the host
+    /// sends ICE keepalives every 2 s. The grace is shorter than the host's
+    /// 25 s ICE failure timeout: after a longer suspension the connection is
+    /// replaced on return instead of trusted.
+    static let backgroundGrace: Duration = .seconds(20)
 
     @Published private(set) var statuses: [UUID: Status] = [:]
     private final class Entry {
@@ -150,6 +164,9 @@ final class LinkedDevicesRuntime: ObservableObject {
         var attempt = 0
         var terminal = false
         var enrolling = false
+        /// Closes `live` once the app has been in the background for the grace.
+        var backgroundClose: Task<Void, Never>?
+        var backgroundCloseDue: ContinuousClock.Instant?
         init(connection: HubConnection) { self.connection = connection }
     }
 
@@ -161,6 +178,10 @@ final class LinkedDevicesRuntime: ObservableObject {
     private let monitorQueue = DispatchQueue(label: "com.termllm.linked-devices.path")
     private var networkAvailable = true
     private var foreground = true
+    /// Sources whose page is capturing the microphone or camera.
+    private var capturing: Set<UUID> = []
+    private let grace: Duration
+    private let now: () -> ContinuousClock.Instant
 
     #if canImport(Security)
     convenience init() {
@@ -174,11 +195,15 @@ final class LinkedDevicesRuntime: ObservableObject {
     init(identities: LinkedDevicesIdentityStore,
          connector: (any LinkedDevicesSessionConnecting)?,
          pathMonitor: NWPathMonitor = NWPathMonitor(),
-         makeListener: @escaping () -> any PeerLoopbackListening = { PeerNWLoopbackListener() }) {
+         makeListener: @escaping () -> any PeerLoopbackListening = { PeerNWLoopbackListener() },
+         backgroundGrace: Duration = LinkedDevicesRuntime.backgroundGrace,
+         now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.identities = identities
         self.connector = connector
         self.pathMonitor = pathMonitor
         self.makeListener = makeListener
+        grace = backgroundGrace
+        self.now = now
         pathMonitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in self?.networkChanged(path.status == .satisfied) }
         }
@@ -229,6 +254,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             if entry.enrolling && !entry.enrollmentExistingSource { continue }
             entries[id] = nil
             statuses[id] = nil
+            capturing.remove(id)
             tearDown(entry)
             if let key = hostKey(entry.connection) { try? identities.remove(hostKey: key) }
             let store = WKWebsiteDataStore(forIdentifier: id)
@@ -254,14 +280,60 @@ final class LinkedDevicesRuntime: ObservableObject {
     func setForeground(_ value: Bool) {
         guard foreground != value else { return }
         foreground = value
-        if value { reconnectEligibleSources(immediate: true) }
-        else {
+        if value {
+            let returned = now()
+            for entry in entries.values {
+                let overdue = entry.backgroundCloseDue.map { returned >= $0 } ?? false
+                cancelBackgroundClose(entry)
+                // The close never ran because the app was suspended past the
+                // grace, so the host has most likely dropped this connection.
+                // Replace it now rather than wait for WebRTC to notice.
+                if overdue, entry.live != nil, !entry.terminal, !entry.enrolling { tearDownConnection(entry) }
+            }
+            reconnectEligibleSources(immediate: true)
+        } else {
             for entry in entries.values {
                 entry.task?.cancel()
                 entry.task = nil
-                statuses[entry.connection.id] = entry.live == nil ? .suspended : statuses[entry.connection.id]
+                if entry.live == nil && !entry.terminal { statuses[entry.connection.id] = .suspended }
+                scheduleBackgroundClose(entry)
             }
         }
+    }
+
+    /// The source's page started or stopped capturing the microphone or
+    /// camera. A capturing page (a Live call) keeps its connection open in the
+    /// background; when it stops there, the grace starts.
+    func setMediaCaptureActive(_ active: Bool, for sourceID: UUID) {
+        if active {
+            capturing.insert(sourceID)
+            if let entry = entries[sourceID] { cancelBackgroundClose(entry) }
+        } else {
+            capturing.remove(sourceID)
+            if let entry = entries[sourceID] { scheduleBackgroundClose(entry) }
+        }
+    }
+
+    private func scheduleBackgroundClose(_ entry: Entry) {
+        let sourceID = entry.connection.id
+        guard !foreground, entry.live != nil, entry.backgroundClose == nil, !entry.terminal, !entry.enrolling,
+              !capturing.contains(sourceID) else { return }
+        let token = entry.activeToken
+        let grace = grace
+        entry.backgroundCloseDue = now() + grace
+        entry.backgroundClose = Task { @MainActor [weak self, weak entry] in
+            try? await Task.sleep(for: grace)
+            guard !Task.isCancelled, let self, let entry, self.entries[sourceID] === entry, !self.foreground,
+                  entry.live != nil, entry.activeToken == token, !self.capturing.contains(sourceID) else { return }
+            self.tearDownConnection(entry)
+            self.statuses[sourceID] = .suspended
+        }
+    }
+
+    private func cancelBackgroundClose(_ entry: Entry) {
+        entry.backgroundClose?.cancel()
+        entry.backgroundClose = nil
+        entry.backgroundCloseDue = nil
     }
 
     func reconnectNow(_ sourceID: UUID) {
@@ -461,6 +533,8 @@ final class LinkedDevicesRuntime: ObservableObject {
                                                                        hubBaseURL: connection.url))
                     statuses[sourceID] = .connected(relayed: nil)
                     updateSelectedPair(for: reservedEntry, live: live)
+                    // Enrollment may finish after the app went to the background.
+                    scheduleBackgroundClose(reservedEntry)
                 } else {
                     statuses[sourceID] = .offline
                     startIfEligible(reservedEntry, immediate: true)
@@ -720,6 +794,7 @@ final class LinkedDevicesRuntime: ObservableObject {
     private func tearDownConnection(_ entry: Entry) {
         entry.task?.cancel()
         entry.task = nil
+        cancelBackgroundClose(entry)
         entry.activeToken = nil
         let live = entry.live
         entry.live = nil

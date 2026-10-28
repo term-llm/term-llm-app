@@ -3,7 +3,8 @@ import Observation
 
 /// The Listen library kept on this phone. Unplayed and in-progress items in
 /// list order form Up Next; played and archived items stay as history until
-/// cleared. Saved as JSON after every change.
+/// cleared. Saved as JSON after every change, except playback positions,
+/// which go to a small file of their own (see `setPosition`).
 @MainActor
 @Observable
 final class ListenStore {
@@ -21,6 +22,10 @@ final class ListenStore {
     private(set) var notice: String?
 
     @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored private let positionsURL: URL
+    /// Positions recorded since the library file was last written.
+    @ObservationIgnored private var pendingPositions: [UUID: TimeInterval] = [:]
+    @ObservationIgnored private var positionsFileMayExist = false
     @ObservationIgnored private let now: () -> Date
     static let formatVersion = 1
     /// History beyond this many items is dropped, oldest first.
@@ -28,12 +33,18 @@ final class ListenStore {
 
     init(fileURL: URL = ListenStore.defaultFileURL, now: @escaping () -> Date = Date.init) {
         self.fileURL = fileURL
+        positionsURL = Self.positionsURL(for: fileURL)
         self.now = now
         load()
     }
 
     nonisolated static var defaultFileURL: URL {
         URL.applicationSupportDirectory.appending(path: "Listen/library.json")
+    }
+
+    /// Where positions recorded since the library was last saved are kept.
+    nonisolated static func positionsURL(for library: URL) -> URL {
+        library.deletingLastPathComponent().appending(path: library.deletingPathExtension().lastPathComponent + "-positions.json")
     }
 
     var upNext: [ListenItem] { items.filter(\.isQueued) }
@@ -108,6 +119,20 @@ final class ListenStore {
         item.updatedAt = now()
         items[index] = item
         if save { persist() }
+    }
+
+    /// Records where playback of `id` is. Called regularly while playing, so
+    /// it rewrites only a small file of the positions recorded since the
+    /// library was last saved, never the whole library (show notes and
+    /// history make that hundreds of KB). The next library save takes them in
+    /// and deletes the small file.
+    func setPosition(_ position: TimeInterval, for id: UUID) {
+        guard position.isFinite, let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let position = max(0, position)
+        if items[index].position != position { items[index].position = position }
+        guard pendingPositions[id] != position else { return }
+        pendingPositions[id] = position
+        writePositions()
     }
 
     func setStatus(_ ids: [UUID], _ status: ListenItem.Status) throws {
@@ -187,6 +212,13 @@ final class ListenStore {
         } catch {
             listenLog.error("Listen library save failed: \(error.localizedDescription, privacy: .public)")
             notice = "\(Self.saveFailurePrefix) \(error.localizedDescription)"
+            return
+        }
+        // The library now holds every position.
+        pendingPositions = [:]
+        if positionsFileMayExist {
+            try? FileManager.default.removeItem(at: positionsURL)
+            positionsFileMayExist = false
         }
     }
 
@@ -227,7 +259,36 @@ final class ListenStore {
         if let publishedAt = draft.publishedAt { item.publishedAt = publishedAt }
     }
 
+    private func writePositions() {
+        let positions = Dictionary(uniqueKeysWithValues: pendingPositions.map { ($0.key.uuidString, $0.value) })
+        do {
+            try FileManager.default.createDirectory(at: positionsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try Self.encoder.encode(StoredPositions(version: Self.formatVersion, positions: positions))
+            positionsFileMayExist = true
+            try data.write(to: positionsURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch {
+            listenLog.error("Listen position save failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Positions recorded after the library was last saved win over its own.
+    private func loadPositions() {
+        guard let data = try? Data(contentsOf: positionsURL) else { return }
+        positionsFileMayExist = true
+        guard let stored = try? Self.decoder.decode(StoredPositions.self, from: data) else {
+            listenLog.error("Listen positions file is unreadable; using the library's positions")
+            return
+        }
+        for (key, position) in stored.positions {
+            guard let id = UUID(uuidString: key), position.isFinite, position >= 0,
+                  let index = items.firstIndex(where: { $0.id == id }) else { continue }
+            items[index].position = position
+            pendingPositions[id] = position
+        }
+    }
+
     private func load() {
+        defer { loadPositions() }
         let data: Data
         do {
             data = try Data(contentsOf: fileURL)
@@ -255,6 +316,12 @@ final class ListenStore {
     private struct Stored: Encodable {
         let version: Int
         let items: [ListenItem]
+    }
+
+    private struct StoredPositions: Codable {
+        let version: Int
+        /// Seconds, by item id.
+        let positions: [String: TimeInterval]
     }
 
     private struct Body: Decodable {

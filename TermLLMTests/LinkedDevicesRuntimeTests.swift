@@ -1764,3 +1764,139 @@ private func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async th
         XCTFail("Expected error", file: file, line: line)
     } catch {}
 }
+
+private final class ImmediateLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
+    func start(port: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16 {
+        port ?? 43_300
+    }
+    func stop() {}
+}
+
+/// Hands out live connections; counts how many were made and closed.
+private final class CountingRuntimeTestConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var connects = 0
+    private var closes = 0
+    var connectCount: Int { lock.withLock { connects } }
+    var closeCount: Int { lock.withLock { closes } }
+
+    func reconnect(credential: LinkedDevicesCredential,
+                   closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
+        lock.withLock { connects += 1 }
+        let authorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: LinkedDevicesBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
+            expiresAt: .distantFuture, scopePrefix: credential.basePath ?? "/"))
+        let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
+        return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
+                                           stats: { PeerSessionStats() }, close: { [self] in
+            lock.withLock { closes += 1 }
+            multiplexer.close(); authorization.revoke(); callback()
+        })
+    }
+}
+
+@MainActor
+private final class RuntimeTestClock {
+    var now = ContinuousClock.now
+}
+
+/// Background lifecycle: podcast playback keeps the app running in the
+/// background, where an open connection keeps the radio awake.
+extension LinkedDevicesRuntimeTests {
+    private func connectedRuntime(seed: UInt8, grace: Duration,
+                                  clock: RuntimeTestClock? = nil) async throws
+        -> (LinkedDevicesRuntime, CountingRuntimeTestConnector, HubConnection) {
+        let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
+        let host = Data(repeating: seed, count: 32)
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: seed &+ 1, count: 32))
+        credential.deviceID = LinkedDevicesBase64URL.encode(Data(repeating: seed &+ 2, count: 16))
+        credential.reconnectCapability = Data(repeating: seed &+ 3, count: 32)
+        credential.brokerURL = try XCTUnwrap(URL(string: "https://broker.example"))
+        credential.scope = "web-v1"
+        credential.basePath = "/chat"
+        try identities.save(credential)
+        let source = HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                                   url: try XCTUnwrap(URL(string: "http://localhost:\(43_300 + Int(seed))/chat/")),
+                                   needsKindReview: nil, linkedDevicesHostKey: LinkedDevicesBase64URL.encode(host))
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                           makeListener: { ImmediateLoopbackListener() }, backgroundGrace: grace,
+                                           now: { clock?.now ?? ContinuousClock.now })
+        runtime.synchronize([source])
+        try await waitUntil { runtime.status(for: source.id).isConnected }
+        return (runtime, connector, source)
+    }
+
+    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+
+    func testBackgroundClosesAnIdleConnectionAfterTheGraceAndReturningReconnects() async throws {
+        let (runtime, connector, source) = try await connectedRuntime(seed: 0x81, grace: .milliseconds(50))
+        defer { runtime.synchronize([]) }
+        runtime.setForeground(false)
+        XCTAssertTrue(runtime.status(for: source.id).isConnected, "a quick lock or app switch keeps the connection")
+        XCTAssertEqual(connector.closeCount, 0)
+
+        try await waitUntil { connector.closeCount == 1 }
+        XCTAssertEqual(runtime.status(for: source.id), .suspended)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(connector.connectCount, 1, "nothing reconnects while the app is in the background")
+
+        runtime.setForeground(true)
+        try await waitUntil { runtime.status(for: source.id).isConnected }
+        XCTAssertEqual(connector.connectCount, 2)
+    }
+
+    func testCapturingPageKeepsTheConnectionUntilItStops() async throws {
+        let (runtime, connector, source) = try await connectedRuntime(seed: 0x82, grace: .milliseconds(50))
+        defer { runtime.synchronize([]) }
+        runtime.setMediaCaptureActive(true, for: source.id)
+        runtime.setForeground(false)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(connector.closeCount, 0, "a Live call must keep working while the phone is locked")
+        XCTAssertTrue(runtime.status(for: source.id).isConnected)
+
+        runtime.setMediaCaptureActive(false, for: source.id)
+        XCTAssertEqual(connector.closeCount, 0, "the grace starts when the call ends")
+        try await waitUntil { connector.closeCount == 1 }
+        XCTAssertEqual(runtime.status(for: source.id), .suspended)
+    }
+
+    func testReturningWithinTheGraceKeepsTheConnection() async throws {
+        let clock = RuntimeTestClock()
+        let (runtime, connector, source) = try await connectedRuntime(seed: 0x83, grace: .seconds(60), clock: clock)
+        defer { runtime.synchronize([]) }
+        runtime.setForeground(false)
+        clock.now = clock.now + .seconds(59)
+        runtime.setForeground(true)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(connector.closeCount, 0)
+        XCTAssertEqual(connector.connectCount, 1)
+        XCTAssertTrue(runtime.status(for: source.id).isConnected)
+    }
+
+    func testReturningAfterTheGraceReplacesAConnectionTheAppWasSuspendedWith() async throws {
+        let clock = RuntimeTestClock()
+        let (runtime, connector, source) = try await connectedRuntime(seed: 0x84, grace: .seconds(60), clock: clock)
+        defer { runtime.synchronize([]) }
+        runtime.setForeground(false)
+        // Suspended: the close is still waiting, but its time has passed.
+        clock.now = clock.now + .seconds(61)
+        runtime.setForeground(true)
+        XCTAssertEqual(connector.closeCount, 1, "the host has most likely dropped it already")
+        try await waitUntil { runtime.status(for: source.id).isConnected }
+        XCTAssertEqual(connector.connectCount, 2)
+    }
+
+    func testBackgroundKeepsARevokedStatus() async throws {
+        let (runtime, _, source) = try await connectedRuntime(seed: 0x85, grace: .milliseconds(50))
+        defer { runtime.synchronize([]) }
+        runtime.markRevoked(source.id)
+        runtime.setForeground(false)
+        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+        runtime.setForeground(true)
+        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+    }
+}

@@ -210,6 +210,8 @@ final class HubStore: ObservableObject {
         pollTask = nil
     }
 
+    var isPolling: Bool { pollTask != nil }
+
     /// Resume after `suspendPolling`. Refetches idle panels, then polls again.
     /// No-op while already polling, disposed or unauthorized.
     func resumePolling() {

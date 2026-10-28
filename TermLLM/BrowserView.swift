@@ -156,6 +156,9 @@ struct BrowserView: UIViewRepresentable {
     var onAuthorizationRevoked: () -> Void = {}
     /// Committed main document only; provisional destinations are not retained context.
     var onDocumentCommitted: (URL) -> Void = { _ in }
+    /// The page started or stopped capturing the microphone or camera (a Live
+    /// call). Reported as stopped when the view goes away mid-capture.
+    var onMediaCaptureChange: (Bool) -> Void = { _ in }
 
     /// Pure WebKit permission policy; granting here does not bypass iOS's
     /// app-level microphone authorization. No capture API is called natively.
@@ -212,6 +215,14 @@ struct BrowserView: UIViewRepresentable {
         context.coordinator.urlObservation = view.observe(\.url, options: [.initial, .new]) { [weak coordinator = context.coordinator] webView, _ in
             MainActor.assumeIsolated { coordinator?.parent.push?.visibleURL = webView.url }
         }
+        context.coordinator.captureObservations = [
+            view.observe(\.microphoneCaptureState, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+                MainActor.assumeIsolated { coordinator?.setMediaCapturing(webView.isCapturingMedia) }
+            },
+            view.observe(\.cameraCaptureState, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+                MainActor.assumeIsolated { coordinator?.setMediaCapturing(webView.isCapturingMedia) }
+            },
+        ]
         view.allowsBackForwardNavigationGestures = true
         view.scrollView.contentInsetAdjustmentBehavior = .never
         let pull = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePull(_:)))
@@ -250,6 +261,9 @@ struct BrowserView: UIViewRepresentable {
         var authenticatedCount = 0
         var backObservation: NSKeyValueObservation?
         var urlObservation: NSKeyValueObservation?
+        var captureObservations: [NSKeyValueObservation] = []
+        /// What `onMediaCaptureChange` last reported.
+        private(set) var capturingMedia = false
         var pushChangeCount = 0
         private var handledPushNavigation: UUID?
         private var bridge: WebMCPBridge?
@@ -289,11 +303,20 @@ struct BrowserView: UIViewRepresentable {
             backObservation = nil
             urlObservation?.invalidate()
             urlObservation = nil
+            captureObservations.forEach { $0.invalidate() }
+            captureObservations = []
+            setMediaCapturing(false)
             bridge?.uninstall()
             bridge = nil
             pushBridge?.uninstall()
             pushBridge = nil
             recoveryPending = false
+        }
+
+        func setMediaCapturing(_ capturing: Bool) {
+            guard capturing != capturingMedia else { return }
+            capturingMedia = capturing
+            parent.onMediaCaptureChange(capturing)
         }
 
         private var nativeDestinationID: UUID?
@@ -790,4 +813,8 @@ struct BrowserView: UIViewRepresentable {
                 ["/auth/login", "/auth/setup", "/auth/recover"].contains { destination.path == prefix + $0 }
         }
     }
+}
+
+private extension WKWebView {
+    var isCapturingMedia: Bool { microphoneCaptureState != .none || cameraCaptureState != .none }
 }

@@ -166,6 +166,32 @@ final class ListenPlayerTests: XCTestCase {
         XCTAssertTrue(listen.player.showsBar)
     }
 
+    func testPlaybackSavesThePositionWithoutRewritingTheLibrary() async throws {
+        let directory = temporaryDirectory()
+        let library = directory.appending(path: "library.json")
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine, directory: directory)
+        let items = try await listen.add([draft("a")], placement: .now, download: .never)
+        await settle()
+        let saved = try Data(contentsOf: library)
+        let played = ListenPlayer.saveInterval * 3
+        for second in 1...played {
+            engine.currentTime = TimeInterval(second)
+            engine.send(.tick)
+        }
+        XCTAssertEqual(try Data(contentsOf: library), saved)
+        XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played))
+
+        engine.currentTime = TimeInterval(played + 4)
+        listen.player.savePlayingPosition()
+        XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played + 4),
+                       "leaving the foreground saves it at once")
+        engine.currentTime = TimeInterval(played + 9)
+        listen.player.pause()
+        XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played + 9))
+        XCTAssertEqual(try Data(contentsOf: library), saved)
+    }
+
     func testServerMediaStreamsWithCookiesAndOthersWithout() async throws {
         let engine = FakeListenEngine()
         let cookies = FakeCookieJar()

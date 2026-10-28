@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Shared building blocks for the Music screens.
 
@@ -71,28 +72,108 @@ struct TrackRow: View {
     }
 }
 
-/// The small animated equalizer beside the current song.
+/// The small animated equalizer beside the current song or episode. Core
+/// Animation moves the bars in the render server at a capped frame rate, so
+/// the app isn't woken to redraw them every frame. They hold still with
+/// Reduce Motion.
 struct PlayingBars: View {
     let animating: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 20, paused: !animating)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 2) {
-                ForEach(0..<3, id: \.self) { bar in
-                    Capsule().fill(.tint).frame(width: 3, height: height(bar, time))
-                }
-            }
-            .frame(height: 16)
-        }
-        .accessibilityHidden(true)
+        PlayingBarsLayers(animating: animating && !reduceMotion)
+            .frame(width: PlayingBarsView.width, height: PlayingBarsView.height)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct PlayingBarsLayers: UIViewRepresentable {
+    let animating: Bool
+
+    func makeUIView(context: Context) -> PlayingBarsView { PlayingBarsView() }
+    func updateUIView(_ view: PlayingBarsView, context: Context) { view.animating = animating }
+}
+
+/// Three tinted capsules whose heights Core Animation varies.
+final class PlayingBarsView: UIView {
+    static let barWidth: CGFloat = 3
+    static let spacing: CGFloat = 2
+    static let width = barWidth * 3 + spacing * 2
+    static let height: CGFloat = 16
+    static let stillHeights: [CGFloat] = [6, 12, 6]
+    static let lowest: CGFloat = 5
+    /// Seconds for each bar to rise (and again to fall); unequal, so the bars
+    /// drift in and out of step.
+    static let periods: [CFTimeInterval] = [0.43, 0.31, 0.37]
+    static let frameRate = CAFrameRateRange(minimum: 10, maximum: 20, preferred: 15)
+    static let animationKey = "playing"
+
+    let bars: [CALayer] = (0..<3).map { _ in CALayer() }
+
+    var animating = false {
+        didSet { if animating != oldValue { updateAnimations() } }
     }
 
-    private func height(_ bar: Int, _ time: Double) -> CGFloat {
-        guard animating else { return bar == 1 ? 12 : 6 }
-        let phase = Double(bar) * 0.8
-        let wave = sin(time * 5.2 + phase) * 0.6 + sin(time * 3.1 + phase * 1.7) * 0.4
-        return 5 + CGFloat((wave + 1) / 2) * 11
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        bars.forEach { layer.addSublayer($0) }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: PlayingBarsView, _: UITraitCollection) in
+            view.updateColor()
+        }
+        updateColor()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: CGSize { CGSize(width: Self.width, height: Self.height) }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let left = bounds.midX - Self.width / 2
+        for (index, bar) in bars.enumerated() {
+            bar.bounds = CGRect(x: 0, y: 0, width: Self.barWidth, height: Self.stillHeights[index])
+            bar.position = CGPoint(x: left + CGFloat(index) * (Self.barWidth + Self.spacing) + Self.barWidth / 2,
+                                   y: bounds.midY)
+            bar.cornerRadius = Self.barWidth / 2
+        }
+        CATransaction.commit()
+    }
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        updateColor()
+    }
+
+    private func updateColor() {
+        let color = tintColor.resolvedColor(with: traitCollection).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bars.forEach { $0.backgroundColor = color }
+        CATransaction.commit()
+    }
+
+    private func updateAnimations() {
+        for (index, bar) in bars.enumerated() {
+            guard animating else {
+                bar.removeAnimation(forKey: Self.animationKey)
+                continue
+            }
+            let bounce = CABasicAnimation(keyPath: "bounds.size.height")
+            bounce.fromValue = Self.lowest
+            bounce.toValue = Self.height
+            bounce.duration = Self.periods[index]
+            bounce.autoreverses = true
+            bounce.repeatCount = .infinity
+            bounce.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            bounce.timeOffset = Self.periods[index] * Double(index) * 0.7
+            bounce.preferredFrameRateRange = Self.frameRate
+            // Otherwise the bars stop once the app has been in the background.
+            bounce.isRemovedOnCompletion = false
+            bar.add(bounce, forKey: Self.animationKey)
+        }
     }
 }
 
