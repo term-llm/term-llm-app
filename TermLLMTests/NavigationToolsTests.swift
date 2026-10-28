@@ -368,6 +368,60 @@ final class NavigationToolsTests: XCTestCase {
         XCTAssertNil(service.active)
     }
 
+    /// GPS at navigation accuracy must not run on for directions the user
+    /// stopped following.
+    func testNavigationStopsByItselfWhenTheUserStopsGettingCloser() async throws {
+        try await call("navigation_preview", ["destination": "blue bottle"])
+        try await call("navigation_start")
+        location.send(TestRoutes.origin)
+        service.countStalledTime(NavigationService.stallLimit(.walking) - 60)
+        // 30 m nearer is within GPS wander: not progress.
+        location.send(Geo.moved(TestRoutes.origin, north: 30))
+        XCTAssertNotNil(service.active)
+        service.countStalledTime(60)
+        XCTAssertNil(service.active)
+        XCTAssertNil(location.handler, "GPS is off")
+
+        let status = try await call("navigation_status")
+        XCTAssertEqual(status["active"], false)
+        XCTAssertEqual(status["stopped_automatically"]?["destination"]?["name"], "Blue Bottle Coffee")
+        guard case .string(let reason)? = status["stopped_automatically"]?["reason"] else { return XCTFail("no reason") }
+        XCTAssertTrue(reason.contains("20 minutes"), reason)
+        try await call("navigation_stop")
+        let cleared = try await call("navigation_status")
+        XCTAssertEqual(cleared, ["active": false])
+    }
+
+    func testGettingCloserOrArrivingKeepsNavigation() async throws {
+        try await call("navigation_preview", ["destination": "blue bottle", "mode": "driving"])
+        try await call("navigation_start")
+        location.send(TestRoutes.origin)
+        service.countStalledTime(NavigationService.stallLimit(.walking))
+        XCTAssertNotNil(service.active, "driving allows longer, for traffic")
+        location.send(Geo.moved(TestRoutes.origin, north: 120))
+        XCTAssertEqual(service.stalledFor, 0, "80 m nearer is progress")
+        service.countStalledTime(NavigationService.stallLimit(.driving) - 60)
+        XCTAssertNotNil(service.active)
+        location.send(Geo.moved(TestRoutes.corner, east: 140))
+        XCTAssertEqual(service.active?.tracker.state, .arrived)
+        service.countStalledTime(NavigationService.stallLimit(.driving) * 2)
+        XCTAssertNotNil(service.active, "an arrival keeps being reported")
+    }
+
+    /// GPS is off in the background, so only time with the app open counts.
+    func testOnlyTimeWithTheAppOpenCounts() async throws {
+        var open = false
+        service = NavigationService(location: location, planner: planner, now: { [unowned self] in clock },
+                                    appActive: { open }, stallCheck: .milliseconds(20))
+        try await call("navigation_preview", ["destination": "blue bottle"])
+        try await call("navigation_start")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(service.stalledFor, 0)
+        open = true
+        for _ in 0..<100 where service.stalledFor == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertGreaterThan(service.stalledFor, 0)
+    }
+
     func testRoundedDistances() {
         XCTAssertEqual(NavigationTools.roundedDistance(42), 40)
         XCTAssertEqual(NavigationTools.roundedDistance(43), 45)

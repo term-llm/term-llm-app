@@ -27,7 +27,8 @@ final class NavigationTools {
                  readOnly: true) { try await $0.preview($1) },
             tool("navigation_start",
                  "Start turn-by-turn tracking on the iPhone for a route from navigation_preview, replacing any active navigation. "
-                 + "The iPhone follows the user's location and reroutes automatically if they go off route.",
+                 + "The iPhone follows the user's location and reroutes automatically if they go off route. "
+                 + "It stops by itself after 20 minutes (30 driving) of the app being open without the user getting closer.",
                  schema(["preview_id": .string("Id from navigation_preview. Default: the latest preview.")])) { try await $0.start($1) },
             tool("navigation_status",
                  "How the user is doing on the active route: distance and time left, the next instruction, whether they are off route "
@@ -84,7 +85,16 @@ final class NavigationTools {
     }
 
     private func status() -> JSONValue {
-        guard let navigation = service.active else { return ["active": false] }
+        guard let navigation = service.active else {
+            guard let stalled = service.stalled else { return ["active": false] }
+            return ["active": false, "stopped_automatically": [
+                "destination": Self.place(stalled.place),
+                "at": .string(Self.clockFormatter(service.timeZone).string(from: stalled.at)),
+                "reason": .string("The app was open for \(stalled.minutes) minutes without the user getting closer, "
+                                  + "so the iPhone stopped navigating to save battery. "
+                                  + "Plan again with navigation_preview if they still want directions."),
+            ]]
+        }
         return Self.status(navigation, now: service.currentDate, timeZone: service.timeZone)
     }
 

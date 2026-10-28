@@ -6,7 +6,13 @@ import Observation
 @MainActor
 @Observable
 final class MusicLibrary {
-    static let shared = MusicLibrary(catalog: AppleMusicCatalog(), engine: AppleMusicEngine(), store: PlaylistStore())
+    static let shared: MusicLibrary = {
+        let library = MusicLibrary(catalog: AppleMusicCatalog(), engine: AppleMusicEngine(), store: PlaylistStore())
+        // Artwork saved for songs no playlist holds any more (search results,
+        // songs played from elsewhere) goes; the rest stays on the phone.
+        ListenArtworkStore.music.prune(keepingURLs: library.store.playlists.flatMap { $0.tracks.compactMap(\.artworkURL) })
+        return library
+    }()
 
     let store: PlaylistStore
     let player: MusicPlayer
@@ -34,4 +40,12 @@ final class MusicLibrary {
     func requestAccess() async {
         access = await catalog.requestAccess()
     }
+}
+
+extension ListenArtworkStore {
+    /// Apple Music artwork, in a folder of its own. It's public: never
+    /// fetched with cookies.
+    static let music = ListenArtworkStore(
+        directory: URL.applicationSupportDirectory.appending(path: "Music/Artwork", directoryHint: .isDirectory),
+        cookies: nil, server: { nil })
 }

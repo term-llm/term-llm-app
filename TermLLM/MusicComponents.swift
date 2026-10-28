@@ -3,15 +3,27 @@ import UIKit
 
 // Shared building blocks for the Music screens.
 
+/// Apple Music artwork from the copy saved on the phone, so a rebuilt row or
+/// player bar shows it at once instead of loading and decoding it again.
 struct ArtworkView: View {
     let url: URL?
     let size: CGFloat
     var highlighted = false
+    /// Default: `ListenArtworkStore.music`.
+    var store: ListenArtworkStore?
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var loaded: (key: String, image: UIImage)?
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            if case .success(let image) = phase {
-                image.resizable().scaledToFill()
+        let store = store ?? .music
+        let pixels = ListenArtworkStore.pixels(for: size, scale: displayScale)
+        let key = url.map { "\(pixels) \($0.absoluteString)" }
+        let image = url.flatMap { store.cachedImage(url: $0, pixels: pixels) }
+            ?? (key != nil && loaded?.key == key ? loaded?.image : nil)
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "music.note").foregroundStyle(.secondary)
             }
@@ -25,6 +37,10 @@ struct ArtworkView: View {
         }
         .animation(.snappy(duration: 0.25), value: highlighted)
         .accessibilityHidden(true)
+        .task(id: key) {
+            guard let url, let key else { return }
+            loaded = await store.image(url: url, pixels: pixels).map { (key: key, image: $0) }
+        }
     }
 }
 

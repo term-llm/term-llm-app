@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// Supplies device location. The real one wraps `CLLocationManager`.
 @MainActor
@@ -99,6 +100,14 @@ struct ActiveNavigation: Equatable, Sendable {
     }
 }
 
+/// Navigation that stopped by itself because the user stopped following it.
+struct StalledNavigation: Equatable, Sendable {
+    let place: NavigationPlace
+    let at: Date
+    /// Minutes the app was open without the user getting nearer.
+    let minutes: Int
+}
+
 /// Owns navigation on the device: planning, tracking the active route with
 /// Core Location, and rerouting when the user leaves it. The agent drives it
 /// through `NavigationTools`; nothing here talks to the server.
@@ -109,15 +118,24 @@ final class NavigationService {
 
     private(set) var active: ActiveNavigation?
     private(set) var previews: [NavigationPreview] = []
+    /// The last navigation that stopped by itself, until navigation starts or stops again.
+    private(set) var stalled: StalledNavigation?
+    /// Seconds the app has been open during the active navigation since the
+    /// user last got `progressStep` nearer the destination.
+    @ObservationIgnored private(set) var stalledFor: TimeInterval = 0
+    @ObservationIgnored private var closestDistance: Double?
 
     @ObservationIgnored private let location: LocationProvider
     @ObservationIgnored private let planner: RoutePlanner
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let makeID: () -> String
     @ObservationIgnored private let thresholds: RouteTracker.Thresholds
+    @ObservationIgnored private let appActive: () -> Bool
+    @ObservationIgnored private let stallCheck: Duration
     /// Time zone for the local times the tools report.
     @ObservationIgnored let timeZone: TimeZone
     @ObservationIgnored private var rerouteTask: Task<Void, Never>?
+    @ObservationIgnored private var stallTask: Task<Void, Never>?
     @ObservationIgnored private var toolbox: NavigationTools!
 
     /// Previews older than this are re-planned from the current location on start.
@@ -131,16 +149,29 @@ final class NavigationService {
     nonisolated static let trailWindow: TimeInterval = 30 * 60
     /// …and at most this many points (a sample a minute plus room for events).
     nonisolated static let maxTrailPoints = 40
+    /// Navigation stops by itself after the app has been open this long
+    /// without the user getting `progressStep` metres nearer the destination:
+    /// it was most likely abandoned, and GPS at navigation accuracy is costly.
+    /// Only open time counts, as GPS is off in the background.
+    nonisolated static func stallLimit(_ mode: TravelMode) -> TimeInterval {
+        mode == .driving ? 30 * 60 : 20 * 60
+    }
+    /// Well beyond GPS jitter, so standing still never counts as progress.
+    static let progressStep: Double = 50
 
     init(location: LocationProvider, planner: RoutePlanner, now: @escaping () -> Date = Date.init,
          makeID: @escaping () -> String = { String(UUID().uuidString.prefix(8)).lowercased() },
-         thresholds: RouteTracker.Thresholds = RouteTracker.Thresholds(), timeZone: TimeZone = .current) {
+         thresholds: RouteTracker.Thresholds = RouteTracker.Thresholds(), timeZone: TimeZone = .current,
+         appActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active },
+         stallCheck: Duration = .seconds(60)) {
         self.timeZone = timeZone
         self.location = location
         self.planner = planner
         self.now = now
         self.makeID = makeID
         self.thresholds = thresholds
+        self.appActive = appActive
+        self.stallCheck = stallCheck
         toolbox = NavigationTools(service: self)
     }
 
@@ -204,6 +235,7 @@ final class NavigationService {
             if active?.id == navigation.id { active = nil }
             throw error
         }
+        if active?.id == navigation.id { watchForStall(navigation.id) }
         return active ?? navigation
     }
 
@@ -212,10 +244,40 @@ final class NavigationService {
     func stop() -> ActiveNavigation? {
         rerouteTask?.cancel()
         rerouteTask = nil
+        stallTask?.cancel()
+        stallTask = nil
+        stalled = nil
+        stalledFor = 0
+        closestDistance = nil
         guard let stopped = active else { return nil }
         location.stopUpdates()
         active = nil
         return stopped
+    }
+
+    /// Adds `seconds` of the app being open without progress, and stops
+    /// navigation once that reaches `stallLimit`.
+    func countStalledTime(_ seconds: TimeInterval) {
+        guard let navigation = active, navigation.tracker.state != .arrived else { return }
+        stalledFor += seconds
+        let limit = Self.stallLimit(navigation.mode)
+        guard stalledFor >= limit else { return }
+        stop()
+        stalled = StalledNavigation(place: navigation.place, at: now(), minutes: Int(limit / 60))
+    }
+
+    /// Checked on a timer: a phone lying still gets no location updates.
+    private func watchForStall(_ id: String) {
+        stallTask?.cancel()
+        let interval = stallCheck
+        let seconds = Double(interval.components.seconds) + Double(interval.components.attoseconds) / 1e18
+        stallTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self, self.active?.id == id else { return }
+                if self.appActive() { self.countStalledTime(seconds) }
+            }
+        }
     }
 
     func receive(_ fix: LocationFix) {
@@ -237,10 +299,20 @@ final class NavigationService {
             navigation.record(navigation.trailPoint(fix, event: event))
         }
         active = navigation
+        if !navigation.tracker.poorAccuracy {
+            // Straight-line distance, so a reroute doesn't count as progress.
+            let distance = Geo.distance(fix.coordinate, navigation.place.coordinate)
+            if closestDistance.map({ distance <= $0 - Self.progressStep }) ?? true {
+                closestDistance = distance
+                stalledFor = 0
+            }
+        }
         switch navigation.tracker.state {
         case .arrived:
             // Keep reporting arrival, but stop using GPS.
             rerouteTask?.cancel()
+            stallTask?.cancel()
+            stallTask = nil
             location.stopUpdates()
         case .offRoute:
             rerouteIfDue(from: fix)

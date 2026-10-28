@@ -818,6 +818,30 @@ final class ListenArtworkTests: XCTestCase {
         XCTAssertNil(artwork.savedFile(for: other))
     }
 
+    /// Apple Music artwork shares the store, in a folder of its own: public,
+    /// fetched once, and kept only while a playlist still uses it.
+    func testPublicArtworkIsSavedOnceAndPrunedByURL() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let artwork = ListenArtworkStore(directory: directory, cookies: nil, server: { nil }, session: session)
+        let host = "https://\(UUID().uuidString.lowercased()).artwork.example/"
+        let kept = try XCTUnwrap(URL(string: host + "kept.jpg"))
+        let dropped = try XCTUnwrap(URL(string: host + "dropped.jpg"))
+        let row = ListenArtworkStore.pixels(for: 44, scale: 3)
+        XCTAssertNil(artwork.cachedImage(url: kept, pixels: row))
+        let image = await artwork.image(url: kept, pixels: row)
+        XCTAssertEqual(image?.cgImage?.width, 160)
+        _ = await artwork.image(url: dropped, pixels: row)
+        XCTAssertNotNil(artwork.cachedImage(url: kept, pixels: row), "a rebuilt view reads it without waiting")
+
+        let relaunched = ListenArtworkStore(directory: directory, cookies: nil, server: { nil }, session: session)
+        _ = await relaunched.image(url: kept, pixels: row)
+        XCTAssertEqual(ArtworkProtocol.requests(for: kept), 1, "never downloaded again")
+        relaunched.prune(keepingURLs: [kept])
+        XCTAssertNotNil(relaunched.savedFile(url: kept))
+        XCTAssertNil(relaunched.savedFile(url: dropped))
+    }
+
     /// MediaPlayer renders artwork on its own queue. The closure used to be
     /// main-actor isolated, so playing anything with artwork trapped there.
     func testLockScreenArtworkRendersOffTheMainThread() async throws {

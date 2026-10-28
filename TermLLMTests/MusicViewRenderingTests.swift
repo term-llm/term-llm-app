@@ -71,6 +71,50 @@ final class MusicViewRenderingTests: XCTestCase {
         try await render(MusicSearchView(library: library, playlistID: playlist.id), named: "add-songs")
     }
 
+    /// The tab accessory recreates the Music mini player whenever the root view
+    /// updates. Its artwork must come back in the first frame from the copy on
+    /// the phone, not flash a placeholder while it's fetched and decoded again.
+    func testRebuiltArtworkShowsTheSavedImageInItsFirstFrame() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ListenArtworkStore(directory: directory, cookies: nil, server: { nil }, session: session)
+        let cover = try XCTUnwrap(URL(string: "https://\(UUID().uuidString.lowercased()).artwork.example/cover.jpg"))
+        try await render(ArtworkView(url: cover, size: 42, store: store), named: "music-artwork")
+        XCTAssertNotNil(store.savedFile(url: cover))
+
+        // Drawn before yielding, so no load can have finished: this is the
+        // rebuilt view's first frame.
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 42, height: 42)
+        let host = UIHostingController(rootView: ArtworkView(url: cover, size: 42, store: store).ignoresSafeArea())
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { context in
+            host.view.layer.render(in: context.cgContext)
+        }
+        let (red, green, blue) = try XCTUnwrap(Self.centre(frame))
+        XCTAssertTrue(green > red + 40 && blue > red + 40, "the first frame shows the teal artwork: \(red) \(green) \(blue)")
+        XCTAssertEqual(ArtworkProtocol.requests(for: cover), 1, "fetched once")
+    }
+
+    private static func centre(_ image: UIImage) -> (Int, Int, Int)? {
+        guard let cgImage = image.cgImage, let data = cgImage.dataProvider?.data as Data?,
+              cgImage.bitsPerPixel == 32 else { return nil }
+        let offset = (cgImage.height / 2) * cgImage.bytesPerRow + (cgImage.width / 2) * 4
+        guard data.count >= offset + 4 else { return nil }
+        // BGRA or RGBA: the red and blue channels may swap, green stays put.
+        let first = Int(data[offset]), second = Int(data[offset + 1]), third = Int(data[offset + 2])
+        let bgra = cgImage.bitmapInfo.contains(.byteOrder32Little)
+        return bgra ? (third, second, first) : (first, second, third)
+    }
+
     /// Core Animation moves the bars at a capped rate; nothing in the app
     /// redraws them each frame, and they come to rest when playback stops.
     func testPlayingBarsAnimateInCoreAnimationOnlyWhilePlaying() throws {
