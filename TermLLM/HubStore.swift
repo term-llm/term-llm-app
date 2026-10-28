@@ -258,7 +258,8 @@ final class HubStore: ObservableObject {
                 } else {
                     try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 }
-                guard let self, !self.disposed, !self.unauthorized else { break }
+                // Suspending cancels the sleeps above: that's no reason to refetch.
+                guard !Task.isCancelled, let self, !self.disposed, !self.unauthorized else { break }
                 self.launchPanelTasksIfIdle()
             }
         }

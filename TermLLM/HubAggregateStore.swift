@@ -388,12 +388,22 @@ final class HubAggregateStore: ObservableObject {
     @Published private(set) var sources: [HubSourceWorkspace] = []
     private var observations: [UUID: AnyCancellable] = [:]
     private let makeSource: @MainActor (HubConnection) -> HubSourceWorkspace
+    /// Leaving Agents keeps polling for this long, so quick tab switches cost
+    /// nothing; coming back later refreshes at once.
+    private let agentsLeaveGrace: Duration
+    private var backgrounded = false
+    private var awayFromAgents = false
+    private var leavingAgents: Task<Void, Never>?
 
-    init(makeSource: @escaping @MainActor (HubConnection) -> HubSourceWorkspace = { connection in
+    init(agentsLeaveGrace: Duration = .seconds(10),
+         makeSource: @escaping @MainActor (HubConnection) -> HubSourceWorkspace = { connection in
         HubSourceWorkspace(connection: connection,
                            bearerStorage: PhoneHubFixture.isEnabled ? HubMemoryBearerStorage() : HubKeychainBearerStorage(),
                            transport: LinkedDevicesRuntime.shared.transport(for: connection))
-    }) { self.makeSource = makeSource }
+    }) {
+        self.agentsLeaveGrace = agentsLeaveGrace
+        self.makeSource = makeSource
+    }
 
     static func shouldRemoveCredentialsWhenReplacing(_ old: HubConnection,
                                                      with replacement: HubConnection?) -> Bool {
@@ -425,6 +435,8 @@ final class HubAggregateStore: ObservableObject {
             let source = makeSource(connection)
             observations[connection.id] = source.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             source.start()
+            // Loads once, but polls only when it may.
+            if isPollingSuspended { source.store.suspendPolling() }
             return source
         }
         if sources.count != updated.count || zip(sources, updated).contains(where: { $0 !== $1 }) {
@@ -432,11 +444,42 @@ final class HubAggregateStore: ObservableObject {
         }
     }
     func source(_ id: UUID) -> HubSourceWorkspace? { sources.first { $0.id == id } }
-    private(set) var isPollingSuspended = false
+
+    /// Sources poll only while the app is active and Agents is on screen:
+    /// nothing else shows what they fetch.
+    var isPollingSuspended: Bool { backgrounded || awayFromAgents }
+
     /// Pause every source's change-feed loop while backgrounded, resume on return.
     /// Sources for which `deferring` is true stay paused; resume them later.
     func setPollingSuspended(_ suspended: Bool, deferring: (HubSourceWorkspace) -> Bool = { _ in false }) {
-        isPollingSuspended = suspended
+        backgrounded = suspended
+        applyPolling(deferring: deferring)
+    }
+
+    /// Polling pauses `agentsLeaveGrace` after Agents leaves the screen, unless
+    /// it comes back first. Coming back after that refetches at once.
+    func setAgentsVisible(_ visible: Bool, deferring: (HubSourceWorkspace) -> Bool = { _ in false }) {
+        if visible {
+            leavingAgents?.cancel()
+            leavingAgents = nil
+            guard awayFromAgents else { return }
+            awayFromAgents = false
+            applyPolling(deferring: deferring)
+        } else {
+            guard !awayFromAgents, leavingAgents == nil else { return }
+            let grace = agentsLeaveGrace
+            leavingAgents = Task { [weak self] in
+                try? await Task.sleep(for: grace)
+                guard !Task.isCancelled, let self else { return }
+                self.leavingAgents = nil
+                self.awayFromAgents = true
+                self.applyPolling()
+            }
+        }
+    }
+
+    private func applyPolling(deferring: (HubSourceWorkspace) -> Bool = { _ in false }) {
+        let suspended = isPollingSuspended
         for source in sources where source.isActive {
             if suspended { source.store.suspendPolling() } else if !deferring(source) { source.store.resumePolling() }
         }

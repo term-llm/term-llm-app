@@ -54,6 +54,65 @@ final class HubAggregateStoreTests: XCTestCase {
         XCTAssertFalse(deskStore.isPolling)
     }
 
+    /// Sources poll only while Agents is on screen. A quick look at another
+    /// tab costs nothing; coming back after a while refetches at once.
+    func testPollingRunsOnlyWhileAgentsIsOnScreen() async throws {
+        let client = MockHubClient()
+        let work = connection("work")
+        let aggregate = HubAggregateStore(agentsLeaveGrace: .milliseconds(50)) { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999))
+        }
+        aggregate.synchronize([work])
+        defer { aggregate.synchronize([]) }
+        let store = try XCTUnwrap(aggregate.source(work.id)).store
+        await drain()
+        let loads = client.listNodesCalls
+        XCTAssertTrue(store.isPolling)
+
+        aggregate.setAgentsVisible(false)
+        aggregate.setAgentsVisible(true)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(store.isPolling)
+        XCTAssertEqual(client.listNodesCalls, loads, "a quick switch doesn't refetch")
+
+        aggregate.setAgentsVisible(false)
+        XCTAssertTrue(store.isPolling, "not straight away")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(aggregate.isPollingSuspended)
+        XCTAssertFalse(store.isPolling)
+
+        aggregate.setAgentsVisible(true)
+        XCTAssertTrue(store.isPolling)
+        await drain()
+        XCTAssertEqual(client.listNodesCalls, loads + 1, "coming back refetches at once")
+    }
+
+    func testAgentsAndTheAppMustBothBeOnScreenToPoll() async throws {
+        let client = MockHubClient()
+        let work = connection("work"), home = connection("home")
+        let aggregate = HubAggregateStore(agentsLeaveGrace: .milliseconds(20)) { connection in
+            HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999))
+        }
+        aggregate.synchronize([work])
+        defer { aggregate.synchronize([]) }
+        aggregate.setAgentsVisible(false)
+        try await Task.sleep(for: .milliseconds(100))
+        aggregate.setPollingSuspended(true)
+        aggregate.setPollingSuspended(false)
+        XCTAssertTrue(aggregate.isPollingSuspended, "returning to the app on another tab doesn't poll")
+        // A connection added meanwhile loads once but doesn't poll.
+        aggregate.synchronize([work, home])
+        let added = try XCTUnwrap(aggregate.source(home.id)).store
+        XCTAssertFalse(added.isPolling)
+
+        aggregate.setPollingSuspended(true)
+        aggregate.setAgentsVisible(true)
+        XCTAssertTrue(aggregate.isPollingSuspended, "still in the background")
+        aggregate.setPollingSuspended(false)
+        XCTAssertTrue(try XCTUnwrap(aggregate.source(work.id)).store.isPolling)
+        XCTAssertTrue(added.isPolling)
+    }
+
     func testAttentionBadgeUsesServerTotalsNotTheLoadedWindow() async throws {
         let connection = connection("work")
         let client = MockHubClient()

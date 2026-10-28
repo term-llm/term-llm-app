@@ -242,9 +242,7 @@ struct ContentView: View {
                 // polling once connected (see the statuses handler) instead of
                 // failing its first poll.
                 linkedDevices.setForeground(true)
-                aggregate.setPollingSuspended(false) { source in
-                    source.connection.isLinkedDevices && !linkedDevices.status(for: source.id).isConnected
-                }
+                aggregate.setPollingSuspended(false, deferring: waitsForLinkedConnection)
                 Task { await push.refreshAuthorization() }
                 if let request = voiceLaunches.request { beginVoiceLaunch(request) }
                 push.routeManualToKeyScene()
@@ -440,6 +438,13 @@ struct ContentView: View {
         showingControls = false
         if tab == .agents { showingHub = true }
         if tab == .chat { showingHub = false }
+        // Agents is the only screen that shows what the sources poll for.
+        aggregate.setAgentsVisible(tab == .agents, deferring: waitsForLinkedConnection)
+    }
+
+    /// A linked device that is reconnecting starts polling once connected.
+    private func waitsForLinkedConnection(_ source: HubSourceWorkspace) -> Bool {
+        source.connection.isLinkedDevices && !linkedDevices.status(for: source.id).isConnected
     }
 
     private func makeChatContext(for url: URL, source: HubSourceWorkspace? = nil) -> ChatTabContext? {

@@ -729,6 +729,23 @@ final class HubStoreTests: XCTestCase {
         XCTAssertGreaterThan(changesCalls, suspendedAt, "Polling resumes")
     }
 
+    /// Suspending interrupts the loop's wait. It used to fall through and
+    /// refetch every panel once more on the way out.
+    func testSuspendingDoesNotRefetch() async {
+        for feed in [false, true] {
+            let client = MockHubClient()
+            if feed { client.changesResponse = { _ in HubChangesResponse(version: 1) } }
+            let store = HubStore(client: client, pollInterval: 999)
+            store.start()
+            defer { store.dispose() }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let loaded = client.listNodesCalls
+            store.suspendPolling()
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(client.listNodesCalls, loaded, feed ? "change feed" : "plain polling")
+        }
+    }
+
     func testPollCoalescesWithInFlightRead() async {
         let started = expectation(description: "initial nodes request started")
         var nodesFetchCount = 0
