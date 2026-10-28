@@ -1,0 +1,220 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Connections redesign concepts</title>
+<style>
+:root{--blue:#0a84ff;--green:#30d158;--orange:#ff9f0a;--red:#ff3b30;--sep:#e3e3e8;--bg:#f2f2f7;--sec:#8a8a8e;--ter:#c7c7cc;--label:#000}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#d9dbe0;font:15px -apple-system,"SF Pro Text",system-ui,sans-serif;color:var(--label)}
+.concept{display:inline-flex;flex-direction:column;gap:14px;margin:0 28px 36px 0;vertical-align:top}
+.concept>h2{margin:0;font-size:20px}
+.concept>p{margin:0;max-width:820px;color:#3a3a3c;line-height:1.4;font-size:14px}
+.pair{display:flex;gap:28px;align-items:flex-start}
+.cap{font-size:12px;color:#555;text-align:center;margin-top:22px;font-weight:600;letter-spacing:.02em}
+.phone{width:393px;height:852px;background:var(--bg);border-radius:52px;overflow:hidden;box-shadow:0 0 0 11px #111,0 20px 50px rgba(0,0,0,.25);position:relative}
+.status{height:54px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 34px 6px;font-weight:600;font-size:16px}
+.island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:124px;height:36px;border-radius:20px;background:#000}
+.nav{height:50px;display:flex;align-items:center;justify-content:center;position:relative;font-weight:600;font-size:17px}
+.nav .l,.nav .r{position:absolute;top:6px;height:38px;display:flex;align-items:center;gap:6px}
+.nav .l{left:16px}.nav .r{right:16px}
+.glass{background:rgba(255,255,255,.75);backdrop-filter:blur(20px);border-radius:19px;height:38px;min-width:38px;padding:0 12px;display:flex;align-items:center;justify-content:center;color:var(--label);box-shadow:0 1px 3px rgba(0,0,0,.08),inset 0 0 0 .5px rgba(0,0,0,.06);font-weight:500;font-size:16px}
+.glass.icon{padding:0;width:38px}
+.glass.blue{background:var(--blue);color:#fff}
+.content{padding:4px 16px 40px;height:calc(852px - 104px);overflow:hidden}
+.hdr{font-size:13px;color:var(--sec);text-transform:uppercase;padding:18px 16px 7px;letter-spacing:.01em;display:flex;justify-content:space-between}
+.hdr b{font-weight:400}
+.ftr{font-size:13px;color:var(--sec);padding:7px 16px 0;line-height:1.35}
+.group{background:#fff;border-radius:22px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:10px 16px;min-height:52px;position:relative}
+.row+.row:before{content:"";position:absolute;top:0;right:0;left:64px;border-top:.5px solid var(--sep)}
+.row.plain+.row.plain:before{left:16px}
+.row .main{flex:1;min-width:0}
+.t{font-size:17px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s{font-size:13px;color:var(--sec);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.chev{color:var(--ter);flex:none}
+.tile{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;flex:none}
+.tile.lg{width:64px;height:64px;border-radius:18px}
+.k-hub{background:linear-gradient(160deg,#5e5ce6,#3634a3)}
+.k-direct{background:linear-gradient(160deg,#30b0c7,#1c7f92)}
+.k-linked{background:linear-gradient(160deg,#bf5af2,#8944ab)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.d-ok{background:var(--green)}.d-warn{background:var(--orange)}.d-off{background:var(--ter)}.d-busy{background:var(--blue)}
+.warn{color:var(--orange)}.ok{color:#248a3d}.blue{color:var(--blue)}.red{color:var(--red)}
+.sw{width:51px;height:31px;border-radius:16px;background:#e9e9ea;position:relative;flex:none}
+.sw:after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.2)}
+.sw.on{background:var(--green)}.sw.on:after{left:22px}
+.check{color:var(--blue);flex:none}
+.val{color:var(--sec);font-size:17px}
+.btnrow{display:flex;gap:8px}
+.pill{height:34px;border-radius:17px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:15px;font-weight:600;white-space:nowrap}
+.pill.tint{background:rgba(10,132,255,.12);color:var(--blue)}
+.pill.fill{background:var(--blue);color:#fff}
+.pill.warnfill{background:var(--orange);color:#fff}
+.pill.warntint{background:rgba(255,159,10,.15);color:#c56a00}
+.pill.grey{background:#eeeef0;color:var(--label)}
+.pill.sm{height:30px;padding:0 12px;font-size:14px}
+.pill.wide{flex:1}
+.badge{font-size:12px;font-weight:600;border-radius:9px;padding:2px 8px;display:inline-flex;align-items:center;gap:4px}
+.b-ok{background:rgba(48,209,88,.15);color:#248a3d}
+.b-warn{background:rgba(255,159,10,.16);color:#b86200}
+.b-off{background:#eeeef0;color:var(--sec)}
+.b-sel{background:rgba(10,132,255,.12);color:var(--blue)}
+.card{background:#fff;border-radius:22px;padding:14px 16px;margin-bottom:12px}
+.card .top{display:flex;gap:12px;align-items:center}
+.more{width:32px;height:32px;border-radius:16px;background:#eeeef0;display:flex;align-items:center;justify-content:center;color:#3a3a3c;flex:none}
+.meta{display:flex;align-items:center;gap:8px;margin:12px 0 12px;font-size:13px;color:var(--sec)}
+.dim{position:absolute;inset:0;background:rgba(0,0,0,.18)}
+.menu{position:absolute;width:250px;background:rgba(250,250,252,.92);backdrop-filter:blur(30px);border-radius:24px;box-shadow:0 18px 50px rgba(0,0,0,.25);overflow:hidden;padding:6px 0}
+.menu .mi{display:flex;justify-content:space-between;align-items:center;padding:11px 18px;font-size:17px}
+.menu .sepr{height:8px;background:rgba(0,0,0,.05);margin:4px 0}
+.sheet{position:absolute;left:8px;right:8px;bottom:8px;background:#fff;border-radius:40px;padding:10px 20px 26px;box-shadow:0 -10px 40px rgba(0,0,0,.15)}
+.grab{width:36px;height:5px;border-radius:3px;background:#d1d1d6;margin:0 auto 14px}
+.field{background:#f2f2f7;border-radius:14px;padding:13px 14px;color:var(--sec);font-size:17px;margin:8px 0}
+.big{height:52px;border-radius:26px;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:17px;gap:8px}
+.hero{background:#fff;border-radius:26px;padding:18px;margin-top:6px}
+.actgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+.act{background:#f2f2f7;border-radius:16px;height:66px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:13px;font-weight:600;color:var(--blue)}
+.radio{width:24px;height:24px;border-radius:12px;border:2px solid var(--ter);flex:none}
+.radio.on{border:7px solid var(--blue)}
+.minus{width:22px;height:22px;border-radius:11px;background:var(--red);flex:none;display:flex;align-items:center;justify-content:center}
+.minus:after{content:"";width:11px;height:2px;background:#fff;border-radius:1px}
+.grip{color:var(--ter);flex:none}
+.issuecard{background:#fff;border-radius:22px;padding:14px 16px;margin-bottom:10px;box-shadow:inset 3px 0 0 var(--orange)}
+.centered{text-align:center}
+.lbl{font-size:12px;color:var(--sec);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+</style></head><body>
+<div id="root"></div>
+<script>
+const I={
+ hub:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg>',
+ direct:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
+ linked:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg>',
+ chev:'<svg class="chev" width="9" height="15" viewBox="0 0 9 15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 1.5l6 6-6 6"/></svg>',
+ back:'<svg width="11" height="19" viewBox="0 0 11 19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L2 9.5 9 17"/></svg>',
+ check:'<svg class="check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>',
+ plus:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+ dots:'<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+ refresh:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
+ gear:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>',
+ pencil:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+ trash:'<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+ key:'<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg>',
+ warn:'<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm-1 7h2v6h-2V9zm0 8h2v2h-2v-2z"/></svg>',
+ grip:'<svg class="grip" width="20" height="14" viewBox="0 0 20 14" fill="currentColor"><rect y="0" width="20" height="2" rx="1"/><rect y="6" width="20" height="2" rx="1"/><rect y="12" width="20" height="2" rx="1"/></svg>',
+ passkey:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6M17 11a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM17 17v4l1.5-1"/></svg>',
+};
+const C=[
+ {name:'Home Hub',kind:'hub',kt:'Hub',addr:'hub.saffron.dev',st:'ok',stt:'Up to date',when:'2 min ago',agents:'6 agents · 4 online',sel:true},
+ {name:'Studio Mac',kind:'linked',kt:'Linked device',addr:'3f9a1c07be42…',st:'ok',stt:'Connected',when:'just now',agents:'1 agent'},
+ {name:'Work Node',kind:'direct',kt:'Direct Node',addr:'node.work.example:8443',st:'warn',stt:'Needs sign-in',fix:'Sign in',agents:'—'},
+ {name:'Pi Lab',kind:'hub',kt:'Hub',addr:'pi.local:8080',st:'warn',stt:'Couldn’t update · timed out',fix:'Retry',when:'3 h ago',agents:'2 agents'},
+];
+const tile=(c,lg)=>`<div class="tile k-${c.kind}${lg?' lg':''}">${lg?I[c.kind].replace(/20/g,'32'):I[c.kind]}</div>`;
+const dot=c=>`<span class="dot d-${c.st}"></span>`;
+const chrome=(title,l='',r='',body='')=>`<div class="phone"><div class="island"></div><div class="status"><span>9:41</span><span style="display:flex;gap:6px;align-items:center"><svg width="18" height="12" viewBox="0 0 18 12" fill="#000"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/><rect x="10" y="2" width="3" height="10" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg><svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="#000" opacity=".4"/><rect x="2" y="2" width="18" height="9" rx="2"/><rect x="25" y="4" width="1.5" height="5" rx=".7" opacity=".4"/></svg></span></div>
+ <div class="nav"><div class="l">${l}</div>${title}<div class="r">${r}</div></div><div class="content">${body}</div>`;
+const backBtn=`<div class="glass icon">${I.back}</div>`;
+const toggleGroup=`<div class="hdr">Agents</div><div class="group"><div class="row plain"><div class="main"><div class="t">Show offline agents</div></div><div class="sw"></div></div></div>
+ <div class="ftr">Offline agents can’t be opened. When shown, they appear greyed out in the Agents list.</div>`;
+
+/* ---------- Concept 1: Native settings list + detail ---------- */
+function c1(){
+ const rows=C.map(c=>`<div class="row">${tile(c)}<div class="main"><div class="t">${c.name}</div>
+   <div class="s">${dot(c)}<span class="${c.st==='warn'?'warn':''}">${c.st==='warn'?c.stt:c.kt+' · '+c.addr}</span></div></div>
+   ${I.chev}</div>`).join('');
+ const list=chrome('Connections',backBtn,`<div class="glass icon">${I.plus}</div>`,
+  `<div class="hdr">Servers</div><div class="group">${rows}</div>
+   <div class="ftr">Tap a connection to see its status, sign in, or manage it.</div>${toggleGroup}`)+'</div>';
+ const c=C[0];
+ const detail=chrome('',backBtn+'<span style="font-weight:500">Connections</span>','',
+  `<div class="centered" style="padding:8px 0 4px">${tile(c,1).replace('class="tile ','style="margin:0 auto" class="tile ')}</div>
+   <div class="centered" style="font-size:24px;font-weight:700;margin-top:10px">${c.name}</div>
+   <div class="centered s" style="justify-content:center;font-size:15px">${c.kt} · ${c.addr}</div>
+   <div class="centered" style="margin-top:10px"><span class="badge b-ok"><span class="dot d-ok"></span>Up to date · 2 min ago</span></div>
+   <div class="hdr" style="padding-top:22px">Server</div><div class="group">
+     <div class="row plain"><div class="main"><div class="t">Agents</div></div><span class="val">4 of 6 online</span></div>
+     <div class="row plain"><div class="main"><div class="t blue">Open in Chat</div></div></div>
+     <div class="row plain"><div class="main"><div class="t blue">Refresh now</div></div></div>
+     <div class="row plain"><div class="main"><div class="t">Manage server</div></div>${I.chev}</div>
+     <div class="row plain"><div class="main"><div class="t">Address &amp; name</div></div><span class="val">Edit</span>${I.chev}</div></div>
+   <div class="group" style="margin-top:28px"><div class="row plain" style="justify-content:center"><div class="t red">Remove Connection</div></div></div>`)+'</div>';
+ return {t:'1 · Settings-native: one row per server, actions on a detail page',
+  p:'Mirrors iOS Settings › Wi-Fi. The list carries only identity + status (dot, orange text for problems). There is no “selected” state. Every action moves to a consistent detail page: plain blue action rows, navigation rows with chevrons, one red destructive row at the bottom. Add lives in the nav bar. Swipe-to-delete on the list as a shortcut.',
+  phones:[[list,'List'],[detail,'Tap “Home Hub”']]};
+}
+
+/* ---------- Concept 2: Cards, one contextual primary + overflow ---------- */
+function c2(){
+ const card=c=>{
+  let prim;
+  if(c.fix==='Sign in') prim=`<div class="pill warnfill wide">${I.key} Sign in</div>`;
+  else if(c.fix==='Retry') prim=`<div class="pill warntint wide">${I.refresh} Retry</div>`;
+  else if(c.sel) prim=`<div class="pill tint wide">${I.check.replace('class="check"','')} Default for Chat</div>`;
+  else prim=`<div class="pill grey wide">Make default</div>`;
+  const badge=c.st==='ok'?`<span class="badge b-ok"><span class="dot d-ok"></span>${c.stt}</span>`:`<span class="badge b-warn">${I.warn}${c.stt.split(' · ')[0]}</span>`;
+  return `<div class="card"><div class="top">${tile(c)}<div class="main" style="flex:1;min-width:0"><div class="t" style="font-weight:600">${c.name}</div>
+   <div class="s">${c.kt} · ${c.addr}</div></div><div class="more">${I.dots}</div></div>
+   <div class="meta">${badge}<span>${c.when?('Updated '+c.when):'Not signed in'}</span></div>
+   <div class="btnrow">${prim}</div></div>`;};
+ const body=`<div style="height:6px"></div>${C.map(card).join('')}`;
+ const list=chrome('Connections',backBtn,`<div class="glass icon">${I.plus}</div>`,body)+'</div>';
+ const withMenu=chrome('Connections',backBtn,`<div class="glass icon">${I.plus}</div>`,body)+
+  `<div class="dim"></div><div class="menu" style="top:178px;right:30px">
+    <div class="mi">Refresh ${I.refresh}</div><div class="mi">Manage server ${I.gear}</div><div class="mi">Edit address ${I.pencil}</div>
+    <div class="sepr"></div><div class="mi red">Remove ${I.trash}</div></div></div>`;
+ return {t:'2 · Cards: one contextual button + overflow menu',
+  p:'Each server is a card with the same anatomy: identity, status badge + “updated” time, and exactly one full-width button whose meaning follows state (Sign in / Retry / Make default / Default for Chat). Everything secondary (Refresh, Manage, Edit, Remove) is in the ··· menu, so rows never grow ragged button clusters.',
+  phones:[[list,'List'],[withMenu,'··· menu on Home Hub']]};
+}
+
+/* ---------- Concept 3: Active hero + switcher ---------- */
+function c3(){
+ const c=C[0];
+ const others=C.slice(1).map(o=>`<div class="row">${tile(o)}<div class="main"><div class="t">${o.name}</div>
+   <div class="s">${dot(o)}<span class="${o.st==='warn'?'warn':''}">${o.st==='warn'?o.stt.split(' · ')[0]:o.kt+' · '+o.stt}</span></div></div>
+   ${o.fix?`<div class="pill sm warntint">${o.fix}</div>`:`<div class="pill sm tint">Switch</div>`}</div>`).join('');
+ const body=`<div class="hero"><div style="display:flex;gap:14px;align-items:center">${tile(c,1)}<div style="flex:1;min-width:0">
+   <div class="lbl">Active</div><div style="font-size:22px;font-weight:700;margin-top:2px">${c.name}</div><div class="s">${c.kt} · ${c.addr}</div></div></div>
+   <div style="display:flex;justify-content:space-between;margin-top:14px;font-size:13px"><span class="badge b-ok"><span class="dot d-ok"></span>Up to date</span><span style="color:var(--sec)">4 of 6 agents online · 2 min ago</span></div>
+   <div class="actgrid"><div class="act">${I.refresh}Refresh</div><div class="act">${I.gear}Manage</div><div class="act">${I.pencil}Edit</div></div></div>
+   <div class="hdr">Other connections</div><div class="group">${others}
+   <div class="row"><div class="tile" style="background:#eeeef0;color:var(--blue)">${I.plus}</div><div class="main"><div class="t blue">Add Connection</div></div></div></div>
+   ${toggleGroup}`;
+ const list=chrome('Connections',backBtn,'',body)+'</div>';
+ const w=C[2];
+ const sheet=chrome('Connections',backBtn,'',body)+`<div class="dim"></div><div class="sheet"><div class="grab"></div>
+   <div style="display:flex;gap:12px;align-items:center">${tile(w)}<div style="flex:1"><div class="t" style="font-weight:600">Sign in to ${w.name}</div><div class="s">${w.kt} · ${w.addr}</div></div></div>
+   <div class="big" style="background:var(--blue);color:#fff;margin-top:18px">${I.passkey} Sign in with passkey</div>
+   <div class="centered" style="font-size:13px;color:var(--sec);margin:14px 0 4px">or use a node token</div>
+   <div class="field">Node token</div>
+   <div class="big" style="background:#eeeef0;color:var(--ter)">Sign in with token</div>
+   <div style="display:flex;justify-content:space-between;margin-top:18px;font-size:15px"><span class="blue">Edit address</span><span class="red">Remove</span></div></div></div>`;
+ return {t:'3 · Active hero + switcher',
+  p:'Optimises for the common case: one server in use. The active server gets a hero card with status and three identical icon tiles (Refresh / Manage / Edit). Others are compact rows with a single trailing capsule – “Switch” when healthy, orange “Sign in” / “Retry” when not. Fixes open a focused sheet that also holds the rare actions (edit, remove).',
+  phones:[[list,'List'],[sheet,'Tap “Sign in” on Work Node']]};
+}
+
+/* ---------- Concept 4: Status-first, edit mode ---------- */
+function c4(){
+ const issues=C.filter(c=>c.fix).map(c=>`<div class="issuecard"><div class="top" style="display:flex;gap:12px;align-items:center">${tile(c)}
+   <div style="flex:1;min-width:0"><div class="t" style="font-weight:600">${c.name}</div><div class="s warn">${I.warn}${c.stt}</div></div></div>
+   <div class="btnrow" style="margin-top:12px"><div class="pill ${c.fix==='Sign in'?'fill':'tint'} wide">${c.fix}</div><div class="pill grey wide">Details</div></div></div>`).join('');
+ const healthy=C.filter(c=>!c.fix);
+ const hrows=(edit)=>healthy.map(c=>`<div class="row">${edit?'<div class="minus"></div>':`<div class="radio${c.sel?' on':''}"></div>`}${tile(c)}
+   <div class="main"><div class="t">${c.name}</div><div class="s">${c.kt} · ${c.when}</div></div>${edit?I.grip:I.chev}</div>`).join('');
+ const body=edit=>`<div class="hdr"><span>Needs attention</span><b>2</b></div>${edit?'':issues}
+   ${edit?`<div class="group">${C.filter(c=>c.fix).map(c=>`<div class="row"><div class="minus"></div>${tile(c)}<div class="main"><div class="t">${c.name}</div><div class="s warn">${c.stt.split(' · ')[0]}</div></div>${I.grip}</div>`).join('')}</div>`:''}
+   <div class="hdr" style="padding-top:${edit?18:8}px"><span>Connected</span></div><div class="group">${hrows(edit)}</div>
+   <div class="ftr">${edit?'Drag to reorder. Removing a linked device forgets its pairing.':'The selected server opens in Chat. Tap a row for status, refresh and server management.'}</div>
+   ${edit?'':toggleGroup}`;
+ const list=chrome('Connections',backBtn,`<div class="glass">Edit</div><div class="glass icon">${I.plus}</div>`,body(false))+'</div>';
+ const edit=chrome('Connections','',`<div class="glass blue">Done</div>`,body(true))+'</div>';
+ return {t:'4 · Status-first: problems on top, edit mode for housekeeping',
+  p:'Groups by what needs you. Broken servers float to the top as cards with a primary fix and a neutral “Details”, same two-button layout every time. Healthy servers are clean rows with a radio for the default and a chevron to details. Remove/reorder moves into a standard Edit mode instead of a red button on every row.',
+  phones:[[list,'List'],[edit,'Edit mode']]};
+}
+
+const all=[c1,c2,c3,c4];
+const q=new URLSearchParams(location.search).get('c');
+const pick=q?[all[q-1]]:all;
+document.getElementById('root').innerHTML=pick.map(f=>{const d=f();return `<section class="concept"><h2>${d.t}</h2><p>${d.p}</p>
+ <div class="pair">${d.phones.map(([h,cap])=>`<div>${h}<div class="cap">${cap}</div></div>`).join('')}</div></section>`}).join('');
+</script></body></html>

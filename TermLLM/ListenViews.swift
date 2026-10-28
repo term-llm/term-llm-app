@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Playback shelf
 
@@ -230,7 +231,7 @@ struct MiniPlayerBar: View {
             HStack(spacing: 0) {
                 Button(action: onOpen) {
                     HStack(spacing: 12) {
-                        ListenArtwork(item: item, size: 42)
+                        ListenArtwork(item: item, size: 42, store: listen.artwork)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.subheadline.weight(.semibold))
@@ -381,7 +382,7 @@ struct ListenPlayerView: View {
         NavigationStack {
             VStack(spacing: 22) {
                 if let item = player.current {
-                    ListenArtwork(item: item, size: 240)
+                    ListenArtwork(item: item, size: 240, store: listen.artwork)
                         .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
                         .padding(.top, 12)
                     VStack(spacing: 6) {
@@ -591,7 +592,7 @@ struct ListenView: View {
             Task { await attemptAsync { try await player.play(item.id) } }
         } label: {
             HStack(spacing: 12) {
-                ListenArtwork(item: item, size: 44)
+                ListenArtwork(item: item, size: 44, store: listen.artwork)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
                         .font(.subheadline.weight(player.currentID == item.id ? .semibold : .regular))
@@ -850,14 +851,23 @@ struct ListenDownloadRing: View {
     }
 }
 
+/// Artwork from the copy saved on the phone (see `ListenArtworkStore`).
 struct ListenArtwork: View {
     let item: ListenItem
     let size: CGFloat
+    let store: ListenArtworkStore
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var loaded: (key: String, image: UIImage)?
 
     var body: some View {
-        AsyncImage(url: item.artworkURL) { phase in
-            if case .success(let image) = phase {
-                image.resizable().scaledToFill()
+        let pixels = ListenArtworkStore.pixels(for: size, scale: displayScale)
+        let key = store.fileName(for: item).map { "\(pixels) \($0)" }
+        // A rebuilt view starts from the decoded copy instead of the placeholder.
+        let image = store.cachedImage(for: item, pixels: pixels) ?? (key != nil && loaded?.key == key ? loaded?.image : nil)
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: symbol)
                     .font(.system(size: size * 0.4))
@@ -868,6 +878,10 @@ struct ListenArtwork: View {
         .background(.secondary.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: size / 5, style: .continuous))
         .accessibilityHidden(true)
+        .task(id: key) {
+            guard let key else { return }
+            loaded = await store.image(for: item, pixels: pixels).map { (key: key, image: $0) }
+        }
     }
 
     private var symbol: String {

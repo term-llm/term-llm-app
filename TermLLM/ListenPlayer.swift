@@ -37,8 +37,6 @@ final class ListenPlayer {
 
     /// Runs before this player starts audio (e.g. to pause Apple Music).
     @ObservationIgnored var willStartPlayback: (() -> Void)?
-    /// An item started streaming (e.g. to cache it meanwhile).
-    @ObservationIgnored var didStartStreaming: ((UUID) -> Void)?
     /// Items played to the end here.
     @ObservationIgnored var didFinish: (([UUID]) -> Void)?
 
@@ -89,7 +87,10 @@ final class ListenPlayer {
 
     var current: ListenItem? { currentID.flatMap(store.item) }
     var isPlaying: Bool { status == .playing || status == .loading }
-    var showsBar: Bool { current != nil && !barHidden }
+    /// Player state only, never the library: the root view reads this, and the
+    /// library changes every few seconds while playing (the position is saved).
+    /// The iOS 26 tab accessory rebuilds the whole shelf on each root update.
+    var showsBar: Bool { currentID != nil && !barHidden }
 
     // MARK: - Starting
 
@@ -150,7 +151,6 @@ final class ListenPlayer {
                 if let duration = self.duration { $0.duration = duration }
             }
             showNowPlaying()
-            if streaming { didStartStreaming?(id) }
         } catch {
             guard attempt == generation else { return }
             generation += 1

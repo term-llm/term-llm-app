@@ -2,14 +2,14 @@ import Foundation
 import Observation
 
 /// Keeps Listen items on the phone so they play offline and seek instantly.
-/// Files live in Application Support (not backed up). Media from the
-/// connected server is fetched with the web view's sign-in cookie; other
-/// hosts never get cookies.
+/// Each item has at most one `ListenTransfer`, fetched by byte range, and
+/// playback reads through it while it runs: streaming an episode and saving
+/// it fetch each byte once. Files live in Application Support (not backed
+/// up). Media from the connected server is fetched with the web view's
+/// sign-in cookie; other hosts never get cookies.
 @MainActor
 @Observable
 final class ListenDownloader {
-    typealias Fetch = @Sendable (URLRequest, ListenTransfer) async throws -> (URL, URLResponse)
-
     /// Bytes fetched so far for a download in flight.
     struct Progress: Equatable, Sendable {
         var received: Int64 = 0
@@ -29,24 +29,36 @@ final class ListenDownloader {
     /// Downloads in flight, by item.
     private(set) var progress: [UUID: Progress] = [:]
 
+    /// Whether playback is reading this item through its transfer now.
+    @ObservationIgnored var isStreaming: (UUID) -> Bool = { _ in false }
+
     @ObservationIgnored private let store: ListenStore
     @ObservationIgnored private let cookies: ListenCookieJar
     @ObservationIgnored private let server: () -> ListenServer?
-    @ObservationIgnored private let fetch: Fetch
+    @ObservationIgnored private let fetching: ListenFetching
+    @ObservationIgnored private let retryDelays: [TimeInterval]
     @ObservationIgnored let directory: URL
-    @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
+    /// Downloads in flight, including one playback reads.
+    @ObservationIgnored private var transfers: [UUID: ListenTransfer] = [:]
+    /// Transfers that only serve playback now (saving was stopped). The
+    /// player holds them; they let a new download carry on instead.
+    @ObservationIgnored private var streams: [UUID: WeakTransfer] = [:]
+    @ObservationIgnored private var watchers: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var waiting: [UUID] = []
     /// Downloads started only to cache what's streaming.
     @ObservationIgnored private var forPlayback: Set<UUID> = []
 
     init(store: ListenStore, cookies: ListenCookieJar, server: @escaping () -> ListenServer?,
          directory: URL = ListenDownloader.defaultDirectory,
-         fetch: @escaping Fetch = ListenTransfer.fetch) {
+         fetching: ListenFetching = ListenSessionFetching(),
+         retryDelays: [TimeInterval] = ListenTransfer.retryDelays) {
         self.store = store
         self.cookies = cookies
         self.server = server
         self.directory = directory
-        self.fetch = fetch
+        self.fetching = fetching
+        self.retryDelays = retryDelays
+        removeStrayPartials()
     }
 
     nonisolated static var defaultDirectory: URL {
@@ -59,7 +71,7 @@ final class ListenDownloader {
         server()?.isSameOrigin(item.url) ?? false
     }
 
-    var activeCount: Int { tasks.count }
+    var activeCount: Int { transfers.count }
 
     /// Bytes used by downloaded items.
     var totalBytes: Int64 {
@@ -73,20 +85,29 @@ final class ListenDownloader {
     }
 
     /// What the engine should play for `item`: its file if downloaded,
-    /// otherwise the URL (with cookies only for the connected server).
+    /// otherwise its transfer, which saves it while it plays. Video and plain
+    /// http stream straight from the URL (cookies only for the connected server).
     func source(for item: ListenItem) async -> ListenSource {
         if let local = localURL(for: item) { return ListenSource(url: local, spoken: item.kind != .music) }
         if item.download == .downloaded {
             // The file vanished; forget it.
             store.update(item.id) { $0.download = .none; $0.localFile = nil; $0.downloadedBytes = nil }
         }
-        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(item.url) ?? false)
-        return ListenSource(url: item.url, cookies: sameServer ? await cookies.cookies(for: item.url, sourceID: item.sourceID) : [],
-                            spoken: item.kind != .music)
+        if Self.playsThroughTransfer(item) {
+            return ListenSource(url: item.url, spoken: item.kind != .music, transfer: transferForPlayback(item))
+        }
+        let cookies = isSameServer(item) ? await cookies.cookies(for: item.url, sourceID: item.sourceID) : []
+        return ListenSource(url: item.url, cookies: cookies, spoken: item.kind != .music)
     }
 
-    /// Downloads `id`. `forPlayback` caches something that's streaming:
-    /// it runs at low priority and the file goes once the item is played.
+    /// Videos can be huge and AirPlay needs their real URL; App Transport
+    /// Security keeps plain http to AVFoundation.
+    nonisolated static func playsThroughTransfer(_ item: ListenItem) -> Bool {
+        item.kind != .video && item.url.scheme?.lowercased() == "https"
+    }
+
+    /// Downloads `id`. `forPlayback` caches something that's streaming: the
+    /// file goes once the item is played.
     func download(_ id: UUID, forPlayback: Bool = false) {
         guard let item = store.item(id) else { return }
         if !forPlayback {
@@ -94,9 +115,15 @@ final class ListenDownloader {
             self.forPlayback.remove(id)
             if item.cachedForPlayback == true { store.update(id) { $0.cachedForPlayback = nil } }
         }
-        guard item.download != .downloaded || localURL(for: item) == nil,
-              tasks[id] == nil, !waiting.contains(id) else { return }
+        guard item.download != .downloaded || localURL(for: item) == nil else { return }
+        if transfers[id] != nil || waiting.contains(id) { return }
         if forPlayback { self.forPlayback.insert(id) }
+        if let stream = streams.removeValue(forKey: id)?.transfer {
+            // Saving stopped while it played: carry on with the same transfer.
+            stream.setSaving(true)
+            track(stream, for: id)
+            return
+        }
         store.update(id) { $0.download = .queued; $0.downloadError = nil }
         waiting.append(id)
         startWaiting()
@@ -107,16 +134,30 @@ final class ListenDownloader {
     /// Deletes files that were only cached for streaming.
     func releasePlaybackCache(_ ids: [UUID]) {
         for id in ids {
-            if forPlayback.contains(id) { cancel(id); continue }
-            if store.item(id)?.cachedForPlayback == true { deleteFile(id) }
+            if forPlayback.contains(id) {
+                cancel(id)
+            } else if store.item(id)?.cachedForPlayback == true {
+                deleteFile(id)
+            }
+            // What was streamed of it without finishing goes too.
+            removePartial(id)
         }
     }
 
+    /// Stops downloading. If it's playing, it carries on streaming without
+    /// saving the rest.
     func cancel(_ id: UUID) {
         waiting.removeAll { $0 == id }
         forPlayback.remove(id)
-        progress[id] = nil
-        tasks.removeValue(forKey: id)?.cancel()
+        stopWatching(id)
+        if let transfer = transfers.removeValue(forKey: id) {
+            if isStreaming(id) {
+                transfer.setSaving(false)
+                streams[id] = WeakTransfer(transfer)
+            } else {
+                transfer.cancel(keepingPartial: false)
+            }
+        }
         if let item = store.item(id), item.download == .queued || item.download == .downloading {
             store.update(id) { $0.download = .none }
         }
@@ -128,6 +169,7 @@ final class ListenDownloader {
         cancel(id)
         guard let item = store.item(id) else { return }
         if let name = item.localFile { try? FileManager.default.removeItem(at: directory.appending(path: name)) }
+        removePartial(id)
         store.update(id) {
             $0.download = .none; $0.localFile = nil; $0.downloadedBytes = nil; $0.downloadError = nil; $0.cachedForPlayback = nil
         }
@@ -138,65 +180,137 @@ final class ListenDownloader {
         for item in items {
             waiting.removeAll { $0 == item.id }
             forPlayback.remove(item.id)
-            progress[item.id] = nil
-            tasks.removeValue(forKey: item.id)?.cancel()
+            stopWatching(item.id)
+            transfers.removeValue(forKey: item.id)?.cancel(keepingPartial: false)
+            streams.removeValue(forKey: item.id)?.transfer?.cancel(keepingPartial: false)
             if let name = item.localFile { try? FileManager.default.removeItem(at: directory.appending(path: name)) }
+            removePartial(item.id)
         }
         startWaiting()
     }
 
+    /// The request a transfer sends for `url`, with only its owner's cookies,
+    /// read when it's sent so a revoked sign-in stops at the next request.
+    func request(for url: URL, sameServer: Bool, sourceID: UUID?) async -> URLRequest {
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.httpShouldHandleCookies = false
+        if sameServer {
+            HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: sourceID)).forEach {
+                request.setValue($1, forHTTPHeaderField: $0)
+            }
+        }
+        return request
+    }
+
+    /// The request `item`'s transfer would send now.
+    func request(for item: ListenItem) async -> URLRequest {
+        await request(for: transferURL(for: item), sameServer: isSameServer(item), sourceID: item.sourceID)
+    }
+
     // MARK: - Private
 
+    private struct WeakTransfer {
+        weak var transfer: ListenTransfer?
+        init(_ transfer: ListenTransfer) { self.transfer = transfer }
+    }
+
+    private func isSameServer(_ item: ListenItem) -> Bool {
+        item.sourceID != nil || (server()?.isSameOrigin(item.url) ?? false)
+    }
+
+    private func transferURL(for item: ListenItem) -> URL {
+        // App Transport Security blocks plain http downloads; most hosts also
+        // serve https. (Streaming plain http still works for media.)
+        guard !isSameServer(item), item.url.scheme?.lowercased() == "http",
+              var components = URLComponents(url: item.url, resolvingAgainstBaseURL: false) else { return item.url }
+        components.scheme = "https"
+        return components.url ?? item.url
+    }
+
+    /// The transfer playback reads: the download in flight, or a new one
+    /// that caches the item while it plays. It starts at once, ahead of the queue.
+    private func transferForPlayback(_ item: ListenItem) -> ListenTransfer {
+        if let transfer = transfers[item.id] { return transfer }
+        if let stream = streams[item.id]?.transfer { return stream }
+        let queued = waiting.contains(item.id)
+        waiting.removeAll { $0 == item.id }
+        if !queued { forPlayback.insert(item.id) }
+        return begin(item)
+    }
+
     private func startWaiting() {
-        while tasks.count < Self.maxConcurrent, !waiting.isEmpty {
+        while transfers.count < Self.maxConcurrent, !waiting.isEmpty {
             let id = waiting.removeFirst()
-            guard store.item(id) != nil else { continue }
-            tasks[id] = Task { [weak self] in
-                await self?.run(id)
+            guard let item = store.item(id) else { continue }
+            begin(item)
+        }
+    }
+
+    @discardableResult
+    private func begin(_ item: ListenItem) -> ListenTransfer {
+        let sameServer = isSameServer(item)
+        let sourceID = item.sourceID
+        let transfer = ListenTransfer(
+            id: item.id, remote: transferURL(for: item), directory: directory, fetching: fetching,
+            retryDelays: retryDelays,
+            makeRequest: { [weak self] url in
+                await self?.request(for: url, sameServer: sameServer, sourceID: sourceID) ?? URLRequest(url: url)
+            },
+            finished: { [weak self] transfer, result in
+                Task { @MainActor in self?.finished(transfer, result) }
+            })
+        track(transfer, for: item.id)
+        transfer.start()
+        return transfer
+    }
+
+    private func track(_ transfer: ListenTransfer, for id: UUID) {
+        transfers[id] = transfer
+        store.update(id) { $0.download = .downloading; $0.downloadError = nil }
+        watchers[id]?.cancel()
+        progress[id] = Progress()
+        watchers[id] = Task { [weak self, weak transfer] in
+            while !Task.isCancelled {
+                guard let self, let transfer, self.transfers[id] === transfer else { return }
+                let now = transfer.progress
+                let next = Progress(received: now.received, expected: now.expected)
+                if self.progress[id] != next { self.progress[id] = next }
+                try? await Task.sleep(for: Self.progressInterval)
             }
         }
     }
 
-    private func run(_ id: UUID) async {
-        let transfer = ListenTransfer(lowPriority: forPlayback.contains(id))
-        progress[id] = Progress()
-        let watcher = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: Self.progressInterval)
-                guard !Task.isCancelled, let self, self.progress[id] != nil else { return }
-                let now = transfer.snapshot
-                let next = Progress(received: now.received, expected: now.expected)
-                if self.progress[id] != next { self.progress[id] = next }
-            }
+    private func stopWatching(_ id: UUID) {
+        watchers.removeValue(forKey: id)?.cancel()
+        progress[id] = nil
+    }
+
+    private func finished(_ transfer: ListenTransfer, _ result: Result<ListenTransfer.Saved, Error>) {
+        let id = transfer.id
+        if streams[id]?.transfer === transfer { streams[id] = nil }
+        guard transfers[id] === transfer else {
+            // Saving was stopped: what playback fetched isn't kept.
+            if case .success(let saved) = result { try? FileManager.default.removeItem(at: saved.file) }
+            return
         }
-        defer {
-            watcher.cancel()
-            progress[id] = nil
-            tasks.removeValue(forKey: id)
-            startWaiting()
-        }
-        guard let item = store.item(id) else { return }
-        store.update(id) { $0.download = .downloading }
-        do {
-            let file = try await fetchFile(for: item, transfer: transfer)
-            try Task.checkCancellation()
+        transfers[id] = nil
+        stopWatching(id)
+        defer { startWaiting() }
+        switch result {
+        case .success(let saved):
+            let cached = forPlayback.remove(id) != nil
             guard store.item(id) != nil else {
-                try? FileManager.default.removeItem(at: directory.appending(path: file.name))
+                try? FileManager.default.removeItem(at: saved.file)
                 return
             }
-            let cached = forPlayback.remove(id) != nil
             store.update(id) {
                 $0.download = .downloaded
-                $0.localFile = file.name
-                $0.downloadedBytes = file.bytes
+                $0.localFile = saved.file.lastPathComponent
+                $0.downloadedBytes = saved.bytes
                 $0.downloadError = nil
                 $0.cachedForPlayback = cached ? true : nil
             }
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
-        } catch {
+        case .failure(let error):
             if forPlayback.remove(id) != nil {
                 // A cache that didn't work out; the item still streams.
                 listenLog.info("Listen couldn't save a stream: \(error.localizedDescription, privacy: .public)")
@@ -208,47 +322,26 @@ final class ListenDownloader {
         }
     }
 
-    private func fetchFile(for item: ListenItem, transfer: ListenTransfer) async throws -> (name: String, bytes: Int64) {
-        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(item.url) ?? false)
-        var url = item.url
-        // App Transport Security blocks plain http downloads; most hosts also
-        // serve https. (Streaming plain http still works for media.)
-        if !sameServer, url.scheme?.lowercased() == "http", var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            components.scheme = "https"
-            url = components.url ?? url
-        }
-        var request = URLRequest(url: url, timeoutInterval: 60)
-        request.httpShouldHandleCookies = false
-        if sameServer {
-            HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
-                request.setValue($1, forHTTPHeaderField: $0)
-            }
-        }
-        let (temporary, response) = try await fetch(request, transfer)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ListenError.downloadFailed("the server answered \(http.statusCode)")
-        }
-        let mime = response.mimeType?.lowercased() ?? ""
-        if mime.hasPrefix("text/html") || mime.hasPrefix("application/json") {
-            throw ListenError.downloadFailed("\(item.url.absoluteString) is a web page, not an audio or video file")
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var folder = directory
-        try? folder.setResourceValues(values)
+    /// An unfinished download's file, unless a live transfer still owns it.
+    private func removePartial(_ id: UUID) {
+        guard transfers[id] == nil, streams[id]?.transfer == nil else { return }
+        ListenTransfer.partialFiles(for: id, in: directory).forEach { try? FileManager.default.removeItem(at: $0) }
+    }
 
-        let name = "\(item.id.uuidString).\(Self.fileExtension(url: item.url, mime: mime))"
-        let destination = directory.appending(path: name)
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporary, to: destination)
-        let bytes = (try? FileManager.default.attributesOfItem(atPath: destination.path(percentEncoded: false))[.size] as? Int64) ?? nil
-        return (name, bytes ?? 0)
+    /// Unfinished downloads of items still in Up Next resume later; the rest go.
+    private func removeStrayPartials() {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+        for name in names where name.contains(".partial") {
+            if let id = UUID(uuidString: String(name.prefix(36))), let item = store.item(id), item.isQueued,
+               item.download != .downloaded {
+                continue
+            }
+            try? FileManager.default.removeItem(at: directory.appending(path: name))
+        }
     }
 
     /// AVFoundation picks a decoder from the extension, so keep a real one.
-    static func fileExtension(url: URL, mime: String) -> String {
+    nonisolated static func fileExtension(url: URL, mime: String) -> String {
         let known = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4", "m4v", "mov", "webm", "caf", "aiff"]
         let ext = url.pathExtension.lowercased()
         if known.contains(ext) { return ext }
@@ -263,50 +356,6 @@ final class ListenDownloader {
         case "video/webm", "audio/webm": return "webm"
         default: return "mp3"
         }
-    }
-}
-
-/// Lets the downloader read progress from a download in flight.
-final class ListenTransfer: @unchecked Sendable {
-    let lowPriority: Bool
-    private let session: URLSession
-    private let lock = NSLock()
-    private var task: URLSessionTask?
-    private var reported: (received: Int64, expected: Int64?) = (0, nil)
-
-    init(lowPriority: Bool = false, session: URLSession = ListenMediaSession.shared) {
-        self.lowPriority = lowPriority
-        self.session = session
-    }
-
-    var snapshot: (received: Int64, expected: Int64?) {
-        lock.withLock {
-            guard let task else { return reported }
-            let expected = task.countOfBytesExpectedToReceive
-            return (task.countOfBytesReceived, expected > 0 ? expected : nil)
-        }
-    }
-
-    func attach(_ task: URLSessionTask) {
-        if lowPriority { task.priority = URLSessionTask.lowPriority }
-        lock.withLock { self.task = task }
-    }
-
-    /// For fetches that aren't a URLSession task (tests).
-    func report(received: Int64, expected: Int64?) {
-        lock.withLock { reported = (received, expected) }
-    }
-
-    @Sendable static func fetch(_ request: URLRequest, _ transfer: ListenTransfer) async throws -> (URL, URLResponse) {
-        var request = request
-        request.httpShouldHandleCookies = false
-        return try await transfer.session.download(for: request, delegate: Watcher(transfer: transfer))
-    }
-
-    private final class Watcher: ListenMediaSession.Delegate, @unchecked Sendable {
-        let transfer: ListenTransfer
-        init(transfer: ListenTransfer) { self.transfer = transfer }
-        func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) { transfer.attach(task) }
     }
 }
 

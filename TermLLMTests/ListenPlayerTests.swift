@@ -1,4 +1,6 @@
 import AVFoundation
+import MediaPlayer
+import UIKit
 import XCTest
 @testable import TermLLM
 
@@ -135,21 +137,56 @@ final class ListenPlayerTests: XCTestCase {
         let items = try await listen.add([draft("a")], placement: .now, download: .never)
         try listen.remove([items[0].id])
         XCTAssertNil(listen.player.currentID)
+        XCTAssertFalse(listen.player.showsBar)
         XCTAssertEqual(engine.stops, 1)
         XCTAssertTrue(listen.store.items.isEmpty)
+    }
+
+    /// The root view and the shelf read these. Saving the position must not
+    /// invalidate them: the iOS 26 tab accessory rebuilds the shelf on every
+    /// root update, which refetched the artwork every few seconds.
+    func testSavingThePositionLeavesTheShelfAlone() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([draft("a")], placement: .now, download: .never)
+        await settle()
+        let invalidated = UncheckedBox(Flag())
+        withObservationTracking {
+            _ = (listen.player.currentID, listen.player.showsBar, listen.player.isPlaying)
+        } onChange: {
+            invalidated.value.raised = true
+        }
+        for second in 1...ListenPlayer.saveInterval {
+            engine.currentTime = TimeInterval(60 + second)
+            engine.send(.tick)
+        }
+        XCTAssertEqual(listen.store.item(items[0].id)?.position, TimeInterval(60 + ListenPlayer.saveInterval),
+                       "the position was saved")
+        XCTAssertFalse(invalidated.value.raised)
+        XCTAssertTrue(listen.player.showsBar)
     }
 
     func testServerMediaStreamsWithCookiesAndOthersWithout() async throws {
         let engine = FakeListenEngine()
         let cookies = FakeCookieJar()
         cookies.cookies = [HTTPCookie(properties: [.domain: "hub.example", .path: "/", .name: "s", .value: "1"])!]
-        let listen = makeListen(engine: engine, cookies: cookies)
-        let items = try await listen.add([ListenDraft(url: URL(string: "https://hub.example/media/a.mp3")!),
-                                          draft("b")], placement: .end, download: .never)
+        let hub = URL(string: "https://hub.example/media/a.mp3")!
+        let server = FakeMediaServer()
+        server.serve(hub, .init(body: mediaBody(40)))
+        server.serve(draft("b").url, .init(body: mediaBody(40)))
+        let listen = makeListen(engine: engine, cookies: cookies, server: server)
+        let items = try await listen.add([ListenDraft(url: hub), draft("b"),
+                                          ListenDraft(url: URL(string: "https://hub.example/media/clip.mp4")!)],
+                                         placement: .end, download: .never)
         try await listen.player.play(items[0].id)
-        XCTAssertEqual(engine.loads.last?.source.cookies.count, 1)
         try await listen.player.play(items[1].id)
-        XCTAssertEqual(engine.loads.last?.source.cookies.count, 0)
+        try await waitFor { server.requests.count == 2 }
+        XCTAssertEqual(server.requests.first { $0.url == hub }?.value(forHTTPHeaderField: "Cookie"), "s=1")
+        XCTAssertNil(server.requests.first { $0.url == draft("b").url }?.value(forHTTPHeaderField: "Cookie"))
+        // Video streams straight from its URL, with the cookie for this server.
+        try await listen.player.play(items[2].id)
+        XCTAssertNil(engine.loads.last?.source.transfer)
+        XCTAssertEqual(engine.loads.last?.source.cookies.count, 1)
     }
 
     func testRestoresTheCurrentItemPausedAfterRelaunch() async throws {
@@ -172,16 +209,9 @@ final class ListenPlayerTests: XCTestCase {
 
     func testDownloadsServerMediaAutomatically() async throws {
         let directory = temporaryDirectory()
-        let source = directory.appending(path: "payload.tmp")
-        try Data("ID3fake".utf8).write(to: source)
-        let cookies = FakeCookieJar()
-        let listen = makeListen(cookies: cookies, directory: directory, fetch: { request, _ in
-            XCTAssertEqual(request.url?.host(), "hub.example")
-            let copy = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-            try FileManager.default.copyItem(at: source, to: copy)
-            return (copy, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
-                                          headerFields: ["Content-Type": "audio/mpeg"])!)
-        })
+        let server = FakeMediaServer()
+        server.serve(URL(string: "https://hub.example/media/abc")!, .init(body: Data("ID3fake".utf8)))
+        let listen = makeListen(directory: directory, server: server)
         let items = try await listen.add([ListenDraft(url: URL(string: "https://hub.example/media/abc")!), draft("ext")],
                                          placement: .end)
         for _ in 0..<50 where listen.store.item(items[0].id)?.download != .downloaded {
@@ -199,12 +229,9 @@ final class ListenPlayerTests: XCTestCase {
     }
 
     func testDownloadRejectsWebPages() async throws {
-        let listen = makeListen(fetch: { request, _ in
-            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-            try Data("<html>".utf8).write(to: file)
-            return (file, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
-                                          headerFields: ["Content-Type": "text/html; charset=utf-8"])!)
-        })
+        let server = FakeMediaServer()
+        server.serve(draft("page").url, .init(body: Data("<html>".utf8), mime: "text/html"))
+        let listen = makeListen(server: server)
         let items = try await listen.add([draft("page")], placement: .end, download: .now)
         for _ in 0..<50 where listen.store.item(items[0].id)?.download != .failed {
             try await Task.sleep(for: .milliseconds(20))
@@ -215,17 +242,12 @@ final class ListenPlayerTests: XCTestCase {
 
     // MARK: - Streaming
 
-    /// A fetch that serves a small MP3 after `gate` opens, reporting progress.
-    private func audioFetch(gate: AsyncStream<Void>? = nil) -> ListenDownloader.Fetch {
-        let box = UncheckedBox(gate)
-        return { request, transfer in
-            transfer.report(received: 10, expected: 40)
-            if let gate = box.value { for await _ in gate { break } }
-            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-            try Data("ID3fake".utf8).write(to: file)
-            return (file, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
-                                          headerFields: ["Content-Type": "audio/mpeg"])!)
-        }
+    /// Serves draft("ep") as a 40-byte file; `held` holds back all but the first 10 bytes.
+    private func episodeServer(held: Bool = false) -> FakeMediaServer {
+        let server = FakeMediaServer()
+        server.serve(draft("ep").url, .init(body: mediaBody(40)))
+        if held { server.hold(10..<40) }
+        return server
     }
 
     private func waitFor(_ condition: () -> Bool) async throws {
@@ -245,11 +267,13 @@ final class ListenPlayerTests: XCTestCase {
 
     func testStreamingCachesTheItemThenSeeksFromTheFile() async throws {
         let engine = FakeListenEngine()
-        let (gate, open) = AsyncStream<Void>.makeStream()
-        let listen = makeListen(engine: engine, fetch: audioFetch(gate: gate))
+        let server = episodeServer(held: true)
+        let listen = makeListen(engine: engine, server: server)
         let items = try await listen.add([draft("ep")], placement: .now, download: .never)
         XCTAssertTrue(listen.player.streaming)
-        XCTAssertFalse(try XCTUnwrap(engine.loads.last).source.isLocal)
+        let stream = try XCTUnwrap(engine.loads.last).source
+        XCTAssertFalse(stream.isLocal)
+        XCTAssertNotNil(stream.transfer, "playback reads through the download")
 
         try await waitFor { listen.downloader.progress[items[0].id]?.fraction != nil }
         XCTAssertEqual(listen.downloader.progress[items[0].id]?.fraction, 0.25, "progress is visible while saving")
@@ -259,9 +283,11 @@ final class ListenPlayerTests: XCTestCase {
         engine.send(.buffer)
         XCTAssertEqual(listen.player.bufferedUntil, 90)
 
-        open.yield()
+        server.release()
         try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
         XCTAssertEqual(listen.store.item(items[0].id)?.cachedForPlayback, true)
+        XCTAssertEqual(server.requests.count, 1, "one download feeds playback and the saved file")
+        XCTAssertEqual(server.bytesSent, 40)
 
         await listen.player.seek(to: 300)
         XCTAssertEqual(engine.loads.count, 2)
@@ -277,9 +303,48 @@ final class ListenPlayerTests: XCTestCase {
                        "a file saved only for streaming goes once played")
     }
 
+    func testPlayingWhileDownloadingFetchesOnce() async throws {
+        let engine = FakeListenEngine()
+        let server = episodeServer(held: true)
+        let listen = makeListen(engine: engine, server: server)
+        let items = try await listen.add([draft("ep")], placement: .end, download: .now)
+        XCTAssertEqual(listen.store.item(items[0].id)?.download, .downloading)
+        try await listen.player.play(items[0].id)
+        XCTAssertNotNil(engine.loads.last?.source.transfer, "playback joins the download in flight")
+        server.release()
+        try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
+        XCTAssertEqual(server.requests.count, 1)
+        XCTAssertEqual(server.bytesSent, 40)
+        XCTAssertNil(listen.store.item(items[0].id)?.cachedForPlayback, "an explicit download is kept")
+    }
+
+    func testStoppingTheSaveKeepsPlaybackStreaming() async throws {
+        let engine = FakeListenEngine()
+        let server = episodeServer(held: true)
+        let listen = makeListen(engine: engine, server: server)
+        let items = try await listen.add([draft("ep")], placement: .now, download: .never)
+        let id = items[0].id
+        let transfer = try XCTUnwrap(engine.loads.last?.source.transfer)
+        try await waitFor { transfer.progress.received == 10 }
+        listen.downloader.cancel(id)
+        XCTAssertEqual(listen.store.item(id)?.download, ListenItem.Download.none)
+        let read = FakeRead(0, length: 10)
+        transfer.read(read)
+        try await waitFor { read.finished }
+        XCTAssertEqual(read.data, mediaBody(40).prefix(10), "playback carries on")
+
+        listen.downloader.download(id)
+        server.release()
+        try await waitFor { listen.store.item(id)?.download == .downloaded }
+        XCTAssertEqual(server.ranges(for: draft("ep").url), ["bytes=0-", "bytes=10-"],
+                       "saving again carries on where it stopped")
+        XCTAssertEqual(server.bytesSent, 40)
+        XCTAssertNil(listen.store.item(id)?.cachedForPlayback)
+    }
+
     func testExplicitDownloadsSurvivePlaying() async throws {
         let engine = FakeListenEngine()
-        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let listen = makeListen(engine: engine, server: episodeServer())
         let items = try await listen.add([draft("ep")], placement: .end, download: .now)
         try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
         try await listen.player.play(items[0].id)
@@ -291,7 +356,7 @@ final class ListenPlayerTests: XCTestCase {
 
     func testDroppedStreamCarriesOnFromTheSavedFile() async throws {
         let engine = FakeListenEngine()
-        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let listen = makeListen(engine: engine, server: episodeServer())
         let items = try await listen.add([draft("ep")], placement: .now, download: .never)
         try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
         engine.currentTime = 120
@@ -332,7 +397,7 @@ final class ListenPlayerTests: XCTestCase {
 
     func testStopWinsAgainstQueuedDownloadRecovery() async throws {
         let engine = FakeListenEngine()
-        let listen = makeListen(engine: engine, fetch: audioFetch())
+        let listen = makeListen(engine: engine, server: episodeServer())
         let items = try await listen.add([draft("ep")], placement: .now, download: .never)
         try await waitFor { listen.store.item(items[0].id)?.download == .downloaded }
         engine.send(.failed("stream failed"))
@@ -386,6 +451,10 @@ final class ListenPlayerTests: XCTestCase {
 private final class UncheckedBox<Value>: @unchecked Sendable {
     let value: Value
     init(_ value: Value) { self.value = value }
+}
+
+private final class Flag {
+    var raised = false
 }
 
 @MainActor
@@ -521,11 +590,9 @@ final class ListenMediaTransportTests: XCTestCase {
                 jar.cookies = [HTTPCookie(properties: [.name: "scoped", .value: "owner",
                                                        .domain: fixture.url.host!, .path: "/"])!]
             }
-            let listen = makeListen(cookies: jar, directory: directory, fetch: { request, _ in
-                // Keep the real consumer's request and execute its production
-                // download transport with only the URLProtocol registration changed.
-                try await ListenTransfer.fetch(request, ListenTransfer(session: fixture.session))
-            })
+            // The production transport, with only the URLProtocol registration changed.
+            let listen = makeListen(cookies: jar, directory: directory,
+                                    fetching: ListenSessionFetching(session: fixture.session))
             let items = try await listen.add([ListenDraft(url: fixture.url, sourceID: UUID())],
                                              placement: .end, download: .now)
             for _ in 0..<100 where listen.downloader.activeCount > 0 {
@@ -547,7 +614,9 @@ final class ListenMediaTransportTests: XCTestCase {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let jar = FakeCookieJar()
-        let nowPlaying = SystemNowPlaying(cookies: jar, server: { nil }, session: fixture.session)
+        let artwork = ListenArtworkStore(directory: directory.appending(path: "Artwork"), cookies: jar,
+                                         server: { nil }, session: fixture.session)
+        let nowPlaying = SystemNowPlaying(artwork: artwork)
         defer { nowPlaying.clear() }
         for explicit in [false, true] {
             jar.cookies = explicit ? [HTTPCookie(properties: [.name: "scoped", .value: "owner",
@@ -629,6 +698,145 @@ private final class MediaTransportProtocol: URLProtocol, @unchecked Sendable {
                                        headerFields: ["Content-Type": "audio/mpeg", "Set-Cookie": "session=response; Path=/"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("media".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+@MainActor
+final class ListenArtworkTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUp() async throws {
+        directory = temporaryDirectory()
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func store(_ session: URLSession) -> ListenArtworkStore {
+        ListenArtworkStore(directory: directory, cookies: FakeCookieJar(), server: { nil }, session: session)
+    }
+
+    private func item(_ name: String = "cover.jpg", sourceID: UUID? = nil) -> ListenItem {
+        let artwork = URL(string: "https://\(UUID().uuidString.lowercased()).artwork.example/\(name)")!
+        return ListenStore(fileURL: directory.appending(path: "library.json"))
+            .add([ListenDraft(url: URL(string: "https://pod.example/\(UUID()).mp3")!, artworkURL: artwork,
+                              sourceID: sourceID)], placement: .end)[0]
+    }
+
+    func testArtworkIsFetchedOnceAndReadFromItsFileAfterThat() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let artwork = store(session)
+        let episode = item()
+        let url = try XCTUnwrap(episode.artworkURL)
+        let row = ListenArtworkStore.pixels(for: 44, scale: 3)
+        XCTAssertEqual(row, ListenArtworkStore.pixels(for: 42, scale: 3), "the mini player and list rows share one size")
+        XCTAssertNil(artwork.cachedImage(for: episode, pixels: row))
+
+        async let first = artwork.image(for: episode, pixels: row)
+        async let second = artwork.image(for: episode, pixels: row)
+        let images = await [first, second]
+        XCTAssertEqual(images[0]?.cgImage?.width, 160, "decoded at display size")
+        XCTAssertNotNil(images[1])
+        XCTAssertEqual(ArtworkProtocol.requests(for: url), 1, "views showing the same artwork share one download")
+        XCTAssertNotNil(artwork.cachedImage(for: episode, pixels: row), "a rebuilt view reads it without waiting")
+
+        let file = try XCTUnwrap(artwork.savedFile(for: episode))
+        XCTAssertEqual(file.deletingLastPathComponent().standardizedFileURL, directory.standardizedFileURL)
+        XCTAssertEqual(ListenArtworkStore.decode(file, maxPixels: 4096)?.cgImage?.width, 1024,
+                       "saved at lock-screen size, not the served 1200 px")
+        let large = await artwork.image(for: episode, pixels: ListenArtworkStore.pixels(for: 240, scale: 3))
+        XCTAssertEqual(large?.cgImage?.width, 800)
+
+        // Another launch reads the same file.
+        let relaunched = store(session)
+        let again = await relaunched.image(for: episode, pixels: row)
+        XCTAssertNotNil(again)
+        XCTAssertEqual(ArtworkProtocol.requests(for: url), 1, "never downloaded again")
+    }
+
+    func testMissingArtworkIsNotRefetchedOnEveryRebuild() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let artwork = store(session)
+        let episode = item("missing.jpg")
+        let first = await artwork.image(for: episode, pixels: 160)
+        let second = await artwork.image(for: episode, pixels: 160)
+        XCTAssertNil(first)
+        XCTAssertNil(second)
+        XCTAssertEqual(ArtworkProtocol.requests(for: try XCTUnwrap(episode.artworkURL)), 1)
+        var plain = episode
+        plain.artworkURL = nil
+        let none = await artwork.image(for: plain, pixels: 160)
+        XCTAssertNil(none)
+    }
+
+    func testEachOwnersArtworkIsKeptApartAndUnusedFilesGo() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let artwork = store(session)
+        let public1 = item()
+        var owned = public1
+        owned.sourceID = UUID()
+        XCTAssertNotEqual(artwork.fileName(for: public1), artwork.fileName(for: owned),
+                          "an image fetched with one connection's sign-in never shows for another")
+        let other = item()
+        _ = await artwork.image(for: public1, pixels: 160)
+        _ = await artwork.image(for: other, pixels: 160)
+        XCTAssertNotNil(artwork.savedFile(for: other))
+        artwork.prune(keeping: [public1])
+        XCTAssertNotNil(artwork.savedFile(for: public1))
+        XCTAssertNil(artwork.savedFile(for: other))
+    }
+
+    /// MediaPlayer renders artwork on its own queue. The closure used to be
+    /// main-actor isolated, so playing anything with artwork trapped there.
+    func testLockScreenArtworkRendersOffTheMainThread() async throws {
+        let file = try XCTUnwrap(ListenArtworkStore.save(ArtworkProtocol.jpeg(side: 3000),
+                                                         to: directory.appending(path: "big.img"), in: directory))
+        let image = try XCTUnwrap(ListenArtworkStore.decode(file, maxPixels: ListenArtworkStore.savedPixels))
+        XCTAssertEqual(image.cgImage?.width, 1024)
+        let artwork = UncheckedBox(SystemNowPlaying.artwork(image))
+        let rendered = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: artwork.value.image(at: CGSize(width: 300, height: 300)) != nil)
+            }
+        }
+        XCTAssertTrue(rendered)
+    }
+}
+
+final class ArtworkProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    // Guarded by `lock`.
+    nonisolated(unsafe) private static var counts: [URL: Int] = [:]
+    private static let body = jpeg(side: 1200)
+
+    static func requests(for url: URL) -> Int { lock.withLock { counts[url] ?? 0 } }
+
+    static func jpeg(side: Int) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let size = CGSize(width: side, height: side)
+        return UIGraphicsImageRenderer(size: size, format: format).jpegData(withCompressionQuality: 0.8) { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".artwork.example") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.lock.withLock { Self.counts[url, default: 0] += 1 }
+        let missing = url.lastPathComponent.hasPrefix("missing")
+        let response = HTTPURLResponse(url: url, statusCode: missing ? 404 : 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": missing ? "text/html" : "image/jpeg"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: missing ? Data("<html>".utf8) : Self.body)
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}

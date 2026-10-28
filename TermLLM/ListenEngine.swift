@@ -9,14 +9,21 @@ import WebKit
 // Everything above these protocols (store, player, tools, views) is testable
 // without real audio.
 
-/// What the engine plays: a local file or a remote URL, with the cookies the
-/// request may carry (only for the connected term-llm server).
+/// What the engine plays: a local file, the item's download in progress
+/// (`transfer`), or a remote URL with the cookies the request may carry (only
+/// for the connected term-llm server).
 struct ListenSource: Equatable, Sendable {
     var url: URL
     var cookies: [HTTPCookie] = []
     var spoken = true
+    /// Plays through the item's download, which fetches each byte once.
+    var transfer: ListenTransfer?
 
     var isLocal: Bool { url.isFileURL }
+
+    static func == (lhs: ListenSource, rhs: ListenSource) -> Bool {
+        lhs.url == rhs.url && lhs.cookies == rhs.cookies && lhs.spoken == rhs.spoken && lhs.transfer === rhs.transfer
+    }
 }
 
 enum ListenEngineEvent: Equatable, Sendable {
@@ -173,6 +180,8 @@ final class AVListenEngine: ListenEngine {
     private var sessionObservers: [NSObjectProtocol] = []
     private var spoken = true
     private var isRemote = false
+    /// The resource loader holds its delegate weakly.
+    private var transfer: ListenTransfer?
 
     /// How long to wait for a stream to become playable.
     static let loadTimeout: Duration = .seconds(30)
@@ -245,10 +254,16 @@ final class AVListenEngine: ListenEngine {
     func load(_ source: ListenSource, startAt: TimeInterval) async throws {
         spoken = source.spoken
         isRemote = !source.isLocal
-        var options: [String: Any] = [:]
-        // An explicit empty list must not fall back to AVFoundation's default cookies.
-        options[AVURLAssetHTTPCookiesKey] = source.cookies
-        let asset = AVURLAsset(url: source.url, options: options)
+        let asset: AVURLAsset
+        if let transfer = source.transfer {
+            // AVFoundation reads through the download instead of fetching again.
+            asset = AVURLAsset(url: transfer.assetURL)
+            asset.resourceLoader.setDelegate(transfer, queue: transfer.queue)
+        } else {
+            // An explicit empty list must not fall back to AVFoundation's default cookies.
+            asset = AVURLAsset(url: source.url, options: [AVURLAssetHTTPCookiesKey: source.cookies])
+        }
+        transfer = source.transfer
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .timeDomain
         observe(item)
@@ -291,6 +306,7 @@ final class AVListenEngine: ListenEngine {
         player.replaceCurrentItem(with: nil)
         removeItemObservers()
         isRemote = false
+        transfer = nil
         playRequest += 1
         audioSession.deactivate()
     }
@@ -379,14 +395,10 @@ final class SystemNowPlaying: ListenNowPlaying {
     private var artworkSourceID: UUID?
     private var artwork: MPMediaItemArtwork?
     private var artworkTask: Task<Void, Never>?
-    private let cookies: ListenCookieJar
-    private let server: () -> ListenServer?
-    private let session: URLSession
+    private let artworkStore: ListenArtworkStore
 
-    init(cookies: ListenCookieJar, server: @escaping () -> ListenServer?, session: URLSession = ListenMediaSession.shared) {
-        self.cookies = cookies
-        self.server = server
-        self.session = session
+    init(artwork: ListenArtworkStore) {
+        artworkStore = artwork
     }
 
     func connect(_ commands: ListenRemoteCommands) {
@@ -434,6 +446,12 @@ final class SystemNowPlaying: ListenNowPlaying {
         loadArtwork(for: item)
     }
 
+    /// MediaPlayer asks for the image on its own queue. A closure formed in
+    /// this main-actor class would be main-actor isolated and trap there.
+    nonisolated static func artwork(_ image: UIImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+    }
+
     func clear() {
         artworkTask?.cancel()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -447,28 +465,17 @@ final class SystemNowPlaying: ListenNowPlaying {
         artwork = nil
         artworkTask?.cancel()
         guard let url = item.artworkURL else { return }
-        let cookies = cookies
-        let session = session
-        let sameServer = item.sourceID != nil || (server()?.isSameOrigin(url) ?? false)
+        let store = artworkStore
         artworkTask = Task { [weak self] in
-            var request = URLRequest(url: url, timeoutInterval: 20)
-            request.httpShouldHandleCookies = false
-            if sameServer {
-                HTTPCookie.requestHeaderFields(with: await cookies.cookies(for: url, sourceID: item.sourceID)).forEach {
-                    request.setValue($1, forHTTPHeaderField: $0)
-                }
-            }
-            guard let (data, _) = try? await session.data(for: request),
-                  let image = UIImage(data: data), !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self, self.artworkURL == url else { return }
-                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                self.artwork = artwork
-                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                guard info[MPMediaItemPropertyTitle] != nil else { return }
-                info[MPMediaItemPropertyArtwork] = artwork
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            }
+            // From the saved file, which is lock-screen size.
+            guard let image = await store.image(for: item, pixels: ListenArtworkStore.savedPixels),
+                  !Task.isCancelled, let self, self.artworkURL == url else { return }
+            let artwork = Self.artwork(image)
+            self.artwork = artwork
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            guard info[MPMediaItemPropertyTitle] != nil else { return }
+            info[MPMediaItemPropertyArtwork] = artwork
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
     }
 }

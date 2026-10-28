@@ -9,11 +9,10 @@ final class ListenViewRenderingTests: XCTestCase {
     private func sampleListen() async throws -> Listen {
         let engine = FakeListenEngine()
         // Saving the streaming episode stays in flight at about a third.
-        let listen = makeListen(engine: engine, fetch: { _, transfer in
-            transfer.report(received: 21_000_000, expected: 62_000_000)
-            try await Task.sleep(for: .seconds(60))
-            throw CancellationError()
-        })
+        let server = FakeMediaServer()
+        server.serve(URL(string: "https://hub.example/media/brief.mp3")!, .init(body: mediaBody(6_200_000)))
+        server.hold(2_100_000..<6_200_000)
+        let listen = makeListen(engine: engine, server: server)
         let items = try await listen.add([
             ListenDraft(url: URL(string: "https://hub.example/media/brief.mp3")!, title: "Morning briefing: Sunday 18 October",
                         artist: "term-llm · af_sky", kind: .generated, duration: 412),
@@ -242,6 +241,28 @@ final class ListenViewRenderingTests: XCTestCase {
             Color.cyan.opacity(0.15).overlay(Text("web page"))
             MiniPlayerBar(listen: listen) {}
         }, named: "listen-mini-player")
+    }
+
+    func testMiniPlayerShowsArtworkSavedOnThePhone() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let directory = temporaryDirectory()
+        let artwork = ListenArtworkStore(directory: directory.appending(path: "Artwork"), cookies: FakeCookieJar(),
+                                         server: { nil }, session: session)
+        let listen = makeListen(directory: directory, artwork: artwork)
+        let cover = URL(string: "https://\(UUID().uuidString.lowercased()).artwork.example/cover.jpg")!
+        let items = try await listen.add([
+            ListenDraft(url: URL(string: "https://feeds.example/ep212.mp3")!, title: "Episode 212: The long tail of caches",
+                        artist: "Systems Weekly", artworkURL: cover, kind: .episode, duration: 3_720),
+        ], placement: .now, download: .never)
+        try await render(VStack(spacing: 0) {
+            Color.cyan.opacity(0.15).overlay(Text("web page"))
+            MiniPlayerBar(listen: listen) {}
+        }, named: "listen-mini-player-artwork")
+        XCTAssertNotNil(artwork.cachedImage(for: items[0], pixels: ListenArtworkStore.pixels(for: 42, scale: 3)),
+                        "the mini player decoded its artwork from the saved file")
+        XCTAssertNotNil(artwork.savedFile(for: items[0]))
+        XCTAssertEqual(ArtworkProtocol.requests(for: cover), 1)
     }
 
     func testPlayerSheet() async throws {

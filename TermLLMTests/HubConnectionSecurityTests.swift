@@ -113,15 +113,12 @@ final class HubConnectionSecurityTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("media-scope-\(UUID())")
         let library = ListenStore(fileURL: directory.appendingPathComponent("library.json"))
         let item = try XCTUnwrap(library.add([ListenDraft(url: url, sourceID: nested.id)], placement: .end).first)
-        let downloader = ListenDownloader(store: library, cookies: jar, server: { ListenServer(base: root.url, sourceID: root.id) }, directory: directory, fetch: { request, _ in
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "term_llm_web_session=nested", "Download must use the saved item owner, not the newly selected root")
-            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("owned-media-\(UUID())")
-            try Data([1, 2, 3]).write(to: temporary)
-            return (temporary, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "audio/mpeg"])!)
-        })
+        let media = FakeMediaServer()
+        media.serve(url, .init(body: Data([1, 2, 3])))
+        let downloader = ListenDownloader(store: library, cookies: jar, server: { ListenServer(base: root.url, sourceID: root.id) }, directory: directory, fetching: media)
         catalog.select(root.id); registry.selectedID = root.id
-        let stream = await downloader.source(for: item)
-        XCTAssertEqual(stream.cookies.map(\.value), ["nested"], "Selection must not rebind an old media item")
+        let stream = await downloader.request(for: item)
+        XCTAssertEqual(stream.value(forHTTPHeaderField: "Cookie"), "term_llm_web_session=nested", "Selection must not rebind an old media item")
         XCTAssertNil(registry.unambiguousSourceID(for: url), "Root/child URLs without operation ownership are ambiguous")
         let unbound = await jar.cookies(for: url)
         XCTAssertTrue(unbound.isEmpty)
@@ -130,13 +127,15 @@ final class HubConnectionSecurityTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(library.item(item.id)?.download, .downloaded)
+        XCTAssertEqual(media.requests.map { $0.value(forHTTPHeaderField: "Cookie") }, ["term_llm_web_session=nested"],
+                       "Download must use the saved item owner, not the newly selected root")
         downloader.deleteFile(item.id)
         b.nextEpoch() // revoke/reauth starts before asynchronous WebKit clear finishes
-        let revoked = await downloader.source(for: item)
-        XCTAssertTrue(revoked.cookies.isEmpty, "Revocation blocks media reads immediately, not only after WebKit deletion")
+        let revoked = await downloader.request(for: item)
+        XCTAssertNil(revoked.value(forHTTPHeaderField: "Cookie"), "Revocation blocks media reads immediately, not only after WebKit deletion")
         catalog.remove(nested.id)
-        let removed = await downloader.source(for: item)
-        XCTAssertTrue(removed.cookies.isEmpty, "Removed UUID must never fall back to root credentials")
+        let removed = await downloader.request(for: item)
+        XCTAssertNil(removed.value(forHTTPHeaderField: "Cookie"), "Removed UUID must never fall back to root credentials")
         try? FileManager.default.removeItem(at: directory)
     }
 

@@ -1,0 +1,302 @@
+import XCTest
+
+/// Throwaway visual walkthrough: drives the real app (no fixture) against the
+/// public demo Hub and writes one PNG per screen into WALKTHROUGH_DIR.
+final class WalkthroughUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private var outputDir: URL!
+    private var index = 0
+    private let demoURL = "https://demo.term-llm.com"
+
+    override func setUpWithError() throws {
+        continueAfterFailure = true
+        let dir = ProcessInfo.processInfo.environment["WALKTHROUGH_DIR"] ?? NSTemporaryDirectory() + "walkthrough"
+        outputDir = URL(fileURLWithPath: dir)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+    }
+
+    @MainActor
+    private func shot(_ name: String) {
+        index += 1
+        let screenshot = XCUIScreen.main.screenshot()
+        let file = outputDir.appendingPathComponent(String(format: "%02d-%@.png", index, name))
+        do { try screenshot.pngRepresentation.write(to: file) } catch { XCTFail("write \(file.path): \(error)") }
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    private func wait(_ element: XCUIElement, _ timeout: TimeInterval = 20) -> Bool {
+        element.exists || element.waitForExistence(timeout: timeout)
+    }
+
+    @MainActor
+    private func settle(_ seconds: TimeInterval = 1.0) {
+        _ = XCTWaiter.wait(for: [expectation(description: "settle")], timeout: seconds)
+    }
+
+    @MainActor
+    private func any(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)[identifier].firstMatch
+    }
+
+    @MainActor
+    private func first(prefix: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+    }
+
+    @MainActor
+    private func tab(_ name: String) {
+        let byID = app.buttons["appTab." + name]
+        if byID.exists {
+            byID.tap()
+        } else {
+            app.tabBars.buttons[name.capitalized].firstMatch.tap()
+        }
+        settle(1.2)
+    }
+
+    @MainActor
+    private func tapIfExists(_ element: XCUIElement, _ timeout: TimeInterval = 5) -> Bool {
+        guard wait(element, timeout) else { return false }
+        element.tap()
+        return true
+    }
+
+    /// Leave the simulator as found: drop every saved connection through the UI.
+    @MainActor
+    private func removeAllConnections() {
+        tab("agents")
+        guard tapIfExists(app.buttons["phoneHub.settings"], 5) else { return }
+        guard tapIfExists(app.buttons["settings.connections"], 5) else { return }
+        _ = wait(app.navigationBars["Connections"], 10)
+        for _ in 0..<5 {
+            let source = first(prefix: "phoneHub.source.")
+            guard wait(source, 3) else { break }
+            source.tap()
+            guard wait(any("phoneHub.connectionDetail"), 10) else { break }
+            let remove = first(prefix: "phoneHub.remove.")
+            for _ in 0..<6 where !remove.isHittable { app.swipeUp() }
+            remove.tap()
+            _ = tapIfExists(app.buttons["phoneHub.remove.confirm"].firstMatch, 5)
+            settle(1)
+        }
+        if app.navigationBars["Connections"].buttons["Settings"].exists {
+            app.navigationBars["Connections"].buttons["Settings"].tap()
+            settle(0.8)
+        }
+        _ = tapIfExists(app.buttons["settings.done"], 5)
+        settle(0.8)
+    }
+
+    @MainActor
+    private func panelStripTap(_ identifier: String) -> Bool {
+        let button = app.buttons[identifier]
+        guard wait(button, 3) else { return false }
+        // Off-screen strip buttons have invalid activation points, so check the
+        // frame itself rather than isHittable, and scroll the strip until visible.
+        func visible() -> Bool {
+            let rect = button.frame
+            return !rect.isEmpty && rect.minX >= 0 && rect.maxX <= app.frame.width
+        }
+        for _ in 0..<3 where !visible() {
+            let strip = app.scrollViews["hub.panelStrip"]
+            strip.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: strip.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+            settle(0.6)
+        }
+        guard visible() else { return false }
+        button.tap()
+        return true
+    }
+
+    @MainActor
+    func testWalkthrough() throws {
+        app = XCUIApplication()
+        app.launch()
+        settle(2)
+        if !app.buttons["phoneHub.addConnection"].exists { removeAllConnections() }
+
+        // 1. Welcome / empty Agents home, then add the demo Hub.
+        if wait(app.buttons["phoneHub.addConnection"], 15) {
+            settle(1.5)
+            shot("welcome")
+            app.buttons["phoneHub.addConnection"].tap()
+            let url = app.textFields["phoneHub.connection.url"]
+            XCTAssertTrue(wait(url))
+            url.tap()
+            url.typeText(demoURL)
+            let name = app.textFields["phoneHub.connection.name"]
+            if name.exists {
+                name.tap()
+                name.typeText("Demo Hub")
+            }
+            settle(0.5)
+            shot("add-connection")
+            app.buttons["phoneHub.connection.save"].tap()
+            if wait(any("phoneHub.connection.checking"), 2) { shot("checking-server") }
+            XCTAssertTrue(wait(any("phoneHub.connection.success"), 90))
+            settle(0.8)
+            shot("connection-added")
+            app.buttons["phoneHub.connection.done"].tap()
+        }
+
+        // 2. Agents home panels.
+        let node = first(prefix: "phoneHub.node.")
+        XCTAssertTrue(wait(node, 90))
+        settle(2.5)
+        shot("agents")
+        if tapIfExists(app.buttons["phoneHub.sessions"]) {
+            settle(2)
+            shot("sessions")
+        }
+        if tapIfExists(app.buttons["phoneHub.attention"]) {
+            settle(1.5)
+            shot("attention")
+        }
+        _ = tapIfExists(app.buttons["phoneHub.nodes"])
+        settle(0.5)
+
+        // 3. Open a scripted session in Chat (web UI), from the Sessions panel.
+        _ = tapIfExists(app.buttons["phoneHub.sessions"])
+        settle(1)
+        let session = first(prefix: "phoneHub.session.")
+        if wait(session, 10) {
+            session.tap()
+        } else {
+            _ = tapIfExists(app.buttons["phoneHub.nodes"])
+            _ = tapIfExists(first(prefix: "phoneHub.node."))
+        }
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(wait(web, 60))
+        settle(8)
+        shot("chat")
+
+        // Send a message to the scripted demo so a streamed reply is visible.
+        let composer = web.textViews.firstMatch.exists ? web.textViews.firstMatch : web.textFields.firstMatch
+        if wait(composer, 5) {
+            composer.tap()
+            settle(0.5)
+            composer.typeText("Hi! What can you do on my phone?")
+            settle(0.5)
+            let send = web.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'send'")).firstMatch
+            if send.exists { send.tap() } else { composer.typeText("\n") }
+            settle(7)
+            if app.keyboards.count > 0 {
+                // Hide the keyboard so the reply is visible.
+                if app.toolbars.buttons["Done"].firstMatch.exists {
+                    app.toolbars.buttons["Done"].firstMatch.tap()
+                } else {
+                    web.swipeDown()
+                }
+                settle(1)
+            }
+            shot("chat-reply")
+        }
+
+        // Pull-down app controls + first-use coachmark.
+        let start = web.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+        let end = web.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+        start.press(forDuration: 0.15, thenDragTo: end)
+        settle(1.5)
+        if any("appControls").exists || any("appControlsHint").exists {
+            shot("app-controls")
+        }
+        if app.buttons["Got it"].exists { app.buttons["Got it"].tap() }
+
+        // 4. Settings → Connections → connection detail → Manage server.
+        tab("agents")
+        XCTAssertTrue(tapIfExists(app.buttons["phoneHub.settings"], 10))
+        XCTAssertTrue(wait(app.buttons["settings.done"]))
+        settle(1.2)
+        shot("settings")
+
+        if tapIfExists(any("settings.voiceAgent"), 3) {
+            settle(1.2)
+            shot("voice-agent-picker")
+            let back = app.navigationBars.buttons.firstMatch
+            if back.exists { back.tap() }
+            settle(0.8)
+        }
+
+        XCTAssertTrue(tapIfExists(app.buttons["settings.connections"], 10))
+        XCTAssertTrue(wait(app.navigationBars["Connections"]))
+        settle(1.2)
+        shot("connections")
+
+        let source = first(prefix: "phoneHub.source.")
+        XCTAssertTrue(wait(source, 10))
+        source.tap()
+        XCTAssertTrue(wait(any("phoneHub.connectionDetail")))
+        settle(1.5)
+        shot("connection-detail")
+
+        let manage = first(prefix: "phoneHub.details.")
+        if tapIfExists(manage, 5) {
+            XCTAssertTrue(wait(app.scrollViews["hub.panelStrip"], 20))
+            settle(2.5)
+            shot("manage-server")
+            if panelStripTap("hub.nodes") { settle(2); shot("hub-nodes") }
+            if panelStripTap("hub.delegations") { settle(2); shot("hub-delegations") }
+            if panelStripTap("hub.security") { settle(2); shot("hub-security") }
+            _ = tapIfExists(app.buttons["phoneHub.details.close"], 5)
+            settle(1)
+        }
+
+        // Leave Settings.
+        if app.navigationBars.buttons["Connections"].firstMatch.exists {
+            app.navigationBars.buttons["Connections"].firstMatch.tap()
+            settle(0.8)
+        }
+        if app.navigationBars["Connections"].buttons["Settings"].exists {
+            app.navigationBars["Connections"].buttons["Settings"].tap()
+            settle(0.8)
+        }
+        _ = tapIfExists(app.buttons["settings.done"], 5)
+        settle(0.8)
+
+        // 5. Music and Podcasts tabs.
+        tab("music")
+        _ = wait(any("musicScreen"), 10)
+        settle(1.5)
+        shot("music")
+        var createdPlaylists: [String] = []
+        for playlistName in ["Road Trip", "Focus"] {
+            guard tapIfExists(app.buttons["New Playlist"], 3) else { break }
+            let field = app.alerts.textFields.firstMatch
+            guard wait(field, 5) else { break }
+            field.typeText(playlistName)
+            app.alerts.buttons["Create"].tap()
+            settle(1.2)
+            createdPlaylists.append(playlistName)
+            if playlistName == "Road Trip" { shot("playlist") }
+            // Back to the list.
+            let back = app.navigationBars.buttons.firstMatch
+            if back.exists { back.tap() }
+            settle(0.8)
+        }
+        if !createdPlaylists.isEmpty { settle(0.5); shot("music-playlists") }
+
+        tab("podcasts")
+        _ = wait(any("podcastsScreen"), 10)
+        settle(1.5)
+        shot("podcasts")
+
+        // 6. Back to the retained Chat document.
+        tab("chat")
+        settle(2)
+        shot("chat-retained")
+
+        // 7. Cleanup: delete created playlists and the demo connection.
+        tab("music")
+        for playlistName in createdPlaylists {
+            let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", playlistName)).firstMatch
+            guard wait(row, 3) else { continue }
+            row.press(forDuration: 1.2)
+            if tapIfExists(app.buttons["Delete"], 3) { settle(0.8) } else { app.tap() }
+        }
+        removeAllConnections()
+    }
+}

@@ -9,8 +9,9 @@ final class Listen {
     static let shared: Listen = {
         let cookies = WebKitCookieJar()
         let server = { ListenServer.current() }
+        let artwork = ListenArtworkStore(cookies: cookies, server: server)
         return Listen(store: ListenStore(), engine: AVListenEngine(), cookies: cookies, server: server,
-                      nowPlaying: SystemNowPlaying(cookies: cookies, server: server))
+                      nowPlaying: SystemNowPlaying(artwork: artwork), artwork: artwork)
     }()
 
     enum DownloadPolicy: String, CaseIterable, Sendable {
@@ -23,32 +24,31 @@ final class Listen {
     let store: ListenStore
     let downloader: ListenDownloader
     let player: ListenPlayer
+    let artwork: ListenArtworkStore
     @ObservationIgnored let server: () -> ListenServer?
     @ObservationIgnored private var toolbox: ListenTools?
 
+    /// `artwork` defaults to a store next to `downloadDirectory`.
     init(store: ListenStore, engine: ListenEngine, cookies: ListenCookieJar, server: @escaping () -> ListenServer?,
-         nowPlaying: ListenNowPlaying? = nil, downloadDirectory: URL = ListenDownloader.defaultDirectory,
-         fetch: ListenDownloader.Fetch? = nil, defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
+         nowPlaying: ListenNowPlaying? = nil, artwork: ListenArtworkStore? = nil,
+         downloadDirectory: URL = ListenDownloader.defaultDirectory, fetching: ListenFetching = ListenSessionFetching(),
+         retryDelays: [TimeInterval] = ListenTransfer.retryDelays,
+         defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
         self.store = store
         self.server = server
-        let downloader = fetch.map {
-            ListenDownloader(store: store, cookies: cookies, server: server, directory: downloadDirectory, fetch: $0)
-        } ?? ListenDownloader(store: store, cookies: cookies, server: server, directory: downloadDirectory)
+        self.artwork = artwork ?? ListenArtworkStore(
+            directory: downloadDirectory.deletingLastPathComponent().appending(path: "Artwork", directoryHint: .isDirectory),
+            cookies: cookies, server: server)
+        let downloader = ListenDownloader(store: store, cookies: cookies, server: server, directory: downloadDirectory,
+                                          fetching: fetching, retryDelays: retryDelays)
         self.downloader = downloader
-        self.player = ListenPlayer(store: store, engine: engine, sources: { await downloader.source(for: $0) },
-                                   nowPlaying: nowPlaying, defaults: defaults, now: now)
-        // Save what's streaming as it plays, so seeks become instant and a
-        // dropped connection doesn't stop it; the file goes once played.
-        player.didStartStreaming = { [weak downloader] id in
-            guard let downloader, let item = store.item(id), Self.cachesWhileStreaming(item) else { return }
-            downloader.download(id, forPlayback: true)
-        }
+        let player = ListenPlayer(store: store, engine: engine, sources: { await downloader.source(for: $0) },
+                                  nowPlaying: nowPlaying, defaults: defaults, now: now)
+        self.player = player
+        // Playing an item streams it through its download, which saves it
+        // meanwhile; the file goes once played.
+        downloader.isStreaming = { [weak player] id in player?.currentID == id && player?.streaming == true }
         player.didFinish = { [weak downloader] ids in downloader?.releasePlaybackCache(ids) }
-    }
-
-    /// Video files can be huge; everything else is cached while it streams.
-    static func cachesWhileStreaming(_ item: ListenItem) -> Bool {
-        item.kind != .video && item.download != .downloaded && item.download != .downloading && item.download != .queued
     }
 
     var tools: [DeviceTool] {
@@ -88,6 +88,7 @@ final class Listen {
         player.willRemove(Set(ids))
         try store.remove(ids)
         downloader.removeFiles(for: doomed)
+        artwork.prune(keeping: store.items)
     }
 
     /// Marks played or archived, moving on if one of them is playing.
@@ -102,6 +103,7 @@ final class Listen {
     func clearHistory() {
         let removed = store.clearHistory()
         downloader.removeFiles(for: removed)
+        artwork.prune(keeping: store.items)
     }
 
     /// One Listen and Apple Music at a time: each pauses the other. Either
