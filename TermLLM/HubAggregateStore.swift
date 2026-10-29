@@ -109,6 +109,8 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     let directClient: DirectNodeClient?
     let security: HubConnectionSecurity?
     let searcher: (any HubSessionSearching)?
+    /// An agent's paged conversation history and its pin/rename/archive edits.
+    let sessions: (any HubSessionBrowsing)?
     @Published private(set) var browserRevoked = false
     @Published private(set) var browserIdentity = UUID()
     @Published private(set) var browserReady = false
@@ -134,6 +136,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             store = workspace.store
             directClient = nil
             searcher = client
+            sessions = client
         } else {
             let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport,
                                           display_name_source: { await relay.displayName() })
@@ -141,6 +144,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             hubWorkspace = nil
             store = HubStore(client: client)
             searcher = client
+            sessions = client
         }
         relay.owner = self
         installAuthorizationContext()
@@ -157,11 +161,13 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     }
 
     /// Inject existing HubServing mocks without network, WK or Keychain effects.
-    init(connection: HubConnection, store: HubStore, searcher: (any HubSessionSearching)? = nil) {
+    init(connection: HubConnection, store: HubStore, searcher: (any HubSessionSearching)? = nil,
+         sessions: (any HubSessionBrowsing)? = nil) {
         self.connection = connection
         self.id = connection.id
         self.store = store
         self.searcher = searcher
+        self.sessions = sessions
         hubWorkspace = nil
         directClient = nil
         security = nil
@@ -749,7 +755,11 @@ final class HubAggregateStore: ObservableObject {
     /// Mirrors the server's canonical `/chat/<selector>` route; destinations
     /// are still validated by `HubNavigation.chatDestination` before opening.
     static func searchResumePath(connection: HubConnection, nodeID: String, entry: SessionSearchEntry) -> String {
-        let selector = (entry.number ?? 0) > 0 ? String(entry.number!) : entry.id
+        resumePath(connection: connection, nodeID: nodeID, number: entry.number, id: entry.id)
+    }
+
+    static func resumePath(connection: HubConnection, nodeID: String, number: Int64?, id: String) -> String {
+        let selector = (number ?? 0) > 0 ? String(number!) : id
         let root = connection.kind == .hub ? connection.mountPath + "node/" + nodeID + "/" : connection.mountPath
         return root + "chat/" + selector
     }

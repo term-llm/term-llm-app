@@ -1445,6 +1445,59 @@ extension HubClient: HubSessionSearching {
     }
 }
 
+// MARK: - Session browsing
+
+extension HubClient: HubSessionBrowsing {
+    /// Through the Hub's node proxy, like search: a 401/403 may come from the
+    /// node rather than the Hub session, so it fails this request only.
+    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
+        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe node identifier.")
+        }
+        let data = try await executeRequest(
+            "/node/\(node_id)/v1/sessions",
+            percentEncodedQuery: AgentSessionQuery.percentEncoded(limit: limit, cursor: cursor),
+            revokesOnUnauthorized: false
+        )
+        if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }
+        return try JSONDecoder().decode(AgentSessionPage.self, from: data)
+    }
+
+    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
+        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe node identifier.")
+        }
+        guard AgentSessionQuery.isSafeSessionID(session_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe session identifier.")
+        }
+        let data = try await executeRequest(
+            "/node/\(node_id)/v1/sessions/\(session_id)",
+            method: .PATCH,
+            body: patch,
+            revokesOnUnauthorized: false
+        )
+        if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }
+        return try JSONDecoder().decode(AgentSessionPatchResult.self, from: data)
+    }
+
+    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder {
+        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe node identifier.")
+        }
+        guard session_ids.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
+            throw HubAPIError(status: 0, message: "Unsafe session identifier.")
+        }
+        let data = try await executeRequest(
+            "/node/\(node_id)/v1/sessions/pinned-order",
+            method: .PATCH,
+            body: ["session_ids": session_ids],
+            revokesOnUnauthorized: false
+        )
+        if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }
+        return try JSONDecoder().decode(PinnedSessionOrder.self, from: data)
+    }
+}
+
 // MARK: - Private helpers
 
 private struct EmptyBody: Encodable {}

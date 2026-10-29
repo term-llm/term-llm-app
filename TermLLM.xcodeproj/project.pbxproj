@@ -111,6 +111,7 @@
 		2D965D04B8979858890EE276 /* linked-devices-vectors-v2.json in Resources */ = {isa = PBXBuildFile; fileRef = 1F6C9A57657458DF79A98E6A /* linked-devices-vectors-v2.json */; };
 		3AF4906EC6C114D388E8B6CA /* HubConnectionSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */; };
 		69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */; };
+		DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */; };
 		73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */; };
 		759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */; };
 		7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */; };
@@ -136,6 +137,9 @@
 		A30200000000000000000001 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = A30100000000000000000001 /* WebRTC */; };
 		ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */; };
 		FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */; };
+		A633D910B85C23F03349FEA4 /* PhoneHubAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */; };
+		A606D0DADCBADBD4FD3399A0 /* PhoneHubAgentSessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */; };
+		407AC317A3BDC0A564FB47B1 /* HubSessionBrowsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -304,7 +308,11 @@
 		C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClient.swift; sourceTree = "<group>"; };
 		D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStoreTests.swift; sourceTree = "<group>"; };
 		E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStoreTests.swift; sourceTree = "<group>"; };
+		DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentSessionsTests.swift; sourceTree = "<group>"; };
 		FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubView.swift; sourceTree = "<group>"; };
+		EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentView.swift; sourceTree = "<group>"; };
+		85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentSessions.swift; sourceTree = "<group>"; };
+		122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubSessionBrowsing.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -425,6 +433,9 @@
 				0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */,
 				C842C4ACB61754CA3C5A62B6 /* DirectNodeClient.swift */,
 				FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */,
+				EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */,
+				85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */,
+				122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */,
 				A10000000000000000000001 /* PeerWireProtocol.swift */,
 				A10000000000000000000002 /* PeerHTTPMultiplexer.swift */,
 				A10000000000000000000003 /* PeerSession.swift */,
@@ -481,6 +492,7 @@
 				D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */,
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
+				DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */,
 				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
 				A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */,
 				A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */,
@@ -744,6 +756,9 @@
 				ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */,
 				0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */,
 				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
+				A633D910B85C23F03349FEA4 /* PhoneHubAgentView.swift in Sources */,
+				A606D0DADCBADBD4FD3399A0 /* PhoneHubAgentSessions.swift in Sources */,
+				407AC317A3BDC0A564FB47B1 /* HubSessionBrowsing.swift in Sources */,
 				A20000000000000000000001 /* PeerWireProtocol.swift in Sources */,
 				A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */,
 				A20000000000000000000003 /* PeerSession.swift in Sources */,
@@ -799,6 +814,7 @@
 				759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */,
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
+				DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */,
 				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
 				A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */,
 				A21000000000000000000002 /* LinkedDevicesProtocolTests.swift in Sources */,

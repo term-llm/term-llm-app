@@ -246,7 +246,7 @@ final class PhoneHubUITests: XCTestCase {
         continueAfterFailure = false
         launch(reset: true, seed: ["work"])
         let work = id("work")
-        required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
+        required(app.buttons["phoneHub.node." + work + ".shared.new"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         if app.buttons["Got it"].exists { app.buttons["Got it"].tap() }
         required(app.webViews.links["Open existing fixture conversation"]).tap()
@@ -281,7 +281,7 @@ final class PhoneHubUITests: XCTestCase {
         continueAfterFailure = false
         launch(reset: true, seed: ["work", "home"])
         let work = id("work")
-        required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
+        required(app.buttons["phoneHub.node." + work + ".shared.new"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         required(app.tabBars.buttons["Agents"]).tap()
         openConnection(work)
@@ -438,7 +438,7 @@ final class PhoneHubUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "phoneHub.settings").count, 1)
         XCTAssertFalse(app.buttons["phoneHub.edit." + work].exists)
         shot("home-nodes-first")
-        workNode.tap()
+        required(app.buttons["phoneHub.node." + work + ".shared.new"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         let draft = required(app.webViews.textFields["Fixture draft"])
         draft.tap()
@@ -476,7 +476,7 @@ final class PhoneHubUITests: XCTestCase {
         continueAfterFailure = false
         launch(reset: true, seed: ["work", "home"])
         let work = id("work")
-        required(app.buttons["phoneHub.node." + work + ".shared"]).tap()
+        required(app.buttons["phoneHub.node." + work + ".shared.new"]).tap()
         _ = required(app.webViews.staticTexts["Work fixture chat"])
         required(app.tabBars.buttons["Agents"]).tap()
         required(app.buttons["phoneHub.settings"]).tap()
@@ -506,7 +506,8 @@ final class PhoneHubUITests: XCTestCase {
         // Exercise the real source-aware navigation, not just native cached rows.
         for (id, title) in [(work, "Work"), (home, "Home"), (direct, "Laptop")] {
             panel("nodes")
-            let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "phoneHub.node." + id + ".")).firstMatch
+            let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@",
+                                                       "phoneHub.node." + id + ".", ".new")).firstMatch
             reveal(row)
             row.tap()
             _ = required(app.webViews.staticTexts[title + " fixture chat"].firstMatch)
@@ -627,5 +628,94 @@ final class PhoneHubUITests: XCTestCase {
         reveal(homeNode)
         XCTAssertFalse(app.buttons["phoneHub.node." + work + ".shared"].exists)
         shot("07-one-source-auth-failure-isolated")
+    }
+
+    // MARK: Agent page
+
+    @MainActor
+    private func openAgentPage(_ source: String) {
+        let row = required(app.buttons["phoneHub.node." + source + ".shared"])
+        reveal(row)
+        row.tap()
+        _ = required(app.descendants(matching: .any)["phoneHub.agent"].firstMatch)
+    }
+
+    @MainActor
+    private func agentRow(_ session: String) -> XCUIElement {
+        app.buttons["phoneHub.agent.session." + session]
+    }
+
+    /// Swipes the lazily loaded list until `element` exists (paging as it goes).
+    @MainActor
+    private func scroll(to element: XCUIElement, limit: Int = 40, file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<limit {
+            if element.exists && element.isHittable { return }
+            app.swipeUp()
+        }
+        _ = required(element, timeout: 5, file: file, line: line)
+    }
+
+    @MainActor
+    func testAgentPageShowsPinsThenHistoryAndLoadsEveryPage() throws {
+        continueAfterFailure = false
+        launch(reset: true, seed: ["home"])
+        let home = id("home")
+        XCTAssertTrue(required(app.buttons["phoneHub.node." + home + ".shared.new"]).isHittable,
+                      "A new conversation stays one tap away on the agent row")
+        shot("09-agent-row-new-conversation")
+        openAgentPage(home)
+        _ = required(app.buttons["phoneHub.agent.new"])
+        // Pins lead in their saved order, then history by activity.
+        let pins = ["session-10", "session-3", "session-25"].map(agentRow)
+        for pin in pins { _ = required(pin) }
+        let input = required(agentRow("active-shared"))
+        XCTAssertLessThan(pins[0].frame.minY, pins[1].frame.minY)
+        XCTAssertLessThan(pins[1].frame.minY, pins[2].frame.minY)
+        XCTAssertLessThan(pins[2].frame.minY, input.frame.minY)
+        let needsInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Needs input"), object: input)
+        XCTAssertEqual(XCTWaiter.wait(for: [needsInput], timeout: 10), .completed, "Run state comes from the polled dashboard")
+        XCTAssertTrue((agentRow("session-shared").value as? String ?? "").contains("Unseen"))
+        shot("10-agent-page")
+        // Infinite scroll: all 75 conversations arrive, 30 at a time.
+        scroll(to: agentRow("session-75"))
+        let end = app.descendants(matching: .any)["phoneHub.agent.end"].firstMatch
+        scroll(to: end, limit: 6)
+        XCTAssertTrue(end.label.contains("75 conversations"), end.label)
+        shot("11-agent-page-end")
+    }
+
+    @MainActor
+    func testAgentPagePinsRetriesAndKeepsItsPlaceAcrossChat() async throws {
+        continueAfterFailure = false
+        launch(reset: true, seed: ["home"])
+        let home = id("home")
+        openAgentPage(home)
+        // Swipe right to pin: the conversation joins the end of Pinned at once.
+        let webrtc = agentRow("session-4")
+        scroll(to: webrtc)
+        webrtc.swipeRight()
+        required(app.buttons["Pin"].firstMatch).tap()
+        for _ in 0..<3 { app.swipeDown() }
+        let moved = required(agentRow("session-4"))
+        let pinned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Pinned"), object: moved)
+        XCTAssertEqual(XCTWaiter.wait(for: [pinned], timeout: 10), .completed)
+        XCTAssertLessThan(required(agentRow("session-25")).frame.minY, moved.frame.minY, "A new pin goes after the existing ones")
+        shot("12-agent-page-pinned")
+        // A page that fails explains itself and retries in place.
+        try await control("home", "sessions-page-error")
+        let retry = app.buttons["phoneHub.agent.retry"]
+        scroll(to: retry)
+        shot("13-agent-page-retry")
+        retry.tap()
+        scroll(to: agentRow("session-45"))
+        // Chat round trip: the page, scroll position and New conversation remain.
+        agentRow("session-45").tap()
+        _ = required(app.webViews.staticTexts["Home fixture chat"])
+        required(app.tabBars.buttons["Agents"]).tap()
+        XCTAssertTrue(required(agentRow("session-45")).isHittable, "Returning to Agents keeps the agent page where it was")
+        let compose = required(app.buttons["phoneHub.agent.newToolbar"])
+        shot("14-agent-page-after-chat")
+        compose.tap()
+        _ = required(app.webViews.staticTexts["Home fixture chat"])
     }
 }

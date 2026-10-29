@@ -14,6 +14,8 @@ struct PhoneHubView: View {
     @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
     @State private var editor: Editor?
     @State private var navigationError: String?
+    /// Agent pages pushed on the Agents stack; kept across Chat round-trips.
+    @State private var agentPath: [PhoneHubAgentRoute] = []
     @State private var sessionSearch = ""
     @AppStorage("phoneHub.sessionSort", store: PhoneHubFixture.defaults) private var sessionSort: PhoneHubSessionSort = .recent
     /// Search keeps its own order: relevance by default, per query session.
@@ -52,7 +54,7 @@ struct PhoneHubView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $agentPath) {
             List {
                 if connections.connections.isEmpty {
                     Section {
@@ -158,6 +160,20 @@ struct PhoneHubView: View {
                 PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
                     .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
             }
+            .navigationDestination(for: PhoneHubAgentRoute.self) { route in
+                PhoneHubAgentView(route: route, aggregate: aggregate, isVisible: isVisible,
+                                  onOpenChat: onOpenChat, onSettings: onSettings)
+                    // An edited endpoint is a new source identity: start over
+                    // with it rather than keep the old one's history.
+                    .id(aggregate.source(route.sourceID).map(ObjectIdentifier.init))
+            }
+        }
+        .onChange(of: aggregate.sources.map(\.id)) { _, ids in
+            // A removed connection takes its agent pages with it.
+            let live = Set(ids)
+            if agentPath.contains(where: { !live.contains($0.sourceID) }) {
+                agentPath.removeAll { !live.contains($0.sourceID) }
+            }
         }
         .onChange(of: sessionSearch) { _, text in aggregate.updateSearchQuery(text) }
         .onChange(of: connections.connections, initial: true) { _, sources in aggregate.synchronize(sources.filter { $0.needsKindReview != true }) }
@@ -183,30 +199,42 @@ struct PhoneHubView: View {
         // line on its own: show only what differs between rows.
         let multipleSources = aggregate.sources.count > 1
         ForEach(visibleNodes) { row in
-            Button {
-                open(row.node.new_session_path, source: row.source, nodeID: row.node.id)
-            } label: {
+            let detail = ([
+                multipleSources ? row.source.name : nil,
+                row.node.status.reachable ? nil : "Offline",
+                row.node.sessions?.count_label,
+            ] as [String?]).compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            // The row opens the agent's page (new, pinned and recent
+            // conversations); the compose button keeps a one-tap new chat.
+            NavigationLink(value: PhoneHubAgentRoute(sourceID: row.source.id, nodeID: row.node.id)) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.node.name).font(.headline).foregroundStyle(.primary)
-                        Text(([
-                            multipleSources ? row.source.name : nil,
-                            row.node.status.reachable ? nil : "Offline",
-                            row.node.sessions?.count_label ?? "New conversation",
-                        ] as [String?]).compactMap { $0 }.joined(separator: " · "))
-                            .font(.subheadline).foregroundStyle(.secondary)
+                        if !detail.isEmpty {
+                            Text(detail).font(.subheadline).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
+                    Button {
+                        open(row.node.new_session_path, source: row.source, nodeID: row.node.id)
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 38, height: 38)
+                            .background(Circle().fill(Color.accentColor.opacity(0.12)))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("New conversation with \(row.node.name)")
+                    .accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id).new")
                 }
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
-            }.buttonStyle(.plain)
-                .accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id)")
-                .disabled(!row.node.status.reachable)
-                .opacity(row.node.status.reachable ? 1 : 0.5)
+            }
+            .accessibilityIdentifier("phoneHub.node.\(row.source.id.uuidString).\(row.node.id)")
+            .disabled(!row.node.status.reachable)
+            .opacity(row.node.status.reachable ? 1 : 0.5)
         }
         if visibleNodes.isEmpty { emptyPanel(.nodes) }
     }

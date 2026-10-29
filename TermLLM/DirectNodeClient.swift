@@ -891,3 +891,27 @@ extension DirectNodeClient: HubSessionSearching {
         return try await request("/v1/sessions/status?\(query)")
     }
 }
+
+extension DirectNodeClient: HubSessionBrowsing {
+    /// GET /v1/sessions — the web sidebar's listing, every project, paged.
+    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
+        try await request("/v1/sessions?\(AgentSessionQuery.percentEncoded(limit: limit, cursor: cursor))")
+    }
+
+    /// PATCH /v1/sessions/{id} — rename, archive or pin one conversation.
+    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
+        guard AgentSessionQuery.isSafeSessionID(session_id) else {
+            throw HubAPIError(status: 0, message: "Unsafe session identifier.")
+        }
+        return try await request("/v1/sessions/\(session_id.directNodePathEncoded)", method: .PATCH, body: patch)
+    }
+
+    /// PATCH /v1/sessions/pinned-order — the listed pins swap into the ranks
+    /// they already hold; the answer is the complete committed order.
+    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder {
+        guard session_ids.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
+            throw HubAPIError(status: 0, message: "Unsafe session identifier.")
+        }
+        return try await request("/v1/sessions/pinned-order", method: .PATCH, body: ["session_ids": session_ids])
+    }
+}

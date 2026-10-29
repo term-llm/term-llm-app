@@ -383,6 +383,22 @@ final class HubStore: ObservableObject {
         }
     }
 
+    /// Exact-item acknowledgement for a conversation row outside the loaded
+    /// attention window (an agent's history). Throws so the row can restore
+    /// its unseen mark; on success the attention panel and badge refresh.
+    func markSessionSeen(_ request: AttentionSeenRequest) async throws {
+        let e = epoch
+        guard !disposed, !unauthorized else { throw CancellationError() }
+        do {
+            _ = try await client.mark_attention_seen(request)
+        } catch {
+            if epochCurrent(e) { authPurgeIfNeeded(error) }
+            throw error
+        }
+        guard epochCurrent(e) else { return }
+        launchAttentionTask()
+    }
+
     var canLoadMoreAttention: Bool { attentionHasMore && attentionLimit < Self.maxAttentionLimit }
 
     func loadMoreAttention() async {
