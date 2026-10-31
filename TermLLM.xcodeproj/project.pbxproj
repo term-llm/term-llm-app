@@ -112,6 +112,7 @@
 		3AF4906EC6C114D388E8B6CA /* HubConnectionSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006BAED0E53BB0F166255F1F /* HubConnectionSecurity.swift */; };
 		69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */; };
 		DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */; };
+		0DCDE0401715B1A04E45450F /* PhoneHubAgentRowRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E73E3A7D51E463423259300 /* PhoneHubAgentRowRenderingTests.swift */; };
 		73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */; };
 		759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */; };
 		7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */; };
@@ -309,6 +310,7 @@
 		D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStoreTests.swift; sourceTree = "<group>"; };
 		E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStoreTests.swift; sourceTree = "<group>"; };
 		DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentSessionsTests.swift; sourceTree = "<group>"; };
+		3E73E3A7D51E463423259300 /* PhoneHubAgentRowRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentRowRenderingTests.swift; sourceTree = "<group>"; };
 		FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubView.swift; sourceTree = "<group>"; };
 		EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentView.swift; sourceTree = "<group>"; };
 		85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentSessions.swift; sourceTree = "<group>"; };
@@ -493,6 +495,7 @@
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
 				DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */,
+				3E73E3A7D51E463423259300 /* PhoneHubAgentRowRenderingTests.swift */,
 				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
 				A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */,
 				A11000000000000000000002 /* LinkedDevicesProtocolTests.swift */,
@@ -815,6 +818,7 @@
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
 				DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */,
+				0DCDE0401715B1A04E45450F /* PhoneHubAgentRowRenderingTests.swift in Sources */,
 				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
 				A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */,
 				A21000000000000000000002 /* LinkedDevicesProtocolTests.swift in Sources */,

@@ -472,6 +472,7 @@ struct PhoneHubAgentConversationRow: View {
     let conversation: PhoneHubAgentConversation
     let now: Date
     var showsPin = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var attention: Bool { conversation.needsInput || conversation.unseen }
     private var caption: String {
@@ -486,6 +487,12 @@ struct PhoneHubAgentConversationRow: View {
     }
     private var captionColor: Color {
         conversation.needsInput ? .orange : (conversation.running ? .accentColor : .secondary)
+    }
+    /// The time's cap height, from its exact font: `@ScaledMetric` drifts
+    /// from the real text size at accessibility sizes.
+    private var timeCapHeight: CGFloat {
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+        return UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits).capHeight
     }
 
     var body: some View {
@@ -509,7 +516,11 @@ struct PhoneHubAgentConversationRow: View {
                     Spacer(minLength: 8)
                     // Waiting on you is not work in progress.
                     if conversation.running && !conversation.needsInput {
-                        ProgressView().controlSize(.mini)
+                        ProgressView()
+                            .controlSize(.mini)
+                            // Its own baseline is its top edge, which hung it
+                            // below the line; centre it on the time instead.
+                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + timeCapHeight / 2 }
                     }
                     Text(PhoneHubAgentDateGroup.timeLabel(conversation.lastActivity, now: now, calendar: .current))
                         .font(.subheadline)
