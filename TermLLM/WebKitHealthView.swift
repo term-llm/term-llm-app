@@ -30,10 +30,12 @@ struct WebKitHealthView: View {
     let onReload: () -> Void
     @State private var copied = false
     @State private var sharing: SharedReport?
+    @State private var exportURL: URL?
+    @State private var exportFailed = false
 
     private struct SharedReport: Identifiable {
         let id = UUID()
-        let text: String
+        let url: URL
     }
 
     var body: some View {
@@ -116,20 +118,26 @@ struct WebKitHealthView: View {
                         .accessibilityIdentifier("webKitHealth.pause")
                 }
                 Button {
-                    sharing = SharedReport(text: monitor.report())
+                    do {
+                        let url = try WebKitHealthReport.writeFile(monitor.report())
+                        exportURL = url
+                        sharing = SharedReport(url: url)
+                    } catch {
+                        exportFailed = true
+                    }
                 } label: {
-                    Label("Share report", systemImage: "square.and.arrow.up")
+                    Label("Share full report (.txt)", systemImage: "square.and.arrow.up")
                 }
                 .accessibilityIdentifier("webKitHealth.share")
                 Button {
-                    UIPasteboard.general.string = monitor.report()
+                    UIPasteboard.general.string = monitor.report(compact: true)
                     copied = true
                 } label: {
-                    Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    Label(copied ? "Copied" : "Copy for diagnosis", systemImage: copied ? "checkmark" : "doc.on.doc")
                 }
                 .accessibilityIdentifier("webKitHealth.copy")
             } footer: {
-                Text("Pausing closes the chat page and its web process. About 40 s later (or when it is reopened) the history notes whether device CPU dropped while it was closed, which shows whether WebKit was the cause. Reports contain only measurements and code names, never page content or addresses.")
+                Text("Copy for diagnosis gives an agent a compact, selected report to paste into chat. Share full report exports the complete retained detail as a .txt file. Pausing closes the chat page and its web process. About 40 s later (or when it is reopened) the history notes whether device CPU dropped while it was closed, which shows whether WebKit was the cause. Reports contain only measurements and code names, never page content or addresses.")
             }
 
             Section {
@@ -160,8 +168,18 @@ struct WebKitHealthView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { monitor.detailed = true }
         .onDisappear { monitor.detailed = false }
-        .sheet(item: $sharing) { report in
-            ActivitySheet(items: [report.text])
+        .alert("Could not create report", isPresented: $exportFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Try again, or use Copy for diagnosis.")
+        }
+        .sheet(item: $sharing, onDismiss: {
+            if let exportURL {
+                try? FileManager.default.removeItem(at: exportURL.deletingLastPathComponent())
+                self.exportURL = nil
+            }
+        }) { report in
+            ActivitySheet(items: [report.url])
                 .ignoresSafeArea()
         }
     }

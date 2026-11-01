@@ -20,7 +20,7 @@ private func native(_ uptime: TimeInterval, app: Double? = 0.05, device: Double?
     NativeHealthSample(uptime: uptime, date: Date(timeIntervalSinceReferenceDate: 800_000_040 + uptime),
                        appCPU: app, deviceCPU: device, cpuCount: 6, wakeupsPerSecond: 3, footprintMB: 80,
                        thermal: thermal, lowPower: false, batteryLevel: 0.5, charging: false,
-                       appActive: true, appBackground: false)
+                       appActive: true, appBackground: false, cpuInterval: 5)
 }
 
 final class WebKitHealthPolicyTests: XCTestCase {
@@ -280,6 +280,93 @@ final class WebKitHealthHistoryTests: XCTestCase {
         XCTAssertFalse(text.contains("http"))
     }
 
+    func testAgentReportIncludesOldEvidencePeaksFreshnessAndSamplingLimits() {
+        var status = WebKitHealthStatus()
+        status.lastReportAge = 93
+        var accumulator = MinuteAccumulator()
+        _ = accumulator.add(native(0, app: 0.9), chatOnScreen: false, webViews: 1)
+        let minute = accumulator.add(native(65), chatOnScreen: false, webViews: 1)!
+        let events = (0..<100).map {
+            WebKitHealthEvent(date: Date(), kind: "native-cpu", message: "evidence-\($0)")
+        }
+        let text = WebKitHealthReport.make(status: status, events: events, minutes: [minute],
+                                          natives: [native(0), native(65)], probeEnabled: true, autoStop: true,
+                                          now: Date(), device: "iPhone", app: "1.0")
+        XCTAssertTrue(text.contains("Report schema: 2"))
+        XCTAssertTrue(text.contains("Page report age: 93 s"))
+        XCTAssertTrue(text.contains("evidence-0"), "do not drop an older CPU incident at the old 80-event export limit")
+        XCTAssertTrue(text.contains("| 90 0.30 80"), text)
+        XCTAssertTrue(text.contains("| 65.0 65.0 5.0 true false 80 normal"), text)
+        XCTAssertTrue(text.contains("not time-weighted"))
+        XCTAssertTrue(text.contains("not a stack trace"))
+        XCTAssertTrue(text.contains("Findings (current only):"))
+    }
+
+    func testCompactReportSelectsWorstCPURecoveryAndDeduplicatesNoise() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        var events = [
+            WebKitHealthEvent(date: date, kind: "native-cpu", message: "app 80%; threads main#42 70%"),
+            WebKitHealthEvent(date: date.addingTimeInterval(5), kind: "native-cpu", message: "CPU episode ended at app 5%; peak 150%. worst-recovery"),
+            WebKitHealthEvent(date: date.addingTimeInterval(10), kind: "stop", message: "Paused page"),
+            WebKitHealthEvent(date: date.addingTimeInterval(15), kind: "effect", message: "After closing: CPU unchanged")
+        ]
+        events += (0..<200).map {
+            WebKitHealthEvent(date: date.addingTimeInterval(Double(20 + $0)), kind: "app", message: "Returned to foreground.")
+        }
+        events.append(WebKitHealthEvent(date: date.addingTimeInterval(230), kind: "native-cpu", message: "app 40%; threads worker#43 35%"))
+        let compact = WebKitHealthReport.make(status: WebKitHealthStatus(), events: events, minutes: [], natives: [],
+                                             probeEnabled: true, autoStop: true, now: date, device: "iPhone", app: "1.0", compact: true)
+        XCTAssertTrue(compact.contains("worst-recovery"), compact)
+        XCTAssertTrue(compact.contains("main#42 70%"))
+        XCTAssertTrue(compact.contains("After closing: CPU unchanged"))
+        XCTAssertTrue(compact.contains("(x200 identical)"))
+        XCTAssertEqual(compact.components(separatedBy: "Returned to foreground.").count - 1, 1)
+        XCTAssertTrue(compact.contains("Selection is lossy"))
+        XCTAssertTrue(compact.contains("no stacks"))
+        XCTAssertTrue(compact.contains("Current findings: none"))
+        XCTAssertFalse(compact.contains("Samples (retained"))
+    }
+
+    func testCompactReportIsMuchSmallerButKeepsPeakAndBoundaryMinutes() {
+        var accumulator = MinuteAccumulator()
+        var minutes: [WebKitHealthMinute] = []
+        for index in 0...360 {
+            if let minute = accumulator.add(native(Double(index * 60), app: index == 50 ? 0.95 : 0.05),
+                                            chatOnScreen: index < 100, webViews: 1) {
+                minutes.append(minute)
+            }
+        }
+        let events = (0..<300).map {
+            WebKitHealthEvent(date: Date(timeIntervalSince1970: Double($0)), kind: "app", message: "Returned to foreground.")
+        }
+        let samples = (0..<360).map { native(Double($0 * 5)) }
+        let compact = WebKitHealthReport.make(status: WebKitHealthStatus(), events: events, minutes: minutes,
+                                             natives: samples, probeEnabled: true, autoStop: true, now: Date(),
+                                             device: "iPhone", app: "1.0", compact: true)
+        let full = WebKitHealthReport.make(status: WebKitHealthStatus(), events: events, minutes: minutes,
+                                          natives: samples, probeEnabled: true, autoStop: true, now: Date(), device: "iPhone", app: "1.0")
+        XCTAssertTrue(compact.contains("95/95"), compact)
+        XCTAssertTrue(compact.contains(minutes[0].start.ISO8601Format()))
+        XCTAssertTrue(compact.contains(minutes[359].start.ISO8601Format()))
+        XCTAssertTrue(full.contains(minutes[0].start.formatted(.dateTime.hour().minute().second())), full)
+        XCTAssertLessThan(compact.count, 16_000)
+        XCTAssertLessThan(compact.count * 5, full.count, "representative long history should shrink by at least 80%")
+    }
+
+    func testFullReportFileIsUTF8AndOwnsAnIsolatedDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let text = "term-llm health\nthermal warm → normal\nthreads main#42 70%\n"
+        let first = try WebKitHealthReport.writeFile(text, directory: root)
+        let second = try WebKitHealthReport.writeFile("second", directory: root)
+        XCTAssertEqual(first.pathExtension, "txt")
+        XCTAssertEqual(try String(contentsOf: first, encoding: .utf8), text)
+        XCTAssertNotEqual(first.deletingLastPathComponent(), second.deletingLastPathComponent())
+        try FileManager.default.removeItem(at: first.deletingLastPathComponent())
+        XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "second")
+        XCTAssertThrowsError(try WebKitHealthReport.writeFile("blocked", directory: second))
+    }
+
     /// Opening diagnostics hides Chat, so the report keeps what the page did on screen.
     func testReportKeepsTheLastOnScreenActivityOnceChatIsHidden() {
         var status = WebKitHealthStatus()
@@ -298,6 +385,77 @@ final class WebKitHealthHistoryTests: XCTestCase {
 final class WebKitHealthMonitorTests: XCTestCase {
     private func monitor() -> WebKitHealthMonitor {
         WebKitHealthMonitor(defaults: UserDefaults(suiteName: "WebKitHealthTests-\(UUID().uuidString)")!, journal: nil)
+    }
+
+    func testRealSamplerReportsCounterIntervalAndThreadIdentities() throws {
+        let sampler = ProcessUsageSampler()
+        let first = sampler.sample(uptime: 10, appActive: true, appBackground: false)
+        XCTAssertNil(first.cpuInterval)
+        let tooSoon = sampler.sample(uptime: 10.2, appActive: true, appBackground: false)
+        XCTAssertNil(tooSoon.cpuInterval)
+        let next = sampler.sample(uptime: 11, appActive: true, appBackground: false)
+        XCTAssertEqual(next.cpuInterval, 1)
+        XCTAssertNotNil(next.appCPU)
+        let threads = ProcessUsageSampler.busiestThreads(limit: 128, minimum: 0)
+        let main = try XCTUnwrap(threads.first { $0.name == "main" || $0.name.hasPrefix("main:") })
+        XCTAssertNotNil(main.threadID)
+        XCTAssertEqual(Set(threads.compactMap(\.threadID)).count, threads.count)
+    }
+
+    func testCPUEvidenceSurvivesRecoveryAndIsRateLimited() {
+        let monitor = monitor()
+        let threads = [ThreadUsage(name: "main", cpu: 0.65, threadID: 42)]
+        for time in stride(from: 0.0, through: 65, by: 5) {
+            monitor.tick(now: time, native: native(time, app: time == 5 ? 0.95 : 0.8), threadUsage: threads)
+        }
+        let evidence = monitor.events.filter { $0.kind == "native-cpu" }
+        XCTAssertEqual(evidence.count, 3, "first sample, 30 s, 60 s")
+        XCTAssertEqual(evidence.first?.date, native(0).date)
+        XCTAssertTrue(evidence[0].message.contains("main#42 65%"))
+        XCTAssertTrue(evidence[0].message.contains("no chat page"))
+        XCTAssertTrue(evidence[0].message.contains("over 5.0 s"))
+        XCTAssertTrue(evidence[1].message.contains("episode peak 95%"))
+        monitor.tick(now: 70, native: native(70, app: nil), threadUsage: [])
+        XCTAssertEqual(monitor.events.filter { $0.kind == "native-cpu" }.count, 3, "missing CPU is not recovery")
+        monitor.tick(now: 75, native: native(75), threadUsage: [])
+        let text = monitor.report()
+        XCTAssertTrue(text.contains("CPU episode ended at app 5%; observed span 75 s, peak 95%"), text)
+        XCTAssertTrue(text.contains("main#42 65%"), "historical threads remain after current threads disappear")
+        monitor.tick(now: 80, native: native(80, app: 0.4), threadUsage: [])
+        XCTAssertEqual(monitor.events.filter { $0.kind == "native-cpu" }.count, 5, "new episode captures immediately")
+        monitor.clearHistory()
+        monitor.tick(now: 85, native: native(85, app: 0.4), threadUsage: [])
+        XCTAssertEqual(monitor.events.filter { $0.kind == "native-cpu" }.count, 1)
+    }
+
+    func testCPUEvidenceIncludesStalePageAndProtectedWork() {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = {
+            WebKitPageContext(userCanSee: false, inWindow: false, viewHidden: true,
+                              capturing: true, voiceLaunching: true, toolCalls: 2)
+        }
+        monitor.record(report(["vis": "hidden"]), from: session, now: 0)
+        monitor.tick(now: 90, native: native(90, app: 0.7), threadUsage: [])
+        let evidence = monitor.events.first { $0.kind == "native-cpu" }?.message ?? ""
+        XCTAssertTrue(evidence.contains("page report age 90 s"), evidence)
+        XCTAssertTrue(evidence.contains("isHidden true"), evidence)
+        XCTAssertTrue(evidence.contains("voiceLaunching true, toolCalls 2"), evidence)
+        XCTAssertTrue(evidence.contains("none above 3% or unavailable"), evidence)
+        withExtendedLifetime(web) {}
+    }
+
+    func testCPUEvidenceUsesExistingPersistentJournal() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = WebKitHealthJournal(directory: directory)
+        let monitor = WebKitHealthMonitor(defaults: UserDefaults(suiteName: "HealthCPU-\(UUID().uuidString)")!, journal: journal)
+        monitor.tick(now: 5, native: native(5, app: 0.8), threadUsage: [ThreadUsage(name: "main", cpu: 0.7, threadID: 99)])
+        let events: [WebKitHealthEvent] = await withCheckedContinuation { continuation in
+            journal.load { events, _ in continuation.resume(returning: events) }
+        }
+        XCTAssertTrue(events.contains { $0.kind == "native-cpu" && $0.message.contains("main#99 70%") })
     }
 
     private final class Stops { var reasons: [WebKitTeardownReason] = [] }

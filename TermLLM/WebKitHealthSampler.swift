@@ -21,6 +21,8 @@ struct NativeHealthSample: Equatable, Sendable {
     let charging: Bool?
     let appActive: Bool
     let appBackground: Bool
+    /// Elapsed uptime used by the app CPU counter delta, including suspension.
+    var cpuInterval: TimeInterval? = nil
 
     /// CPU used by other processes: WebKit's processes, the render server and iOS daemons.
     var otherCPU: Double? {
@@ -33,6 +35,9 @@ struct ThreadUsage: Equatable, Sendable, Codable {
     let name: String
     /// Fraction of one core (recent, decaying), 1.0 = 100%.
     let cpu: Double
+    /// Stable within this process lifetime, unlike a Mach port name.
+    var threadID: UInt64? = nil
+    var label: String { threadID.map { "\(name)#\($0)" } ?? name }
 }
 
 /// Reads public Mach/BSD counters. Each call costs a few system calls.
@@ -52,9 +57,11 @@ final class ProcessUsageSampler {
     func sample(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime, date: Date = Date(),
                 appActive: Bool, appBackground: Bool) -> NativeHealthSample {
         var appCPU: Double?
+        var cpuInterval: TimeInterval?
         if let seconds = Self.processCPUSeconds() {
             if let previous = previousCPU {
                 if uptime - previous.uptime >= Self.minimumInterval {
+                    cpuInterval = uptime - previous.uptime
                     appCPU = max(0, seconds - previous.seconds) / (uptime - previous.uptime)
                     previousCPU = (uptime, seconds)
                 }
@@ -101,7 +108,7 @@ final class ProcessUsageSampler {
             wakeupsPerSecond: wakeups, footprintMB: Self.footprintBytes().map { Double($0) / 1_048_576 },
             thermal: ProcessInfo.processInfo.thermalState, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryLevel: level >= 0 ? level : nil, charging: charging,
-            appActive: appActive, appBackground: appBackground)
+            appActive: appActive, appBackground: appBackground, cpuInterval: cpuInterval)
     }
 
     /// User + system CPU of every thread this process has run, including exited ones.
@@ -183,7 +190,15 @@ final class ProcessUsageSampler {
             }
             name = WebKitHealthProbe.token(name, limit: 48, allowingSpaces: true) ?? ""
             if list[index] == main { name = name.isEmpty ? "main" : "main:" + name }
-            result.append(ThreadUsage(name: name.isEmpty ? "unnamed" : name, cpu: usage))
+            var identity = thread_identifier_info_data_t()
+            var identityCount = mach_msg_type_number_t(MemoryLayout<thread_identifier_info_data_t>.size / MemoryLayout<natural_t>.size)
+            let identityStatus = withUnsafeMutablePointer(to: &identity) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(identityCount)) {
+                    thread_info(list[index], thread_flavor_t(THREAD_IDENTIFIER_INFO), $0, &identityCount)
+                }
+            }
+            result.append(ThreadUsage(name: name.isEmpty ? "unnamed" : name, cpu: usage,
+                                      threadID: identityStatus == KERN_SUCCESS ? identity.thread_id : nil))
         }
         return Array(result.sorted { $0.cpu > $1.cpu }.prefix(limit))
     }
