@@ -1,0 +1,421 @@
+import WebKit
+import XCTest
+@testable import TermLLM
+
+/// Builds probe reports through the real parser, as the bridge does.
+private func report(_ fields: [String: Any] = [:]) -> WebPageHealthSample {
+    var body: [String: Any] = ["v": WebKitHealthProbe.version, "doc": "doc-1", "seq": 0, "span": 5_000, "vis": "hidden"]
+    body.merge(fields) { $1 }
+    return WebKitHealthProbe.parse(body)!
+}
+
+private func reports(every step: TimeInterval = 5, from start: TimeInterval, through end: TimeInterval,
+                     _ fields: [String: Any]) -> [TimedPageSample] {
+    stride(from: start, through: end, by: step).map { TimedPageSample(uptime: $0, sample: report(fields)) }
+}
+
+private func native(_ uptime: TimeInterval, app: Double? = 0.05, device: Double? = 0.3,
+                    thermal: ProcessInfo.ThermalState = .nominal) -> NativeHealthSample {
+    // 800_000_040 s after the reference date starts a minute.
+    NativeHealthSample(uptime: uptime, date: Date(timeIntervalSinceReferenceDate: 800_000_040 + uptime),
+                       appCPU: app, deviceCPU: device, cpuCount: 6, wakeupsPerSecond: 3, footprintMB: 80,
+                       thermal: thermal, lowPower: false, batteryLevel: 0.5, charging: false,
+                       appActive: true, appBackground: false)
+}
+
+final class WebKitHealthPolicyTests: XCTestCase {
+    private let policy = WebKitHealthPolicy()
+    private let offScreen = WebKitPageContext(userCanSee: false)
+
+    private func verdict(now: TimeInterval, context: WebKitPageContext? = nil, hiddenSince: TimeInterval? = 0,
+                         visibleSince: TimeInterval? = nil, lastSampleAt: TimeInterval? = nil, armed: Bool = true,
+                         samples: [TimedPageSample] = [], thermal: ProcessInfo.ThermalState = .nominal,
+                         outside: Double? = nil) -> WebKitHealthPolicy.Verdict {
+        policy.verdict(.init(now: now, context: context ?? offScreen, hiddenSince: hiddenSince, visibleSince: visibleSince,
+                             lastSampleAt: lastSampleAt ?? samples.last?.uptime, armed: armed, samples: samples,
+                             thermal: thermal, outsideAppCPU: outside))
+    }
+
+    private func stopReason(_ verdict: WebKitHealthPolicy.Verdict) -> WebKitTeardownReason? {
+        if case .teardown(let reason, _) = verdict { return reason }
+        return nil
+    }
+
+    func testOffScreenPageThatKeepsDrawingIsStoppedAfterGraceAndWindow() {
+        // WebKit still runs it as visible: 60 frames/s off screen.
+        let drawing = reports(from: 5, through: 150, ["vis": "visible", "frames": 300])
+        XCTAssertEqual(verdict(now: 50, samples: drawing.filter { $0.uptime <= 50 }), .healthy, "inside the grace period")
+        XCTAssertEqual(verdict(now: 90, samples: drawing.filter { $0.uptime <= 90 }), .healthy, "not active for long enough yet")
+        guard case .teardown(.hiddenActivity, let detail) = verdict(now: 150, samples: drawing) else {
+            return XCTFail("a page drawing off screen for two minutes must be stopped")
+        }
+        XCTAssertTrue(detail.contains("60 frames/s"), detail)
+    }
+
+    func testOccasionalActivityIsNotARunaway() {
+        let mixed = stride(from: 5.0, through: 150, by: 5).map { time in
+            TimedPageSample(uptime: time, sample: report(Int(time) % 10 == 0 ? ["vis": "visible", "frames": 300] : [:]))
+        }
+        XCTAssertEqual(verdict(now: 150, samples: mixed), .healthy)
+    }
+
+    func testHiddenPageDOMChangesAloneDoNotStopIt() {
+        // A response that offers device tools keeps streaming into a hidden page.
+        let streaming = reports(from: 5, through: 180, ["vis": "hidden", "mutations": 200, "mutMs": 1_000])
+        XCTAssertEqual(verdict(now: 180, samples: streaming), .healthy)
+        // The same changes in a page WebKit renders as visible off screen do count.
+        let rendered = reports(from: 5, through: 180, ["vis": "visible", "mutations": 200, "mutMs": 1_000])
+        XCTAssertEqual(stopReason(verdict(now: 180, samples: rendered)), .hiddenActivity)
+    }
+
+    func testHiddenPagePollingOrRunningAudioIsStopped() {
+        let polling = reports(from: 5, through: 180, ["resources": 10])
+        XCTAssertEqual(stopReason(verdict(now: 180, samples: polling)), .hiddenActivity)
+        let audio = reports(from: 5, through: 180, ["audio": 1, "audioTotal": 1])
+        XCTAssertEqual(stopReason(verdict(now: 180, samples: audio)), .hiddenActivity)
+    }
+
+    func testCallsVoiceLaunchesToolRepliesSignInAndPlayingMediaAreProtected() {
+        let audio = reports(from: 5, through: 180, ["audio": 1, "audioTotal": 1, "vis": "visible", "frames": 300])
+        for context in [WebKitPageContext(capturing: true), WebKitPageContext(voiceLaunching: true),
+                        WebKitPageContext(toolCalls: 1), WebKitPageContext(signingIn: true)] {
+            XCTAssertEqual(verdict(now: 180, context: context, samples: audio), .healthy, "\(context)")
+        }
+        let playing = reports(from: 5, through: 180, ["vis": "visible", "frames": 300, "media": 1])
+        XCTAssertEqual(verdict(now: 180, samples: playing), .healthy, "page media may be what the user listens to")
+    }
+
+    func testOnScreenPageIsNeverStoppedForActivity() {
+        let drawing = reports(from: 5, through: 180, ["vis": "visible", "frames": 300, "audio": 1])
+        XCTAssertEqual(verdict(now: 180, context: WebKitPageContext(userCanSee: true), hiddenSince: nil,
+                               visibleSince: 0, samples: drawing), .healthy)
+    }
+
+    func testHotPhoneStopsOnlyAnAwakeOffScreenPage() {
+        let awake = reports(from: 5, through: 30, [:])
+        XCTAssertEqual(stopReason(verdict(now: 40, samples: awake, thermal: .serious)), .thermal)
+        XCTAssertEqual(stopReason(verdict(now: 40, samples: awake, thermal: .critical)), .thermal)
+        XCTAssertEqual(verdict(now: 40, samples: awake, thermal: .fair), .healthy)
+        XCTAssertEqual(verdict(now: 20, samples: reports(from: 5, through: 20, [:]), thermal: .serious), .healthy,
+                       "inside the thermal grace")
+        XCTAssertEqual(verdict(now: 100, samples: awake, thermal: .serious), .healthy,
+                       "a page that stopped reporting is suspended, not the cause")
+        XCTAssertEqual(verdict(now: 40, hiddenSince: 0, samples: [], thermal: .serious), .healthy)
+    }
+
+    func testSilentOnScreenPageIsStoppedOnlyWhileThePhoneStaysBusy() {
+        let onScreen = WebKitPageContext(userCanSee: true)
+        func silent(_ now: TimeInterval, context: WebKitPageContext = onScreen, armed: Bool = true,
+                    outside: Double?) -> WebKitHealthPolicy.Verdict {
+            verdict(now: now, context: context, hiddenSince: nil, visibleSince: 0, lastSampleAt: 0, armed: armed,
+                    outside: outside)
+        }
+        XCTAssertEqual(silent(10, outside: 2), .healthy)
+        XCTAssertEqual(silent(20, outside: 2), .stalled(20))
+        XCTAssertEqual(stopReason(silent(50, outside: 1.2)), .unresponsive, "an endless loop burns a core")
+        XCTAssertEqual(silent(50, outside: 0.1), .stalled(50), "paused in Web Inspector or deadlocked: costs nothing")
+        XCTAssertEqual(silent(50, outside: nil), .stalled(50), "no evidence without device counters")
+        XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, loading: true), outside: 2), .healthy)
+        XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, signingIn: true), outside: 2), .stalled(50))
+        XCTAssertEqual(silent(50, armed: false, outside: 2), .healthy, "no probe, no heartbeat to miss")
+        // Silence is counted from when the page came on screen, not its last hidden report.
+        XCTAssertEqual(verdict(now: 100, context: onScreen, hiddenSince: nil, visibleSince: 90, lastSampleAt: 0,
+                               outside: 2), .healthy)
+    }
+}
+
+final class WebKitHealthProbeParsingTests: XCTestCase {
+    func testParsesAReportAndKeepsOnlyCodeNames() throws {
+        let sample = try XCTUnwrap(WebKitHealthProbe.parse([
+            "v": WebKitHealthProbe.version, "doc": "abc-123", "seq": 4, "span": 5_000, "vis": "visible",
+            "hidden": 1_000, "ticks": 5, "late": 9_999, "maxLate": 700, "frames": 120, "frameMs": 30,
+            "mutations": 40, "mutMs": 1_000, "resources": 2, "longTasks": -1, "dom": 1_234, "running": 3,
+            "anims": [["name": "spin", "target": "div.spinner::before", "props": ["transform"], "infinite": true,
+                       "composited": true],
+                      ["name": "Read secret https://x.example/?q=1", "target": "p", "props": ["color"]]],
+            "audio": 1, "audioTotal": 2, "tracks": 1, "peers": 0, "sockets": 1, "sources": 0, "media": 0, "probe": 2.5,
+        ]))
+        XCTAssertEqual(sample.documentID, "abc-123")
+        XCTAssertTrue(sample.isVisible)
+        XCTAssertEqual(sample.lateMilliseconds, 5_000, "clamped to the span")
+        XCTAssertEqual(sample.busyFraction, 1)
+        XCTAssertEqual(sample.framesPerSecond, 24)
+        XCTAssertEqual(sample.mutationsPerSecond, 40, "per counted second, not per span")
+        XCTAssertEqual(sample.resourcesPerMinute, 24)
+        XCTAssertNil(sample.longTasks)
+        XCTAssertEqual(sample.domNodes, 1_234)
+        XCTAssertEqual(sample.animations.first, .init(name: "spin", target: "div.spinner::before",
+                                                      properties: ["transform"], infinite: true, composited: true))
+        XCTAssertEqual(sample.animations.last?.name, "Read?secret?https:??x.example??q?1",
+                       "free text can only pass as code-name characters")
+        XCTAssertEqual(sample.repaintingAnimations.count, 1)
+        XCTAssertEqual(sample.probeShare, 0.0005, accuracy: 1e-9)
+    }
+
+    func testRejectsMalformedOrForeignReports() {
+        XCTAssertNil(WebKitHealthProbe.parse("text"))
+        XCTAssertNil(WebKitHealthProbe.parse(["v": 1, "doc": "a", "span": 5_000]), "old probe version")
+        XCTAssertNil(WebKitHealthProbe.parse(["v": WebKitHealthProbe.version, "span": 5_000]), "no document")
+        XCTAssertNil(WebKitHealthProbe.parse(["v": WebKitHealthProbe.version, "doc": "a", "span": 0]))
+        XCTAssertNil(WebKitHealthProbe.parse(["v": WebKitHealthProbe.version, "doc": "a", "span": true]))
+        let odd = WebKitHealthProbe.parse(["v": WebKitHealthProbe.version, "doc": "a", "span": 5_000, "vis": "sneaky",
+                                           "frames": -5, "audio": 1e9, "mutations": "many"])
+        XCTAssertEqual(odd?.visibility, "unknown")
+        XCTAssertEqual(odd?.frames, 0)
+        XCTAssertEqual(odd?.audioContextsRunning, 64)
+        XCTAssertEqual(odd?.mutations, 0)
+    }
+
+    /// The probe reports counts and code names only: it must never read page
+    /// text, form values, titles, addresses, cookies or storage.
+    func testProbeNeverReadsPageContent() {
+        let script = WebKitHealthProbe.script(origin: "https://example.com")
+        for forbidden in ["innerText", "textContent", "innerHTML", "outerHTML", "document.title",
+                          "location.href", "document.URL", "cookie", "localStorage", "sessionStorage", "fetch("] {
+            XCTAssertFalse(script.contains(forbidden), forbidden)
+        }
+        XCTAssertNil(script.range(of: #"\.value(?![A-Za-z])"#, options: .regularExpression), "form values")
+        XCTAssertTrue(script.contains("location.origin !== ORIGIN"))
+    }
+}
+
+final class WebKitHealthFindingsTests: XCTestCase {
+    private func evaluate(context: WebKitPageContext, samples: [TimedPageSample], hiddenSince: TimeInterval? = nil,
+                          natives: [NativeHealthSample] = [], alive: Int = 1, now: TimeInterval = 60) -> Set<String> {
+        let page = WebKitHealthFindings.Page(context: context, samples: samples, hiddenSince: hiddenSince, verdict: .healthy)
+        return Set(WebKitHealthFindings.evaluate(natives: natives, page: page, threads: [], webViewsAlive: alive,
+                                                 pages: 1, now: now).map(\.id))
+    }
+
+    func testExplainsAnOnScreenPageThatKeepsTheCPUBusy() {
+        let busy = reports(from: 30, through: 60, ["vis": "visible", "frames": 300, "late": 3_000, "running": 2,
+                                                   "anims": [["name": "paint", "target": "div", "props": ["background-position"]]]])
+        let ids = evaluate(context: WebKitPageContext(userCanSee: true), samples: busy)
+        XCTAssertEqual(ids, ["frames", "busy", "animations"])
+    }
+
+    func testFlagsAnOffScreenPageWebKitStillRunsAsVisible() {
+        let ids = evaluate(context: WebKitPageContext(userCanSee: false, inWindow: true, viewHidden: true),
+                           samples: reports(from: 30, through: 60, ["vis": "visible"]), hiddenSince: 20)
+        XCTAssertTrue(ids.contains("visibility"))
+        XCTAssertFalse(evaluate(context: WebKitPageContext(userCanSee: false),
+                                samples: reports(from: 30, through: 60, ["vis": "hidden"]), hiddenSince: 20)
+            .contains("visibility"))
+    }
+
+    func testSeparatesAppCPUFromOtherProcessesAndLeakedViews() {
+        let natives = stride(from: 0.0, through: 60, by: 5).map { native($0, app: 0.8, device: 3) }
+        let ids = evaluate(context: WebKitPageContext(userCanSee: true), samples: [], natives: natives, alive: 2)
+        XCTAssertEqual(ids, ["app-cpu", "other-cpu", "web-views"])
+    }
+
+    func testAudioWithoutACallButNotDuringOne() {
+        let audio = reports(from: 30, through: 60, ["audio": 1, "audioTotal": 1])
+        XCTAssertTrue(evaluate(context: WebKitPageContext(userCanSee: true), samples: audio).contains("audio"))
+        XCTAssertFalse(evaluate(context: WebKitPageContext(userCanSee: true, capturing: true), samples: audio).contains("audio"))
+    }
+}
+
+final class WebKitHealthHistoryTests: XCTestCase {
+    func testMinuteSummaryUsesCountedTimeAndMeasuresItsOwnCost() throws {
+        var accumulator = MinuteAccumulator()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        func add(_ uptime: TimeInterval, cost: UInt64) -> WebKitHealthMinute? {
+            accumulator.add(native(uptime, app: 0.1, device: 1), chatOnScreen: true, webViews: 1,
+                            monitorNanoseconds: cost, calendar: calendar)
+        }
+        XCTAssertNil(add(5, cost: 0))
+        accumulator.add(report(["vis": "visible", "frames": 50, "mutations": 30, "mutMs": 1_000, "probe": 1]))
+        accumulator.add(report(["vis": "visible", "frames": 50, "mutations": 10, "mutMs": 1_000, "probe": 1]))
+        XCTAssertNil(add(35, cost: 3_000_000))
+        let minute = try XCTUnwrap(add(65, cost: 3_500_000))
+        XCTAssertEqual(minute.app ?? 0, 0.1, accuracy: 1e-9)
+        XCTAssertEqual(minute.device ?? 0, 1, accuracy: 1e-9)
+        XCTAssertEqual(minute.pageReports, 2)
+        XCTAssertEqual(minute.fps ?? 0, 10, accuracy: 1e-9)
+        XCTAssertEqual(minute.mutations ?? 0, 20, accuracy: 1e-9, "40 changes over 2 counted seconds")
+        XCTAssertEqual(minute.probe ?? 0, 0.0002, accuracy: 1e-9, "2 ms over 10 s")
+        XCTAssertEqual(minute.monitor ?? 0, 0.0001, accuracy: 1e-9, "3 ms over 30 s")
+        XCTAssertEqual(minute.chatOnScreen, 1)
+    }
+
+    func testJournalSurvivesRelaunchAndClears() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("WebKitHealth-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = WebKitHealthJournal(directory: directory)
+        journal.append(event: WebKitHealthEvent(date: Date(), kind: "stop", message: "Stopped"))
+        journal.append(event: WebKitHealthEvent(date: Date(), kind: "effect", message: "Dropped"))
+        journal.append(minute: WebKitHealthMinute(start: Date(), thermal: 2, foreground: 1, chatOnScreen: 0,
+                                                  pageReports: 3, webViews: 1, probe: 0.0001))
+        let reopened = WebKitHealthJournal(directory: directory)
+        let loaded = await withCheckedContinuation { continuation in
+            // Same queue order is not shared across instances: load after the writes land.
+            journal.load { _, _ in
+                reopened.load { events, minutes in continuation.resume(returning: (events, minutes)) }
+            }
+        }
+        XCTAssertEqual(loaded.0.map(\.kind), ["stop", "effect"])
+        XCTAssertEqual(loaded.1.first?.thermal, 2)
+        XCTAssertEqual(loaded.1.first?.probe, 0.0001)
+        journal.clear()
+        let cleared = await withCheckedContinuation { continuation in
+            journal.load { events, minutes in continuation.resume(returning: events.count + minutes.count) }
+        }
+        XCTAssertEqual(cleared, 0)
+    }
+
+    func testReportCarriesMeasurementsNotAddresses() {
+        var status = WebKitHealthStatus()
+        status.native = native(10)
+        status.latest = report(["vis": "visible", "frames": 300])
+        status.monitorShare = 0.00002
+        status.probeShare = 0.0001
+        let text = WebKitHealthReport.make(status: status, events: [WebKitHealthEvent(date: Date(), kind: "stop", message: "Stopped")],
+                                           minutes: [], natives: [native(10)], probeEnabled: true, autoStop: true,
+                                           now: Date(), device: "iPhone17,1 iOS 26.1", app: "1.0 (1)")
+        XCTAssertTrue(text.contains("Monitor cost: app 0.002% of a core since launch, page probe 0.010% (this page, up to 10 min)"), text)
+        XCTAssertTrue(text.contains("60.0 frames/s"))
+        XCTAssertFalse(text.contains("Last on-screen report"), "the latest report is already the on-screen one")
+        XCTAssertFalse(text.contains("http"))
+    }
+
+    /// Opening diagnostics hides Chat, so the report keeps what the page did on screen.
+    func testReportKeepsTheLastOnScreenActivityOnceChatIsHidden() {
+        var status = WebKitHealthStatus()
+        status.latest = report(["vis": "hidden"])
+        status.lastOnScreen = report(["vis": "visible", "frames": 300, "running": 1,
+                                      "anims": [["name": "shimmer", "target": "div.row", "props": ["background-position-x"]]]])
+        status.lastOnScreenAge = 12
+        let text = WebKitHealthReport.make(status: status, events: [], minutes: [], natives: [], probeEnabled: true,
+                                           autoStop: true, now: Date(), device: "iPhone", app: "1.0 (1)")
+        XCTAssertTrue(text.contains("Last on-screen report (12 s ago): busy 0%, 60.0 frames/s, 1 running animations"), text)
+        XCTAssertTrue(text.contains("shimmer on div.row [background-position-x] REPAINTS"), text)
+    }
+}
+
+@MainActor
+final class WebKitHealthMonitorTests: XCTestCase {
+    private func monitor() -> WebKitHealthMonitor {
+        WebKitHealthMonitor(defaults: UserDefaults(suiteName: "WebKitHealthTests-\(UUID().uuidString)")!, journal: nil)
+    }
+
+    private final class Stops { var reasons: [WebKitTeardownReason] = [] }
+
+    private func drive(_ monitor: WebKitHealthMonitor, until end: TimeInterval) -> Stops {
+        let stops = Stops()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: false) }
+        session.onTeardown = { reason, _ in stops.reasons.append(reason) }
+        for time in stride(from: 0.0, through: end, by: 5) {
+            monitor.record(report(["vis": "visible", "frames": 300, "seq": Int(time)]), from: session, now: time)
+            monitor.tick(now: time, native: native(time))
+        }
+        withExtendedLifetime(web) {}
+        return stops
+    }
+
+    func testStopsARunawayOffScreenPageOnceAndRecordsWhy() {
+        let monitor = monitor()
+        let stops = drive(monitor, until: 240)
+        XCTAssertEqual(stops.reasons, [.hiddenActivity])
+        let kinds = monitor.events.map(\.kind)
+        XCTAssertTrue(kinds.contains("visibility"), "\(kinds)")
+        XCTAssertEqual(kinds.filter { $0 == "stop" }.count, 1)
+        XCTAssertTrue(kinds.contains("effect"), "records whether closing the page changed device CPU")
+    }
+
+    func testEffectCoversOnlyTheTimeThePageStayedClosed() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        var closes = 0
+        session.onTeardown = { _, _ in closes += 1 }
+        for time in stride(from: 0.0, through: 30, by: 5) { monitor.tick(now: time, native: native(time, device: 3)) }
+        monitor.pausePage(now: 30)
+        XCTAssertEqual(closes, 1)
+        for time in stride(from: 35.0, through: 60, by: 5) { monitor.tick(now: time, native: native(time, device: 1)) }
+        let page = WebKitParkedPage(reason: .manual, detail: "", restoreURL: nil, sourceID: nil,
+                                    browserIdentity: nil, destinationID: nil)
+        monitor.noteResumed(page, automatically: false, now: 62)
+        // Samples after the reopen must not count, even once the window passes.
+        for time in stride(from: 65.0, through: 90, by: 5) { monitor.tick(now: time, native: native(time, device: 5)) }
+        let effects = monitor.events.filter { $0.kind == "effect" }.map(\.message)
+        XCTAssertEqual(effects, ["After closing the page: device CPU 3.00 → 1.00 cores, app 0.05 → 0.05 cores."])
+        withExtendedLifetime(web) {}
+    }
+
+    func testReopeningTooSoonSaysSo() {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        monitor.tick(now: 0, native: native(0))
+        monitor.pausePage(now: 5)
+        monitor.tick(now: 10, native: native(10))
+        monitor.noteResumed(WebKitParkedPage(reason: .manual, detail: "", restoreURL: nil, sourceID: nil,
+                                             browserIdentity: nil, destinationID: nil), automatically: true, now: 15)
+        XCTAssertEqual(monitor.events.filter { $0.kind == "effect" }.map(\.message),
+                       ["Page reopened 10 s after closing, too soon to measure the effect."])
+        withExtendedLifetime(web) {}
+    }
+
+    func testOnlyRecordsWhatItWouldStopWhenStoppingIsOff() {
+        let monitor = monitor()
+        monitor.autoStopEnabled = false
+        let stops = drive(monitor, until: 240)
+        XCTAssertEqual(stops.reasons, [])
+        XCTAssertEqual(monitor.events.filter { $0.kind == "would-stop" }.count, 1)
+    }
+
+    /// Watching must cost next to nothing: the monitor's whole 5 s sample
+    /// (evaluation, findings, history) and a page report.
+    func testMonitorWorkIsCheap() {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        let iterations = 2_000
+        let elapsed = ContinuousClock().measure {
+            for index in 0..<iterations {
+                let time = Double(index) * 5
+                monitor.record(report(["vis": "visible", "frames": 30, "seq": index, "running": 1,
+                                       "anims": [["name": "spin", "target": "div", "props": ["transform"]]]]),
+                               from: session, now: time)
+                monitor.tick(now: time, native: native(time))
+            }
+        }
+        let perSample = elapsed / iterations
+        let share = perSample / .seconds(WebKitHealthMonitor.interval)
+        print("WebKit health: \(perSample) per 5 s sample = \(WebKitHealthReport.costText(share)) of a core")
+        XCTAssertLessThan(perSample, .milliseconds(2), "a 5 s sample must stay far below 0.04% of a core")
+        withExtendedLifetime(web) {}
+    }
+
+    func testReadingDeviceCountersIsCheap() {
+        let sampler = ProcessUsageSampler()
+        let iterations = 500
+        let elapsed = ContinuousClock().measure {
+            for _ in 0..<iterations { _ = sampler.sample(appActive: true, appBackground: false) }
+        }
+        let perSample = elapsed / iterations
+        print("WebKit health: device counters \(perSample) per sample")
+        XCTAssertLessThan(perSample, .milliseconds(1))
+    }
+
+    /// Back-to-back samples (a thermal change right after a timer tick) keep
+    /// the baseline instead of reporting nothing for the next interval.
+    func testRatesNeedHalfASecondButKeepTheirBaseline() async throws {
+        let sampler = ProcessUsageSampler()
+        XCTAssertNil(sampler.sample(appActive: true, appBackground: false).appCPU)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(sampler.sample(appActive: true, appBackground: false).appCPU)
+        try await Task.sleep(for: .milliseconds(300))
+        let sample = sampler.sample(appActive: true, appBackground: false)
+        XCTAssertNotNil(sample.appCPU)
+        XCTAssertNotNil(sample.wakeupsPerSecond)
+        XCTAssertNotNil(sample.footprintMB)
+    }
+}

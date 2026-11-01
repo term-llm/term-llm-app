@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // UI tests wait for transitions to settle after every tap.
         if PhoneHubFixture.isEnabled { UIView.setAnimationsEnabled(false) }
         guard !HubFixture.isEnabled else { return true }
+        // Device/app CPU and thermal history, plus the chat page's own reports.
+        WebKitHealthMonitor.shared.start()
         // Must be set before launch finishes to receive the tap that launched the app.
         UNUserNotificationCenter.current().delegate = PushCenter.shared
         PushCenter.shared.applicationDidLaunch()

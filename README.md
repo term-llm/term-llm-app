@@ -116,6 +116,22 @@ Returning from the background keeps the existing web view and does not force a p
 
 This does not persist conversation snapshots or restore JavaScript memory after process loss. Unsent text and live-session reconnection after a reload depend on the server's web UI. Physical-device memory-pressure and background voice testing are still necessary.
 
+### Web page health
+
+To explain a phone that runs hot, the app watches the chat page and the device. **Agents → Settings → Web page health** shows the thermal state, this app's CPU, device-wide CPU (which includes WebKit's separate page, GPU and network processes), and the chat page's own activity. It also lists findings, a one-hour CPU chart and a history kept across launches, and can share or copy a report. The page activity comes from a small script injected into the configured server's main frame. It covers main-thread blocking (a 1 s heartbeat), animation frames, running CSS animations (by name and element class, and whether they repaint every frame), DOM changes, requests, and open Web Audio, WebRTC, WebSocket and media. Reports carry only counts and code names, never page text, form values or addresses.
+
+**Stop runaway pages** (on by default) closes the chat page's web view in these cases:
+
+- it misses its heartbeat for 45 s on screen while at least half a core stays busy outside the app;
+- off screen for about two minutes, it keeps drawing or animating as if visible, keeps its main thread busy, polls (30+ requests a minute) or runs Web Audio without a call;
+- the phone is hot (serious or critical) and the page is still running off screen.
+
+The page is never stopped during a live call, a voice launch, a device-tool reply, sign-in, or while the page plays media. Closing first runs the page's beforeunload listeners and navigates it to `about:blank`, so its pagehide/unload handlers run and the web UI saves an unsent draft. The view is then released, ending its web process. A page stopped off screen reopens at the same route when Chat is shown again; a hung page, or one closed with **Pause chat page**, offers Reload. About 40 s after a close, the history records device and app CPU before and after, which shows whether WebKit was the cause.
+
+Watching is cheap and reports its own cost on the same screen. In simulator measurements, one native sample took about 0.3 ms every 5 s (0.006% of a core). The page script used 0.06–0.1% of a core when reporting every second; at its real rates (every 5 s on screen, every 15 s hidden) that is about a fifth. In the background (playing audio), samples drop to every 30 s.
+
+WebKit behavior measured while building this: setting `isHidden` on a web view does not throttle its page (it stays "visible" at 60 frames/s); only leaving the window does, which the tab view does for inactive tabs. WKWebView never fires `beforeunload`, so the web UI's beforeunload draft save does not run on ordinary reloads in the app. The simulator reports the Mac's CPU as device CPU; heat itself needs a physical phone.
+
 ## Music
 
 Pull down for app controls and tap ♪ to open **Music**. It shows what's playing and the playlists saved on this phone. You can create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there. Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.

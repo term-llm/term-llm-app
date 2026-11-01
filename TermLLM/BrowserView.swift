@@ -159,6 +159,11 @@ struct BrowserView: UIViewRepresentable {
     /// The page started or stopped capturing the microphone or camera (a Live
     /// call). Reported as stopped when the view goes away mid-capture.
     var onMediaCaptureChange: (Bool) -> Void = { _ in }
+    /// Watches this page's web content; nil disables monitoring (tests, legacy fixture).
+    var health: WebKitHealthMonitor? = nil
+    /// The monitor asks to close this web view (runaway, hung or paused page),
+    /// with the page's current same-mount URL to reopen later.
+    var onHealthTeardown: (WebKitTeardownReason, String, URL?) -> Void = { _, _, _ in }
 
     /// Pure WebKit permission policy; granting here does not bypass iOS's
     /// app-level microphone authorization. No capture API is called natively.
@@ -202,6 +207,7 @@ struct BrowserView: UIViewRepresentable {
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
         context.coordinator.webView = view
+        context.coordinator.syncHealth(view)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.appWillStartPlayback),
                                                name: .appWillStartPlayback, object: nil)
 #if DEBUG
@@ -280,6 +286,14 @@ struct BrowserView: UIViewRepresentable {
         /// The app's audio started during a device tool call; hang up once it replies.
         private var hangUpAfterToolCall = false
         private var hangUpTask: Task<Void, Never>?
+        private var healthBridge: WebKitHealthBridge?
+        private(set) var healthSession: WebKitPageSession?
+        /// The page is unloading before the monitor's requested close.
+        private(set) var closingPage = false
+        private var closingNavigation: WKNavigation?
+        private var closingFinish: (() -> Void)?
+        private var closingTimeout: Task<Void, Never>?
+        static let blankPage = URL(string: "about:blank")!
 
         init(_ parent: BrowserView) {
             self.parent = parent
@@ -310,13 +324,141 @@ struct BrowserView: UIViewRepresentable {
             bridge = nil
             pushBridge?.uninstall()
             pushBridge = nil
+            healthBridge?.uninstall()
+            healthBridge = nil
+            if let healthSession { MainActor.assumeIsolated { parent.health?.detach(healthSession) } }
+            healthSession = nil
+            closingTimeout?.cancel()
+            closingTimeout = nil
+            closingFinish = nil
+            closingNavigation = nil
+            closingPage = false
             recoveryPending = false
+        }
+
+        /// Creates this view's health session and keeps the probe matching the
+        /// configured origin and setting. Script changes apply to the next document.
+        func syncHealth(_ view: WKWebView) {
+            MainActor.assumeIsolated {
+                guard let monitor = parent.health else {
+                    healthBridge?.uninstall()
+                    healthBridge = nil
+                    return
+                }
+                if healthSession == nil {
+                    let session = monitor.makeSession(for: view)
+                    session.contextProvider = { [weak self, weak view] in
+                        guard let self, let view else { return WebKitPageContext() }
+                        return self.healthContext(view)
+                    }
+                    session.onTeardown = { [weak self] reason, detail in
+                        self?.closePage(reason: reason, detail: detail)
+                    }
+                    healthSession = session
+                }
+                let controller = view.configuration.userContentController
+                if monitor.probeEnabled {
+                    if healthBridge?.serverURL != parent.url || healthBridge?.isInstalled != true {
+                        healthBridge?.uninstall()
+                        let bridge = WebKitHealthBridge(serverURL: parent.url)
+                        bridge.onSample = { [weak self] sample, _ in
+                            MainActor.assumeIsolated {
+                                guard let self, let session = self.healthSession else { return }
+                                self.parent.health?.record(sample, from: session)
+                            }
+                        }
+                        bridge.install(into: controller)
+                        healthBridge = bridge
+                    }
+                } else if let healthBridge {
+                    healthBridge.uninstall()
+                    self.healthBridge = nil
+                }
+            }
+        }
+
+        @MainActor
+        private func healthContext(_ view: WKWebView) -> WebKitPageContext {
+            WebKitPageContext(
+                userCanSee: pushContentIsVisible && view.window != nil,
+                appBackground: UIApplication.shared.applicationState == .background,
+                inWindow: view.window != nil,
+                viewHidden: view.isHidden,
+                capturing: capturingMedia,
+                voiceLaunching: voiceTask != nil,
+                toolCalls: bridge?.activeCalls ?? 0,
+                signingIn: parent.isSigningIn,
+                loading: parent.loading || view.isLoading)
+        }
+
+        /// Hands the web view to the parent to close. A page that still runs
+        /// first unloads, so its own handlers save the unsent draft (the
+        /// frontend persists it on beforeunload, not per keystroke). A hung
+        /// page cannot run any handler and closes at once.
+        @MainActor
+        func closePage(reason: WebKitTeardownReason, detail: String, grace: Duration = .seconds(2)) {
+            guard !closingPage else { return }
+            let restore = restorableURL()
+            let finish = { [weak self] in
+                guard let self else { return }
+                self.closingTimeout?.cancel()
+                self.closingTimeout = nil
+                self.parent.onHealthTeardown(reason, detail, restore)
+            }
+            guard reason != .unresponsive, let view = webView, view.url != nil, view.url != Self.blankPage else {
+                finish()
+                return
+            }
+            closingPage = true
+            closingFinish = finish
+            view.evaluateJavaScript(Self.unloadScript) { [weak self, weak view] _, error in
+                MainActor.assumeIsolated {
+                    // Could not run in the page: unload it from here (pagehide only).
+                    guard error != nil, let self, self.closingFinish != nil, let view else { return }
+                    self.closingNavigation = view.load(URLRequest(url: Self.blankPage))
+                }
+            }
+            closingTimeout = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: grace) } catch { return }
+                self?.finishClosing()
+            }
+        }
+
+        /// WKWebView never dispatches beforeunload here (measured: neither for
+        /// loads the app starts nor for the page's own navigations), so the
+        /// page's beforeunload listeners are run explicitly, as a browser would
+        /// before leaving. Leaving then runs pagehide and unload. Only DOM
+        /// lifecycle events; no frontend state is touched.
+        static let unloadScript = """
+        try { window.dispatchEvent(new Event('beforeunload', { cancelable: true })); } catch {}
+        location.replace('about:blank'); void 0;
+        """
+
+        /// The old document has unloaded (or could not): let the parent close the view.
+        private func finishClosing() {
+            guard let finish = closingFinish else { return }
+            closingFinish = nil
+            finish()
+        }
+
+        /// The page's current route if it is still this connection's page;
+        /// otherwise the configured root. Never a login route or another mount.
+        func restorableURL() -> URL? {
+            guard let current = webView?.url, sameOrigin(current, parent.url), !isLoginRoute(current),
+                  parent.connectionMount.map({ HubNavigation.isWithinMount(current, server: $0) }) ?? true else { return parent.url }
+            return current
+        }
+
+        private func refreshHealth() {
+            guard let healthSession else { return }
+            MainActor.assumeIsolated { parent.health?.refresh(healthSession) }
         }
 
         func setMediaCapturing(_ capturing: Bool) {
             guard capturing != capturingMedia else { return }
             capturingMedia = capturing
             parent.onMediaCaptureChange(capturing)
+            refreshHealth()
         }
 
         private var nativeDestinationID: UUID?
@@ -328,10 +470,12 @@ struct BrowserView: UIViewRepresentable {
                 // This is a native responder handoff, not JS or a navigation.
                 view.endEditing(true)
             }
-            // A retained tab may stay attached to the window while another tab
-            // is shown. WebKit only throttles timers/rAF and reports a hidden
-            // document when the view itself is hidden, so mirror native
-            // visibility here rather than letting the page run at full rate.
+            // Mirror native visibility. This alone does not throttle the page:
+            // WebKit runs a web view as visible while it is in a window,
+            // whatever `isHidden` says (measured: timers, animation frames and
+            // visibilityState are unchanged). Leaving the window hides it; the
+            // tab view detaches a hidden tab's view, and the health monitor
+            // reports a page that keeps running as visible off screen.
             let hidden = !parent.isContentVisible
             if view.isHidden != hidden { view.isHidden = hidden }
             self.parent = parent
@@ -362,6 +506,7 @@ struct BrowserView: UIViewRepresentable {
                                                    controller: view.configuration.userContentController)
             let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.deviceTools,
                                                controller: view.configuration.userContentController) || pushBridgeChanged
+            syncHealth(view)
 
             // Coalesce native changes into one navigation. Server changes and
             // fresh auth always take precedence over reload/back commands.
@@ -415,6 +560,7 @@ struct BrowserView: UIViewRepresentable {
                     view.evaluateJavaScript(NativePushBridge.changeScript, completionHandler: nil)
                 }
             }
+            refreshHealth()
         }
 
         func registerPushScene(_ scene: UIWindowScene) {
@@ -561,6 +707,12 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            if let healthSession { MainActor.assumeIsolated { parent.health?.contentProcessTerminated(healthSession) } }
+            if closingPage {
+                // Nothing left to unload; the view is closing anyway.
+                finishClosing()
+                return
+            }
             if voiceTask != nil {
                 cancelVoiceLaunch(error: "The voice page stopped unexpectedly. Run the shortcut again after recovery.")
             }
@@ -656,6 +808,8 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            // The unload before a requested close is not a page load.
+            guard !closingPage else { return }
             // A provisional load may fail, be cancelled or become a download.
             // The still-live document keeps its binding until actual commit.
             rejectedHTTPResponse = false
@@ -665,8 +819,15 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            if closingPage {
+                // The chat document has unloaded and saved its draft.
+                MainActor.assumeIsolated { pushBridge?.documentCommitted() }
+                if webView.url == Self.blankPage { finishClosing() }
+                return
+            }
             if let url = webView.url { parent.onDocumentCommitted(url) }
             MainActor.assumeIsolated {
+                if let healthSession { parent.health?.documentWillChange(healthSession) }
                 let owner: String?
                 if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }
                 else { owner = nil }
@@ -675,6 +836,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard !closingPage else { return }
             if let scene = webView.window?.windowScene {
                 registerPushScene(scene)
             }
@@ -686,6 +848,10 @@ struct BrowserView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+            if closingPage {
+                decisionHandler(navigationResponse.response.url == Self.blankPage ? .allow : .cancel)
+                return
+            }
             if let mount = parent.connectionMount,
                let destination = navigationResponse.response.url,
                !HubNavigation.isWithinMount(destination, server: mount) {
@@ -716,10 +882,20 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            if closingPage {
+                // The unload page itself failed: close anyway. A cancelled
+                // earlier load is not the unload.
+                if navigation === closingNavigation { finishClosing() }
+                return
+            }
             fail(error)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            if closingPage {
+                if navigation === closingNavigation { finishClosing() }
+                return
+            }
             fail(error)
         }
 
@@ -736,6 +912,11 @@ struct BrowserView: UIViewRepresentable {
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             guard let destination = navigationAction.request.url else {
                 decisionHandler(.cancel)
+                return
+            }
+            if closingPage {
+                // Only the unload page; nothing may start while the view closes.
+                decisionHandler(destination == Self.blankPage && navigationAction.targetFrame?.isMainFrame != false ? .allow : .cancel)
                 return
             }
             if let mount = parent.connectionMount, !HubNavigation.isWithinMount(destination, server: mount) {

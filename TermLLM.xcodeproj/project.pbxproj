@@ -19,8 +19,14 @@
 		00000000000000000000008C /* DeviceToolsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004C /* DeviceToolsSettings.swift */; };
 		00000000000000000000008D /* DeviceToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004D /* DeviceToolsTests.swift */; };
 		000000000000000000000A91 /* LiveHangUp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A90 /* LiveHangUp.swift */; };
+		000000000000000000000B91 /* WebKitHealthProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B90 /* WebKitHealthProbe.swift */; };
+		000000000000000000000B97 /* WebKitHealthSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B96 /* WebKitHealthSampler.swift */; };
+		000000000000000000000B99 /* WebKitHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B98 /* WebKitHealthMonitor.swift */; };
+		000000000000000000000B9B /* WebKitHealthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B9A /* WebKitHealthView.swift */; };
 		0000000000000000000000B0 /* WebMCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A0 /* WebMCPBridge.swift */; };
 		000000000000000000000A93 /* LiveHangUpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A92 /* LiveHangUpTests.swift */; };
+		000000000000000000000B95 /* WebKitHealthLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B94 /* WebKitHealthLiveTests.swift */; };
+		000000000000000000000B9D /* WebKitHealthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B9C /* WebKitHealthTests.swift */; };
 		0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A1 /* WebMCPBridgeTests.swift */; };
 		0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A2 /* WebMCPLiveServerTests.swift */; };
 		0000000000000000000000D0 /* MusicModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000C0 /* MusicModels.swift */; };
@@ -117,6 +123,7 @@
 		759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */; };
 		7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */; };
 		9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */; };
+		000000000000000000000B9F /* WebKitHealthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000B9E /* WebKitHealthUITests.swift */; };
 		A20000000000000000000001 /* PeerWireProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* PeerWireProtocol.swift */; };
 		A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* PeerHTTPMultiplexer.swift */; };
 		A20000000000000000000003 /* PeerSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* PeerSession.swift */; };
@@ -196,8 +203,14 @@
 		00000000000000000000004C /* DeviceToolsSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsSettings.swift; sourceTree = "<group>"; };
 		00000000000000000000004D /* DeviceToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolsTests.swift; sourceTree = "<group>"; };
 		000000000000000000000A90 /* LiveHangUp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHangUp.swift; sourceTree = "<group>"; };
+		000000000000000000000B90 /* WebKitHealthProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthProbe.swift; sourceTree = "<group>"; };
+		000000000000000000000B96 /* WebKitHealthSampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthSampler.swift; sourceTree = "<group>"; };
+		000000000000000000000B98 /* WebKitHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthMonitor.swift; sourceTree = "<group>"; };
+		000000000000000000000B9A /* WebKitHealthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthView.swift; sourceTree = "<group>"; };
 		0000000000000000000000A0 /* WebMCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridge.swift; sourceTree = "<group>"; };
 		000000000000000000000A92 /* LiveHangUpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHangUpTests.swift; sourceTree = "<group>"; };
+		000000000000000000000B94 /* WebKitHealthLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthLiveTests.swift; sourceTree = "<group>"; };
+		000000000000000000000B9C /* WebKitHealthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000A1 /* WebMCPBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPBridgeTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000A2 /* WebMCPLiveServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMCPLiveServerTests.swift; sourceTree = "<group>"; };
 		0000000000000000000000C0 /* MusicModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicModels.swift; sourceTree = "<group>"; };
@@ -284,6 +297,7 @@
 		0930C0FC823C339CD5FDF1A6 /* HubAggregateStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubAggregateStore.swift; sourceTree = "<group>"; };
 		1F6C9A57657458DF79A98E6A /* linked-devices-vectors-v2.json */ = {isa = PBXFileReference; includeInIndex = 1; path = "linked-devices-vectors-v2.json"; sourceTree = "<group>"; };
 		44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubUITests.swift; sourceTree = "<group>"; };
+		000000000000000000000B9E /* WebKitHealthUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthUITests.swift; sourceTree = "<group>"; };
 		630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DirectNodeClientTests.swift; sourceTree = "<group>"; };
 		693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionSecurityTests.swift; sourceTree = "<group>"; };
 		74399B86FF5B1720DA79EF9D /* HubConnectionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubConnectionStore.swift; sourceTree = "<group>"; };
@@ -398,6 +412,10 @@
 				000000000000000000000048 /* DeviceTools.swift */,
 				00000000000000000000004C /* DeviceToolsSettings.swift */,
 				000000000000000000000A90 /* LiveHangUp.swift */,
+				000000000000000000000B90 /* WebKitHealthProbe.swift */,
+				000000000000000000000B96 /* WebKitHealthSampler.swift */,
+				000000000000000000000B98 /* WebKitHealthMonitor.swift */,
+				000000000000000000000B9A /* WebKitHealthView.swift */,
 				0000000000000000000000A0 /* WebMCPBridge.swift */,
 				0000000000000000000000C0 /* MusicModels.swift */,
 				0000000000000000000000C1 /* PlaylistStore.swift */,
@@ -469,6 +487,8 @@
 				0000000000000000000000E3 /* BrowserLifecycleTests.swift */,
 				00000000000000000000004D /* DeviceToolsTests.swift */,
 				000000000000000000000A92 /* LiveHangUpTests.swift */,
+				000000000000000000000B94 /* WebKitHealthLiveTests.swift */,
+				000000000000000000000B9C /* WebKitHealthTests.swift */,
 				0000000000000000000000A1 /* WebMCPBridgeTests.swift */,
 				0000000000000000000000A2 /* WebMCPLiveServerTests.swift */,
 				0000000000000000000000CA /* MusicTestSupport.swift */,
@@ -533,6 +553,7 @@
 			children = (
 				000000000000000000000701 /* NativeHubUITests.swift */,
 				44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */,
+				000000000000000000000B9E /* WebKitHealthUITests.swift */,
 			);
 			path = TermLLMUITests;
 			sourceTree = "<group>";
@@ -725,6 +746,10 @@
 				000000000000000000000088 /* DeviceTools.swift in Sources */,
 				00000000000000000000008C /* DeviceToolsSettings.swift in Sources */,
 				000000000000000000000A91 /* LiveHangUp.swift in Sources */,
+				000000000000000000000B91 /* WebKitHealthProbe.swift in Sources */,
+				000000000000000000000B97 /* WebKitHealthSampler.swift in Sources */,
+				000000000000000000000B99 /* WebKitHealthMonitor.swift in Sources */,
+				000000000000000000000B9B /* WebKitHealthView.swift in Sources */,
 				0000000000000000000000B0 /* WebMCPBridge.swift in Sources */,
 				0000000000000000000000D0 /* MusicModels.swift in Sources */,
 				0000000000000000000000D1 /* PlaylistStore.swift in Sources */,
@@ -793,6 +818,8 @@
 				0000000000000000000000F3 /* BrowserLifecycleTests.swift in Sources */,
 				00000000000000000000008D /* DeviceToolsTests.swift in Sources */,
 				000000000000000000000A93 /* LiveHangUpTests.swift in Sources */,
+				000000000000000000000B95 /* WebKitHealthLiveTests.swift in Sources */,
+				000000000000000000000B9D /* WebKitHealthTests.swift in Sources */,
 				0000000000000000000000B1 /* WebMCPBridgeTests.swift in Sources */,
 				0000000000000000000000B2 /* WebMCPLiveServerTests.swift in Sources */,
 				0000000000000000000000DA /* MusicTestSupport.swift in Sources */,
@@ -846,6 +873,7 @@
 			files = (
 				000000000000000000000700 /* NativeHubUITests.swift in Sources */,
 				9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */,
+				000000000000000000000B9F /* WebKitHealthUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

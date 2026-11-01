@@ -48,6 +48,8 @@ struct ContentView: View {
     @State private var pushActivity: NSUserActivity?
     @State private var voiceRequest: VoiceBrowserLaunch?
     @State private var voiceLaunchError: String?
+    /// The chat page's web view was closed to stop its web process.
+    @State private var parkedBrowser: WebKitParkedPage?
     private let listen = Listen.shared
 
     private var address: URL? {
@@ -141,6 +143,7 @@ struct ContentView: View {
         .onChange(of: connections.selectedID, initial: true) { _, id in
             HubCookieScopeRegistry.shared.selectedID = id
             guard !HubFixture.isEnabled else { return }
+            if parkedBrowser?.sourceID != id { discardParkedBrowser() }
             if hubDestination?.sourceID != id {
                 hubDestination = nil
                 workspaceChosen = false
@@ -157,8 +160,9 @@ struct ContentView: View {
         .onChange(of: loadError) { _, error in
             if error != nil { pendingChat = nil }
         }
-        .onChange(of: selectedWorkspace?.browserIdentity) { _, _ in
+        .onChange(of: selectedWorkspace?.browserIdentity) { _, identity in
             guard !HubFixture.isEnabled else { return }
+            if parkedBrowser?.browserIdentity != identity { discardParkedBrowser() }
             loadError = nil
             loginError = nil
             loginRequired = false
@@ -231,6 +235,10 @@ struct ContentView: View {
             if let id, let pushActivity { push.claimNavigation(pushActivity, windowID: id) }
             revealPendingPushIfOwned()
             if let request = voiceLaunches.request { beginVoiceLaunch(request) }
+        }
+        .onChange(of: parkedBrowserShouldReopen, initial: true) { _, reopen in
+            // Chat is on screen again: reopen a page stopped while off screen.
+            if reopen { resumeParkedBrowser(automatically: true) }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
@@ -530,6 +538,8 @@ struct ContentView: View {
                 }
             } else if !HubFixture.isEnabled && source?.browserReady != true {
                 ProgressView("Preparing connection…")
+            } else if let parked = parkedBrowser, parked.sourceID == source?.id, parked.browserIdentity == browserIdentity {
+                parkedBrowserScreen(parked)
             } else {
             BrowserView(url: url, loading: $loading, canGoBack: $canGoBack,
                         loadError: $loadError, loginRequired: $loginRequired,
@@ -568,6 +578,13 @@ struct ContentView: View {
                             // A Live call keeps a linked device connected while the phone is locked.
                             guard let source, source.connection.isLinkedDevices else { return }
                             linkedDevices.setMediaCaptureActive(capturing, for: source.id)
+                        }, health: HubFixture.isEnabled ? nil : WebKitHealthMonitor.shared,
+                        onHealthTeardown: { reason, detail, restoreURL in
+                            guard let source, let browserIdentity, source.isActive,
+                                  source.browserIdentity == browserIdentity else { return }
+                            parkBrowser(WebKitParkedPage(reason: reason, detail: detail, restoreURL: restoreURL,
+                                                         sourceID: source.id, browserIdentity: browserIdentity,
+                                                         destinationID: hubDestination?.id))
                         })
                 .id(HubFixture.isEnabled ? "legacy" : (selectedWorkspace?.id.uuidString ?? "none") + (selectedWorkspace?.browserIdentity.uuidString ?? ""))
                 .ignoresSafeArea(edges: HubFixture.isEnabled ? .bottom : [])
@@ -618,7 +635,60 @@ struct ContentView: View {
     }
 
     private var appControlsAvailable: Bool {
-        loadError == nil && !loginRequired && loginError == nil && !isSigningIn
+        loadError == nil && !loginRequired && loginError == nil && !isSigningIn && parkedBrowser == nil
+    }
+
+    /// Off-screen stops reopen without asking once Chat is on screen again.
+    private var parkedBrowserShouldReopen: Bool {
+        parkedBrowser?.reason.resumesAutomatically == true && chatIsVisible && scenePhase == .active
+    }
+
+    /// Closing the web view ends its page process; the document is reopened
+    /// at the page's last route rather than kept alive.
+    private func parkBrowser(_ page: WebKitParkedPage) {
+        if let request = voiceRequest {
+            finishVoiceLaunch(request.id, "The chat page was stopped (\(page.reason.title.lowercased())). Run the shortcut again.")
+        }
+        parkedBrowser = page
+        loading = false
+        canGoBack = false
+        showingControls = false
+        WebKitHealthMonitor.shared.noteParked(page)
+    }
+
+    private func resumeParkedBrowser(automatically: Bool) {
+        guard let parked = parkedBrowser else { return }
+        parkedBrowser = nil
+        // A newer destination (another chat, a notification) wins over the old route.
+        if let restore = parked.restoreURL, hubDestination?.id == parked.destinationID,
+           let source = selectedWorkspace, source.id == parked.sourceID,
+           HubNavigation.isWithinMount(restore, server: source.connection.url) {
+            hubDestination = HubBrowserDestination(url: restore, sourceID: source.id)
+        }
+        loadError = nil
+        WebKitHealthMonitor.shared.noteResumed(parked, automatically: automatically)
+    }
+
+    /// The connection or its authorization changed: the stopped page will
+    /// not come back, a different one opens instead.
+    private func discardParkedBrowser() {
+        guard let parked = parkedBrowser else { return }
+        parkedBrowser = nil
+        WebKitHealthMonitor.shared.noteDiscarded(parked)
+    }
+
+    @ViewBuilder private func parkedBrowserScreen(_ parked: WebKitParkedPage) -> some View {
+        if parked.reason.resumesAutomatically {
+            // Reopens as soon as Chat is on screen (see parkedBrowserShouldReopen).
+            ProgressView("Reopening chat…")
+        } else {
+            recoveryScreen(parked.reason.title, symbol: parked.reason == .manual ? "pause.circle" : "exclamationmark.octagon",
+                           message: parked.detail + " Reloading starts a new web process.") {
+                Button("Reload page") { resumeParkedBrowser(automatically: false) }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("chat.reloadParked")
+            }
+        }
     }
 
     private func handleAppControl(_ action: AppControlAction) {
@@ -685,6 +755,7 @@ struct ContentView: View {
             pendingChat = makeChatContext(for: destination, source: source)
             workspaceChosen = true
             showingHub = false
+            resumeParkedBrowser(automatically: false)
             selectTab(.chat)
         }
     }
@@ -708,6 +779,19 @@ struct ContentView: View {
                 notificationsSection
                 if let issue = push.badgeIssue {
                     Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
+                }
+                if !HubFixture.isEnabled {
+                    Section {
+                        NavigationLink {
+                            WebKitHealthView(monitor: .shared, parked: parkedBrowser,
+                                             onReload: { resumeParkedBrowser(automatically: false) })
+                        } label: {
+                            WebKitHealthSettingsRow(monitor: .shared)
+                        }
+                        .accessibilityIdentifier("settings.webKitHealth")
+                    } header: {
+                        Text("Diagnostics")
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -832,6 +916,7 @@ struct ContentView: View {
         showingSettings = false
         showingHub = false
         if let destination = push.pendingNavigation?.url { pendingChat = makeChatContext(for: destination) }
+        resumeParkedBrowser(automatically: false)
         selectTab(.chat)
     }
 
@@ -876,6 +961,7 @@ struct ContentView: View {
             workspaceChosen = true
             voiceRequest = VoiceBrowserLaunch(id: id, url: destination)
             pendingChat = makeChatContext(for: destination, source: source)
+            resumeParkedBrowser(automatically: false)
             selectTab(.chat)
         }
     }

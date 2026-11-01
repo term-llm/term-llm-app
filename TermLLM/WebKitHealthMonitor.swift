@@ -1,0 +1,1142 @@
+import Foundation
+import os
+import UIKit
+import WebKit
+
+let webKitHealthLog = Logger(subsystem: "com.termllm.app", category: "webkit-health")
+
+enum WebKitTeardownReason: String, Codable, Sendable, Equatable {
+    case unresponsive
+    case hiddenActivity = "hidden_activity"
+    case thermal
+    case manual
+
+    var title: String {
+        switch self {
+        case .unresponsive: "The chat page stopped responding"
+        case .hiddenActivity: "The chat page kept working off screen"
+        case .thermal: "The phone was hot"
+        case .manual: "Chat page paused"
+        }
+    }
+
+    /// Off-screen stops reopen by themselves when Chat is shown again; a hung
+    /// or manually paused page waits for an explicit reload (no reload loops).
+    var resumesAutomatically: Bool { self == .hiddenActivity || self == .thermal }
+}
+
+/// A chat page whose web view was closed to stop its web process.
+struct WebKitParkedPage: Equatable {
+    let id = UUID()
+    let reason: WebKitTeardownReason
+    let detail: String
+    let restoreURL: URL?
+    let sourceID: UUID?
+    let browserIdentity: UUID?
+    /// Native destination at the time; a newer one (another chat) wins on resume.
+    let destinationID: UUID?
+    let date = Date()
+}
+
+/// Native facts about a browser view that its page cannot report itself.
+struct WebKitPageContext: Equatable, Sendable {
+    /// On screen in the active app and not covered by sign-in or error screens.
+    var userCanSee = false
+    var appBackground = false
+    var inWindow = false
+    var viewHidden = false
+    var capturing = false
+    var voiceLaunching = false
+    var toolCalls = 0
+    var signingIn = false
+    var loading = false
+
+    /// Work a teardown would break: a live call, a voice launch, a device tool reply, sign-in.
+    var protectsPage: Bool { capturing || voiceLaunching || toolCalls > 0 || signingIn }
+}
+
+struct TimedPageSample: Equatable, Sendable {
+    let uptime: TimeInterval
+    let sample: WebPageHealthSample
+}
+
+struct WebKitHealthEvent: Codable, Equatable, Identifiable, Sendable {
+    var id = UUID()
+    let date: Date
+    let kind: String
+    let message: String
+}
+
+struct WebKitHealthFinding: Identifiable, Equatable, Sendable {
+    enum Severity: Int, Comparable, Sendable {
+        case info, warning, critical
+        static func < (lhs: Severity, rhs: Severity) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+    let id: String
+    let severity: Severity
+    let title: String
+    let detail: String
+}
+
+/// One wall-clock minute, kept for a few hours and persisted across launches.
+struct WebKitHealthMinute: Codable, Equatable, Sendable {
+    var start: Date
+    var app: Double?
+    var appPeak: Double?
+    var device: Double?
+    var devicePeak: Double?
+    var thermal: Int
+    var battery: Int?
+    var charging: Bool?
+    var foreground: Double
+    var chatOnScreen: Double
+    var pageReports: Int
+    var pageVisible: Double?
+    var busy: Double?
+    var fps: Double?
+    var animations: Int?
+    var repainting: Int?
+    var mutations: Double?
+    var requests: Double?
+    var audio: Int?
+    var webViews: Int
+    var memoryMB: Int?
+    /// Share of one core the page probe used.
+    var probe: Double?
+    /// Share of one core this monitor used in the app process.
+    var monitor: Double?
+}
+
+/// Everything the diagnostics screen shows, refreshed every sample.
+struct WebKitHealthStatus: Equatable {
+    enum PageState: Equatable {
+        case none
+        case loading
+        case waiting
+        case active
+        case stalled(TimeInterval)
+        case offScreenAwake
+        case offScreenQuiet
+    }
+
+    var native: NativeHealthSample?
+    var appCPUMinute: Double?
+    var deviceCPUMinute: Double?
+    var pageState: PageState = .none
+    var context = WebKitPageContext()
+    var latest: WebPageHealthSample?
+    var lastReportAge: TimeInterval?
+    /// Opening diagnostics takes Chat off screen, so also keep what the page
+    /// last reported while it was visible.
+    var lastOnScreen: WebPageHealthSample?
+    var lastOnScreenAge: TimeInterval?
+    var findings: [WebKitHealthFinding] = []
+    var threads: [ThreadUsage] = []
+    var webViewsAlive = 0
+    var pages = 0
+    var parked: WebKitParkedPage?
+    /// What watching costs, as a share of one core: this monitor's own work in
+    /// the app since launch, and the page probe over the last minute.
+    var monitorShare: Double?
+    var probeShare: Double?
+}
+
+/// One live browser view. The coordinator owns it; the monitor holds it weakly.
+@MainActor
+final class WebKitPageSession {
+    let number: Int
+    let created: TimeInterval
+    weak var webView: WKWebView?
+    var contextProvider: () -> WebKitPageContext = { WebKitPageContext() }
+    var onTeardown: (WebKitTeardownReason, String) -> Void = { _, _ in }
+
+    fileprivate(set) var context = WebKitPageContext()
+    fileprivate(set) var documentID: String?
+    fileprivate(set) var samples: [TimedPageSample] = []
+    fileprivate(set) var lastSampleAt: TimeInterval?
+    fileprivate(set) var hiddenSince: TimeInterval?
+    fileprivate(set) var visibleSince: TimeInterval?
+    fileprivate var stalled = false
+    fileprivate var reportedMismatch = false
+    fileprivate var teardownRequested = false
+    fileprivate var wouldStop: WebKitTeardownReason?
+    fileprivate var episodes: Set<String> = []
+    fileprivate var lastLongBlock: TimeInterval = -.infinity
+
+    init(number: Int, created: TimeInterval) {
+        self.number = number
+        self.created = created
+        hiddenSince = created
+    }
+
+    var latest: WebPageHealthSample? { samples.last?.sample }
+}
+
+// MARK: - Policy
+
+/// Pure decisions, unit tested without WebKit.
+struct WebKitHealthPolicy: Sendable {
+    /// Off screen this long before its activity counts against it.
+    var hiddenGrace: TimeInterval = 60
+    /// Activity must last this long (in most reports) before a stop.
+    var activityWindow: TimeInterval = 120
+    var activityShare = 0.8
+    var minimumReports = 6
+    var stallAfter: TimeInterval = 15
+    var unresponsiveAfter: TimeInterval = 45
+    /// A silent page is only stopped while something outside the app burns
+    /// at least this many cores: a page paused in Web Inspector or deadlocked
+    /// costs no power, an endless loop does.
+    var stuckCores = 0.5
+    var thermalGrace: TimeInterval = 30
+
+    enum Verdict: Equatable {
+        case healthy
+        case stalled(TimeInterval)
+        case teardown(WebKitTeardownReason, String)
+    }
+
+    struct Input {
+        var now: TimeInterval
+        var context: WebKitPageContext
+        var hiddenSince: TimeInterval?
+        var visibleSince: TimeInterval?
+        var lastSampleAt: TimeInterval?
+        var armed: Bool
+        var samples: [TimedPageSample]
+        var thermal: ProcessInfo.ThermalState
+        /// Recent average cores busy outside this app (WebKit's processes,
+        /// iOS); nil when the device counters are unavailable.
+        var outsideAppCPU: Double? = nil
+    }
+
+    struct Activity: Equatable, Sendable {
+        enum Kind: String, Sendable { case frames, animations, busy, mutations, requests, audio }
+        let kind: Kind
+        let text: String
+    }
+
+    /// Why an off-screen page is costing power; empty when it is quiet.
+    /// A page WebKit has hidden draws nothing and its timers are throttled,
+    /// so DOM changes alone (a response that offers device tools keeps
+    /// streaming while hidden) do not count; drawing, polling and audio do.
+    func offScreenActivity(_ sample: WebPageHealthSample, capturing: Bool) -> [Activity] {
+        var reasons: [Activity] = []
+        if sample.framesPerSecond >= 1 {
+            reasons.append(.init(kind: .frames, text: "drew \(Int(sample.framesPerSecond.rounded())) frames/s"))
+        }
+        if sample.isVisible, sample.runningAnimations > 0 {
+            reasons.append(.init(kind: .animations, text: "ran \(sample.runningAnimations) animation\(sample.runningAnimations == 1 ? "" : "s") as if on screen"))
+        }
+        // Heartbeat lateness is only measured while WebKit reports the page visible.
+        if sample.busyFraction >= 0.25 {
+            reasons.append(.init(kind: .busy, text: "kept its main thread \(Int((sample.busyFraction * 100).rounded()))% busy"))
+        }
+        if sample.isVisible, sample.mutationsPerSecond >= 20 {
+            reasons.append(.init(kind: .mutations, text: "changed its DOM \(Int(sample.mutationsPerSecond.rounded())) times/s"))
+        }
+        if sample.resourcesPerMinute >= 30 {
+            reasons.append(.init(kind: .requests, text: "made \(Int(sample.resourcesPerMinute.rounded())) requests/min"))
+        }
+        if sample.audioContextsRunning > 0, !capturing {
+            reasons.append(.init(kind: .audio, text: "kept its audio engine running without a call"))
+        }
+        return reasons
+    }
+
+    func verdict(_ input: Input) -> Verdict {
+        let context = input.context
+        // A hung page is checked only while the user is looking at it: hidden
+        // and suspended pages legitimately stop reporting.
+        if context.userCanSee, !context.loading, input.armed, let last = input.lastSampleAt,
+           let visibleSince = input.visibleSince {
+            let silent = input.now - max(last, visibleSince)
+            if silent >= unresponsiveAfter, !context.signingIn, let busy = input.outsideAppCPU, busy >= stuckCores {
+                return .teardown(.unresponsive, "No response from the page for \(Int(silent)) s while on screen, "
+                                 + String(format: "with %.1f cores busy outside the app.", busy))
+            }
+            if silent >= stallAfter { return .stalled(silent) }
+        }
+        guard let hiddenSince = input.hiddenSince, !context.userCanSee, !context.protectsPage else { return .healthy }
+        let hidden = input.now - hiddenSince
+        // Media the page plays may be what the user is listening to.
+        if input.samples.last?.sample.mediaPlaying ?? 0 > 0 { return .healthy }
+        // A hidden page reports every 15 s while awake; a suspended one is not the cause.
+        if input.thermal.rawValue >= ProcessInfo.ThermalState.serious.rawValue, hidden >= thermalGrace,
+           let last = input.lastSampleAt, input.now - last <= 45 {
+            return .teardown(.thermal, "The phone is \(Self.thermalName(input.thermal).lowercased()) and the off-screen chat page was still running.")
+        }
+        guard hidden >= hiddenGrace else { return .healthy }
+        let from = max(input.now - activityWindow, hiddenSince + 5)
+        let window = input.samples.filter { $0.uptime >= from }
+        guard window.count >= minimumReports, let first = window.first,
+              input.now - first.uptime >= activityWindow * 0.75 else { return .healthy }
+        let reasons = window.map { offScreenActivity($0.sample, capturing: context.capturing) }
+        let active = reasons.filter { !$0.isEmpty }.count
+        guard Double(active) / Double(window.count) >= activityShare else { return .healthy }
+        // Describe each kind of activity once, using its latest wording.
+        var latest: [Activity.Kind: String] = [:]
+        var order: [Activity.Kind] = []
+        for activity in reasons.flatMap({ $0 }) {
+            if latest[activity.kind] == nil { order.append(activity.kind) }
+            latest[activity.kind] = activity.text
+        }
+        let summary = order.prefix(3).compactMap { latest[$0] }.joined(separator: ", ")
+        return .teardown(.hiddenActivity, "Off screen for \(Int(hidden / 60)) min, the page \(summary).")
+    }
+
+    static func thermalName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "Normal"
+        case .fair: "Warm"
+        case .serious: "Hot"
+        case .critical: "Very hot"
+        @unknown default: "Unknown"
+        }
+    }
+}
+
+// MARK: - Findings
+
+enum WebKitHealthFindings {
+    struct Page {
+        var context: WebKitPageContext
+        var samples: [TimedPageSample]
+        var hiddenSince: TimeInterval?
+        var verdict: WebKitHealthPolicy.Verdict
+    }
+
+    /// What looks wrong right now, most severe first. Thresholds are meant to
+    /// flag sustained cost, not momentary spikes.
+    static func evaluate(natives: [NativeHealthSample], page: Page?, threads: [ThreadUsage],
+                         webViewsAlive: Int, pages: Int, now: TimeInterval) -> [WebKitHealthFinding] {
+        var findings: [WebKitHealthFinding] = []
+        let minute = natives.filter { now - $0.uptime <= 65 }
+        if let latest = natives.last, latest.thermal.rawValue >= ProcessInfo.ThermalState.fair.rawValue {
+            let name = WebKitHealthPolicy.thermalName(latest.thermal)
+            findings.append(.init(id: "thermal", severity: latest.thermal.rawValue >= ProcessInfo.ThermalState.serious.rawValue ? .critical : .warning,
+                                  title: "Phone is \(name.lowercased())", detail: "iOS reports the thermal state as \(name.lowercased())."))
+        }
+        let appValues = minute.compactMap(\.appCPU)
+        if appValues.count >= 6, average(appValues) >= 0.5 {
+            let top = threads.prefix(3).map { "\($0.name) \(percent($0.cpu))" }.joined(separator: ", ")
+            findings.append(.init(id: "app-cpu", severity: .warning, title: "App process busy (\(percent(average(appValues))) CPU)",
+                                  detail: top.isEmpty ? "The native app itself is using the CPU, not WebKit." : "Busiest threads: \(top)."))
+        }
+        let otherValues = minute.compactMap(\.otherCPU)
+        if otherValues.count >= 6, average(otherValues) >= 1.5 {
+            findings.append(.init(id: "other-cpu", severity: .warning,
+                                  title: "Other processes busy (\(String(format: "%.1f", average(otherValues))) cores)",
+                                  detail: "CPU outside this app: WebKit's web, GPU and network processes, the render server or iOS itself."))
+        }
+        if webViewsAlive > pages {
+            findings.append(.init(id: "web-views", severity: .warning, title: "\(webViewsAlive - pages) closed web view(s) still alive",
+                                  detail: "A closed browser should release its web view and page process."))
+        }
+        guard let page else { return findings.sorted { $0.severity > $1.severity } }
+        switch page.verdict {
+        case .stalled(let seconds):
+            findings.append(.init(id: "stalled", severity: .critical, title: "Page not responding (\(Int(seconds)) s)",
+                                  detail: "The page's main thread has not run its 1 s heartbeat."))
+        case .teardown(let reason, let detail):
+            findings.append(.init(id: "stop-" + reason.rawValue, severity: .critical, title: reason.title, detail: detail))
+        case .healthy:
+            break
+        }
+        let recent = page.samples.filter { now - $0.uptime <= 65 }.map(\.sample)
+        guard let latest = recent.last else { return findings.sorted { $0.severity > $1.severity } }
+        if !page.context.userCanSee, latest.isVisible, let hidden = page.hiddenSince, now - hidden >= 10 {
+            findings.append(.init(id: "visibility", severity: .warning, title: "Page runs as if on screen while hidden",
+                                  detail: "WebKit still reports it visible (\(page.context.inWindow ? "view in window" : "view not in window")\(page.context.viewHidden ? ", isHidden" : "")), so its timers, animations and streams keep full speed."))
+        }
+        let visible = recent.filter(\.isVisible)
+        if visible.count >= 6 {
+            let busy = average(visible.map(\.busyFraction))
+            if busy >= 0.5 {
+                findings.append(.init(id: "busy", severity: .warning, title: "Page main thread \(percent(busy)) busy",
+                                      detail: "Long tasks kept the page's 1 s heartbeat waiting (longest \(Int(visible.map(\.maxLateMilliseconds).max() ?? 0)) ms)."))
+            }
+            let fps = average(visible.map(\.framesPerSecond))
+            if fps >= 20 {
+                findings.append(.init(id: "frames", severity: .warning, title: "Page draws \(Int(fps.rounded())) frames/s",
+                                      detail: "A requestAnimationFrame loop keeps rendering every frame."))
+            }
+            if visible.allSatisfy({ $0.runningAnimations > 0 }) {
+                let animations = visible.last?.animations ?? []
+                let repainting = animations.filter { !$0.composited }
+                let composited = animations.filter(\.composited)
+                var detail: [String] = []
+                if !repainting.isEmpty { detail.append("Repaint every frame: " + describe(repainting) + ".") }
+                if !composited.isEmpty { detail.append("Compositor only: " + describe(composited) + ".") }
+                findings.append(.init(id: "animations", severity: repainting.isEmpty ? .info : .warning,
+                                      title: "\(visible.last?.runningAnimations ?? 0) animation(s) running continuously",
+                                      detail: detail.joined(separator: " ")))
+            }
+        }
+        if recent.count >= 6, recent.allSatisfy({ $0.audioContextsRunning > 0 }), !page.context.capturing {
+            findings.append(.init(id: "audio", severity: .warning, title: "Audio engine running without a call",
+                                  detail: "\(latest.audioContextsRunning) Web Audio context(s) keep the audio hardware and their render thread active."))
+        }
+        let connections = latest.webSockets + latest.eventSources
+        if connections >= 5 || latest.peerConnections >= 2 {
+            findings.append(.init(id: "connections", severity: .info, title: "\(connections + latest.peerConnections) open connections",
+                                  detail: "\(latest.webSockets) WebSocket, \(latest.eventSources) EventSource, \(latest.peerConnections) WebRTC."))
+        }
+        if let nodes = latest.domNodes, nodes >= 30_000 {
+            findings.append(.init(id: "dom", severity: .info, title: "Large page (\(nodes.formatted()) elements)",
+                                  detail: "Style and layout cost grows with the document."))
+        }
+        return findings.sorted { $0.severity > $1.severity }
+    }
+
+    static func describe(_ animations: [WebPageHealthSample.Animation]) -> String {
+        animations.prefix(4).map { animation in
+            let props = animation.properties.isEmpty ? "" : " [\(animation.properties.joined(separator: ","))]"
+            return "\(animation.name) on \(animation.target.isEmpty ? "?" : animation.target)\(props)"
+        }.joined(separator: "; ")
+    }
+
+    static func average(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count) }
+    static func percent(_ fraction: Double) -> String { "\(Int((fraction * 100).rounded()))%" }
+}
+
+// MARK: - Monitor
+
+/// Watches the chat page's web content and the device so a hot phone can be
+/// explained, and stops a runaway page. Samples every 5 s in the foreground and
+/// every 30 s while the app runs in the background (playing audio); the page
+/// reports by itself through the injected probe. A sample is a handful of
+/// system calls; the monitor times its own work (`status.monitorShare`).
+@MainActor
+final class WebKitHealthMonitor: ObservableObject {
+    static let shared = WebKitHealthMonitor()
+    static let probeKey = "webKitHealth.probe"
+    static let autoStopKey = "webKitHealth.autoStop"
+    static let interval: TimeInterval = 5
+    static let backgroundInterval: TimeInterval = 30
+    static let retention: TimeInterval = 30 * 60
+
+    @Published var probeEnabled: Bool {
+        didSet { defaults.set(probeEnabled, forKey: Self.probeKey) }
+    }
+    @Published var autoStopEnabled: Bool {
+        didSet {
+            defaults.set(autoStopEnabled, forKey: Self.autoStopKey)
+            record("setting", "Stop runaway pages \(autoStopEnabled ? "on" : "off").")
+        }
+    }
+    @Published private(set) var status = WebKitHealthStatus()
+    @Published private(set) var events: [WebKitHealthEvent] = []
+    @Published private(set) var minutes: [WebKitHealthMinute] = []
+    /// The diagnostics screen is open: also break down this app's threads.
+    var detailed = false
+
+    var policy = WebKitHealthPolicy()
+    private let defaults: UserDefaults
+    private let journal: WebKitHealthJournal?
+    private let sampler = ProcessUsageSampler()
+    private var timer: Timer?
+    private(set) var natives: [NativeHealthSample] = []
+    private var sessionRefs: [WeakSession] = []
+    private let webViews = NSHashTable<WKWebView>.weakObjects()
+    private var nextSession = 1
+    private var accumulator = MinuteAccumulator()
+    private var pendingEffect: PendingEffect?
+    private var extraWebViewsSince: TimeInterval?
+    private var reportedExtraWebViews = false
+    private var lastThermal = ProcessInfo.processInfo.thermalState
+    private var observers: [NSObjectProtocol] = []
+    private var parked: WebKitParkedPage?
+    /// Main-thread time spent in this monitor since `costSince`.
+    private var costNanoseconds: UInt64 = 0
+    private var costSince: UInt64?
+
+    private struct WeakSession { weak var session: WebKitPageSession? }
+    private struct PendingEffect {
+        let reason: WebKitTeardownReason
+        let at: TimeInterval
+        let deviceBefore: Double?
+        let appBefore: Double?
+    }
+
+    init(defaults: UserDefaults = HubFixture.defaults, journal: WebKitHealthJournal? = .standard()) {
+        self.defaults = defaults
+        self.journal = journal
+        probeEnabled = defaults.object(forKey: Self.probeKey) as? Bool ?? true
+        autoStopEnabled = defaults.object(forKey: Self.autoStopKey) as? Bool ?? true
+    }
+
+    var sessions: [WebKitPageSession] { sessionRefs.compactMap(\.session) }
+
+    // MARK: Lifecycle
+
+    func start() {
+        guard timer == nil else { return }
+        journal?.load { [weak self] events, minutes in
+            Task { @MainActor in
+                guard let self else { return }
+                self.events = Array((events + self.events).suffix(300))
+                self.minutes = Array((minutes + self.minutes).suffix(360))
+            }
+        }
+        let device = UIDevice.current
+        record("launch", "App \(Self.appVersion) on \(Self.deviceModel) iOS \(device.systemVersion), \(sampler.cpuCount) cores. "
+               + "Probe \(probeEnabled ? "on" : "off"), stop runaway pages \(autoStopEnabled ? "on" : "off").")
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.thermalChanged() }
+            },
+            center.addObserver(forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.record("power", "Low Power Mode \(ProcessInfo.processInfo.isLowPowerModeEnabled ? "on" : "off").")
+                }
+            },
+            center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.record("memory", "Memory warning. \(self?.snapshot() ?? "")") }
+            },
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.record("app", "Entered background. \(self.snapshot())")
+                    // Only alive while playing audio; a coarse history is enough.
+                    self.schedule(every: Self.backgroundInterval)
+                }
+            },
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.record("app", "Returned to foreground.")
+                    self.schedule(every: Self.interval)
+                    self.tick()
+                }
+            },
+        ]
+        schedule(every: UIApplication.shared.applicationState == .background ? Self.backgroundInterval : Self.interval)
+        tick()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers = []
+    }
+
+    private func schedule(every interval: TimeInterval) {
+        if let timer, timer.isValid, timer.timeInterval == interval { return }
+        timer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        // Lets iOS coalesce the wakeup with others.
+        timer.tolerance = interval / 5
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    /// Adds the duration of monitor work started at `began` to its running cost.
+    private func charge(since began: UInt64) {
+        let end = DispatchTime.now().uptimeNanoseconds
+        if costSince == nil { costSince = began }
+        costNanoseconds &+= end >= began ? end - began : 0
+    }
+
+    /// Share of one core this monitor has used since its first sample.
+    var monitorShare: Double? {
+        guard let since = costSince else { return nil }
+        let elapsed = DispatchTime.now().uptimeNanoseconds &- since
+        return elapsed >= 1_000_000_000 ? Double(costNanoseconds) / Double(elapsed) : nil
+    }
+
+    // MARK: Browser views
+
+    func makeSession(for webView: WKWebView, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> WebKitPageSession {
+        let session = WebKitPageSession(number: nextSession, created: now)
+        nextSession += 1
+        session.webView = webView
+        webViews.add(webView)
+        sessionRefs.removeAll { $0.session == nil }
+        sessionRefs.append(WeakSession(session: session))
+        return session
+    }
+
+    func detach(_ session: WebKitPageSession) {
+        sessionRefs.removeAll { $0.session == nil || $0.session === session }
+        extraWebViewsSince = nil
+        reportedExtraWebViews = false
+    }
+
+    /// Native state changed (SwiftUI update, capture, tool call): log
+    /// visibility transitions promptly rather than at the next sample.
+    func refresh(_ session: WebKitPageSession, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let began = DispatchTime.now().uptimeNanoseconds
+        defer { charge(since: began) }
+        update(session, context: session.contextProvider(), now: now)
+    }
+
+    func documentWillChange(_ session: WebKitPageSession) {
+        session.documentID = nil
+        session.samples.removeAll()
+        session.lastSampleAt = nil
+        session.stalled = false
+        session.reportedMismatch = false
+        session.episodes.removeAll()
+    }
+
+    func contentProcessTerminated(_ session: WebKitPageSession) {
+        record("terminated", "WebKit's page process exited (crash, memory limit or iOS). \(snapshot(session))")
+        documentWillChange(session)
+    }
+
+    func record(_ sample: WebPageHealthSample, from session: WebKitPageSession,
+                now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard probeEnabled else { return }
+        let began = DispatchTime.now().uptimeNanoseconds
+        defer { charge(since: began) }
+        if session.documentID != sample.documentID {
+            session.documentID = sample.documentID
+            session.samples.removeAll()
+            session.episodes.removeAll()
+            session.reportedMismatch = false
+        }
+        session.samples.append(TimedPageSample(uptime: now, sample: sample))
+        session.samples.removeAll { now - $0.uptime > 10 * 60 }
+        session.lastSampleAt = now
+        if session.stalled {
+            session.stalled = false
+            record("recovered", "Page responding again.")
+        }
+        accumulator.add(sample)
+        if sample.isVisible, sample.maxLateMilliseconds >= 2000, now - session.lastLongBlock >= 60 {
+            session.lastLongBlock = now
+            record("blocked", "Page main thread blocked for \(String(format: "%.1f", sample.maxLateMilliseconds / 1000)) s.")
+        }
+        let context = session.context
+        if !context.userCanSee, sample.isVisible, !session.reportedMismatch,
+           let hidden = session.hiddenSince, now - hidden >= 10 {
+            session.reportedMismatch = true
+            record("visibility", "Chat page off screen but WebKit still runs it as visible (view \(context.inWindow ? "in" : "not in") window\(context.viewHidden ? ", isHidden" : ""), app \(context.appBackground ? "background" : "foreground")). \(describe(sample))")
+        }
+    }
+
+    /// Diagnostics "Pause": close the most relevant page's web view now.
+    func pausePage(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard let session = primarySession() else { return }
+        teardown(session, reason: .manual, detail: "Paused from diagnostics to see what closing the page changes.", now: now)
+    }
+
+    func noteParked(_ page: WebKitParkedPage) {
+        parked = page
+        status.parked = page
+    }
+
+    /// A stopped page that will not be reopened (its connection changed).
+    func noteDiscarded(_ page: WebKitParkedPage) {
+        if parked?.id == page.id { parked = nil }
+        status.parked = parked
+    }
+
+    func noteResumed(_ page: WebKitParkedPage, automatically: Bool,
+                     now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        if parked?.id == page.id { parked = nil }
+        status.parked = parked
+        // The page is back: judge the close only by the time it stayed closed.
+        finishEffect(until: now)
+        record("resumed", automatically ? "Chat page reopened on return to Chat." : "Chat page reloaded.")
+    }
+
+    // MARK: Sampling
+
+    func tick(now: TimeInterval = ProcessInfo.processInfo.systemUptime, native: NativeHealthSample? = nil) {
+        let began = DispatchTime.now().uptimeNanoseconds
+        defer { charge(since: began) }
+        let application = UIApplication.shared.applicationState
+        let sample = native ?? sampler.sample(uptime: now, appActive: application == .active,
+                                              appBackground: application == .background)
+        natives.append(sample)
+        natives.removeAll { now - $0.uptime > Self.retention }
+        let current = sessions
+        sessionRefs.removeAll { $0.session == nil }
+        for session in current {
+            update(session, context: session.contextProvider(), now: now)
+            evaluate(session, now: now)
+        }
+        let alive = webViews.allObjects.count
+        if alive > current.count {
+            extraWebViewsSince = extraWebViewsSince ?? now
+            if let since = extraWebViewsSince, now - since >= 15, !reportedExtraWebViews {
+                reportedExtraWebViews = true
+                record("leak", "\(alive - current.count) web view(s) still alive \(Int(now - since)) s after their browser closed.")
+            }
+        } else {
+            extraWebViewsSince = nil
+            reportedExtraWebViews = false
+        }
+        checkEffect(now: now)
+        let threads = (detailed || (sample.appCPU ?? 0) >= 0.3) ? ProcessUsageSampler.busiestThreads() : []
+        let primary = primarySession()
+        if let finished = accumulator.add(sample, chatOnScreen: primary?.context.userCanSee ?? false, webViews: alive,
+                                          monitorNanoseconds: costNanoseconds) {
+            minutes.append(finished)
+            if minutes.count > 360 { minutes.removeFirst(minutes.count - 360) }
+            journal?.append(minute: finished)
+        }
+        publish(now: now, native: sample, primary: primary, threads: threads, alive: alive, pages: current.count)
+    }
+
+    private func update(_ session: WebKitPageSession, context: WebKitPageContext, now: TimeInterval) {
+        let previous = session.context
+        session.context = context
+        if context.userCanSee {
+            if session.visibleSince == nil { session.visibleSince = now }
+            session.hiddenSince = nil
+            session.wouldStop = nil
+        } else {
+            if session.hiddenSince == nil { session.hiddenSince = now }
+            session.visibleSince = nil
+            session.stalled = false
+        }
+        if previous.capturing != context.capturing {
+            record("capture", context.capturing ? "Page started using the microphone/camera." : "Page stopped using the microphone/camera.")
+        }
+    }
+
+    private func evaluate(_ session: WebKitPageSession, now: TimeInterval) {
+        guard !session.teardownRequested else { return }
+        let thermal = natives.last?.thermal ?? ProcessInfo.processInfo.thermalState
+        switch policy.verdict(.init(now: now, context: session.context, hiddenSince: session.hiddenSince,
+                                    visibleSince: session.visibleSince, lastSampleAt: session.lastSampleAt,
+                                    armed: session.documentID != nil && probeEnabled, samples: session.samples,
+                                    thermal: thermal, outsideAppCPU: outsideAppCPU(now: now))) {
+        case .healthy:
+            break
+        case .stalled(let seconds):
+            if !session.stalled {
+                session.stalled = true
+                record("stalled", "Page stopped answering for \(Int(seconds)) s while on screen. \(snapshot(session))")
+            }
+        case .teardown(let reason, let detail):
+            if autoStopEnabled {
+                teardown(session, reason: reason, detail: detail, now: now)
+            } else if session.wouldStop != reason {
+                session.wouldStop = reason
+                record("would-stop", "Would stop the page (stop runaway pages is off): \(detail) \(snapshot(session))")
+            }
+        }
+    }
+
+    private func teardown(_ session: WebKitPageSession, reason: WebKitTeardownReason, detail: String, now: TimeInterval) {
+        guard !session.teardownRequested else { return }
+        session.teardownRequested = true
+        let window = natives.filter { now - $0.uptime <= 60 }
+        pendingEffect = PendingEffect(reason: reason, at: now,
+                                      deviceBefore: optionalAverage(window.compactMap(\.deviceCPU)),
+                                      appBefore: optionalAverage(window.compactMap(\.appCPU)))
+        record("stop", "\(reason == .manual ? "Paused" : "Stopped") the chat page (\(reason.rawValue)): \(detail) \(snapshot(session))")
+        webKitHealthLog.notice("Closing chat page web view: \(reason.rawValue, privacy: .public)")
+        session.onTeardown(reason, detail)
+    }
+
+    private func checkEffect(now: TimeInterval) {
+        guard let effect = pendingEffect, now - effect.at >= 40 else { return }
+        finishEffect(until: now)
+    }
+
+    /// Records whether closing the page actually changed device CPU: the
+    /// minute before against the time it stayed closed (from 10 s after).
+    private func finishEffect(until end: TimeInterval) {
+        guard let effect = pendingEffect else { return }
+        pendingEffect = nil
+        let after = natives.filter { $0.uptime > effect.at + 10 && $0.uptime <= end }
+        guard after.count >= 2 else {
+            record("effect", "Page reopened \(Int(end - effect.at)) s after closing, too soon to measure the effect.")
+            return
+        }
+        func format(_ before: Double?, _ after: Double?) -> String {
+            guard let before, let after else { return "n/a" }
+            return String(format: "%.2f → %.2f cores", before, after)
+        }
+        record("effect", "After closing the page: device CPU \(format(effect.deviceBefore, optionalAverage(after.compactMap(\.deviceCPU)))), app \(format(effect.appBefore, optionalAverage(after.compactMap(\.appCPU)))).")
+    }
+
+    private func thermalChanged() {
+        let state = ProcessInfo.processInfo.thermalState
+        guard state != lastThermal else { return }
+        let previous = lastThermal
+        lastThermal = state
+        record("thermal", "Thermal state \(WebKitHealthPolicy.thermalName(previous).lowercased()) → \(WebKitHealthPolicy.thermalName(state).lowercased()). \(snapshot())")
+        tick()
+    }
+
+    /// Average cores busy outside this app over the last 30 s.
+    private func outsideAppCPU(now: TimeInterval) -> Double? {
+        let values = natives.filter { now - $0.uptime <= 30 }.compactMap(\.otherCPU)
+        return values.count >= 3 ? optionalAverage(values) : nil
+    }
+
+    private func primarySession() -> WebKitPageSession? {
+        let current = sessions
+        return current.first { $0.context.userCanSee } ?? current.max { $0.created < $1.created }
+    }
+
+    private func publish(now: TimeInterval, native: NativeHealthSample, primary: WebKitPageSession?,
+                         threads: [ThreadUsage], alive: Int, pages: Int) {
+        var next = WebKitHealthStatus()
+        next.native = native
+        let minute = natives.filter { now - $0.uptime <= 65 }
+        next.appCPUMinute = optionalAverage(minute.compactMap(\.appCPU))
+        next.deviceCPUMinute = optionalAverage(minute.compactMap(\.deviceCPU))
+        next.threads = threads
+        next.webViewsAlive = alive
+        next.pages = pages
+        next.parked = parked
+        next.monitorShare = monitorShare
+        var page: WebKitHealthFindings.Page?
+        if let primary {
+            let verdict = policy.verdict(.init(now: now, context: primary.context, hiddenSince: primary.hiddenSince,
+                                               visibleSince: primary.visibleSince, lastSampleAt: primary.lastSampleAt,
+                                               armed: primary.documentID != nil && probeEnabled, samples: primary.samples,
+                                               thermal: native.thermal, outsideAppCPU: outsideAppCPU(now: now)))
+            next.context = primary.context
+            next.latest = primary.latest
+            next.lastReportAge = primary.lastSampleAt.map { now - $0 }
+            if let visible = primary.samples.last(where: { $0.sample.isVisible }) {
+                next.lastOnScreen = visible.sample
+                next.lastOnScreenAge = now - visible.uptime
+            }
+            // On screen the probe reports every 5 s, hidden every 15 s.
+            let reporting = primary.lastSampleAt.map { now - $0 <= (primary.context.userCanSee ? 15 : 40) } ?? false
+            // The page clock has 1 ms steps: average over all of this page's
+            // retained reports (up to 10 min) rather than the last few.
+            let reports = primary.samples.map(\.sample)
+            let span = reports.reduce(0) { $0 + $1.spanSeconds }
+            next.probeShare = span >= 1 ? reports.reduce(0) { $0 + $1.probeMilliseconds } / 1000 / span : nil
+            if case .stalled(let seconds) = verdict {
+                next.pageState = .stalled(seconds)
+            } else if primary.context.loading {
+                next.pageState = .loading
+            } else if !primary.context.userCanSee {
+                next.pageState = reporting ? .offScreenAwake : .offScreenQuiet
+            } else {
+                next.pageState = reporting ? .active : .waiting
+            }
+            page = .init(context: primary.context, samples: primary.samples, hiddenSince: primary.hiddenSince, verdict: verdict)
+        }
+        next.findings = WebKitHealthFindings.evaluate(natives: natives, page: page, threads: threads,
+                                                      webViewsAlive: alive, pages: pages, now: now)
+        for finding in next.findings where finding.severity >= .warning {
+            guard let primary, ["busy", "frames", "audio", "animations", "visibility"].contains(finding.id) else { continue }
+            if primary.episodes.insert(finding.id).inserted {
+                record("finding", "\(finding.title). \(finding.detail)")
+            }
+        }
+        if let primary {
+            let active = Set(next.findings.map(\.id))
+            primary.episodes = primary.episodes.filter { active.contains($0) }
+        }
+        if status != next { status = next }
+    }
+
+    // MARK: Journal
+
+    func record(_ kind: String, _ message: String) {
+        let event = WebKitHealthEvent(date: Date(), kind: kind, message: message)
+        events.append(event)
+        if events.count > 300 { events.removeFirst(events.count - 300) }
+        journal?.append(event: event)
+        webKitHealthLog.info("[\(kind, privacy: .public)] \(message, privacy: .public)")
+    }
+
+    func clearHistory() {
+        events = []
+        minutes = []
+        journal?.clear()
+    }
+
+    /// One line of current context for events.
+    func snapshot(_ session: WebKitPageSession? = nil) -> String {
+        var parts: [String] = []
+        if let native = natives.last {
+            if let app = native.appCPU { parts.append("app \(WebKitHealthFindings.percent(app))") }
+            if let device = native.deviceCPU { parts.append(String(format: "device %.1f cores", device)) }
+            parts.append("thermal \(WebKitHealthPolicy.thermalName(native.thermal).lowercased())")
+        }
+        if let page = session ?? primarySession() {
+            parts.append(page.context.userCanSee ? "chat on screen" : "chat off screen")
+            if page.context.capturing { parts.append("capturing") }
+            if let latest = page.latest { parts.append(describe(latest)) }
+        }
+        return parts.isEmpty ? "" : "[" + parts.joined(separator: " · ") + "]"
+    }
+
+    func describe(_ sample: WebPageHealthSample) -> String {
+        var parts = ["page \(sample.visibility)", "busy \(WebKitHealthFindings.percent(sample.busyFraction))",
+                     "\(Int(sample.framesPerSecond.rounded())) fps", "\(sample.runningAnimations) anim"]
+        if !sample.repaintingAnimations.isEmpty { parts.append("\(sample.repaintingAnimations.count) repainting") }
+        if sample.audioContextsRunning > 0 { parts.append("\(sample.audioContextsRunning) audio") }
+        if sample.liveTracks > 0 { parts.append("\(sample.liveTracks) tracks") }
+        parts.append("\(Int(sample.mutationsPerSecond.rounded())) mut/s")
+        return parts.joined(separator: " ")
+    }
+
+    func report(now: Date = Date()) -> String {
+        WebKitHealthReport.make(status: status, events: events, minutes: minutes, natives: natives,
+                                probeEnabled: probeEnabled, autoStop: autoStopEnabled, now: now,
+                                device: "\(Self.deviceModel) iOS \(UIDevice.current.systemVersion)", app: Self.appVersion)
+    }
+
+    static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    static var deviceModel: String {
+        var system = utsname()
+        uname(&system)
+        let model = withUnsafeBytes(of: system.machine) { raw in String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self) }
+        return WebKitHealthProbe.token(model, limit: 32) ?? UIDevice.current.model
+    }
+}
+
+func optionalAverage(_ values: [Double]) -> Double? { values.isEmpty ? nil : values.reduce(0, +) / Double(values.count) }
+
+// MARK: - Minute history
+
+struct MinuteAccumulator {
+    private var start: Date?
+    private var app: [Double] = []
+    private var device: [Double] = []
+    private var thermal = 0
+    private var battery: Int?
+    private var charging: Bool?
+    private var samples = 0
+    private var foreground = 0
+    private var chat = 0
+    private var webViews = 0
+    private var memory: Int?
+    private var pages: [WebPageHealthSample] = []
+    /// (uptime, cumulative monitor nanoseconds) at the minute's first and last sample.
+    private var costFirst: (uptime: TimeInterval, nanoseconds: UInt64)?
+    private var costLast: (uptime: TimeInterval, nanoseconds: UInt64)?
+
+    mutating func add(_ sample: WebPageHealthSample) { pages.append(sample) }
+
+    /// Returns the previous minute when `sample` starts a new one.
+    mutating func add(_ sample: NativeHealthSample, chatOnScreen: Bool, webViews alive: Int,
+                      monitorNanoseconds: UInt64 = 0, calendar: Calendar = .current) -> WebKitHealthMinute? {
+        let minute = calendar.dateInterval(of: .minute, for: sample.date)?.start ?? sample.date
+        var finished: WebKitHealthMinute?
+        if let start, start != minute { finished = summary(start: start) }
+        if start != minute { self = MinuteAccumulator(); start = minute }
+        if costFirst == nil { costFirst = (sample.uptime, monitorNanoseconds) }
+        costLast = (sample.uptime, monitorNanoseconds)
+        if let value = sample.appCPU { app.append(value) }
+        if let value = sample.deviceCPU { device.append(value) }
+        thermal = max(thermal, sample.thermal.rawValue)
+        battery = sample.batteryLevel.map { Int(($0 * 100).rounded()) }
+        charging = sample.charging
+        samples += 1
+        if sample.appActive { foreground += 1 }
+        if chatOnScreen { chat += 1 }
+        webViews = max(webViews, alive)
+        memory = sample.footprintMB.map { Int($0.rounded()) }
+        return finished
+    }
+
+    private func summary(start: Date) -> WebKitHealthMinute {
+        let count = Double(max(samples, 1))
+        let span = pages.reduce(0) { $0 + $1.spanSeconds }
+        let counted = pages.reduce(0) { $0 + $1.mutationSeconds }
+        var monitor: Double?
+        if let first = costFirst, let last = costLast, last.uptime - first.uptime >= 10, last.nanoseconds >= first.nanoseconds {
+            monitor = Double(last.nanoseconds - first.nanoseconds) / 1_000_000_000 / (last.uptime - first.uptime)
+        }
+        return WebKitHealthMinute(
+            start: start, app: optionalAverage(app), appPeak: app.max(), device: optionalAverage(device), devicePeak: device.max(),
+            thermal: thermal, battery: battery, charging: charging,
+            foreground: Double(foreground) / count, chatOnScreen: Double(chat) / count,
+            pageReports: pages.count,
+            pageVisible: pages.isEmpty ? nil : Double(pages.filter(\.isVisible).count) / Double(pages.count),
+            busy: pages.isEmpty ? nil : WebKitHealthFindings.average(pages.map(\.busyFraction)),
+            fps: span > 0 ? Double(pages.reduce(0) { $0 + $1.frames }) / span : nil,
+            animations: pages.map(\.runningAnimations).max(),
+            repainting: pages.map(\.repaintingAnimations.count).max(),
+            mutations: counted >= 0.2 ? Double(pages.reduce(0) { $0 + $1.mutations }) / counted : nil,
+            requests: span > 0 ? Double(pages.reduce(0) { $0 + $1.resources }) * 60 / span : nil,
+            audio: pages.map(\.audioContextsRunning).max(),
+            webViews: webViews, memoryMB: memory,
+            probe: span > 0 ? pages.reduce(0) { $0 + $1.probeMilliseconds } / 1000 / span : nil,
+            monitor: monitor)
+    }
+}
+
+// MARK: - Persistence
+
+/// JSON lines in Application Support, excluded from backups. Two small
+/// rotating files per kind; writes happen off the main thread.
+final class WebKitHealthJournal: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.termllm.webkit-health.journal", qos: .utility)
+    let directory: URL
+    static let maximumBytes = 256 * 1024
+
+    init(directory: URL) { self.directory = directory }
+
+    static func standard() -> WebKitHealthJournal? {
+        guard !HubFixture.isEnabled, !PhoneHubFixture.isEnabled,
+              let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return WebKitHealthJournal(directory: base.appendingPathComponent("Diagnostics/WebKitHealth", isDirectory: true))
+    }
+
+    func append(event: WebKitHealthEvent) { append(event, to: "events") }
+    func append(minute: WebKitHealthMinute) { append(minute, to: "minutes") }
+
+    func load(_ completion: @escaping @Sendable ([WebKitHealthEvent], [WebKitHealthMinute]) -> Void) {
+        queue.async { [self] in
+            completion(Array(read("events", as: WebKitHealthEvent.self).suffix(200)),
+                       Array(read("minutes", as: WebKitHealthMinute.self).suffix(360)))
+        }
+    }
+
+    func clear() {
+        queue.async { [self] in
+            for name in ["events", "minutes"] {
+                try? FileManager.default.removeItem(at: file(name))
+                try? FileManager.default.removeItem(at: file(name, old: true))
+            }
+        }
+    }
+
+    private func file(_ name: String, old: Bool = false) -> URL {
+        directory.appendingPathComponent(name + (old ? ".old" : "") + ".jsonl")
+    }
+
+    private func append<Value: Encodable & Sendable>(_ value: Value, to name: String) {
+        queue.async { [self] in
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard var line = try? encoder.encode(value) else { return }
+            line.append(0x0A)
+            let manager = FileManager.default
+            if !manager.fileExists(atPath: directory.path) {
+                try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+                var values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                var url = directory
+                try? url.setResourceValues(values)
+            }
+            let url = file(name)
+            if let size = (try? manager.attributesOfItem(atPath: url.path)[.size]) as? Int, size >= Self.maximumBytes {
+                try? manager.removeItem(at: file(name, old: true))
+                try? manager.moveItem(at: url, to: file(name, old: true))
+            }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line)
+            } else {
+                try? line.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
+        }
+    }
+
+    private func read<Value: Decodable>(_ name: String, as type: Value.Type) -> [Value] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var values: [Value] = []
+        for url in [file(name, old: true), file(name)] {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            for line in data.split(separator: 0x0A) {
+                if let value = try? decoder.decode(Value.self, from: Data(line)) { values.append(value) }
+            }
+        }
+        return values
+    }
+}
+
+// MARK: - Report
+
+enum WebKitHealthReport {
+    static func make(status: WebKitHealthStatus, events: [WebKitHealthEvent], minutes: [WebKitHealthMinute],
+                     natives: [NativeHealthSample], probeEnabled: Bool, autoStop: Bool, now: Date,
+                     device: String, app: String) -> String {
+        let time = Date.FormatStyle(date: .omitted, time: .standard)
+        var lines = ["term-llm WebKit health report", "Generated \(now.formatted(date: .abbreviated, time: .standard))",
+                     "Device \(device) · app \(app) · probe \(probeEnabled ? "on" : "off") · stop runaway pages \(autoStop ? "on" : "off")", ""]
+        if let native = status.native {
+            var now = ["thermal \(WebKitHealthPolicy.thermalName(native.thermal).lowercased())"]
+            if let battery = native.batteryLevel { now.append("battery \(Int((battery * 100).rounded()))%\(native.charging == true ? " charging" : "")") }
+            if native.lowPower { now.append("Low Power Mode") }
+            if let app = status.appCPUMinute { now.append("app CPU \(WebKitHealthFindings.percent(app)) (1 min)") }
+            if let device = status.deviceCPUMinute { now.append(String(format: "device CPU %.2f of %d cores (1 min)", device, native.cpuCount)) }
+            if let memory = native.footprintMB { now.append("app memory \(Int(memory)) MB") }
+            if let wakeups = native.wakeupsPerSecond { now.append("app wakeups \(Int(wakeups))/s") }
+            lines.append("Now: " + now.joined(separator: ", "))
+        }
+        let context = status.context
+        lines.append("Chat page: \(pageState(status.pageState)), \(context.userCanSee ? "on screen" : "off screen"), view \(context.inWindow ? "in" : "not in") window\(context.viewHidden ? " (isHidden)" : ""), app \(context.appBackground ? "background" : "foreground")\(context.capturing ? ", capturing" : "")")
+        if let latest = status.latest {
+            lines.append("Last page report: visibility \(latest.visibility), busy \(WebKitHealthFindings.percent(latest.busyFraction)) (longest block \(Int(latest.maxLateMilliseconds)) ms), \(String(format: "%.1f", latest.framesPerSecond)) frames/s, \(latest.runningAnimations) running animations, \(Int(latest.mutationsPerSecond.rounded())) DOM changes/s, \(Int(latest.resourcesPerMinute.rounded())) requests/min, DOM \(latest.domNodes.map(String.init) ?? "?") elements")
+            lines.append("  audio contexts \(latest.audioContextsRunning)/\(latest.audioContexts) running, live tracks \(latest.liveTracks), WebRTC \(latest.peerConnections), WebSocket \(latest.webSockets), EventSource \(latest.eventSources), media playing \(latest.mediaPlaying)")
+            if !latest.animations.isEmpty {
+                lines.append("  animations: " + latest.animations.map { "\($0.name) on \($0.target) [\($0.properties.joined(separator: ","))]\($0.infinite ? " infinite" : "")\($0.composited ? "" : " REPAINTS")" }.joined(separator: "; "))
+            }
+        }
+        if let onScreen = status.lastOnScreen, status.latest?.isVisible != true, let age = status.lastOnScreenAge {
+            lines.append("Last on-screen report (\(Int(age)) s ago): busy \(WebKitHealthFindings.percent(onScreen.busyFraction)), \(String(format: "%.1f", onScreen.framesPerSecond)) frames/s, \(onScreen.runningAnimations) running animations, \(Int(onScreen.mutationsPerSecond.rounded())) DOM changes/s, \(Int(onScreen.resourcesPerMinute.rounded())) requests/min")
+            if !onScreen.animations.isEmpty {
+                lines.append("  animations: " + onScreen.animations.map { "\($0.name) on \($0.target) [\($0.properties.joined(separator: ","))]\($0.infinite ? " infinite" : "")\($0.composited ? "" : " REPAINTS")" }.joined(separator: "; "))
+            }
+        }
+        lines.append("Web views alive \(status.webViewsAlive), browser pages \(status.pages)\(status.parked.map { ", parked: \($0.reason.rawValue)" } ?? "")")
+        lines.append("Monitor cost: app \(costText(status.monitorShare)) of a core since launch, page probe \(costText(status.probeShare)) (this page, up to 10 min)")
+        if !status.threads.isEmpty {
+            lines.append("Busiest app threads: " + status.threads.map { "\($0.name) \(WebKitHealthFindings.percent($0.cpu))" }.joined(separator: ", "))
+        }
+        lines.append("")
+        lines.append("Findings:")
+        if status.findings.isEmpty { lines.append("  none") }
+        for finding in status.findings {
+            lines.append("  [\(["info", "warning", "critical"][finding.severity.rawValue])] \(finding.title): \(finding.detail)")
+        }
+        lines.append("")
+        lines.append("Events (newest first):")
+        for event in events.suffix(80).reversed() {
+            lines.append("  \(event.date.formatted(date: .numeric, time: .standard)) \(event.kind): \(event.message)")
+        }
+        lines.append("")
+        lines.append("Minutes (newest first): time thermal app% dev-cores fg% chat% | reports vis% busy% fps anim repaint mut/s req/min audio | views battery | probe% monitor%")
+        for minute in minutes.suffix(120).reversed() {
+            func value(_ number: Double?, _ format: String = "%.0f") -> String { number.map { String(format: format, $0) } ?? "-" }
+            lines.append("  \(minute.start.formatted(time)) \(WebKitHealthPolicy.thermalName(ProcessInfo.ThermalState(rawValue: minute.thermal) ?? .nominal).lowercased()) \(value(minute.app.map { $0 * 100 })) \(value(minute.device, "%.2f")) \(Int(minute.foreground * 100)) \(Int(minute.chatOnScreen * 100)) | \(minute.pageReports) \(value(minute.pageVisible.map { $0 * 100 })) \(value(minute.busy.map { $0 * 100 })) \(value(minute.fps, "%.1f")) \(minute.animations.map(String.init) ?? "-") \(minute.repainting.map(String.init) ?? "-") \(value(minute.mutations, "%.1f")) \(value(minute.requests)) \(minute.audio.map(String.init) ?? "-") | \(minute.webViews) \(minute.battery.map { "\($0)%" } ?? "-")\(minute.charging == true ? "+" : "") | \(value(minute.probe.map { $0 * 100 }, "%.3f")) \(value(minute.monitor.map { $0 * 100 }, "%.3f"))")
+        }
+        if !natives.isEmpty {
+            lines.append("")
+            lines.append("Samples (last 5 min, newest first): time app% dev-cores wakeups/s")
+            let last = natives.last?.uptime ?? 0
+            for sample in natives.filter({ last - $0.uptime <= 300 }).reversed() {
+                lines.append("  \(sample.date.formatted(time)) \(sample.appCPU.map { String(Int(($0 * 100).rounded())) } ?? "-") \(sample.deviceCPU.map { String(format: "%.2f", $0) } ?? "-") \(sample.wakeupsPerSecond.map { String(Int($0)) } ?? "-")")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A small share of one core, e.g. "0.004%".
+    static func costText(_ share: Double?) -> String {
+        guard let share else { return "n/a" }
+        let percent = share * 100
+        return percent >= 1 ? String(format: "%.1f%%", percent) : String(format: "%.3f%%", percent)
+    }
+
+    static func pageState(_ state: WebKitHealthStatus.PageState) -> String {
+        switch state {
+        case .none: "not open"
+        case .loading: "loading"
+        case .waiting: "waiting for first report"
+        case .active: "reporting"
+        case .stalled(let seconds): "not responding for \(Int(seconds)) s"
+        case .offScreenAwake: "still running"
+        case .offScreenQuiet: "quiet (throttled or suspended)"
+        }
+    }
+}
