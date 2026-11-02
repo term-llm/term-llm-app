@@ -122,6 +122,9 @@ struct BrowserView: UIViewRepresentable {
     let backCount: Int
     let authenticatedCount: Int
     var scenePhase: ScenePhase = .active
+    /// Mac-only text scale. WebKit page zoom stays at 100% so viewport-sized
+    /// headers and composers continue to fit. Phone/iPad sizing is untouched.
+    var textScale: Double = 1.25
     var isSigningIn = false
     /// Device tools to expose to this server's page via WebMCP, or nil when
     /// the user has not opted this server in.
@@ -193,10 +196,71 @@ struct BrowserView: UIViewRepresentable {
             (originPort == 0 ? defaultPort : originPort) == (url.port ?? defaultPort)
     }
 
+    nonisolated static func normalizedMacTextScale(_ value: Double) -> Double {
+        DesktopChatAppearance.clamped(value)
+    }
+
+    static func configureMacBrowsing(_ configuration: WKWebViewConfiguration, isMac: Bool) {
+        guard isMac else { return }
+        // This is a UIKit WebView even on Mac. Its desktop content mode can
+        // impose a wide effective viewport, then shrink/clip that layout inside
+        // a narrow app window. Honor the page's width=device-width viewport;
+        // responsive CSS still selects the desktop layout when there is room.
+        // Readability is controlled independently by text scaling, not by
+        // fitting an oversized desktop canvas into the native bounds.
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+    }
+
+    private static let macTextSizingMarker = "// term-llm Mac text sizing\n"
+
+    nonisolated static func macTextSizingScript(_ value: Double) -> String {
+        let percent = normalizedMacTextScale(value) * 100
+        return """
+        // term-llm Mac text sizing
+        (() => {
+            const size = '\(percent)%';
+            for (const element of [document.documentElement, document.body]) {
+                if (!element) continue;
+                for (const property of ['-webkit-text-size-adjust', 'text-size-adjust']) {
+                    if (element.style.getPropertyValue(property) !== size ||
+                        element.style.getPropertyPriority(property) !== 'important') {
+                        element.style.setProperty(property, size, 'important');
+                    }
+                }
+            }
+        })();
+        """
+    }
+
+    /// UIKit pageZoom changes the visual viewport without consistently resizing
+    /// fixed 100%-wide layouts. Use WebKit's text-only adjustment instead: text
+    /// reflows at the real width, and no navigation, draft or DOM replacement is
+    /// needed. The presentation script has no native handlers or credentials.
+    static func applyMacTextScale(_ value: Double, to view: WKWebView, isMac: Bool,
+                                  documentFinished: Bool = false) {
+        guard isMac else { return }
+        if abs(view.pageZoom - 1) > 0.001 { view.pageZoom = 1 }
+        let source = macTextSizingScript(value)
+        let controller = view.configuration.userContentController
+        let previous = controller.userScripts.first { $0.source.hasPrefix(macTextSizingMarker) }
+        let changed = previous?.source != source
+        if changed {
+            if let previous { controller.removeUserScript(previous) }
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd,
+                                                  forMainFrameOnly: true, in: .defaultClient))
+        }
+        // Reapply on commit completion if a preference changed during a load.
+        // Normal SwiftUI/polling updates with an unchanged size do no page work.
+        if (changed || documentFinished), view.url != nil {
+            view.evaluateJavaScript(source, in: nil, in: .defaultClient) { _ in }
+        }
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        Self.configureMacBrowsing(configuration, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
         configuration.websiteDataStore = websiteDataStore ?? (HubFixture.isEnabled ? HubFixture.websiteDataStore : .default())
         if let authenticationScript {
             configuration.userContentController.addUserScript(WKUserScript(source: authenticationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -206,6 +270,7 @@ struct BrowserView: UIViewRepresentable {
         context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
+        Self.applyMacTextScale(textScale, to: view, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
         context.coordinator.webView = view
         context.coordinator.syncHealth(view)
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.appWillStartPlayback),
@@ -248,6 +313,7 @@ struct BrowserView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
+        Self.applyMacTextScale(textScale, to: view, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
         context.coordinator.update(view, parent: self)
     }
 
@@ -837,6 +903,8 @@ struct BrowserView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard !closingPage else { return }
+            BrowserView.applyMacTextScale(parent.textScale, to: webView,
+                                          isMac: ProcessInfo.processInfo.isiOSAppOnMac, documentFinished: true)
             if let scene = webView.window?.windowScene {
                 registerPushScene(scene)
             }

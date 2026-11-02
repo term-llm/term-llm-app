@@ -98,28 +98,102 @@ enum HubServerRole: Equatable {
         return .direct
     }
 
+    // A cold VPN/DNS/DERP path can take longer than the old three-second
+    // budget. Keep discovery bounded without confusing a slow tailnet with an
+    // unsupported server. Navigation and cancellation remain independent.
+    static let discoveryTimeout: TimeInterval = 15
+
+    enum DiscoveryFailure: LocalizedError, Equatable {
+        case network(code: Int, tailnet: Bool)
+        case http(Int)
+        case unrecognized
+
+        var errorDescription: String? {
+            switch self {
+            case .network(let code, let tailnet):
+                let hint = tailnet
+                    ? " Check that Tailscale is connected on both devices, the server is online, and your tailnet access rules allow this connection."
+                    : " Check the server address and your network connection."
+                switch URLError.Code(rawValue: code) {
+                case .cannotFindHost, .dnsLookupFailed:
+                    return "Could not resolve the server name." + (tailnet
+                        ? " Connect Tailscale on this device and check MagicDNS and the full HTTPS .ts.net name."
+                        : hint)
+                case .timedOut:
+                    return "The server did not respond within 15 seconds." + hint
+                case .cannotConnectToHost, .networkConnectionLost:
+                    return "Could not reach the server." + hint
+                case .notConnectedToInternet:
+                    return "The network connection is unavailable." + hint
+                case .secureConnectionFailed, .serverCertificateHasBadDate,
+                     .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                     .serverCertificateNotYetValid, .clientCertificateRejected,
+                     .clientCertificateRequired:
+                    return "Could not establish a trusted HTTPS connection. Use the hostname covered by the server’s valid certificate, not its IP address. Check the certificate and device date; certificate verification has not been bypassed."
+                default:
+                    return "Could not connect to the server." + hint
+                }
+            case .http(let status):
+                if status == 401 || status == 403 {
+                    return "The server’s health check requires access (HTTP \(status)). Allow the public /healthz check at the configured mount so the app can identify the server before sign-in."
+                }
+                if (300..<400).contains(status) {
+                    return "The server’s health check redirected. Enter the final HTTPS server address, including its path prefix. Discovery does not follow redirects."
+                }
+                return "The server’s health check returned HTTP \(status). Check the server address, path prefix, and reverse-proxy configuration."
+            case .unrecognized:
+                return "Could not identify this server. Check that the address points to a term-llm Hub or Direct Node and includes its path prefix."
+            }
+        }
+    }
+
     static func discover(server: URL) async -> HubServerRole {
-        var components = URLComponents(url: server, resolvingAgainstBaseURL: false)
-        let prefix = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components?.path = (prefix.isEmpty ? "" : "/" + prefix) + "/healthz"
-        guard let url = components?.url else { return .unknown }
-        var request = URLRequest(url: url, timeoutInterval: 3)
-        request.httpShouldHandleCookies = false
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        (try? await detect(server: server)) ?? .unknown
+    }
+
+    /// Throw actionable, credential-free diagnostics for the connection editor.
+    /// Migration still uses `discover` and leaves unsuccessful probes unresolved.
+    static func detect(server: URL) async throws -> HubServerRole {
+        try await detect(server: server, configuration: discoveryConfiguration())
+    }
+
+    static func discoveryConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = 3
-        configuration.timeoutIntervalForResource = 3
+        configuration.timeoutIntervalForRequest = discoveryTimeout
+        configuration.timeoutIntervalForResource = discoveryTimeout
+        return configuration
+    }
+
+    static func detect(server: URL, configuration: URLSessionConfiguration) async throws -> HubServerRole {
+        var components = URLComponents(url: server, resolvingAgainstBaseURL: false)
+        let prefix = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components?.path = (prefix.isEmpty ? "" : "/" + prefix) + "/healthz"
+        guard let url = components?.url else { throw DiscoveryFailure.unrecognized }
+        var request = URLRequest(url: url, timeoutInterval: discoveryTimeout)
+        request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         let session = URLSession(configuration: configuration, delegate: HubRoleRedirectBlocker(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)
-            guard !Task.isCancelled, let http = response as? HTTPURLResponse, http.url == url else { return .unknown }
+            try Task.checkCancellation()
+            guard let http = response as? HTTPURLResponse, http.url == url else { throw DiscoveryFailure.unrecognized }
+            guard http.statusCode == 200 else { throw DiscoveryFailure.http(http.statusCode) }
             return classify(status: http.statusCode, data: data)
-        } catch { return .unknown }
+        } catch {
+            try Task.checkCancellation()
+            if let failure = error as? DiscoveryFailure { throw failure }
+            let error = error as NSError
+            if error.domain == NSURLErrorDomain {
+                let host = server.host?.lowercased() ?? ""
+                throw DiscoveryFailure.network(code: error.code, tailnet: host.hasSuffix(".ts.net"))
+            }
+            throw DiscoveryFailure.unrecognized
+        }
     }
 }
 

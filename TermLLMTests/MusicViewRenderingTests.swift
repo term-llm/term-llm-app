@@ -22,11 +22,12 @@ final class MusicViewRenderingTests: XCTestCase {
         return library
     }
 
-    private func render<Content: View>(_ view: Content, named name: String) async throws {
+    private func render<Content: View>(_ view: Content, named name: String, width: CGFloat? = nil) async throws {
         // Windows only draw when attached to a scene; borrow the test host's.
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.frame = scene.screen.bounds
+        window.frame = CGRect(origin: .zero, size: CGSize(width: width ?? scene.screen.bounds.width,
+                                                        height: scene.screen.bounds.height))
         window.rootViewController = UIHostingController(rootView: view)
         window.makeKeyAndVisible()
         try await Task.sleep(for: .milliseconds(800))
@@ -52,6 +53,12 @@ final class MusicViewRenderingTests: XCTestCase {
     func testMusicScreen() async throws {
         let library = try await sampleLibrary()
         try await render(MusicView(library: library), named: "music")
+    }
+
+    func testMusicWorkspaceRoot() async throws {
+        let library = try await sampleLibrary()
+        try await render(MusicView(library: library, embedded: true, usesWorkspaceChrome: true,
+                                   onToggleSidebar: {}), named: "music-workspace-root", width: 1_024)
     }
 
     func testPlaylistScreen() async throws {

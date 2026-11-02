@@ -99,3 +99,33 @@ final class PhoneHubAgentRowRenderingTests: XCTestCase {
         return band.map { CGFloat($0.lowerBound) / scale...CGFloat($0.upperBound + 1) / scale }
     }
 }
+
+@MainActor
+final class WorkspaceChromeTests: XCTestCase {
+    func testQuietHeaderUsesOne52PointRowAtDefaultTextSize() {
+        let header = WorkspaceHeader(title: "Agents", subtitle: "All connections", onToggleSidebar: {}) {
+            Button {} label: { Image(systemName: "arrow.clockwise").frame(width: 32, height: 44) }
+        }
+        .environment(\.dynamicTypeSize, .large)
+        let host = UIHostingController(rootView: header)
+        for width: CGFloat in [568, 900, 1220] {
+            let size = host.sizeThatFits(in: CGSize(width: width, height: 500))
+            XCTAssertEqual(size.height, 52, accuracy: 0.5, "No oversized title/capsule chrome at \(width)pt")
+            XCTAssertLessThanOrEqual(size.width, width)
+        }
+    }
+
+    func testQuietHeaderAllowsAccessibilityTextToGrowRatherThanClip() {
+        let host = UIHostingController(rootView: WorkspaceHeader(title: "Agents") { EmptyView() }
+            .environment(\.dynamicTypeSize, .accessibility5))
+        XCTAssertGreaterThan(host.sizeThatFits(in: CGSize(width: 568, height: 500)).height, 52)
+    }
+
+    func testPhoneHomeDefaultsToExistingSystemNavigationChrome() {
+        let view = PhoneHubView(connections: HubConnectionStore(defaults: isolatedDefaults()),
+                                aggregate: HubAggregateStore(), pendingConnectionURL: .constant(nil),
+                                isVisible: true, onOpenChat: { _, _ in }, onSettings: {})
+        XCTAssertFalse(view.usesWorkspaceChrome)
+        XCTAssertNil(view.onToggleSidebar)
+    }
+}

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		000000000000000000000BA1 /* ListenNetworkUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000BA0 /* ListenNetworkUsage.swift */; };
 		000000000000000000000080 /* TermLLMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000040 /* TermLLMApp.swift */; };
 		000000000000000000000081 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000041 /* ContentView.swift */; };
 		000000000000000000000082 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000042 /* BrowserView.swift */; };
@@ -189,6 +190,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		000000000000000000000BA0 /* ListenNetworkUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenNetworkUsage.swift; sourceTree = "<group>"; };
 		000000000000000000000030 /* TermLLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TermLLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000031 /* TermLLMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TermLLMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000040 /* TermLLMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermLLMApp.swift; sourceTree = "<group>"; };
@@ -415,6 +417,7 @@
 				000000000000000000000B90 /* WebKitHealthProbe.swift */,
 				000000000000000000000B96 /* WebKitHealthSampler.swift */,
 				000000000000000000000B98 /* WebKitHealthMonitor.swift */,
+				000000000000000000000BA0 /* ListenNetworkUsage.swift */,
 				000000000000000000000B9A /* WebKitHealthView.swift */,
 				0000000000000000000000A0 /* WebMCPBridge.swift */,
 				0000000000000000000000C0 /* MusicModels.swift */,
@@ -749,6 +752,7 @@
 				000000000000000000000B91 /* WebKitHealthProbe.swift in Sources */,
 				000000000000000000000B97 /* WebKitHealthSampler.swift in Sources */,
 				000000000000000000000B99 /* WebKitHealthMonitor.swift in Sources */,
+				000000000000000000000BA1 /* ListenNetworkUsage.swift in Sources */,
 				000000000000000000000B9B /* WebKitHealthView.swift in Sources */,
 				0000000000000000000000B0 /* WebMCPBridge.swift in Sources */,
 				0000000000000000000000D0 /* MusicModels.swift in Sources */,

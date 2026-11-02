@@ -88,6 +88,7 @@ final class ListenDownloader {
     /// otherwise its transfer, which saves it while it plays. Video and plain
     /// http stream straight from the URL (cookies only for the connected server).
     func source(for item: ListenItem) async -> ListenSource {
+        retirePlaybackCaches(except: item.id)
         if let local = localURL(for: item) { return ListenSource(url: local, spoken: item.kind != .music) }
         if item.download == .downloaded {
             // The file vanished; forget it.
@@ -106,8 +107,8 @@ final class ListenDownloader {
         item.kind != .video && item.url.scheme?.lowercased() == "https"
     }
 
-    /// Downloads `id`. `forPlayback` caches something that's streaming: the
-    /// file goes once the item is played.
+    /// Downloads `id`. `forPlayback` caches only a bounded window ahead of
+    /// playback; the file goes once the item is played.
     func download(_ id: UUID, forPlayback: Bool = false) {
         guard let item = store.item(id) else { return }
         if !forPlayback {
@@ -116,11 +117,15 @@ final class ListenDownloader {
             if item.cachedForPlayback == true { store.update(id) { $0.cachedForPlayback = nil } }
         }
         guard item.download != .downloaded || localURL(for: item) == nil else { return }
-        if transfers[id] != nil || waiting.contains(id) { return }
+        if let transfer = transfers[id] {
+            if !forPlayback { transfer.setSaving(true) }
+            return
+        }
+        if waiting.contains(id) { return }
         if forPlayback { self.forPlayback.insert(id) }
         if let stream = streams.removeValue(forKey: id)?.transfer {
             // Saving stopped while it played: carry on with the same transfer.
-            stream.setSaving(true)
+            stream.setSaving(true, playbackOnly: forPlayback)
             track(stream, for: id)
             return
         }
@@ -227,6 +232,27 @@ final class ListenDownloader {
         return components.url ?? item.url
     }
 
+    /// Playback caches only need an active writer/watcher while current. Keep
+    /// sparse bytes for a later resume, without retaining every visited episode
+    /// or letting old completion callbacks update a replacement transfer.
+    private func retirePlaybackCaches(except current: UUID) {
+        for id in forPlayback where id != current {
+            waiting.removeAll { $0 == id }
+            stopWatching(id)
+            if let transfer = transfers.removeValue(forKey: id) {
+                transfer.cancel(keepingPartial: true)
+                // Seal the partial before another source selection can reopen
+                // it on a different transfer queue. No remote work is awaited.
+                _ = transfer.progress
+            }
+            if let item = store.item(id), item.download == .queued || item.download == .downloading {
+                store.update(id) { $0.download = .none; $0.downloadError = nil }
+            }
+        }
+        forPlayback = forPlayback.intersection([current])
+        startWaiting()
+    }
+
     /// The transfer playback reads: the download in flight, or a new one
     /// that caches the item while it plays. It starts at once, ahead of the queue.
     private func transferForPlayback(_ item: ListenItem) -> ListenTransfer {
@@ -239,7 +265,9 @@ final class ListenDownloader {
     }
 
     private func startWaiting() {
-        while transfers.count < Self.maxConcurrent, !waiting.isEmpty {
+        // The current playback cache may stay idle/partial indefinitely.
+        // It must not occupy a whole-file download queue slot.
+        while transfers.keys.filter({ !forPlayback.contains($0) }).count < Self.maxConcurrent, !waiting.isEmpty {
             let id = waiting.removeFirst()
             guard let item = store.item(id) else { continue }
             begin(item)
@@ -252,7 +280,7 @@ final class ListenDownloader {
         let sourceID = item.sourceID
         let transfer = ListenTransfer(
             id: item.id, remote: transferURL(for: item), directory: directory, fetching: fetching,
-            retryDelays: retryDelays,
+            retryDelays: retryDelays, playbackOnly: forPlayback.contains(item.id),
             makeRequest: { [weak self] url in
                 await self?.request(for: url, sameServer: sameServer, sourceID: sourceID) ?? URLRequest(url: url)
             },
@@ -289,8 +317,13 @@ final class ListenDownloader {
         let id = transfer.id
         if streams[id]?.transfer === transfer { streams[id] = nil }
         guard transfers[id] === transfer else {
-            // Saving was stopped: what playback fetched isn't kept.
-            if case .success(let saved) = result { try? FileManager.default.removeItem(at: saved.file) }
+            // Saving was stopped or its playback cache was retired. A newer
+            // transfer may already own the same destination: never delete its
+            // file when an old completion finally reaches the main actor.
+            if case .success(let saved) = result, transfers[id] == nil,
+               store.item(id)?.localFile != saved.file.lastPathComponent {
+                try? FileManager.default.removeItem(at: saved.file)
+            }
             return
         }
         transfers[id] = nil

@@ -154,6 +154,9 @@ final class WebKitPageSession {
     fileprivate(set) var documentID: String?
     fileprivate(set) var samples: [TimedPageSample] = []
     fileprivate(set) var lastSampleAt: TimeInterval?
+    /// After a lifecycle boundary only reports echoing this native reset token
+    /// may arm stall detection or contribute activity evidence.
+    fileprivate(set) var activityWindowID: String?
     fileprivate(set) var hiddenSince: TimeInterval?
     fileprivate(set) var visibleSince: TimeInterval?
     fileprivate var stalled = false
@@ -248,7 +251,7 @@ struct WebKitHealthPolicy: Sendable {
         let context = input.context
         // A hung page is checked only while the user is looking at it: hidden
         // and suspended pages legitimately stop reporting.
-        if context.userCanSee, !context.loading, input.armed, let last = input.lastSampleAt,
+        if context.userCanSee, !context.appBackground, !context.loading, input.armed, let last = input.lastSampleAt,
            let visibleSince = input.visibleSince {
             let silent = input.now - max(last, visibleSince)
             if silent >= unresponsiveAfter, !context.signingIn, let busy = input.outsideAppCPU, busy >= stuckCores {
@@ -437,6 +440,7 @@ final class WebKitHealthMonitor: ObservableObject {
     private let sampler = ProcessUsageSampler()
     private let runID = UUID().uuidString
     private var timer: Timer?
+    private var lastNativeTickAt: TimeInterval?
     private(set) var natives: [NativeHealthSample] = []
     private var sessionRefs: [WeakSession] = []
     private let webViews = NSHashTable<WKWebView>.weakObjects()
@@ -502,7 +506,7 @@ final class WebKitHealthMonitor: ObservableObject {
             center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.record("app", "Entered background. \(self.snapshot())")
+                    self.applicationDidEnterBackground()
                     // Only alive while playing audio; a coarse history is enough.
                     self.schedule(every: Self.backgroundInterval)
                 }
@@ -510,7 +514,7 @@ final class WebKitHealthMonitor: ObservableObject {
             center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.record("app", "Returned to foreground.")
+                    self.applicationWillEnterForeground()
                     self.schedule(every: Self.interval)
                     self.tick()
                 }
@@ -518,6 +522,56 @@ final class WebKitHealthMonitor: ObservableObject {
         ]
         schedule(every: UIApplication.shared.applicationState == .background ? Self.backgroundInterval : Self.interval)
         tick()
+    }
+
+    /// Invalidate before doing any sampling or accepting queued page messages.
+    /// UIKit's state and the browser's SwiftUI context may update in either order.
+    func applicationDidEnterBackground(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        invalidateActivityWindows(now: now, background: true)
+        record("app", "Entered background. \(snapshot())")
+    }
+
+    func applicationWillEnterForeground(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        invalidateActivityWindows(now: now, background: false)
+        record("app", "Returned to foreground.")
+    }
+
+    private func invalidateActivityWindows(now: TimeInterval, background: Bool? = nil) {
+        lastNativeTickAt = nil
+        for session in sessions {
+            if let background {
+                session.context.appBackground = background
+                if background { session.context.userCanSee = false }
+            }
+            invalidateActivityWindow(session, now: now)
+        }
+    }
+
+    private func invalidateActivityWindow(_ session: WebKitPageSession, now: TimeInterval) {
+        session.activityWindowID = UUID().uuidString
+        session.samples.removeAll()
+        session.lastSampleAt = nil
+        session.hiddenSince = session.context.userCanSee ? nil : now
+        session.visibleSince = session.context.userCanSee ? now : nil
+        session.stalled = false
+        session.reportedMismatch = false
+        session.episodes.removeAll()
+        session.wouldStop = nil
+        session.lastLongBlock = -.infinity
+        resetProbeWindow(session)
+    }
+
+    private func resetProbeWindow(_ session: WebKitPageSession) {
+        guard let id = session.activityWindowID else { return }
+        session.webView?.evaluateJavaScript(WebKitHealthProbe.resetScript(windowID: id), completionHandler: nil)
+    }
+
+    /// A suspended native timer can resume before the foreground notification or
+    /// a queued script message. With no continuous native observations, neither
+    /// page silence nor heartbeat lateness is evidence of foreground work.
+    private func invalidateAfterSamplingGap(now: TimeInterval) {
+        guard let last = lastNativeTickAt, now - last > Self.backgroundInterval * 2.5 else { return }
+        invalidateActivityWindows(now: now)
     }
 
     func stop() {
@@ -576,6 +630,7 @@ final class WebKitHealthMonitor: ObservableObject {
     func refresh(_ session: WebKitPageSession, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         let began = DispatchTime.now().uptimeNanoseconds
         defer { charge(since: began) }
+        invalidateAfterSamplingGap(now: now)
         update(session, context: session.contextProvider(), now: now)
     }
 
@@ -598,6 +653,14 @@ final class WebKitHealthMonitor: ObservableObject {
         guard probeEnabled else { return }
         let began = DispatchTime.now().uptimeNanoseconds
         defer { charge(since: began) }
+        invalidateAfterSamplingGap(now: now)
+        update(session, context: session.contextProvider(), now: now)
+        if let window = session.activityWindowID, sample.windowID != window {
+            // This can be a queued old report, or a new document whose probe
+            // has not received the reset yet. Neither arms the watchdog.
+            resetProbeWindow(session)
+            return
+        }
         if session.documentID != sample.documentID {
             session.documentID = sample.documentID
             session.samples.removeAll()
@@ -612,7 +675,7 @@ final class WebKitHealthMonitor: ObservableObject {
             record("recovered", "Page responding again.")
         }
         accumulator.add(sample)
-        if sample.isVisible, sample.maxLateMilliseconds >= 2000, now - session.lastLongBlock >= 60 {
+        if sample.isVisible, !session.context.appBackground, sample.maxLateMilliseconds >= 2000, now - session.lastLongBlock >= 60 {
             session.lastLongBlock = now
             record("blocked", "Page main thread blocked for \(String(format: "%.1f", sample.maxLateMilliseconds / 1000)) s.")
         }
@@ -656,6 +719,8 @@ final class WebKitHealthMonitor: ObservableObject {
               threadUsage: [ThreadUsage]? = nil) {
         let began = DispatchTime.now().uptimeNanoseconds
         defer { charge(since: began) }
+        invalidateAfterSamplingGap(now: now)
+        lastNativeTickAt = now
         let application = UIApplication.shared.applicationState
         let sample = native ?? sampler.sample(uptime: now, appActive: application == .active,
                                               appBackground: application == .background)
@@ -706,6 +771,8 @@ final class WebKitHealthMonitor: ObservableObject {
                          "episode peak \(WebKitHealthFindings.percent(cpuEpisodePeak))",
                          "active \(sample.appActive), background \(sample.appBackground)",
                          "views \(alive), pages \(sessions.count)", snapshot(primary)]
+            let listenUsage = ListenNetworkUsage.shared.snapshot(now: sample.date)
+            parts.append("Listen received \(listenUsage.recentBytes) B in last 60 s (managed media, this run only)")
             if let wakeups = sample.wakeupsPerSecond { parts.append("wakeups \(Int(wakeups))/s") }
             if let memory = sample.footprintMB { parts.append("memory \(Int(memory)) MB") }
             if let primary {
@@ -733,6 +800,9 @@ final class WebKitHealthMonitor: ObservableObject {
     private func update(_ session: WebKitPageSession, context: WebKitPageContext, now: TimeInterval) {
         let previous = session.context
         session.context = context
+        if previous.appBackground != context.appBackground {
+            invalidateActivityWindow(session, now: now)
+        }
         if context.userCanSee {
             if session.visibleSince == nil { session.visibleSince = now }
             session.hiddenSince = nil
@@ -931,7 +1001,8 @@ final class WebKitHealthMonitor: ObservableObject {
     func report(now: Date = Date(), compact: Bool = false) -> String {
         WebKitHealthReport.make(status: status, events: events, minutes: minutes, natives: natives,
                                 probeEnabled: probeEnabled, autoStop: autoStopEnabled, now: now,
-                                device: "\(Self.deviceModel) iOS \(UIDevice.current.systemVersion)", app: Self.appVersion, compact: compact)
+                                device: "\(Self.deviceModel) iOS \(UIDevice.current.systemVersion)", app: Self.appVersion, compact: compact,
+                                listenUsage: ListenNetworkUsage.shared.snapshot(now: now))
     }
 
     static var appVersion: String {
@@ -1105,9 +1176,16 @@ final class WebKitHealthJournal: @unchecked Sendable {
 // MARK: - Report
 
 enum WebKitHealthReport {
+    static let downloadCoverage = "URLSession-delivered media body bytes for Listen's managed downloads and HTTPS audio playback, including retries and re-downloads. Cached file reads add no bytes; URLSession cache hits may count. Excludes direct AVPlayer streams (plain HTTP/video), artwork, Apple Music and network headers; not a carrier data meter."
+
+    static func downloadBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
     static func make(status: WebKitHealthStatus, events: [WebKitHealthEvent], minutes: [WebKitHealthMinute],
                      natives: [NativeHealthSample], probeEnabled: Bool, autoStop: Bool, now: Date,
-                     device: String, app: String, compact: Bool = false) -> String {
+                     device: String, app: String, compact: Bool = false,
+                     listenUsage: ListenNetworkUsage.Snapshot? = nil) -> String {
         let time = Date.FormatStyle(date: .omitted, time: .standard)
         var lines = ["term-llm WebKit health report", compact ? "Report schema: 2 · compact diagnosis" : "Report schema: 2 · full"]
         if !compact { lines.append("Generated \(now.formatted(date: .abbreviated, time: .standard))") }
@@ -1146,6 +1224,10 @@ enum WebKitHealthReport {
             }
         }
         lines.append("Web views alive \(status.webViewsAlive), browser pages \(status.pages)\(status.parked.map { ", parked: \($0.reason.rawValue)" } ?? "")")
+        if let usage = listenUsage {
+            lines.append("Podcast downloads (Listen): today \(usage.todayBytes) B; this week \(usage.weekBytes) B; this month \(usage.monthBytes) B; since tracking began \(usage.totalBytes) B; last 60 s \(usage.recentBytes) B (this run only)")
+            lines.append("  Tracking began \(usage.startedAt.ISO8601Format()); calendar \(Calendar.current.identifier), time zone \(TimeZone.current.identifier). Earlier downloads unknown. Daily buckets retain their recording time zone; zone changes may shift attribution. Abrupt termination may lose the last few seconds. \(downloadCoverage)")
+        }
         lines.append("Monitor cost: app \(costText(status.monitorShare)) of a core since launch, page probe \(costText(status.probeShare)) (this page, up to 10 min)")
         if !status.threads.isEmpty {
             lines.append("Busiest app threads: " + status.threads.map { "\($0.label) \(WebKitHealthFindings.percent($0.cpu))" }.joined(separator: ", "))

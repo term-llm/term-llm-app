@@ -8,6 +8,9 @@ struct MusicView: View {
     var embedded = false
     /// Hide native chrome while this persistent destination is inactive.
     var isActive: Bool = true
+    /// Quiet root chrome for the large-screen workspace; phones keep system chrome.
+    var usesWorkspaceChrome: Bool = false
+    var onToggleSidebar: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -20,29 +23,10 @@ struct MusicView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            List {
-                storageSection
-                if library.access != .authorized { accessSection }
-                if let track = player.nowPlaying { nowPlayingSection(track) }
-                playlistsSection
-            }
-            .accessibilityIdentifier("musicScreen")
-            .navigationTitle("Music")
-            .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+            rootContent
             .navigationDestination(for: UUID.self) {
                 PlaylistDetailView(library: library, playlistID: $0)
                     .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
-            }
-            .toolbar {
-                if !embedded {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("New Playlist")
-                }
             }
             .alert("New Playlist", isPresented: $creating) {
                 TextField("Name", text: $newName)
@@ -61,6 +45,52 @@ struct MusicView: View {
                 library.store.reloadIfReadOnly()
             }
         }
+    }
+
+    @ViewBuilder private var rootContent: some View {
+        if usesWorkspaceChrome {
+            libraryList
+                .toolbar(.hidden, for: .navigationBar)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    WorkspaceHeader(title: "Music", onToggleSidebar: onToggleSidebar) {
+                        if !embedded {
+                            Button("Done") { dismiss() }
+                        }
+                        newPlaylistButton
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("musicWorkspaceHeader")
+                }
+        } else {
+            libraryList
+                .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+                .toolbar {
+                    if !embedded {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        newPlaylistButton
+                    }
+                }
+        }
+    }
+
+    private var libraryList: some View {
+        List {
+            storageSection
+            if library.access != .authorized { accessSection }
+            if let track = player.nowPlaying { nowPlayingSection(track) }
+            playlistsSection
+        }
+        .accessibilityIdentifier("musicScreen")
+        .navigationTitle("Music")
+    }
+
+    private var newPlaylistButton: some View {
+        Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
+            .accessibilityLabel("New Playlist")
     }
 
     // MARK: Sections
@@ -99,7 +129,9 @@ struct MusicView: View {
                 }
             }
         } footer: {
-            Text("Playlists are saved on this iPhone. Searching and playing songs uses Apple Music.")
+            Text(usesWorkspaceChrome
+                 ? "Playlists are saved on this device. Searching and playing songs uses Apple Music."
+                 : "Playlists are saved on this iPhone. Searching and playing songs uses Apple Music.")
         }
     }
 

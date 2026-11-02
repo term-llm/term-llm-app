@@ -118,6 +118,8 @@ final class WebKitHealthPolicyTests: XCTestCase {
         XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, loading: true), outside: 2), .healthy)
         XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, signingIn: true), outside: 2), .stalled(50))
         XCTAssertEqual(silent(50, armed: false, outside: 2), .healthy, "no probe, no heartbeat to miss")
+        XCTAssertEqual(silent(1_100, context: WebKitPageContext(userCanSee: true, appBackground: true), outside: 2),
+                       .healthy, "a stale visibility context must not turn background suspension into a stall")
         // Silence is counted from when the page came on screen, not its last hidden report.
         XCTAssertEqual(verdict(now: 100, context: onScreen, hiddenSince: nil, visibleSince: 90, lastSampleAt: 0,
                                outside: 2), .healthy)
@@ -152,6 +154,13 @@ final class WebKitHealthProbeParsingTests: XCTestCase {
         XCTAssertEqual(sample.probeShare, 0.0005, accuracy: 1e-9)
     }
 
+    func testParsesNativeMeasurementWindowWithoutRequiringItForInitialReports() {
+        XCTAssertNil(report().windowID)
+        XCTAssertEqual(report(["window": "window-123"]).windowID, "window-123")
+        XCTAssertEqual(report(["window": String(repeating: "a", count: 100)]).windowID?.count, 40)
+        XCTAssertEqual(report(["window": "not a token"]).windowID, "not?a?token")
+    }
+
     func testRejectsMalformedOrForeignReports() {
         XCTAssertNil(WebKitHealthProbe.parse("text"))
         XCTAssertNil(WebKitHealthProbe.parse(["v": 1, "doc": "a", "span": 5_000]), "old probe version")
@@ -176,6 +185,94 @@ final class WebKitHealthProbeParsingTests: XCTestCase {
         }
         XCTAssertNil(script.range(of: #"\.value(?![A-Za-z])"#, options: .regularExpression), "form values")
         XCTAssertTrue(script.contains("location.origin !== ORIGIN"))
+    }
+}
+
+/// Executes the production probe in WebKit with a deterministic clock/timer.
+/// This tests lifecycle math, not physical-device suspension behavior.
+@MainActor
+final class WebKitHealthProbeLifecycleTests: XCTestCase {
+    private final class Samples: NSObject, WKScriptMessageHandler {
+        var values: [WebPageHealthSample] = []
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let sample = WebKitHealthProbe.parse(message.body) { values.append(sample) }
+        }
+    }
+
+    private func until(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Timed out waiting for probe lifecycle evidence")
+                throw NSError(domain: "WebKitHealthProbeLifecycleTests", code: 1)
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    func testLifecycleAndNativeResetsDiscardSuspensionButNotSubsequentLongTasks() async throws {
+        let samples = Samples()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let controller = configuration.userContentController
+        controller.add(samples, name: WebKitHealthProbe.handlerName)
+        // No real-time delays, UI visibility dependency, network or busy loop.
+        let clock = """
+        window.__healthClock = 0;
+        Object.defineProperty(performance, 'now', { value: () => window.__healthClock });
+        Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+        window.setTimeout = (callback) => { window.__healthTimer = callback; return 1; };
+        window.clearTimeout = () => { window.__healthTimer = null; };
+        window.__healthAdvance = (milliseconds) => {
+          window.__healthClock += milliseconds;
+          window.__healthTimer();
+        };
+        """
+        controller.addUserScript(WKUserScript(source: clock + WebKitHealthProbe.script(origin: "https://example.com"),
+                                             injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let web = WKWebView(frame: .zero, configuration: configuration)
+        defer {
+            web.stopLoading()
+            controller.removeScriptMessageHandler(forName: WebKitHealthProbe.handlerName)
+        }
+        web.loadHTMLString("<!doctype html><html><body>Probe fixture</body></html>",
+                           baseURL: URL(string: "https://example.com/ui/"))
+        try await until { !web.isLoading && web.url != nil }
+        _ = try await web.evaluateJavaScript(WebKitHealthProbe.resetScript(windowID: "native-window"))
+        let events = [("document", "visibilitychange"), ("window", "pagehide"), ("window", "pageshow"),
+                      ("document", "freeze"), ("document", "resume")]
+        for (target, event) in events {
+            let count = samples.values.count
+            _ = try await web.evaluateJavaScript("""
+            window.__healthClock += 1065700;
+            \(target).dispatchEvent(new Event('\(event)'));
+            for (let i = 0; i < 5; i++) window.__healthAdvance(1000);
+            """)
+            try await until { samples.values.count > count }
+            let sample = try XCTUnwrap(samples.values.last)
+            XCTAssertEqual(samples.values.count, count + 1, "\(event) must not flush a suspension-spanning report")
+            XCTAssertEqual(sample.windowID, "native-window")
+            XCTAssertEqual(sample.spanSeconds, 5, accuracy: 0.001, event)
+            XCTAssertEqual(sample.ticks, 5, event)
+            XCTAssertEqual(sample.maxLateMilliseconds, 0, event)
+            XCTAssertEqual(sample.busyFraction, 0, event)
+        }
+        let count = samples.values.count
+        _ = try await web.evaluateJavaScript("window.__healthClock += 1065700;")
+        _ = try await web.evaluateJavaScript(WebKitHealthProbe.resetScript(windowID: "resumed-window"))
+        _ = try await web.evaluateJavaScript("for (let i = 0; i < 5; i++) window.__healthAdvance(1000);")
+        try await until { samples.values.count > count }
+        let resumed = try XCTUnwrap(samples.values.last)
+        XCTAssertEqual(resumed.windowID, "resumed-window")
+        XCTAssertEqual(resumed.spanSeconds, 5, accuracy: 0.001)
+        XCTAssertEqual(resumed.maxLateMilliseconds, 0)
+        _ = try await web.evaluateJavaScript("window.__healthAdvance(85000);")
+        try await until { samples.values.count > count + 1 }
+        let blocked = try XCTUnwrap(samples.values.last)
+        XCTAssertEqual(blocked.windowID, "resumed-window")
+        XCTAssertEqual(blocked.spanSeconds, 85, accuracy: 0.001)
+        XCTAssertEqual(blocked.maxLateMilliseconds, 84_000, accuracy: 0.001)
+        XCTAssertGreaterThan(blocked.busyFraction, 0.9, "a long foreground task without a lifecycle reset is still measured")
     }
 }
 
@@ -217,6 +314,22 @@ final class WebKitHealthFindingsTests: XCTestCase {
 }
 
 final class WebKitHealthHistoryTests: XCTestCase {
+    func testReportsIncludePodcastBytesAndCoverageInBothFormats() {
+        let now = Date(timeIntervalSince1970: 1_793_600_000)
+        let usage = ListenNetworkUsage.Snapshot(todayBytes: 101, weekBytes: 202, monthBytes: 303,
+                                              totalBytes: 404, recentBytes: 55, startedAt: now)
+        for compact in [false, true] {
+            let text = WebKitHealthReport.make(status: WebKitHealthStatus(), events: [], minutes: [], natives: [],
+                                               probeEnabled: true, autoStop: true, now: now,
+                                               device: "test", app: "test", compact: compact, listenUsage: usage)
+            XCTAssertTrue(text.contains("today 101 B; this week 202 B; this month 303 B; since tracking began 404 B; last 60 s 55 B"), text)
+            XCTAssertTrue(text.contains("Earlier downloads unknown"), text)
+            XCTAssertTrue(text.contains("Excludes direct AVPlayer streams"), text)
+            XCTAssertTrue(text.contains("including retries and re-downloads"), text)
+            XCTAssertTrue(text.contains(now.ISO8601Format()), text)
+        }
+    }
+
     func testMinuteSummaryUsesCountedTimeAndMeasuresItsOwnCost() throws {
         var accumulator = MinuteAccumulator()
         var calendar = Calendar(identifier: .gregorian)
@@ -385,6 +498,168 @@ final class WebKitHealthHistoryTests: XCTestCase {
 final class WebKitHealthMonitorTests: XCTestCase {
     private func monitor() -> WebKitHealthMonitor {
         WebKitHealthMonitor(defaults: UserDefaults(suiteName: "WebKitHealthTests-\(UUID().uuidString)")!, journal: nil)
+    }
+
+    func testSuspensionGapIsRejectedBeforeEitherTheReportOrNativeTickCanUseIt() throws {
+        for reportFirst in [true, false] {
+            let monitor = monitor()
+            let web = WKWebView(frame: .zero)
+            let session = monitor.makeSession(for: web, now: 0)
+            session.contextProvider = { WebKitPageContext(userCanSee: true) }
+            var stops: [WebKitTeardownReason] = []
+            session.onTeardown = { reason, _ in stops.append(reason) }
+            monitor.record(report(["vis": "visible"]), from: session, now: 0)
+            monitor.tick(now: 0, native: native(0, device: 2))
+            // Simulate delivery before UIKit's foreground notification, including
+            // the report's 1049 s timer lateness from the user's diagnosis.
+            let suspended = report(["vis": "visible", "span": 1_065_700,
+                                    "late": 1_049_000, "maxLate": 1_049_000])
+            if reportFirst { monitor.record(suspended, from: session, now: 1_065.7) }
+            monitor.tick(now: 1_065.7, native: native(1_065.7, device: 2))
+            if !reportFirst { monitor.record(suspended, from: session, now: 1_065.7) }
+            XCTAssertNotNil(session.activityWindowID)
+            XCTAssertNil(session.lastSampleAt)
+            XCTAssertTrue(session.samples.isEmpty)
+            for time in stride(from: 1_070.7, through: 1_130.7, by: 5) {
+                monitor.tick(now: time, native: native(time, device: 2))
+            }
+            XCTAssertTrue(stops.isEmpty)
+            XCTAssertFalse(monitor.events.contains { ["blocked", "stalled", "stop", "would-stop"].contains($0.kind) })
+            XCTAssertFalse(monitor.status.findings.contains { ["busy", "stalled", "stop-unresponsive"].contains($0.id) })
+            XCTAssertEqual(monitor.status.pageState, .waiting)
+            XCTAssertTrue(session.webView === web, "suspension must preserve the retained Chat document")
+            withExtendedLifetime(web) {}
+        }
+    }
+
+    func testBackgroundAndForegroundRequireFreshWindowEvenForLateShortReports() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        var context = WebKitPageContext(userCanSee: true)
+        session.contextProvider = { context }
+        var stops: [WebKitTeardownReason] = []
+        session.onTeardown = { reason, _ in stops.append(reason) }
+        let old = report(["vis": "visible", "maxLate": 3_000])
+        monitor.record(report(["vis": "visible"]), from: session, now: 0)
+        monitor.tick(now: 0, native: native(0, device: 2))
+        context = WebKitPageContext(appBackground: true)
+        monitor.applicationDidEnterBackground(now: 5)
+        let backgroundWindow = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNil(session.lastSampleAt)
+        XCTAssertTrue(session.samples.isEmpty)
+        // This genuine background sample still cannot arm a future foreground stall.
+        monitor.record(report(["window": backgroundWindow, "vis": "hidden"]), from: session, now: 10)
+        XCTAssertEqual(session.lastSampleAt, 10)
+        context = WebKitPageContext(userCanSee: true)
+        monitor.applicationWillEnterForeground(now: 1_075)
+        let foregroundWindow = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNotEqual(foregroundWindow, backgroundWindow)
+        XCTAssertNil(session.lastSampleAt)
+        for time in stride(from: 1_075.0, through: 1_140, by: 5) {
+            // A short queued pre-background report cannot evade rejection merely
+            // because enough time has passed since resume for its span to fit.
+            monitor.record(old, from: session, now: time)
+            monitor.record(report(["window": backgroundWindow, "vis": "visible"]), from: session, now: time)
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertTrue(stops.isEmpty)
+        XCTAssertNil(session.lastSampleAt)
+        XCTAssertFalse(monitor.events.contains { ["blocked", "stalled", "stop"].contains($0.kind) })
+        monitor.record(report(["window": foregroundWindow, "vis": "visible"]), from: session, now: 1_145)
+        XCTAssertEqual(session.lastSampleAt, 1_145)
+        XCTAssertEqual(session.samples.count, 1)
+        withExtendedLifetime(web) {}
+    }
+
+    func testContextTransitionBeforeNotificationRejectsQueuedReports() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        var context = WebKitPageContext(userCanSee: true)
+        session.contextProvider = { context }
+        monitor.record(report(["vis": "visible"]), from: session, now: 0)
+        context = WebKitPageContext(appBackground: true)
+        monitor.record(report(["vis": "visible", "maxLate": 4_000]), from: session, now: 5)
+        let beforeBackgroundNotification = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNil(session.lastSampleAt)
+        monitor.applicationDidEnterBackground(now: 6)
+        let backgroundWindow = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNotEqual(beforeBackgroundNotification, backgroundWindow)
+        context = WebKitPageContext(userCanSee: true)
+        monitor.record(report(["window": backgroundWindow, "vis": "visible", "maxLate": 4_000]),
+                       from: session, now: 20)
+        let beforeForegroundNotification = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNil(session.lastSampleAt)
+        monitor.applicationWillEnterForeground(now: 21)
+        XCTAssertNotEqual(beforeForegroundNotification, session.activityWindowID)
+        monitor.record(report(["window": beforeForegroundNotification, "vis": "visible"]), from: session, now: 25)
+        XCTAssertNil(session.lastSampleAt)
+        XCTAssertFalse(monitor.events.contains { $0.kind == "blocked" })
+        withExtendedLifetime(web) {}
+    }
+
+    func testFreshPostResumeHeartbeatArmsAGenuineSubsequentForegroundStall() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        var stops: [WebKitTeardownReason] = []
+        session.onTeardown = { reason, _ in stops.append(reason) }
+        monitor.record(report(["vis": "visible"]), from: session, now: 0)
+        monitor.applicationWillEnterForeground(now: 1_075)
+        let window = try XCTUnwrap(session.activityWindowID)
+        monitor.record(report(["window": window, "vis": "visible"]), from: session, now: 1_080)
+        for time in stride(from: 1_080.0, through: 1_130, by: 5) {
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertEqual(stops, [.unresponsive])
+        XCTAssertTrue(monitor.events.contains { $0.kind == "stalled" && $0.message.contains("15 s") })
+        XCTAssertEqual(monitor.events.filter { $0.kind == "stop" }.count, 1)
+        withExtendedLifetime(web) {}
+    }
+
+    func testContinuousNativeSamplingStillRecordsALongForegroundBlockAfterResume() throws {
+        let monitor = monitor()
+        monitor.autoStopEnabled = false
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        monitor.applicationWillEnterForeground(now: 1_000)
+        let window = try XCTUnwrap(session.activityWindowID)
+        monitor.record(report(["window": window, "vis": "visible"]), from: session, now: 1_005)
+        for time in stride(from: 1_005.0, through: 1_095, by: 5) {
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        monitor.record(report(["window": window, "vis": "visible", "span": 90_000,
+                               "late": 85_000, "maxLate": 85_000]), from: session, now: 1_095)
+        XCTAssertEqual(session.activityWindowID, window)
+        XCTAssertTrue(monitor.events.contains { $0.kind == "blocked" && $0.message.contains("85.0 s") })
+        XCTAssertTrue(monitor.events.contains { $0.kind == "would-stop" })
+        XCTAssertEqual(try XCTUnwrap(session.latest).busyFraction, 85.0 / 90.0, accuracy: 0.0001)
+        for time in stride(from: 1_100.0, through: 1_125, by: 5) {
+            monitor.record(report(["window": window, "vis": "visible", "late": 4_000, "maxLate": 4_000]),
+                           from: session, now: time)
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertTrue(monitor.status.findings.contains { $0.id == "busy" }, "genuine post-resume busy reports still produce findings")
+        withExtendedLifetime(web) {}
+    }
+
+    func testNewDocumentAfterResumeMustAlsoAcknowledgeTheCurrentWindow() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        monitor.applicationWillEnterForeground(now: 10)
+        let window = try XCTUnwrap(session.activityWindowID)
+        monitor.documentWillChange(session)
+        monitor.record(report(["doc": "new-doc", "vis": "visible"]), from: session, now: 15)
+        XCTAssertNil(session.lastSampleAt)
+        monitor.record(report(["doc": "new-doc", "window": window, "vis": "visible"]), from: session, now: 20)
+        XCTAssertEqual(session.documentID, "new-doc")
+        XCTAssertEqual(session.lastSampleAt, 20)
+        withExtendedLifetime(web) {}
     }
 
     func testRealSamplerReportsCounterIntervalAndThreadIdentities() throws {

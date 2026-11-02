@@ -78,6 +78,23 @@ struct WebKitHealthView: View {
                 Text("App CPU is this app's own process. Device CPU also includes WebKit's separate page, GPU and network processes, and iOS itself. Monitor cost is the share of one core this monitor and its page probe use.")
             }
 
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                let usage = ListenNetworkUsage.shared.snapshot(now: context.date)
+                Section {
+                    LabeledContent("Last 60 seconds", value: WebKitHealthReport.downloadBytes(usage.recentBytes))
+                    LabeledContent("Today", value: WebKitHealthReport.downloadBytes(usage.todayBytes))
+                        .accessibilityIdentifier("webKitHealth.podcastBytesToday")
+                    LabeledContent("This week", value: WebKitHealthReport.downloadBytes(usage.weekBytes))
+                    LabeledContent("This month", value: WebKitHealthReport.downloadBytes(usage.monthBytes))
+                    LabeledContent("Since tracking began", value: WebKitHealthReport.downloadBytes(usage.totalBytes))
+                    LabeledContent("Tracking began", value: usage.startedAt.formatted(date: .abbreviated, time: .shortened))
+                } header: {
+                    Text("Podcast downloads · Listen")
+                } footer: {
+                    Text("\(WebKitHealthReport.downloadCoverage) Today, week and month use calendar periods; daily buckets retain their recording time zone, so changing zones can shift attribution. Last 60 seconds covers this app run only. Earlier downloads are unknown. Abrupt termination may lose the last few seconds of counters.")
+                }
+            }
+
             if !status.findings.isEmpty {
                 Section("Findings") {
                     ForEach(status.findings) { finding in

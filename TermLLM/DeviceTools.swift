@@ -98,12 +98,27 @@ struct DeviceInfoSnapshot: Equatable, Sendable {
     }
 }
 
+/// Presentation only: iOS-on-Mac still reports the native snapshot unchanged.
+/// An explicit value lets tests exercise both hosts without depending on runtime.
+enum DeviceToolPlatform: Sendable {
+    case iPhone, mac
+
+    static var current: Self {
+        ProcessInfo.processInfo.isiOSAppOnMac ? .mac : .iPhone
+    }
+
+    var name: String { self == .mac ? "Mac" : "iPhone" }
+    var symbol: String { self == .mac ? "desktopcomputer" : "iphone" }
+    var systemVersionLabel: String { self == .mac ? "system version" : "iOS version" }
+}
+
 enum BuiltInDeviceTools {
-    static func ping(now: @escaping @Sendable () -> Date = { Date() }) -> DeviceTool {
+    static func ping(platform: DeviceToolPlatform = .current,
+                     now: @escaping @Sendable () -> Date = { Date() }) -> DeviceTool {
         DeviceTool(
             name: "ping",
-            title: "Ping iPhone",
-            description: "Check that the term-llm iPhone app is reachable. Optionally echoes a message.",
+            title: "Ping \(platform.name)",
+            description: "Check that the term-llm \(platform.name) app is reachable. Optionally echoes a message.",
             inputSchema: [
                 "type": "object",
                 "properties": ["message": ["type": "string", "description": "Optional text to echo back."]],
@@ -114,7 +129,7 @@ enum BuiltInDeviceTools {
             if let value = arguments["message"], value.stringValue == nil, value != .null {
                 throw DeviceToolError(message: "message must be a string")
             }
-            var text = "pong from term-llm iPhone app at \(ISO8601DateFormatter().string(from: now()))"
+            var text = "pong from term-llm \(platform.name) app at \(ISO8601DateFormatter().string(from: now()))"
             if let message = arguments["message"]?.stringValue, !message.isEmpty {
                 text += "\necho: \(message)"
             }
@@ -122,11 +137,12 @@ enum BuiltInDeviceTools {
         }
     }
 
-    static func deviceInfo(snapshot: @escaping @Sendable () async -> DeviceInfoSnapshot) -> DeviceTool {
+    static func deviceInfo(platform: DeviceToolPlatform = .current,
+                           snapshot: @escaping @Sendable () async -> DeviceInfoSnapshot) -> DeviceTool {
         DeviceTool(
             name: "device_info",
-            title: "iPhone status",
-            description: "Report this iPhone's model, iOS version, battery level and charging state, Low Power Mode, and whether the term-llm app is in the foreground.",
+            title: "\(platform.name) status",
+            description: "Report this \(platform.name)'s model, \(platform.systemVersionLabel), battery level and charging state, Low Power Mode, and whether the term-llm app is in the foreground.",
             readOnly: true
         ) { _ in
             let info = await snapshot()

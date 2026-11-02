@@ -6,6 +6,7 @@ import WebKit
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverURL", store: HubFixture.defaults) private var serverURL = ""
+    @AppStorage("mac.chatZoom", store: HubFixture.defaults) private var macChatZoom = DesktopChatAppearance.defaultZoom
     @AppStorage(AppControlsBar.hintAcknowledgedKey, store: HubFixture.defaults) private var appControlsHintAcknowledged = false
     @StateObject private var connections = HubConnectionStore(defaults: HubFixture.defaults)
     @StateObject private var aggregate = HubAggregateStore()
@@ -63,16 +64,45 @@ struct ContentView: View {
               let token = source.security?.bearer else { return nil }
         return HubConnectionSecurity.directBearerScript(token: token, server: source.connection.url)
     }
-    private enum AppTab: String, CaseIterable {
-        case agents, chat, music, podcasts
-        var title: String { rawValue.capitalized }
-        var symbol: String {
-            switch self {
-            case .agents: "square.grid.2x2"
-            case .chat: "bubble.left.and.bubble.right"
-            case .music: "music.note"
-            case .podcasts: "dot.radiowaves.left.and.right"
+    private var desktopCommandPolicy: DesktopCommandPolicy {
+        DesktopCommandPolicy(
+            tab: selectedTab,
+            enabled: scenePhase == .active && !HubFixture.isEnabled && !showingSettings &&
+                !showingMusic && !showingListen && !showingPlayer && !linkedDevicesPairing.isPresented &&
+                importedServer == nil && !isSigningIn,
+            hasSources: !aggregate.sources.isEmpty,
+            chatAvailable: chatIsVisible && workspaceChosen && address != nil && !browserIsRevoked &&
+                selectedWorkspace?.browserReady == true && !loginRequired && loginError == nil,
+            chatParked: parkedBrowser != nil,
+            canGoBack: canGoBack,
+            canZoom: ProcessInfo.processInfo.isiOSAppOnMac && appControlsAvailable)
+    }
+
+    private func performDesktopCommand(_ command: DesktopCommand) {
+        // Resolve context afresh; a retained but hidden chat is never a target.
+        guard desktopCommandPolicy.allows(command) else { return }
+        if let tab = command.tab {
+            selectTab(tab)
+            return
+        }
+        switch command {
+        case .settings: openSettings()
+        case .back: backCount += 1
+        case .zoomIn: macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: 0.25)
+        case .zoomOut: macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: -0.25)
+        case .resetZoom: macChatZoom = DesktopChatAppearance.defaultZoom
+        case .refresh:
+            switch desktopCommandPolicy.refresh {
+            case .agents:
+                aggregate.refresh()
+                aggregate.rerunSearch()
+            case .chat:
+                loadError = nil
+                reloadCount += 1
+            case .reopenChat: resumeParkedBrowser(automatically: false)
+            case nil: break
             }
+        default: break
         }
     }
     private var chatIsVisible: Bool { HubFixture.isEnabled ? !showingHub : selectedTab == .chat }
@@ -81,7 +111,19 @@ struct ContentView: View {
                      isVisible: selectedTab == .agents, onOpenChat: openPhoneChat, onSettings: openSettings)
     }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        // The extra responder ancestor is only needed by Designed for iPad on Mac.
+        // Platform selection is constant for this scene, never based on its width.
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            DesktopCommandHost(policy: desktopCommandPolicy, onCommand: performDesktopCommand) {
+                shellContent
+            }
+        } else {
+            shellContent
+        }
+    }
+
+    private var shellContent: some View {
         VStack(spacing: 0) {
             Group {
                 if HubFixture.isEnabled {
@@ -91,7 +133,11 @@ struct ContentView: View {
                         setup
                     }
                 } else {
-                    appShell(address)
+                    if WorkspacePlatform.current.usesWorkspaceChrome {
+                        workspaceShell(address)
+                    } else {
+                        appShell(address)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -333,6 +379,37 @@ struct ContentView: View {
             .accessibilityIdentifier("serverAddress")
     }
 
+    private func workspaceShell(_ url: URL?) -> some View {
+        WorkspaceShell(platform: .current, selection: selectedTab, visitedTabs: visitedTabs,
+                       chatAgentName: retainedChat?.agentName, onSelect: selectTab, onSettings: openSettings) { toggle in
+            PhoneHubView(connections: connections, aggregate: aggregate, pendingConnectionURL: $pendingConnectionURL,
+                         isVisible: selectedTab == .agents, onOpenChat: openPhoneChat, onSettings: openSettings,
+                         usesWorkspaceChrome: true, onToggleSidebar: toggle)
+        } chat: {
+            ZStack {
+                if let url, workspaceChosen {
+                    page(url)
+                } else {
+                    emptyChat
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } music: { toggle in
+            MusicView(library: .shared, embedded: true, isActive: selectedTab == .music,
+                      usesWorkspaceChrome: true, onToggleSidebar: toggle)
+        } podcasts: { toggle in
+            NavigationStack {
+                ListenView(listen: listen, embedded: true, isActive: selectedTab == .podcasts,
+                           usesWorkspaceChrome: true, onToggleSidebar: toggle)
+            }
+        } shelf: {
+            playbackShelf()
+        }
+        .onChange(of: shelfPlayback, initial: true) { _, playback in
+            playbackShelfState.update(playback)
+        }
+    }
+
     /// Native tabs own navigation appearance; each destination keeps a stable
     /// identity so switching tabs does not replace the retained browser document.
     @ViewBuilder private func appShell(_ url: URL?) -> some View {
@@ -545,7 +622,9 @@ struct ContentView: View {
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
-                        scenePhase: chatIsVisible ? scenePhase : .inactive, isSigningIn: isSigningIn,
+                        scenePhase: chatIsVisible ? scenePhase : .inactive,
+                        textScale: ProcessInfo.processInfo.isiOSAppOnMac ? DesktopChatAppearance.clamped(macChatZoom) : 1,
+                        isSigningIn: isSigningIn,
                         deviceTools: !isFixture && !isLinkedDevices && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
@@ -776,6 +855,9 @@ struct ContentView: View {
                     voiceShortcutSection
                     deviceToolsSection
                 }
+                if ProcessInfo.processInfo.isiOSAppOnMac {
+                    desktopChatAppearanceSection
+                }
                 notificationsSection
                 if let issue = push.badgeIssue {
                     Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
@@ -803,6 +885,35 @@ struct ContentView: View {
                         .accessibilityIdentifier("settings.done")
                 }
             }
+        }
+    }
+
+    private var desktopChatAppearanceSection: some View {
+        Section {
+            LabeledContent("Chat text size", value: DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
+                .accessibilityIdentifier("settings.chatZoom")
+            HStack {
+                Button("Smaller", systemImage: "textformat.size.smaller") {
+                    macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: -0.25)
+                }
+                .accessibilityLabel("Decrease chat text size")
+                .accessibilityIdentifier("settings.chatZoom.decrease")
+                .disabled(DesktopChatAppearance.clamped(macChatZoom) <= 0.75)
+                Spacer()
+                Button("Larger", systemImage: "textformat.size.larger") {
+                    macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: 0.25)
+                }
+                .accessibilityLabel("Increase chat text size")
+                .accessibilityIdentifier("settings.chatZoom.increase")
+                .disabled(DesktopChatAppearance.clamped(macChatZoom) >= 2)
+            }
+            .buttonStyle(.borderless)
+            Button("Reset to 125%") { macChatZoom = DesktopChatAppearance.defaultZoom }
+                .accessibilityIdentifier("settings.chatZoom.reset")
+        } header: {
+            Text("Chat appearance")
+        } footer: {
+            Text("Text reflows at the window’s width; the page is not magnified or cropped. Adjust from 75% to 200%. This Mac only; your conversation stays open.")
         }
     }
 
@@ -890,7 +1001,7 @@ struct ContentView: View {
         } header: {
             Text("Device tools")
         } footer: {
-            Text("Let agents use this \(UIDevice.current.model) while you chat.")
+            Text("Let agents use this \(DeviceToolPlatform.current == .mac ? DeviceToolPlatform.current.name : UIDevice.current.model) while you chat.")
         }
     }
 

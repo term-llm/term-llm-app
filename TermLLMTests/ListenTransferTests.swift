@@ -59,10 +59,11 @@ final class ListenTransferTests: XCTestCase {
     }
 
     private func transfer(_ server: FakeMediaServer, id: UUID = UUID(),
-                          retryDelays: [TimeInterval] = [0.01, 0.01]) -> (ListenTransfer, Outcome) {
+                          retryDelays: [TimeInterval] = [0.01, 0.01],
+                          playbackOnly: Bool = false) -> (ListenTransfer, Outcome) {
         let outcome = Outcome()
         let transfer = ListenTransfer(id: id, remote: url, directory: directory, fetching: server,
-                                      retryDelays: retryDelays,
+                                      retryDelays: retryDelays, playbackOnly: playbackOnly,
                                       makeRequest: { URLRequest(url: $0) },
                                       finished: { _, result in outcome.set(result) })
         return (transfer, outcome)
@@ -245,6 +246,227 @@ final class ListenTransferTests: XCTestCase {
         XCTAssertNotNil(read.error, "playback hears about it too")
     }
 
+    func testPlaybackCacheStopsAtLookaheadAndResumesWhenACachedReadAdvances() async throws {
+        let body = mediaBody(12 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        transfer.start()
+        await eventually { transfer.progress.received == ListenTransfer.playbackLookahead }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transfer.progress.received, ListenTransfer.playbackLookahead)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727"])
+        XCTAssertNil(outcome.result, "an idle playback cache must not save the entire episode")
+
+        let info = FakeRead(0, info: true, dataless: true)
+        transfer.read(info)
+        await eventually { info.finished }
+        XCTAssertEqual(info.info?.length, Int64(body.count))
+        XCTAssertEqual(server.requests.count, 1, "metadata alone does not move the lookahead")
+
+        let read = FakeRead(1 << 20, length: 4096)
+        transfer.read(read)
+        await eventually { read.finished && transfer.progress.received == 4 << 20 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(read.data, body.subdata(in: 1 << 20 ..< (1 << 20) + 4096))
+        XCTAssertEqual(transfer.progress.received, 4 << 20)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=3145728-4194303"])
+        XCTAssertEqual(server.bytesSent, 4 << 20, "reads from cache still advance the window, without repeats")
+        XCTAssertNil(outcome.result)
+        transfer.cancel(keepingPartial: false)
+        _ = transfer.progress
+    }
+
+    func testPlaybackSeekAndTailProbeDoNotBackfillTheGapAndPromotionDoes() async throws {
+        let body = mediaBody(16 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        transfer.start()
+        await eventually { transfer.progress.received == 3 << 20 }
+        let seek = FakeRead(10 << 20, length: 4096)
+        transfer.read(seek)
+        await eventually { seek.finished && transfer.progress.received == 6 << 20 }
+        XCTAssertEqual(seek.data, body.subdata(in: 10 << 20 ..< (10 << 20) + 4096))
+
+        let tail = FakeRead(Int64(body.count - 2), length: 2, info: true)
+        transfer.read(tail)
+        await eventually { tail.finished }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(tail.data, body.suffix(2))
+        XCTAssertEqual(transfer.progress.received, (6 << 20) + 2)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=10485760-13631487",
+                                               "bytes=16777214-16777215"])
+        XCTAssertNil(outcome.result, "tail metadata must not trigger filling skipped parts")
+
+        let back = FakeRead(2 << 20, length: 4096)
+        transfer.read(back)
+        await eventually { back.finished && transfer.progress.received == (8 << 20) + 2 }
+        XCTAssertEqual(back.data, body.subdata(in: 2 << 20 ..< (2 << 20) + 4096))
+        XCTAssertEqual(server.ranges(for: url).last, "bytes=3145728-5242879")
+
+        transfer.setSaving(true)
+        await eventually { outcome.result != nil }
+        XCTAssertEqual(try contents(outcome.saved), body, "promotion backfills every remaining hole")
+        XCTAssertEqual(server.bytesSent, body.count, "seeks, backfill and promotion share the same cache")
+    }
+
+    func testPlaybackSeekInterruptsOldPrefetchWithoutFetchingTheWholeGap() async throws {
+        let body = mediaBody(12 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        server.hold(256 << 10 ..< 8 << 20)
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        transfer.start()
+        await eventually { transfer.progress.received == 256 << 10 }
+        let seek = FakeRead(8 << 20, length: 4096)
+        transfer.read(seek)
+        await eventually { seek.finished && transfer.progress.received == (3 << 20) + (256 << 10) }
+        server.release()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(seek.data, body.subdata(in: 8 << 20 ..< (8 << 20) + 4096))
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=8388608-11534335"])
+        XCTAssertEqual(transfer.progress.received, (3 << 20) + (256 << 10))
+        XCTAssertNil(outcome.result)
+        transfer.cancel(keepingPartial: false)
+        _ = transfer.progress
+    }
+
+    func testPlaybackRetryAndRelaunchKeepTheBoundAndReusePartialBytes() async throws {
+        let body = mediaBody(12 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        server.dropNext(after: 512 << 10)
+        let id = UUID()
+        do {
+            let (first, outcome) = transfer(server, id: id, playbackOnly: true)
+            first.start()
+            await eventually { first.progress.received == 3 << 20 }
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=524288-3145727"])
+            XCTAssertEqual(server.requests.last?.value(forHTTPHeaderField: "If-Range"), "\"v1\"")
+            XCTAssertNil(outcome.result)
+            first.cancel(keepingPartial: true)
+            _ = first.progress
+        }
+        let (resumed, outcome) = transfer(server, id: id, playbackOnly: true)
+        resumed.start()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(resumed.progress.received, 3 << 20)
+        XCTAssertEqual(server.requests.count, 2, "relaunch does not continue beyond the idle window")
+        let seek = FakeRead(8 << 20, length: 4096)
+        resumed.read(seek)
+        await eventually { seek.finished && resumed.progress.received == 6 << 20 }
+        XCTAssertEqual(seek.data, body.subdata(in: 8 << 20 ..< (8 << 20) + 4096))
+        XCTAssertEqual(server.requests.last?.value(forHTTPHeaderField: "If-Range"), "\"v1\"")
+        XCTAssertNil(outcome.result)
+        resumed.setSaving(true)
+        await eventually { outcome.result != nil }
+        XCTAssertEqual(try contents(outcome.saved), body)
+        XCTAssertEqual(server.bytesSent, body.count, "retry/resume/promotion never repeat a held byte")
+    }
+
+    func testStoppingPlaybackSavingFetchesOnlyDemandAndCanResumeExplicitly() async throws {
+        let body = mediaBody(10 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        transfer.start()
+        await eventually { transfer.progress.received == 3 << 20 }
+        transfer.setSaving(false)
+        let read = FakeRead(6 << 20, length: 64 << 10)
+        transfer.read(read)
+        await eventually { read.finished }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(read.data, body.subdata(in: 6 << 20 ..< (6 << 20) + (64 << 10)))
+        XCTAssertEqual(transfer.progress.received, (3 << 20) + (64 << 10), "Stop disables lookahead too")
+        XCTAssertNil(outcome.result)
+        transfer.setSaving(true)
+        await eventually { outcome.result != nil }
+        XCTAssertEqual(try contents(outcome.saved), body)
+        XCTAssertEqual(server.bytesSent, body.count)
+    }
+
+    func testPlaybackAllToEndDemandIsNotStarvedByTheSpeculativeBound() async throws {
+        let body = mediaBody(8 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        // AVFoundation can ask for the whole remaining resource. Such demand
+        // is not speculative prefetch and must not stall at the lookahead.
+        let read = FakeRead(0, info: true)
+        transfer.read(read)
+        await eventually { read.finished && outcome.result != nil }
+        XCTAssertEqual(read.data, body)
+        XCTAssertEqual(read.info?.length, Int64(body.count))
+        XCTAssertEqual(try contents(outcome.saved), body)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=3145728-6291455", "bytes=6291456-8388607"])
+        XCTAssertEqual(server.bytesSent, body.count)
+    }
+
+    func testPlaybackCacheKeepsOneFullResponseWhenServerIgnoresRange() async throws {
+        let body = mediaBody(10 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body, ranges: false))
+        server.hold(3 << 20 ..< 4 << 20)
+        let (transfer, outcome) = transfer(server, playbackOnly: true)
+        transfer.start()
+        await eventually { transfer.progress.received == 3 << 20 }
+        let first = FakeRead(0, length: 3 << 20)
+        transfer.read(first)
+        await eventually { first.finished }
+        let next = FakeRead(3 << 20, length: 1 << 20)
+        transfer.read(next)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(outcome.result)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727"], "do not cancel the 200 at the speculative bound")
+        server.release()
+        await eventually { next.finished && outcome.result != nil }
+        XCTAssertEqual(first.data, body.prefix(3 << 20))
+        XCTAssertEqual(next.data, body.subdata(in: 3 << 20 ..< 4 << 20))
+        XCTAssertEqual(try contents(outcome.saved), body)
+        XCTAssertEqual(server.requests.count, 1, "sequential playback must not re-download prefixes")
+        XCTAssertEqual(server.bytesSent, body.count, "non-range servers intentionally fall back to a whole-file save")
+    }
+
+    func testPlaybackCacheDiscoversEOFWhenRangeResponseOmitsTotal() async throws {
+        let body = mediaBody(4 << 20)
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let outcome = Outcome()
+        let transfer = ListenTransfer(id: UUID(), remote: url, directory: directory,
+                                      fetching: UnknownTotalFetching(server: server), playbackOnly: true,
+                                      makeRequest: { URLRequest(url: $0) },
+                                      finished: { _, result in outcome.set(result) })
+        let probe = FakeRead(0, length: 2, info: true)
+        transfer.read(probe)
+        await eventually { probe.finished && outcome.result != nil }
+        XCTAssertEqual(probe.info?.length, Int64(body.count), "the first finite range must not be mistaken for EOF")
+        XCTAssertEqual(try contents(outcome.saved), body)
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=3145728-"])
+        XCTAssertEqual(server.bytesSent, body.count, "unknown totals fall back to discovering EOF, without repeating bytes")
+    }
+
+    private struct UnknownTotalFetching: ListenFetching {
+        let server: FakeMediaServer
+
+        func start(_ request: URLRequest, queue: DispatchQueue,
+                   events: @escaping @Sendable (ListenFetchEvent) -> Void) -> @Sendable () -> Void {
+            server.start(request, queue: queue) { event in
+                if case .response(let response) = event,
+                   let range = response.value(forHTTPHeaderField: "Content-Range")?.split(separator: "/").first,
+                   let url = response.url,
+                   let unknown = HTTPURLResponse(url: url, statusCode: response.statusCode, httpVersion: "HTTP/1.1",
+                                                 headerFields: ["Content-Type": "audio/mpeg", "Content-Range": "\(range)/*",
+                                                                "ETag": "\"v1\""]) {
+                    events(.response(unknown))
+                } else {
+                    events(event)
+                }
+            }
+        }
+    }
+
     func testWithoutSavingOnlyWhatPlaybackReadsIsFetched() async throws {
         let body = mediaBody(4 << 20)
         let server = FakeMediaServer()
@@ -371,5 +593,248 @@ final class ListenEngineTransferTests: XCTestCase {
         XCTAssertGreaterThan(engine.currentTime, 20.5)
         await eventually(10) { outcome.done }
         XCTAssertEqual(server.bytesSent, body.count, "\(server.ranges(for: url))")
+    }
+}
+
+final class ListenNetworkUsageTests: XCTestCase {
+    private var directory: URL!
+    private var file: URL { directory.appending(path: "usage.json") }
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        return calendar
+    }
+    private func date(_ year: Int = 2026, _ month: Int = 3, _ day: Int = 9,
+                      _ hour: Int = 12, _ minute: Int = 0, _ second: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day,
+                                          hour: hour, minute: minute, second: second))!
+    }
+    private func usage(at now: Date, interval: TimeInterval = 3_600) -> ListenNetworkUsage {
+        ListenNetworkUsage(fileURL: file, now: { now }, calendar: calendar, flushInterval: interval)
+    }
+    override func setUp() { directory = temporaryDirectory() }
+    override func tearDown() { try? FileManager.default.removeItem(at: directory) }
+
+    func testPersistsStartAndRepeatedBytesButBatchesChunksUntilFlush() throws {
+        let start = date()
+        let ledger = usage(at: start)
+        let emptyFile = try Data(contentsOf: file)
+        // The same downloaded range arriving twice is charged twice.
+        ledger.record(bytes: 512)
+        ledger.record(bytes: 512)
+        ledger.record(bytes: 0)
+        ledger.record(bytes: -1)
+        let snapshot = ledger.snapshot(now: start, calendar: calendar)
+        XCTAssertEqual(snapshot.todayBytes, 1_024)
+        XCTAssertEqual(snapshot.weekBytes, 1_024)
+        XCTAssertEqual(snapshot.monthBytes, 1_024)
+        XCTAssertEqual(snapshot.totalBytes, 1_024)
+        XCTAssertEqual(snapshot.recentBytes, 1_024)
+        XCTAssertEqual(try Data(contentsOf: file), emptyFile, "chunks do not write to disk")
+        ledger.flush()
+        let relaunched = usage(at: start.addingTimeInterval(20))
+        let saved = relaunched.snapshot(now: start.addingTimeInterval(20), calendar: calendar)
+        XCTAssertEqual(saved.totalBytes, 1_024)
+        XCTAssertEqual(saved.todayBytes, 1_024)
+        XCTAssertEqual(saved.startedAt, start)
+        XCTAssertEqual(saved.recentBytes, 0, "recent rate is deliberately in-memory only")
+    }
+
+    func testCalendarDayWeekMonthAndDaylightSavingBoundary() {
+        // Monday starts a new calendar week; Sunday is the 23-hour DST day.
+        let now = date(2026, 3, 9, 0)
+        let ledger = usage(at: date(2026, 2, 28))
+        ledger.record(bytes: 1, at: date(2026, 2, 28, 23, 59, 59))
+        ledger.record(bytes: 2, at: date(2026, 3, 1, 0))
+        ledger.record(bytes: 4, at: date(2026, 3, 8, 23, 59, 59))
+        ledger.record(bytes: 8, at: now)
+        let snapshot = ledger.snapshot(now: now, calendar: calendar)
+        XCTAssertEqual(snapshot.todayBytes, 8)
+        XCTAssertEqual(snapshot.weekBytes, 8, "calendar week, not the last seven days")
+        XCTAssertEqual(snapshot.monthBytes, 14, "calendar month, not the last thirty days")
+        XCTAssertEqual(snapshot.totalBytes, 15)
+        XCTAssertEqual(snapshot.recentBytes, 12)
+        let sunday = ledger.snapshot(now: date(2026, 3, 8, 23, 59, 59), calendar: calendar)
+        XCTAssertEqual(sunday.todayBytes, 4, "next day's bucket is excluded at the interval end")
+        XCTAssertEqual(sunday.weekBytes, 4)
+    }
+
+    func testRecentBytesExpireAtSixtySecondsAndDoNotIncludeFutureBuckets() {
+        let start = date()
+        let ledger = usage(at: start)
+        ledger.record(bytes: 10, at: start)
+        ledger.record(bytes: 20, at: start.addingTimeInterval(1))
+        XCTAssertEqual(ledger.snapshot(now: start, calendar: calendar).recentBytes, 10)
+        XCTAssertEqual(ledger.snapshot(now: start.addingTimeInterval(59), calendar: calendar).recentBytes, 30)
+        XCTAssertEqual(ledger.snapshot(now: start.addingTimeInterval(60), calendar: calendar).recentBytes, 20)
+        XCTAssertEqual(ledger.snapshot(now: start.addingTimeInterval(61), calendar: calendar).recentBytes, 0)
+        XCTAssertEqual(ledger.snapshot(now: start.addingTimeInterval(61), calendar: calendar).totalBytes, 30)
+    }
+
+    func testPrunesDailyBucketsButKeepsLifetimeTotalAndStartDate() throws {
+        let start = date(2025, 1, 1)
+        let ledger = usage(at: start)
+        for offset in 0..<120 {
+            ledger.record(bytes: 10, at: calendar.date(byAdding: .day, value: offset, to: start)!)
+        }
+        ledger.flush()
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual((json["days"] as? [[String: Any]])?.count, 90)
+        let now = calendar.date(byAdding: .day, value: 120, to: start)!
+        let snapshot = usage(at: now).snapshot(now: now, calendar: calendar)
+        XCTAssertEqual(snapshot.totalBytes, 1_200)
+        XCTAssertEqual(snapshot.startedAt, start)
+        XCTAssertEqual(snapshot.todayBytes, 0)
+        let muchLater = calendar.date(byAdding: .year, value: 1, to: now)!
+        let later = usage(at: muchLater).snapshot(now: muchLater, calendar: calendar)
+        XCTAssertEqual(later.totalBytes, 1_200)
+        let pruned = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual((pruned["days"] as? [[String: Any]])?.count, 0)
+    }
+
+    func testConcurrentRecordingAndSnapshotsLoseNoBytes() {
+        let now = date()
+        let ledger = usage(at: now)
+        let calendar = calendar
+        DispatchQueue.concurrentPerform(iterations: 1_000) { index in
+            ledger.record(bytes: 7)
+            if index % 50 == 0 { _ = ledger.snapshot(now: now, calendar: calendar) }
+        }
+        ledger.flush()
+        XCTAssertEqual(ledger.snapshot(now: now, calendar: calendar).totalBytes, 7_000)
+        XCTAssertEqual(usage(at: now).snapshot(now: now, calendar: calendar).totalBytes, 7_000)
+    }
+
+    @MainActor
+    func testPeriodicBatchWritesWithoutACompletion() async throws {
+        let now = date()
+        let ledger = usage(at: now, interval: 0.01)
+        ledger.record(bytes: 123)
+        await eventually {
+            guard let data = try? Data(contentsOf: self.file),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            return json["totalBytes"] as? Int == 123
+        }
+        XCTAssertEqual(usage(at: now).snapshot(now: now, calendar: calendar).totalBytes, 123)
+    }
+
+    func testCorruptFileStartsFreshWithoutInventingHistoricalUsage() throws {
+        try Data("not a ledger".utf8).write(to: file)
+        let now = date()
+        let snapshot = usage(at: now).snapshot(now: now, calendar: calendar)
+        XCTAssertEqual(snapshot.startedAt, now)
+        XCTAssertEqual(snapshot.totalBytes, 0)
+        XCTAssertEqual(snapshot.todayBytes, 0)
+    }
+}
+
+@MainActor
+final class ListenSessionUsageTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws { directory = temporaryDirectory() }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+
+    func testRealDelegateCountsRepeatedRangesAndFlushesSuccessfulAndFailedBodies() async throws {
+        let file = directory.appending(path: "usage.json")
+        let usage = ListenNetworkUsage(fileURL: file, flushInterval: 3_600)
+        let session = ListenMediaSession.makeSession(protocolClasses: [ListenUsageProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let fetching = ListenSessionFetching(session: session, usage: usage)
+        let queue = DispatchQueue(label: "ListenUsageTests.events")
+        for path in ["success", "success", "failure"] {
+            let finished = expectation(description: path)
+            let url = URL(string: "https://usage.media.example/\(path)")!
+            var request = URLRequest(url: url)
+            request.setValue("bytes=0-383", forHTTPHeaderField: "Range")
+            _ = fetching.start(request, queue: queue) { event in
+                if case .data(let data) = event, path == "failure" {
+                    ListenUsageProtocol.failAfterBodyDelivery(bytes: data.count, for: url)
+                }
+                if case .finished(let error) = event {
+                    XCTAssertEqual(error != nil, path == "failure")
+                    finished.fulfill()
+                }
+            }
+            await fulfillment(of: [finished], timeout: 5)
+        }
+        XCTAssertEqual(usage.snapshot().totalBytes, 1_152, "counts repeated bodies, not unique disk ranges")
+        let persisted = ListenNetworkUsage(fileURL: file)
+        XCTAssertEqual(persisted.snapshot().totalBytes, 1_152, "completion flushed success and failure")
+    }
+
+    func testActualDelegateCountsBeforeEventQueueFilteringAndRetainsCancelledBytes() async throws {
+        let file = directory.appending(path: "usage.json")
+        let usage = ListenNetworkUsage(fileURL: file, flushInterval: 3_600)
+        let session = ListenMediaSession.makeSession(protocolClasses: [ListenUsageProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let fetching = ListenSessionFetching(session: session, usage: usage)
+        let queue = DispatchQueue(label: "ListenUsageTests.blockedEvents")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { release.wait() }
+        defer { release.signal() }
+        let finished = expectation(description: "cancelled")
+        let cancel = fetching.start(URLRequest(url: URL(string: "https://usage.media.example/hold")!), queue: queue) { event in
+            // A stale/rejected transfer can ignore every data event. It must
+            // still be charged for bytes URLSession already delivered.
+            if case .finished(let error) = event {
+                XCTAssertEqual((error as? URLError)?.code, .cancelled)
+                finished.fulfill()
+            }
+        }
+        await eventually { usage.snapshot().totalBytes == 384 }
+        XCTAssertEqual(usage.snapshot().totalBytes, 384, "delegate accounted while transfer queue was blocked")
+        cancel()
+        release.signal()
+        await fulfillment(of: [finished], timeout: 5)
+        XCTAssertEqual(ListenNetworkUsage(fileURL: file).snapshot().totalBytes, 384,
+                       "cancelled requests flush bytes already received")
+    }
+}
+
+private final class ListenUsageProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    // A failing fixture waits for real delegate delivery, not a timing delay:
+    // Foundation may discard queued body callbacks if didFail follows didLoad
+    // synchronously. All instance and dictionary state here is guarded by lock.
+    nonisolated(unsafe) private static var pendingFailures: [URL: ListenUsageProtocol] = [:]
+    private var deliveredBytes = 0
+
+    static func failAfterBodyDelivery(bytes: Int, for url: URL) {
+        let ready: ListenUsageProtocol? = lock.withLock {
+            guard let fixture = pendingFailures[url] else { return nil }
+            fixture.deliveredBytes += bytes
+            guard fixture.deliveredBytes >= 384 else { return nil }
+            pendingFailures[url] = nil
+            return fixture
+        }
+        if let ready {
+            ready.client?.urlProtocol(ready, didFailWithError: URLError(.networkConnectionLost))
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "usage.media.example" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        if url.lastPathComponent == "failure" {
+            Self.lock.withLock { Self.pendingFailures[url] = self }
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": "audio/mpeg", "Content-Range": "bytes 0-383/1024",
+            "X-Uncounted-Header": String(repeating: "h", count: 1_024),
+        ])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(repeating: 1, count: 128))
+        client?.urlProtocol(self, didLoad: Data(repeating: 2, count: 256))
+        switch url.lastPathComponent {
+        case "hold", "failure": break
+        default: client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {
+        guard let url = request.url else { return }
+        _ = Self.lock.withLock { Self.pendingFailures.removeValue(forKey: url) }
     }
 }

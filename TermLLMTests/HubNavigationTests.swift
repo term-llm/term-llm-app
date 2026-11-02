@@ -75,3 +75,94 @@ final class HubNavigationTests: XCTestCase {
         }
     }
 }
+
+/// Protocol fixture only: this does not exercise a real VPN, DNS or TLS handshake.
+final class TailnetDiscoveryTests: XCTestCase, @unchecked Sendable {
+    private func configuration() -> URLSessionConfiguration {
+        let configuration = HubServerRole.discoveryConfiguration()
+        configuration.protocolClasses = [TailnetHealthProtocol.self]
+        return configuration
+    }
+
+    func testDiscoveryKeepsCredentialFreeBoundedSessionWithLongerVPNBudget() {
+        let configuration = configuration()
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 15)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 15)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.urlCache)
+    }
+
+    func testMountedTailnetHealthProbeAcceptsHealthyResponse() async throws {
+        let server = URL(string: "https://healthy.tail123.ts.net/hub/")!
+        let role = try await HubServerRole.detect(server: server, configuration: configuration())
+        XCTAssertEqual(role, .hub)
+    }
+
+    func testDNSAndTLSFailuresRemainFailuresWithSafeActionableMessages() async throws {
+        for (host, code, guidance) in [
+            ("dns.tail123.ts.net", URLError.cannotFindHost, "MagicDNS"),
+            ("tls.tail123.ts.net", URLError.serverCertificateUntrusted, "certificate"),
+            ("timeout.tail123.ts.net", URLError.timedOut, "15 seconds"),
+            ("offline.tail123.ts.net", URLError.cannotConnectToHost, "Tailscale")
+        ] {
+            do {
+                _ = try await HubServerRole.detect(server: URL(string: "https://\(host)/hub/")!, configuration: configuration())
+                XCTFail("Failed connection must not be classified as a server")
+            } catch {
+                XCTAssertEqual(error as? HubServerRole.DiscoveryFailure, .network(code: code.rawValue, tailnet: true))
+                XCTAssertTrue(error.localizedDescription.contains(guidance), error.localizedDescription)
+                XCTAssertFalse(error.localizedDescription.contains("private-detail"))
+                XCTAssertFalse(error.localizedDescription.contains(host))
+            }
+        }
+    }
+
+    func testUnhealthyOrRedirectResponsesDoNotBecomeDirectNodes() async throws {
+        for (host, status) in [("auth", 401), ("redirect", 302), ("unavailable", 503)] {
+            do {
+                _ = try await HubServerRole.detect(server: URL(string: "https://\(host).tail123.ts.net/hub/")!, configuration: configuration())
+                XCTFail("HTTP \(status) must not be classified as a server")
+            } catch {
+                XCTAssertEqual(error as? HubServerRole.DiscoveryFailure, .http(status))
+            }
+        }
+        let unknown = try await HubServerRole.detect(server: URL(string: "https://malformed.tail123.ts.net/hub/")!, configuration: configuration())
+        XCTAssertEqual(unknown, .unknown)
+    }
+
+    func testOrdinaryDNSFailureDoesNotSuggestAnUnrelatedVPN() {
+        let error = HubServerRole.DiscoveryFailure.network(code: URLError.cannotFindHost.rawValue, tailnet: false)
+        XCTAssertFalse(error.localizedDescription.contains("Tailscale"))
+        XCTAssertFalse(error.localizedDescription.contains("MagicDNS"))
+    }
+}
+
+private final class TailnetHealthProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let errors: [String: URLError.Code] = ["dns": .cannotFindHost, "tls": .serverCertificateUntrusted,
+                                               "timeout": .timedOut, "offline": .cannotConnectToHost]
+        let host = url.host?.components(separatedBy: ".").first ?? ""
+        if let code = errors[host] {
+            client?.urlProtocol(self, didFailWithError: NSError(domain: NSURLErrorDomain, code: code.rawValue,
+                userInfo: [NSLocalizedDescriptionKey: "private-detail", NSURLErrorFailingURLStringErrorKey: url.absoluteString]))
+            return
+        }
+        // The fixture accepts only the requested mount and credential-free probe.
+        let validRequest = url.path == "/hub/healthz" && request.timeoutInterval == 15
+            && !request.httpShouldHandleCookies && request.value(forHTTPHeaderField: "Authorization") == nil
+            && request.value(forHTTPHeaderField: "Cookie") == nil
+        let statuses = ["auth": 401, "redirect": 302, "unavailable": 503]
+        let status = validRequest ? (statuses[host] ?? 200) : 400
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data((host == "malformed" ? "not JSON" : #"{"status":"ok","role":"hub"}"#).utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}

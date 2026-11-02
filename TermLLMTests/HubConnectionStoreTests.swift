@@ -66,6 +66,28 @@ final class HubConnectionStoreTests: XCTestCase {
             XCTAssertEqual(store.connections, [original])
         }
     }
+    func testDiscoveryNetworkFailurePreservesCatalogAndSurfacesSafeDiagnostic() async throws {
+        let defaults = defaults()
+        let store = HubConnectionStore(defaults: defaults)
+        let original = try store.save(name: "Original", kind: .hub, address: "https://example.com/")
+        let raw = defaults.data(forKey: HubConnectionStore.storageKey)
+        let failure = HubServerRole.DiscoveryFailure.network(code: URLError.cannotFindHost.rawValue, tailnet: true)
+        for id in [nil, Optional(original.id)] {
+            do {
+                try await store.saveDetectingKind(id: id, name: "Tailnet", address: "https://desk.tail123.ts.net/") { _ in
+                    throw failure
+                }
+                XCTFail("Failed discovery must not save")
+            } catch {
+                XCTAssertEqual(error as? HubServerRole.DiscoveryFailure, failure)
+                XCTAssertTrue(error.localizedDescription.contains("MagicDNS"))
+            }
+            XCTAssertEqual(store.connections, [original])
+            XCTAssertEqual(store.selectedID, original.id)
+            XCTAssertEqual(defaults.data(forKey: HubConnectionStore.storageKey), raw)
+        }
+    }
+
     func testCancelledDetectionDoesNotSave() async throws {
         let store = HubConnectionStore(defaults: defaults())
         let task = Task {

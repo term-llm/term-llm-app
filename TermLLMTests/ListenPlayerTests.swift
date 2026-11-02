@@ -205,6 +205,9 @@ final class ListenPlayerTests: XCTestCase {
                                           ListenDraft(url: URL(string: "https://hub.example/media/clip.mp4")!)],
                                          placement: .end, download: .never)
         try await listen.player.play(items[0].id)
+        // Switching sources may retire an unstarted playback cache. Let the
+        // protected request actually launch before checking its scoped cookie.
+        try await waitFor { server.requests.contains { $0.url == hub } }
         try await listen.player.play(items[1].id)
         try await waitFor { server.requests.count == 2 }
         XCTAssertEqual(server.requests.first { $0.url == hub }?.value(forHTTPHeaderField: "Cookie"), "s=1")
@@ -329,6 +332,90 @@ final class ListenPlayerTests: XCTestCase {
                        "a file saved only for streaming goes once played")
     }
 
+    func testPromotingAnActivePlaybackCacheDownloadsTheWholeFileOnTheSameTransfer() async throws {
+        let engine = FakeListenEngine()
+        let server = FakeMediaServer()
+        let body = mediaBody(8 << 20)
+        let url = draft("ep").url
+        server.serve(url, .init(body: body))
+        server.hold(3 << 20 ..< 4 << 20)
+        let listen = makeListen(engine: engine, server: server)
+        let items = try await listen.add([draft("ep")], placement: .now, download: .never)
+        let id = items[0].id
+        let transfer = try XCTUnwrap(engine.loads.last?.source.transfer)
+        try await waitFor { transfer.progress.received == ListenTransfer.playbackLookahead }
+        listen.player.pause()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(server.bytesSent, Int(ListenTransfer.playbackLookahead), "paused/idle reads do not keep moving the cache window")
+        XCTAssertEqual(listen.store.item(id)?.download, .downloading)
+        XCTAssertTrue(listen.downloader.isCachingForPlayback(id))
+
+        listen.downloader.download(id)
+        XCTAssertFalse(listen.downloader.isCachingForPlayback(id), "Download for offline promotes before the active-transfer early return")
+        let promoted = await listen.downloader.source(for: try XCTUnwrap(listen.store.item(id)))
+        XCTAssertTrue(promoted.transfer === transfer)
+        server.release()
+        try await waitFor { listen.store.item(id)?.download == .downloaded }
+        XCTAssertNil(listen.store.item(id)?.cachedForPlayback, "explicitly promoted files are kept")
+        XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=3145728-"])
+        XCTAssertEqual(server.bytesSent, body.count)
+        let local = try XCTUnwrap(listen.downloader.localURL(for: try XCTUnwrap(listen.store.item(id))))
+        XCTAssertEqual(try Data(contentsOf: local), body)
+        listen.player.stop()
+    }
+
+    func testSwitchingSeveralPlaybackCachesDoesNotStarveExplicitQueuedDownloads() async throws {
+        let engine = FakeListenEngine()
+        let server = FakeMediaServer()
+        let body = mediaBody(8 << 20)
+        let podcasts = (0...ListenDownloader.maxConcurrent).map { draft("podcast-\($0)") }
+        for podcast in podcasts { server.serve(podcast.url, .init(body: body)) }
+        let listen = makeListen(engine: engine, server: server)
+        let items = try await listen.add(podcasts, placement: .end, download: .never)
+        for item in items {
+            try await listen.player.play(item.id)
+            let transfer = try XCTUnwrap(engine.loads.last?.source.transfer)
+            try await waitFor { transfer.progress.received == ListenTransfer.playbackLookahead }
+            XCTAssertEqual(listen.downloader.activeCount, 1)
+            XCTAssertEqual(Set(listen.downloader.progress.keys), Set([item.id]), "old cache watchers/progress are retired")
+        }
+        for item in items.dropLast() {
+            XCTAssertEqual(listen.store.item(item.id)?.download, ListenItem.Download.none)
+            XCTAssertTrue(ListenTransfer.partialFiles(for: item.id, in: listen.downloader.directory).allSatisfy {
+                FileManager.default.fileExists(atPath: $0.path)
+            }, "retirement preserves partial bytes and their resume record")
+        }
+
+        let explicit = (0...ListenDownloader.maxConcurrent).map { draft("offline-\($0)") }
+        let downloadBody = mediaBody(1 << 20)
+        for item in explicit { server.serve(item.url, .init(body: downloadBody)) }
+        server.hold(0 ..< 1 << 20)
+        let downloads = try await listen.add(explicit, placement: .end, download: .now)
+        XCTAssertTrue(downloads.prefix(ListenDownloader.maxConcurrent).allSatisfy {
+            listen.store.item($0.id)?.download == .downloading
+        }, "idle playback caches must not occupy whole-file concurrency slots")
+        XCTAssertEqual(listen.store.item(try XCTUnwrap(downloads.last).id)?.download, .queued)
+        // Selecting an old episode reopens its bounded partial while every
+        // explicit transfer remains running/queued, rather than retiring it.
+        try await listen.player.play(items[0].id)
+        let resumed = try XCTUnwrap(engine.loads.last?.source.transfer)
+        XCTAssertEqual(resumed.progress.received, ListenTransfer.playbackLookahead)
+        XCTAssertEqual(listen.downloader.activeCount, ListenDownloader.maxConcurrent + 1)
+        XCTAssertEqual(listen.downloader.progress.count, ListenDownloader.maxConcurrent + 1)
+        XCTAssertTrue(downloads.prefix(ListenDownloader.maxConcurrent).allSatisfy {
+            listen.store.item($0.id)?.download == .downloading
+        })
+        server.release()
+        try await waitFor { downloads.allSatisfy { listen.store.item($0.id)?.download == .downloaded } }
+        for item in downloads {
+            XCTAssertEqual(listen.store.item(item.id)?.downloadedBytes, Int64(downloadBody.count))
+            XCTAssertNil(listen.store.item(item.id)?.cachedForPlayback)
+        }
+        XCTAssertEqual(server.bytesSent, podcasts.count * Int(ListenTransfer.playbackLookahead) + downloads.count * downloadBody.count)
+        listen.player.stop()
+        for item in items { listen.downloader.cancel(item.id) }
+    }
+
     func testPlayingWhileDownloadingFetchesOnce() async throws {
         let engine = FakeListenEngine()
         let server = episodeServer(held: true)
@@ -362,7 +449,7 @@ final class ListenPlayerTests: XCTestCase {
         listen.downloader.download(id)
         server.release()
         try await waitFor { listen.store.item(id)?.download == .downloaded }
-        XCTAssertEqual(server.ranges(for: draft("ep").url), ["bytes=0-", "bytes=10-"],
+        XCTAssertEqual(server.ranges(for: draft("ep").url), ["bytes=0-3145727", "bytes=10-"],
                        "saving again carries on where it stopped")
         XCTAssertEqual(server.bytesSent, 40)
         XCTAssertNil(listen.store.item(id)?.cachedForPlayback)

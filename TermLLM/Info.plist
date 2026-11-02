@@ -58,6 +58,8 @@
 	<string>Search Apple Music and play your playlists, including ones the agent makes for you.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow camera access for web voice and attachments.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to the term-llm servers you choose on your local network or VPN.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Allow location access so you can share your current location in conversations and get walking or driving directions.</string>
 	<key>NSMicrophoneUsageDescription</key>

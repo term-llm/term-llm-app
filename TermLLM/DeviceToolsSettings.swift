@@ -46,7 +46,11 @@ final class DeviceToolsSettings: ObservableObject {
 
 /// Plain-language explanation of what "Share device tools" exposes.
 struct DeviceToolsInfoView: View {
-    private let device = UIDevice.current.model
+    var platform: DeviceToolPlatform = .current
+    var deviceModel: String = UIDevice.current.model
+
+    var statusTitle: String { "\(platform == .mac ? platform.name : deviceModel) status" }
+    var statusSummary: String { "Battery, \(platform.systemVersionLabel) and whether the app is open." }
 
     private struct ToolGroup: Identifiable {
         let id: String
@@ -56,7 +60,7 @@ struct DeviceToolsInfoView: View {
 
     private var groups: [ToolGroup] {
         [
-            ToolGroup(id: "\(device) status", symbol: "iphone", summary: "Battery, iOS version and whether the app is open."),
+            ToolGroup(id: statusTitle, symbol: platform.symbol, summary: statusSummary),
             ToolGroup(id: "Location & directions", symbol: "location", summary: "Your current location. Preview, start and stop turn-by-turn directions."),
             ToolGroup(id: "Music", symbol: "music.note", summary: "Search Apple Music, play and control playback, and edit your playlists."),
             ToolGroup(id: "Podcasts & audio", symbol: "dot.radiowaves.left.and.right", summary: "Add, play and manage episodes and audio."),

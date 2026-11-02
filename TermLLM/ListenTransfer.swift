@@ -93,13 +93,14 @@ protocol ListenFetching: Sendable {
 /// and redirects drop the scoped ones.
 struct ListenSessionFetching: ListenFetching {
     var session: URLSession = ListenMediaSession.shared
+    var usage: ListenNetworkUsage = .shared
 
     func start(_ request: URLRequest, queue: DispatchQueue,
                events: @escaping @Sendable (ListenFetchEvent) -> Void) -> @Sendable () -> Void {
         var request = request
         request.httpShouldHandleCookies = false
         let task = session.dataTask(with: request)
-        task.delegate = Forwarder(queue: queue, events: events)
+        task.delegate = Forwarder(queue: queue, usage: usage, events: events)
         task.resume()
         return { task.cancel() }
     }
@@ -107,10 +108,13 @@ struct ListenSessionFetching: ListenFetching {
     /// A task delegate that keeps the session delegate's redirect rule.
     private final class Forwarder: ListenMediaSession.Delegate, URLSessionDataDelegate, @unchecked Sendable {
         let queue: DispatchQueue
+        let usage: ListenNetworkUsage
         let events: @Sendable (ListenFetchEvent) -> Void
 
-        init(queue: DispatchQueue, events: @escaping @Sendable (ListenFetchEvent) -> Void) {
+        init(queue: DispatchQueue, usage: ListenNetworkUsage,
+             events: @escaping @Sendable (ListenFetchEvent) -> Void) {
             self.queue = queue
+            self.usage = usage
             self.events = events
         }
 
@@ -126,11 +130,15 @@ struct ListenSessionFetching: ListenFetching {
         }
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            // Count actual received bodies, even if the transfer later rejects
+            // the response, cancels this request or discards overlapping bytes.
+            usage.record(bytes: Int64(data.count))
             let events = events
             queue.async { events(.data(data)) }
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            usage.flush()
             let events = events
             queue.async { events(.finished(error)) }
         }
@@ -181,10 +189,10 @@ private final class LoaderRead: ListenTransferRead {
 
 // MARK: - Transfer
 
-/// Downloads one Listen item into a file by byte ranges, fetching each byte
-/// once. Playback reads through it as the item's resource loader delegate:
-/// what a read needs is fetched first (seeking ahead starts a request there;
-/// the gap is filled afterwards), then the rest, so the item ends up saved.
+/// Downloads one Listen item into a file by byte ranges. Explicit downloads
+/// fill every hole; playback-only caches stay near the newest playback read.
+/// The bound is speculative only: outstanding reads are served in full, and
+/// servers ignoring ranges/omitting totals fall back to whole-file fetching.
 /// A partial file outlives the app and resumes with If-Range, so a file that
 /// changed on the server starts over.
 final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
@@ -206,6 +214,9 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     static let recordInterval: Int64 = 1 << 20
     /// Most bytes handed to one read at a time, so cancellation gets in.
     static let readSlice: Int64 = 1 << 20
+    /// Automatic caching may fetch this far ahead of the newest submitted
+    /// playback read, not ahead of its own background download cursor.
+    static let playbackLookahead: Int64 = 3 << 20
 
     let id: UUID
     let queue = DispatchQueue(label: "TermLLM.ListenTransfer")
@@ -227,12 +238,19 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     private var length: Int64?
     private var mime: String?
     private var validator: String?
-    /// Fetch the whole file, not only what playback reads.
+    /// Save ahead of playback, or (by default) fetch the whole file.
     private var saving = true
+    private var playbackOnly: Bool
+    /// Changes only when playback submits a read, never as prefetch arrives.
+    private var playbackOffset: Int64 = 0
     /// Leave an unfinished file for a later resume.
     private var keepsPartial = true
     /// The server answers byte ranges (it sent a 200 to one: it doesn't).
     private var rangesWork = true
+    /// A server omitting the total length requires EOF discovery before we
+    /// can provide AVFoundation's content information. Don't invent EOF at
+    /// the end of our first bounded response.
+    private var requiresEOF = false
     private var reads: [any ListenTransferRead] = []
     private var request: InFlight?
     private var generation = 0
@@ -259,6 +277,8 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         var offset: Int64
         var end: Int64?
         var answered = false
+        /// A bounded 206 with an unknown total must not be mistaken for EOF.
+        var partialResponse = false
         var delivered: Int64 = 0
         var firstData: TimeInterval?
         var lastData: TimeInterval?
@@ -288,6 +308,7 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
 
     init(id: UUID, remote: URL, directory: URL, fetching: ListenFetching,
          retryDelays: [TimeInterval] = ListenTransfer.retryDelays,
+         playbackOnly: Bool = false,
          makeRequest: @escaping @Sendable (URL) async -> URLRequest,
          finished: @escaping @Sendable (ListenTransfer, Result<Saved, Error>) -> Void) {
         self.id = id
@@ -295,6 +316,7 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         self.directory = directory
         self.fetching = fetching
         self.retryDelays = retryDelays
+        self.playbackOnly = playbackOnly
         self.makeRequest = makeRequest
         self.finished = finished
         partialURL = directory.appending(path: "\(id.uuidString).partial")
@@ -337,10 +359,13 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         }
     }
 
-    /// Whether to fetch the whole file (and keep it) or only what playback reads.
-    func setSaving(_ saving: Bool) {
+    /// Saving can be a bounded playback cache or a whole-file download.
+    /// The default promotes a playback cache without replacing its transfer.
+    /// Stopping saving still serves only demanded bytes and discards the partial.
+    func setSaving(_ saving: Bool, playbackOnly: Bool = false) {
         queue.async {
             self.saving = saving
+            self.playbackOnly = playbackOnly
             self.keepsPartial = saving
             self.schedule()
         }
@@ -355,6 +380,8 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             self.failReads(CancellationError())
             if keepingPartial {
                 self.record()
+                try? self.file?.close()
+                self.file = nil
             } else {
                 self.keepsPartial = false
                 self.discardPartial()
@@ -398,6 +425,9 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         case .failed(let error): return read.fail(error)
         case .cancelled: return read.fail(CancellationError())
         case .running, .saved: break
+        }
+        if let wanted = read.wanted, !read.isDone {
+            playbackOffset = max(0, wanted.offset)
         }
         reads.append(read)
         serve()
@@ -509,26 +539,42 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         if let length, held.covers(length) { return save() }
         let urgent = urgentOffset()
         if let request {
-            guard let urgent else {
+            if let urgent {
+                // Without ranges a new request would start from the top: wait.
+                guard rangesWork else { return }
+                if request.arrives(urgent, now: ProcessInfo.processInfo.systemUptime) {
+                    recheckSoon()
+                    return
+                }
+                // A read wants bytes this request won't bring soon.
+                stopRequest()
+            } else if saving, playbackOnly, !requiresEOF {
+                // A server ignoring Range keeps its single full response:
+                // cancelling it would repeatedly download the same prefix.
+                guard rangesWork else { return }
+                // A cached read can move the playhead too. Don't continue an
+                // old prefetch outside its new window.
+                guard request.offset < playbackLimit, request.offset >= playbackOffset else {
+                    stopRequest()
+                    record()
+                    return schedule()
+                }
+                return
+            } else {
                 // Not saving: stop once playback has what it asked for.
                 if !saving, reads.isEmpty, rangesWork { stopRequest() }
                 return
             }
-            // Without ranges a new request would start from the top: wait.
-            guard rangesWork else { return }
-            if request.arrives(urgent, now: ProcessInfo.processInfo.systemUptime) {
-                recheckSoon()
-                return
-            }
-            // A read wants bytes this request won't bring soon.
-            stopRequest()
         } else if retry != nil {
             return // backing off after a failed request
         }
         if let urgent {
-            begin(at: urgent)
+            // Demand is always served, including a large/all-to-end read, but
+            // each playback-cache request is finite. Demand does not move the
+            // background window forward just because bytes arrived.
+            begin(at: urgent, limit: playbackOnly && saving && !requiresEOF ? ahead(of: urgent) : nil)
         } else if saving, let next = nextToFill() {
-            begin(at: next)
+            begin(at: next, limit: playbackOnly && !requiresEOF ? playbackLimit : nil)
         }
     }
 
@@ -542,16 +588,27 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         }
     }
 
+    private func ahead(of offset: Int64) -> Int64 {
+        min(offset, Int64.max - Self.playbackLookahead) + Self.playbackLookahead
+    }
+
+    private var playbackLimit: Int64 { min(length ?? .max, ahead(of: playbackOffset)) }
+
     private func nextToFill() -> Int64? {
+        if playbackOnly, !requiresEOF {
+            return held.firstMissing(from: playbackOffset, below: playbackLimit)
+        }
         guard let length else { return held.firstMissing(from: 0, below: .max) }
         return held.firstMissing(from: fillFrom, below: length) ?? held.firstMissing(from: 0, below: length)
     }
 
-    private func begin(at start: Int64) {
+    private func begin(at start: Int64, limit: Int64? = nil) {
         generation += 1
         let generation = generation
         // Stop where bytes already here begin, so nothing is fetched twice.
-        let end = held.nextStart(after: start)
+        var boundedEnd = held.nextStart(after: start)
+        if let limit { boundedEnd = min(boundedEnd ?? .max, limit, length ?? .max) }
+        let end = boundedEnd
         request = InFlight(generation: generation, start: start, offset: start, end: end)
         let resuming = !held.isEmpty
         let validator = validator
@@ -561,7 +618,8 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             var http = await makeRequest(remote)
             http.setValue("bytes=\(start)-\(end.map { String($0 - 1) } ?? "")", forHTTPHeaderField: "Range")
             if resuming, let validator { http.setValue(validator, forHTTPHeaderField: "If-Range") }
-            self.queue.async { self.launch(http, generation) }
+            let request = http
+            self.queue.async { self.launch(request, generation) }
         }
     }
 
@@ -608,6 +666,8 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             if let total = range.total, let length, total != length { return startOver() }
             if let tag, let validator, tag != validator, !held.isEmpty { return startOver() }
             length = range.total ?? length
+            request.partialResponse = range.total == nil && request.end != nil
+            if length == nil, request.partialResponse, playbackOnly { requiresEOF = true }
             request.offset = range.start
         case 200:
             // The whole file from its first byte: the server ignores ranges, or
@@ -621,6 +681,9 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 rangesWork = false
             }
             length = size ?? (held.isEmpty ? nil : length)
+            // Playback's finite Range was ignored (or If-Range changed).
+            // Keep this one full response rather than refetching prefixes.
+            if saving, playbackOnly { rangesWork = false }
             request.offset = 0
             request.end = nil
         case 416:
@@ -680,8 +743,9 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         guard request.delivered > 0 || length == 0 else {
             return fail(ListenError.downloadFailed("the server sent no data"), discard: false)
         }
-        // A response without a length ends at its last byte.
-        if length == nil, request.answered { length = request.offset }
+        // An unbounded response without a length ends at its last byte. A
+        // bounded 206 may simply have reached our requested end, not EOF.
+        if length == nil, request.answered, !request.partialResponse { length = request.offset }
         record()
         serve()
         schedule()
@@ -697,6 +761,7 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         held = ListenByteRanges()
         length = nil
         validator = nil
+        requiresEOF = false
         fillFrom = 0
         try? file?.truncate(atOffset: 0)
         try? FileManager.default.removeItem(at: recordURL)

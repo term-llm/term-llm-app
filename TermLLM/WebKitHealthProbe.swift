@@ -18,6 +18,8 @@ struct WebPageHealthSample: Equatable, Sendable {
     }
 
     let documentID: String
+    /// Native-issued measurement window, echoed only after the probe resets.
+    let windowID: String?
     let sequence: Int
     /// Wall time this report covers.
     let spanSeconds: Double
@@ -98,7 +100,8 @@ enum WebKitHealthProbe {
           const TICK = 1000, REPORT = \(max(1_000, reportMilliseconds)), HIDDEN = \(max(1_000, hiddenMilliseconds));
           const JITTER = 50, MAX_ANIMATIONS = \(maximumAnimations), MUTATION_WINDOW = 1000, DOM_EVERY = 60000;
           const doc = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).slice(0, 40);
-          let seq = 0, start = now(), expected = 0, timer = 0, hiddenSince = visible() ? -1 : start;
+          let seq = 0, windowID = null, start = now(), expected = 0, timer = 0, hiddenSince = visible() ? -1 : start;
+          let observationSince = start;
           let hiddenMs = 0, ticks = 0, lateMs = 0, maxLateMs = 0, probeMs = 0;
           let frames = 0, frameMs = 0, lastFrame = -1, resources = 0, longTasks = 0;
           let mutations = 0, mutationMs = 0, observingSince = -1;
@@ -186,11 +189,11 @@ enum WebKitHealthProbe {
             mutationMs += t - observingSince;
             observingSince = -1;
           };
-          try { new PerformanceObserver((list) => { resources += list.getEntries().length; }).observe({ type: 'resource' }); } catch {}
+          try { new PerformanceObserver((list) => { resources += list.getEntries().filter((entry) => entry.startTime >= observationSince).length; }).observe({ type: 'resource' }); } catch {}
           let longTaskSupport = false;
           try {
             if ((PerformanceObserver.supportedEntryTypes || []).includes('longtask')) {
-              new PerformanceObserver((list) => { longTasks += list.getEntries().length; }).observe({ type: 'longtask' });
+              new PerformanceObserver((list) => { longTasks += list.getEntries().filter((entry) => entry.startTime >= observationSince).length; }).observe({ type: 'longtask' });
               longTaskSupport = true;
             }
           } catch {}
@@ -253,7 +256,7 @@ enum WebKitHealthProbe {
             unobserve(t);
             const anim = shown ? animations() : { running: 0, list: [] };
             const sample = {
-              v: \(version), doc, seq: seq++, span: t - start, vis: document.visibilityState, hidden: hiddenMs, ticks,
+              v: \(version), doc, window: windowID, seq: seq++, span: t - start, vis: document.visibilityState, hidden: hiddenMs, ticks,
               late: lateMs, maxLate: maxLateMs, frames, frameMs, mutations, mutMs: mutationMs, resources,
               longTasks: longTaskSupport ? longTasks : -1, dom: domNodes, running: anim.running, anims: anim.list,
               audio: count(sets.audio, (c) => c.state === 'running' ? 1 : 0),
@@ -290,21 +293,40 @@ enum WebKitHealthProbe {
             schedule(now());
             probeMs += now() - t;
           };
-          document.addEventListener('visibilitychange', () => {
+          // Suspension is not main-thread work. Discard spans crossing lifecycle
+          // boundaries, including an overdue heartbeat, rather than reporting them.
+          const resetWindow = () => {
             const t = now();
-            if (visible()) {
-              if (hiddenSince >= 0) { hiddenMs += t - hiddenSince; hiddenSince = -1; }
-            } else {
-              unobserve(t);
-              if (hiddenSince < 0) hiddenSince = t;
-            }
-            if (t - start >= 250) report(t);
-            schedule(now());
-            probeMs += now() - t;
-          });
+            unobserve(t);
+            start = t; observationSince = t; hiddenSince = visible() ? -1 : t;
+            hiddenMs = 0; ticks = 0; lateMs = 0; maxLateMs = 0; probeMs = 0;
+            frames = 0; frameMs = 0; lastFrame = -1; mutations = 0; mutationMs = 0; resources = 0; longTasks = 0;
+            if (visible()) observe(t);
+            schedule(t);
+          };
+          // Native never waits for this call. Its token makes queued pre-reset
+          // reports unusable even when message and notification delivery race.
+          try {
+            Object.defineProperty(window, '__termLLMHealthResetWindow', { value: (id) => {
+              windowID = id;
+              resetWindow();
+            } });
+          } catch {}
+          document.addEventListener('visibilitychange', resetWindow);
+          document.addEventListener('freeze', resetWindow);
+          document.addEventListener('resume', resetWindow);
+          window.addEventListener('pagehide', resetWindow);
+          window.addEventListener('pageshow', resetWindow);
           schedule(start);
         })();
         """
+    }
+
+    /// A bounded, fire-and-forget reset; no navigation, document replacement or
+    /// dependency on JavaScript responsiveness in the native navigation path.
+    static func resetScript(windowID: String) -> String {
+        let literal = String(decoding: JSONValue.string(windowID).encoded(), as: UTF8.self)
+        return "window.__termLLMHealthResetWindow?.(\(literal)); void 0;"
     }
 
     // MARK: Parsing (untrusted page input)
@@ -330,6 +352,7 @@ enum WebKitHealthProbe {
         let visibility = token(object["vis"], limit: 16) ?? "unknown"
         return WebPageHealthSample(
             documentID: documentID,
+            windowID: token(object["window"], limit: 40),
             sequence: int("seq", max: Double(Int32.max)),
             spanSeconds: span / 1000,
             visibility: ["visible", "hidden", "prerender"].contains(visibility) ? visibility : "unknown",

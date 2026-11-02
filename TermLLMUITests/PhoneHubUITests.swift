@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Real native UI + loopback HTTP protocol fixtures, not live agents or auth.
 final class PhoneHubUITests: XCTestCase {
@@ -94,7 +95,12 @@ final class PhoneHubUITests: XCTestCase {
         backToConnections()
         if app.navigationBars["Connections"].exists { return }
         if !app.buttons["settings.done"].exists {
-            required(app.buttons["phoneHub.settings"]).tap()
+            if app.descendants(matching: .any)["workspace.shell"].firstMatch.exists {
+                showWorkspaceSidebar()
+                required(app.buttons["workspace.settings"]).tap()
+            } else {
+                required(app.buttons["phoneHub.settings"]).tap()
+            }
         }
         required(app.buttons["settings.connections"]).tap()
         _ = required(app.navigationBars["Connections"])
@@ -129,7 +135,11 @@ final class PhoneHubUITests: XCTestCase {
         if app.buttons["settings.done"].exists {
             app.buttons["settings.done"].tap()
         }
-        _ = required(app.staticTexts["phoneHub.home"])
+        if app.descendants(matching: .any)["workspace.shell"].firstMatch.exists {
+            _ = required(app.staticTexts["workspace.header.title"])
+        } else {
+            _ = required(app.staticTexts["phoneHub.home"])
+        }
     }
 
     @MainActor
@@ -274,6 +284,149 @@ final class PhoneHubUITests: XCTestCase {
         _ = required(app.webViews.staticTexts["/work/node/shared/chat/1"])
         XCTAssertEqual(app.webViews.textFields["Fixture draft"].value as? String, "Keep the exact conversation")
         shot("chat-retained-exact-page")
+    }
+
+    // MARK: iPad / Designed for iPad on Mac workspace
+
+    @MainActor
+    private func requireWorkspaceDevice() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad || ProcessInfo.processInfo.isiOSAppOnMac,
+                          "Workspace coverage requires an iPad or Designed for iPad on Mac; keep the phone journey unchanged")
+    }
+
+    /// A portrait/narrow iPad uses an overlay sidebar; do not require a particular
+    /// simulator size, rotate the developer's device, or fall back to phone tabs.
+    @MainActor
+    private func showWorkspaceSidebar() {
+        if !app.buttons["appTab.agents"].exists || !app.buttons["appTab.agents"].isHittable {
+            let candidates = app.buttons.matching(NSPredicate(format: "identifier IN %@",
+                ["workspace.sidebar.toggle", "workspace.toggleSidebar"])).allElementsBoundByIndex
+            let toggle = candidates.first(where: { $0.isHittable }) ?? candidates.first
+            XCTAssertNotNil(toggle, "A narrow workspace must expose a visible sidebar control")
+            guard let toggle else { return }
+            required(toggle, timeout: 10).tap()
+        }
+        for tab in ["agents", "chat", "music", "podcasts"] {
+            XCTAssertTrue(required(app.buttons["appTab." + tab], timeout: 10).isHittable,
+                          "Workspace destinations must be accessible sidebar buttons")
+        }
+        XCTAssertEqual(app.tabBars.count, 0, "An iPad workspace must not show the phone tab bar")
+    }
+
+    @MainActor
+    private func selectWorkspaceDestination(_ tab: String) {
+        showWorkspaceSidebar()
+        let destination = required(app.buttons["appTab." + tab], timeout: 10)
+        destination.tap()
+        // Compact sidebar buttons disappear after selection, so assert the
+        // destination's own UI rather than selection on an offscreen button.
+    }
+
+    @MainActor
+    private func requireWorkspaceTitle(_ title: String) {
+        let titles = app.staticTexts.matching(identifier: "workspace.header.title")
+        let visible = titles.allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertEqual(visible.count, 1, "Only the active destination owns a visible quiet native root title")
+        XCTAssertEqual(visible.first?.label, title)
+        XCTAssertFalse(app.navigationBars[title].isHittable,
+                       "Workspace roots must not duplicate their quiet header with a native navigation bar")
+    }
+
+    @MainActor
+    func testWorkspaceSidebarPanelsSettingsAndAgentBackNavigation() throws {
+        try requireWorkspaceDevice()
+        continueAfterFailure = false
+        executionTimeAllowance = 120
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        launch(reset: true, seed: ["work"])
+        _ = required(app.descendants(matching: .any)["workspace.shell"].firstMatch, timeout: 10)
+        _ = required(app.descendants(matching: .any)["workspace.header"].firstMatch, timeout: 10)
+        requireWorkspaceTitle("Agents")
+        XCTAssertFalse(app.buttons["phoneHub.settings"].isHittable,
+                       "The workspace uses sidebar Settings, not the phone toolbar")
+        showWorkspaceSidebar()
+        shot("workspace-sidebar-ipad")
+        selectWorkspaceDestination("agents")
+
+        // Exercise the actual pinned panel controls without scrolling them
+        // into view: Agents, Attention and Sessions must stay accessible.
+        for (panel, content) in [("attention", "Work result"), ("sessions", "Work result"), ("nodes", "Work agent")] {
+            let button = required(app.buttons["phoneHub." + panel], timeout: 10)
+            XCTAssertTrue(button.isHittable)
+            button.tap()
+            _ = required(app.staticTexts[content].firstMatch, timeout: 10)
+            requireWorkspaceTitle("Agents")
+        }
+        shot("workspace-agents-panels-ipad")
+
+        // Exercise the same Settings/Connections helpers used by the phone
+        // journey; their workspace branch opens the actual sidebar Settings.
+        openConnections()
+        _ = required(app.navigationBars["Connections"], timeout: 10)
+        shot("workspace-settings-connections-ipad")
+        closeConnections()
+        requireWorkspaceTitle("Agents")
+
+        let agent = required(app.buttons["phoneHub.node." + id("work") + ".shared"], timeout: 10)
+        agent.tap()
+        _ = required(app.descendants(matching: .any)["phoneHub.agent"].firstMatch, timeout: 10)
+        let navigation = required(app.navigationBars["Work agent"], timeout: 10)
+        XCTAssertTrue(required(navigation.buttons["Agents"], timeout: 10).isHittable,
+                      "A pushed agent must keep native Back even though the root navigation bar is hidden")
+        shot("workspace-agent-pushed-ipad")
+        navigation.buttons["Agents"].tap()
+        requireWorkspaceTitle("Agents")
+        XCTAssertTrue(required(app.buttons["phoneHub.node." + id("work") + ".shared"], timeout: 10).isHittable)
+        shot("workspace-agent-back-ipad")
+    }
+
+    @MainActor
+    func testWorkspaceRetainsExactFixtureConversationAndDraftAcrossDestinations() throws {
+        try requireWorkspaceDevice()
+        continueAfterFailure = false
+        executionTimeAllowance = 120
+        launch(reset: true, seed: ["work"])
+        required(app.buttons["phoneHub.node." + id("work") + ".shared.new"], timeout: 10).tap()
+        _ = required(app.webViews.staticTexts["Work fixture chat"], timeout: 10)
+        if app.buttons["Got it"].exists { app.buttons["Got it"].tap() }
+        required(app.webViews.links["Open existing fixture conversation"], timeout: 10).tap()
+        let route = "/work/node/shared/chat/1"
+        _ = required(app.webViews.staticTexts[route], timeout: 10)
+        let draft = "workspace314159"
+        let input = required(app.webViews.textFields["Fixture draft"], timeout: 10)
+        input.tap()
+        input.typeText(draft)
+        XCTAssertEqual(input.value as? String, draft)
+        // WebKit may expose nested AX WebView wrappers for one document when
+        // hosted in a retained UIKit container. Compare with the initial shape;
+        // route + edited DOM draft are the black-box document-retention proof.
+        let visibleWebViewCount = app.webViews.count
+        XCTAssertGreaterThan(visibleWebViewCount, 0)
+        shot("workspace-chat-draft-ipad")
+
+        // No permission/auth controls, searches, or playback actions are needed.
+        // The fixture has no JS document marker: its exact route + unsaved DOM
+        // input are the available black-box retention evidence, not a live-server claim.
+        for (destination, title) in [("agents", "Agents"), ("music", "Music"), ("podcasts", "Podcasts")] {
+            selectWorkspaceDestination(destination)
+            requireWorkspaceTitle(title)
+            XCTAssertEqual(app.webViews.count, 0, "The retained inactive Chat must be detached from visible UI")
+            XCTAssertFalse(app.webViews.textFields["Fixture draft"].exists,
+                           "An inactive Chat must not remain accessible over a native destination")
+            shot("workspace-" + destination + "-ipad")
+            selectWorkspaceDestination("chat")
+            XCTAssertEqual(app.webViews.count, visibleWebViewCount, "Switching destinations must not add WebView wrappers or duplicate Chat documents")
+            _ = required(app.webViews.staticTexts["Work fixture chat"], timeout: 10)
+            _ = required(app.webViews.staticTexts[route], timeout: 10)
+            XCTAssertEqual(required(app.webViews.textFields["Fixture draft"], timeout: 10).value as? String, draft,
+                           "Return to the exact conversation with its unsaved DOM draft, not a reloaded fixture page")
+            XCTAssertFalse(app.staticTexts.matching(identifier: "workspace.header.title").allElementsBoundByIndex.contains { $0.isHittable },
+                           "Chat owns its web header; no visible native workspace title may cover it")
+            XCTAssertFalse(app.navigationBars[title].isHittable,
+                           "Inactive native navigation must not cover Chat")
+        }
+        shot("workspace-chat-retained-exact-page-ipad")
     }
 
     @MainActor

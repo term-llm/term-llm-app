@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import XCTest
 @testable import TermLLM
@@ -271,6 +272,59 @@ final class ListenViewRenderingTests: XCTestCase {
         try await render(ListenPlayerView(listen: listen), named: "listen-player")
     }
 
+    func testLibraryContextMenusForUpNextAndHistory() async throws {
+        // Query the public UIKit menu delegate at visible row locations. This
+        // verifies registration, not a real mouse gesture or the menu's actions.
+        for status in [ListenItem.Status.unplayed, .inProgress, .played, .archived] {
+            let listen = makeListen()
+            let item = try XCTUnwrap(listen.store.add([draft("menu", title: "Menu episode")], placement: .end).first)
+            try listen.store.setStatus([item.id], status)
+            let previousKeyWindow = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows).first(where: \.isKeyWindow)
+            let window = try hostedWindow(ListenView(listen: listen))
+            defer { window.isHidden = true; previousKeyWindow?.makeKey() }
+            try await Task.sleep(for: .milliseconds(800))
+
+            func descendants(_ view: UIView) -> [UIView] {
+                [view] + view.subviews.flatMap(descendants)
+            }
+            let views = descendants(window)
+            let cells = views.compactMap { $0 as? UICollectionViewCell }
+            let interactions = views.flatMap(\.interactions).compactMap { $0 as? UIContextMenuInteraction }
+            let hasMenu = interactions.contains { interaction in
+                guard let view = interaction.view else { return false }
+                return cells.contains { cell in
+                    let center = CGPoint(x: cell.bounds.midX, y: cell.bounds.midY)
+                    let location = cell.convert(center, to: view)
+                    guard view.bounds.contains(location) else { return false }
+                    return interaction.delegate?.contextMenuInteraction(interaction, configurationForMenuAtLocation: location) != nil
+                }
+            }
+            XCTAssertTrue(hasMenu, "\(status) rows must expose a context menu, not only swipe actions")
+        }
+    }
+
+    func testWorkspaceHeaderIsOptIn() async throws {
+        for usesWorkspaceChrome in [false, true] {
+            let previousKeyWindow = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows).first(where: \.isKeyWindow)
+            let window = try hostedWindow(NavigationStack {
+                ListenView(listen: makeListen(), embedded: true, usesWorkspaceChrome: usesWorkspaceChrome,
+                           onToggleSidebar: {})
+            }, width: 1_024)
+            defer { window.isHidden = true; previousKeyWindow?.makeKey() }
+            try await Task.sleep(for: .milliseconds(800))
+            try capture(window, named: usesWorkspaceChrome ? "listen-workspace-root" : "listen-system-root")
+            let identifiers = accessibilityElements(in: window).compactMap {
+                ($0 as? UIAccessibilityIdentification)?.accessibilityIdentifier
+            }
+            guard identifiers.contains("podcastsScreen") else {
+                throw XCTSkip("This host does not expose the SwiftUI accessibility tree; inspect screenshot attachments instead")
+            }
+            XCTAssertEqual(identifiers.contains("listenWorkspaceHeader"), usesWorkspaceChrome)
+        }
+    }
+
     func testLibrary() async throws {
         let listen = try await sampleListen()
         try await render(ListenView(listen: listen), named: "listen-library")
@@ -342,5 +396,63 @@ private struct MediaShelfRenderingHarness: View {
         MediaPlaybackShelf(listen: listen, music: music, state: $shelfState,
                            usesSystemBackground: usesSystemBackground,
                            onOpenPodcastPlayer: {}, onOpenMusic: {})
+    }
+}
+
+/// Verify the actual view-body dependencies, not just the player model: a tick
+/// should refresh the small labels/scrubber without rebuilding artwork/menus.
+@MainActor
+final class ListenViewObservationTests: XCTestCase {
+    private func fixture() async throws -> (Listen, FakeListenEngine, ListenItem) {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let added = try await listen.add([
+            ListenDraft(url: URL(string: "http://pod.example/episode.mp3")!, title: "Episode", duration: 600)
+        ], placement: .now, download: .never)
+        engine.duration = 600
+        engine.currentTime = 30
+        engine.bufferedUntil = 120
+        engine.send(.tick)
+        return (listen, engine, try XCTUnwrap(listen.store.item(added[0].id)))
+    }
+
+    func testTickDoesNotInvalidateMiniPlayerOrFullPlayerBody() async throws {
+        let (listen, engine, _) = try await fixture()
+        let mini = ObservationFlag()
+        let full = ObservationFlag()
+        withObservationTracking {
+            _ = MiniPlayerBar(listen: listen, onOpen: {}).body
+        } onChange: { mini.raise() }
+        withObservationTracking {
+            _ = ListenPlayerView(listen: listen).body
+        } onChange: { full.raise() }
+        engine.currentTime = 31
+        engine.bufferedUntil = 121
+        engine.send(.tick)
+        XCTAssertFalse(mini.raised, "mini-player artwork and transport must not observe the playhead")
+        XCTAssertFalse(full.raised, "full-player artwork and menus must not observe the playhead")
+    }
+
+    func testTickStillInvalidatesSubtitleAndScrubber() async throws {
+        let (listen, engine, item) = try await fixture()
+        let subtitle = ObservationFlag()
+        let scrubber = ObservationFlag()
+        withObservationTracking {
+            _ = ListenMiniPlayerSubtitle(player: listen.player, item: item).body
+        } onChange: { subtitle.raise() }
+        withObservationTracking {
+            _ = ListenPlaybackScrubber(player: listen.player).body
+        } onChange: { scrubber.raise() }
+        engine.currentTime = 31
+        engine.send(.tick)
+        XCTAssertTrue(subtitle.raised)
+        XCTAssertTrue(scrubber.raised)
+    }
+
+    private final class ObservationFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var raised: Bool { lock.withLock { value } }
+        func raise() { lock.withLock { value = true } }
     }
 }

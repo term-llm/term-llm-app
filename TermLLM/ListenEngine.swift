@@ -165,6 +165,62 @@ final class ListenAudioSessionQueue: @unchecked Sendable {
     }
 }
 
+/// Coalesces arbitrary-thread KVO bursts *before* dispatching to the main queue.
+/// One instance belongs to one loaded item; invalidation is permanent, so even
+/// an observer already in flight cannot enqueue work for a replacement item.
+/// Delivery reads the latest engine state rather than retaining KVO snapshots.
+final class ListenBufferCallbackCoalescer: @unchecked Sendable {
+    /// The scheduler must enqueue (not synchronously execute) on the main queue.
+    typealias Scheduler = @Sendable (TimeInterval, DispatchWorkItem) -> Void
+    static let updateInterval: TimeInterval = 0.25
+
+    private let lock = NSLock()
+    private let schedule: Scheduler
+    private let onUpdate: @MainActor @Sendable () -> Void
+    // Protected by `lock`. Keep the slot occupied until main-queue delivery,
+    // including when the main queue is busy, rather than spawning more tasks.
+    private var pending: DispatchWorkItem?
+    private var invalidated = false
+
+    init(schedule: @escaping Scheduler = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }, onUpdate: @escaping @MainActor @Sendable () -> Void) {
+        self.schedule = schedule
+        self.onUpdate = onUpdate
+    }
+
+    func request() {
+        lock.withLock {
+            guard !invalidated, pending == nil else { return }
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.deliver() }
+            }
+            pending = work
+            schedule(Self.updateInterval, work)
+        }
+    }
+
+    func invalidate() {
+        lock.withLock {
+            invalidated = true
+            pending?.cancel()
+            pending = nil
+        }
+    }
+
+    @MainActor
+    private func deliver() {
+        let shouldDeliver = lock.withLock {
+            guard !invalidated, pending != nil else { return false }
+            pending = nil
+            return true
+        }
+        if shouldDeliver { onUpdate() }
+    }
+
+    deinit { pending?.cancel() }
+}
+
 @MainActor
 final class AVListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
@@ -176,7 +232,7 @@ final class AVListenEngine: ListenEngine {
     private var playRequest = 0
     private var timeObserver: Any?
     private var itemObservers: [NSObjectProtocol] = []
-    private var keyValueObservers: [NSKeyValueObservation] = []
+    private var bufferCallbacks: ListenBufferCallbackCoalescer?
     private var sessionObservers: [NSObjectProtocol] = []
     private var spoken = true
     private var isRemote = false
@@ -193,9 +249,6 @@ final class AVListenEngine: ListenEngine {
                                                       queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent?(.tick) }
         }
-        keyValueObservers.append(player.observe(\.timeControlStatus) { [weak self] _, _ in
-            Task { @MainActor in self?.onEvent?(.buffer) }
-        })
         let center = NotificationCenter.default
         sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                                    queue: .main) { [weak self] note in
@@ -290,9 +343,11 @@ final class AVListenEngine: ListenEngine {
     /// AVFoundation start from data it can fetch at once instead of hunting
     /// for the exact frame (much quicker for long MP3 episodes).
     func seek(to seconds: TimeInterval) async {
+        let item = player.currentItem
         let before = isRemote ? CMTime(seconds: 1, preferredTimescale: 600) : .zero
         await player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600),
                           toleranceBefore: before, toleranceAfter: .zero)
+        guard player.currentItem === item else { return }
         onEvent?(.buffer)
     }
 
@@ -302,9 +357,10 @@ final class AVListenEngine: ListenEngine {
     }
 
     func stop() {
+        // Invalidate before pause/replacement can generate more KVO callbacks.
+        removeItemObservers()
         player.pause()
         player.replaceCurrentItem(with: nil)
-        removeItemObservers()
         isRemote = false
         transfer = nil
         playRequest += 1
@@ -335,30 +391,47 @@ final class AVListenEngine: ListenEngine {
 
     private func observe(_ item: AVPlayerItem) {
         removeItemObservers()
+        let callbacks = ListenBufferCallbackCoalescer { [weak self, weak item] in
+            guard let self, let item, self.player.currentItem === item else { return }
+            self.onEvent?(.buffer)
+        }
+        bufferCallbacks = callbacks
         let center = NotificationCenter.default
         itemObservers.append(center.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item,
-                                                queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onEvent?(.ended) }
+                                                queue: .main) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.onEvent?(.ended)
+            }
         })
         itemObservers.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item,
-                                                queue: .main) { [weak self] note in
+                                                queue: .main) { [weak self, weak item] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             MainActor.assumeIsolated {
-                self?.onEvent?(.failed(error?.localizedDescription ?? "playback stopped unexpectedly"))
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.onEvent?(.failed(error?.localizedDescription ?? "playback stopped unexpectedly"))
             }
         })
         itemObservers.append(center.addObserver(forName: AVPlayerItem.playbackStalledNotification, object: item,
-                                                queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onEvent?(.buffer) }
+                                                queue: .main) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.onEvent?(.buffer)
+            }
         })
-        itemKeyValueObservers = [item.observe(\.loadedTimeRanges) { [weak self] _, _ in
-            Task { @MainActor in self?.onEvent?(.buffer) }
-        }]
+        // Both KVO sources share one slot and capture only the thread-safe
+        // helper. No actor task (or main-queue block) is created per KVO event.
+        itemKeyValueObservers = [
+            item.observe(\.loadedTimeRanges) { _, _ in callbacks.request() },
+            player.observe(\.timeControlStatus) { _, _ in callbacks.request() }
+        ]
     }
 
     private var itemKeyValueObservers: [NSKeyValueObservation] = []
 
     private func removeItemObservers() {
+        bufferCallbacks?.invalidate()
+        bufferCallbacks = nil
         itemObservers.forEach(NotificationCenter.default.removeObserver)
         itemObservers = []
         itemKeyValueObservers = []

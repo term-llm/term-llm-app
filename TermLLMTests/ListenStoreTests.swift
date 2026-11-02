@@ -161,3 +161,106 @@ final class ListenStoreTests: XCTestCase {
         XCTAssertTrue(insecure.isEmpty, "secure cookies never go over http")
     }
 }
+
+/// Kept separate from the store suite so these deterministic scheduling tests
+/// need neither AVPlayer nor a running audio session.
+@MainActor
+final class ListenBufferCallbackCoalescerTests: XCTestCase {
+    func testConcurrentBurstSchedulesOnlyOneMainQueueCallback() {
+        let scheduler = BufferCallbackTestScheduler()
+        var deliveries = 0
+        let callbacks = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { deliveries += 1 }
+
+        DispatchQueue.concurrentPerform(iterations: 10_000) { _ in callbacks.request() }
+
+        XCTAssertEqual(scheduler.scheduledDelays, [0.25])
+        XCTAssertEqual(scheduler.pendingCount, 1)
+        XCTAssertEqual(deliveries, 0, "KVO threads must not deliver inline")
+        scheduler.runNext()
+        XCTAssertEqual(deliveries, 1)
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    func testDeliveryReadsLatestStateAndEachWindowRemainsBounded() {
+        let scheduler = BufferCallbackTestScheduler()
+        var latest = 0
+        var delivered: [Int] = []
+        let callbacks = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { delivered.append(latest) }
+
+        for value in 1...500 {
+            latest = value
+            callbacks.request()
+        }
+        // Changes after the last KVO notification are visible too: delivery
+        // samples current engine state, never an old captured KVO snapshot.
+        latest = 501
+        scheduler.runNext()
+        XCTAssertEqual(delivered, [501])
+
+        for value in 502...1_000 {
+            latest = value
+            callbacks.request()
+        }
+        XCTAssertEqual(scheduler.pendingCount, 1)
+        XCTAssertEqual(scheduler.scheduledDelays, [0.25, 0.25], "even a new burst must wait another update interval")
+        scheduler.runNext()
+        XCTAssertEqual(delivered, [501, 1_000])
+    }
+
+    func testStopCancelsPendingDeliveryAndRejectsLateObserverCallbacks() {
+        let scheduler = BufferCallbackTestScheduler()
+        var deliveries = 0
+        let callbacks = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { deliveries += 1 }
+        callbacks.request()
+        callbacks.invalidate()
+        callbacks.invalidate() // Teardown is idempotent.
+
+        DispatchQueue.concurrentPerform(iterations: 1_000) { _ in callbacks.request() }
+        XCTAssertEqual(scheduler.scheduledDelays.count, 1, "an invalidated observer cannot schedule again")
+        scheduler.runNext() // Simulate a canceled callback still queued on main.
+        XCTAssertEqual(deliveries, 0)
+    }
+
+    func testReplacementCannotDeliverOldItemOrSuppressNewItem() {
+        let scheduler = BufferCallbackTestScheduler()
+        var delivered: [String] = []
+        let oldItem = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { delivered.append("old") }
+        oldItem.request()
+        oldItem.invalidate()
+
+        let newItem = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { delivered.append("new") }
+        newItem.request()
+        oldItem.request() // A KVO observer already in flight during replacement.
+        XCTAssertEqual(scheduler.scheduledDelays.count, 2)
+        scheduler.runNext()
+        XCTAssertTrue(delivered.isEmpty)
+        scheduler.runNext()
+        XCTAssertEqual(delivered, ["new"])
+
+        newItem.request()
+        scheduler.runNext()
+        XCTAssertEqual(delivered, ["new", "new"], "the new lifetime remains usable")
+    }
+}
+
+private final class BufferCallbackTestScheduler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var work: [DispatchWorkItem] = []
+    private var delays: [TimeInterval] = []
+
+    var scheduledDelays: [TimeInterval] { lock.withLock { delays } }
+    var pendingCount: Int { lock.withLock { work.count } }
+
+    func schedule(after delay: TimeInterval, work item: DispatchWorkItem) {
+        lock.withLock {
+            delays.append(delay)
+            work.append(item)
+        }
+    }
+
+    @MainActor
+    func runNext() {
+        let item = lock.withLock { work.removeFirst() }
+        item.perform()
+    }
+}

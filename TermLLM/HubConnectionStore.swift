@@ -190,7 +190,7 @@ final class HubConnectionStore: ObservableObject {
     /// Label-only edits of verified endpoints also work while the server is offline.
     @discardableResult
     func saveDetectingKind(id: UUID? = nil, name: String, address: String,
-                           discover: (URL) async -> HubServerRole = HubServerRole.discover) async throws -> HubConnection {
+                           discover: (URL) async throws -> HubServerRole = HubServerRole.detect) async throws -> HubConnection {
         guard persistenceError == nil else { throw ValidationError.corrupt }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let url = Self.canonicalURL(address) else { throw ValidationError.invalid }
@@ -201,7 +201,7 @@ final class HubConnectionStore: ObservableObject {
         if let previous, previous.url == url, previous.needsKindReview != true {
             kind = previous.kind
         } else {
-            let role = await discover(url)
+            let role = try await discover(url)
             try Task.checkCancellation()
             guard role != .unknown else { throw ValidationError.discoveryFailed }
             kind = role == .hub ? .hub : .directNode

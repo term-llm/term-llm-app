@@ -237,7 +237,7 @@ struct MiniPlayerBar: View {
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            subtitleView(item)
+                            ListenMiniPlayerSubtitle(player: player, item: item)
                         }
                         Spacer(minLength: 4)
                     }
@@ -296,16 +296,7 @@ struct MiniPlayerBar: View {
             .padding(.trailing, 4)
             .padding(.vertical, 4)
             .background(alignment: .bottom) {
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        if let buffered = fraction(player.bufferedUntil) {
-                            Rectangle().fill(.tint.opacity(0.3)).frame(width: proxy.size.width * buffered)
-                        }
-                        Rectangle().fill(.tint).frame(width: proxy.size.width * (fraction(player.position) ?? 0))
-                    }
-                    .frame(height: 2)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                }
+                ListenMiniPlayerProgress(player: player)
             }
             .background {
                 if !usesSystemBackground {
@@ -342,13 +333,15 @@ struct MiniPlayerBar: View {
     private func hide() {
         if let onDismiss { onDismiss() } else { player.hideBar() }
     }
+}
 
-    private func fraction(_ time: TimeInterval?) -> CGFloat? {
-        guard let time, let duration = player.duration, duration > 0 else { return nil }
-        return CGFloat(min(1, max(0, time / duration)))
-    }
+/// Only this small label observes the once-per-second playhead, not the
+/// artwork, transport controls, shelf selection or retained tab container.
+struct ListenMiniPlayerSubtitle: View {
+    let player: ListenPlayer
+    let item: ListenItem
 
-    @ViewBuilder private func subtitleView(_ item: ListenItem) -> some View {
+    var body: some View {
         let text = Text(subtitle(item)).font(.caption).lineLimit(1)
         if case .failed = player.status {
             text.foregroundStyle(.orange)
@@ -366,6 +359,40 @@ struct MiniPlayerBar: View {
         let left = player.duration.map { ListenFormat.time(max(0, $0 - player.position)) + " left" }
         // Time left first: it's what changes, and long artists truncate.
         return [left, item.artist].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+    }
+}
+
+/// Keep playhead/buffer changes inside the two-pixel progress track.
+struct ListenMiniPlayerProgress: View {
+    let player: ListenPlayer
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                if let buffered = fraction(player.bufferedUntil) {
+                    Rectangle().fill(.tint.opacity(0.3)).frame(width: proxy.size.width * buffered)
+                }
+                Rectangle().fill(.tint).frame(width: proxy.size.width * (fraction(player.position) ?? 0))
+            }
+            .frame(height: 2)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    private func fraction(_ time: TimeInterval?) -> CGFloat? {
+        guard let time, let duration = player.duration, duration > 0 else { return nil }
+        return CGFloat(min(1, max(0, time / duration)))
+    }
+}
+
+/// Passing the player rather than position values keeps the full sheet's
+/// artwork and menus outside the high-frequency observation boundary.
+struct ListenPlaybackScrubber: View {
+    let player: ListenPlayer
+
+    var body: some View {
+        ListenScrubber(position: player.position, duration: player.duration,
+                       buffered: player.bufferedUntil) { await player.seek(to: $0) }
     }
 }
 
@@ -398,8 +425,7 @@ struct ListenPlayerView: View {
                         }
                     }
                     VStack(spacing: 10) {
-                        ListenScrubber(position: player.position, duration: player.duration,
-                                       buffered: player.bufferedUntil) { await player.seek(to: $0) }
+                        ListenPlaybackScrubber(player: player)
                         ListenConnectionStatus(listen: listen, item: item)
                     }
                     transport
@@ -496,16 +522,20 @@ struct ListenPlayerView: View {
 
 // MARK: - Library
 
-/// Up Next and history. Tap to play, drag to reorder, swipe for more.
+/// Up Next and history. Tap to play, drag to reorder, swipe or right-click for more.
 struct ListenView: View {
     let listen: Listen
     /// Embedded destinations use their parent's navigation stack and omit Done.
     var embedded = false
     /// Hide native chrome while this persistent destination is inactive.
     var isActive: Bool = true
+    /// Quiet root chrome for the large-screen workspace; phones keep system chrome.
+    var usesWorkspaceChrome: Bool = false
+    var onToggleSidebar: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var failure: String?
+    @State private var workspaceEditMode: EditMode = .inactive
     private var player: ListenPlayer { listen.player }
     private var store: ListenStore { listen.store }
 
@@ -515,13 +545,49 @@ struct ListenView: View {
         } else {
             NavigationStack {
                 content.toolbar {
-                    ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                    if !usesWorkspaceChrome {
+                        ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                    }
                 }
             }
         }
     }
 
     private var content: some View {
+        rootContent
+            .alert("Couldn't Update Listen", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(failure ?? "")
+            }
+    }
+
+    @ViewBuilder private var rootContent: some View {
+        if usesWorkspaceChrome {
+            libraryList
+                .toolbar(.hidden, for: .navigationBar)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    WorkspaceHeader(title: embedded ? "Podcasts" : "Listen", onToggleSidebar: onToggleSidebar) {
+                        if !embedded {
+                            Button("Done") { dismiss() }
+                        }
+                        EditButton()
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("listenWorkspaceHeader")
+                }
+                // The inset and list must share the same edit-mode binding.
+                .environment(\.editMode, $workspaceEditMode)
+        } else {
+            libraryList
+                .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                }
+        }
+    }
+
+    private var libraryList: some View {
         List {
             if let notice = store.notice {
                 Section {
@@ -537,15 +603,11 @@ struct ListenView: View {
                 }
                 ForEach(store.upNext) { item in
                     row(item)
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) { attempt { try listen.remove([item.id]) } } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                            Button { Task { await attemptAsync { try await listen.finish([item.id], as: .played) } } } label: {
-                                Label("Played", systemImage: "checkmark.circle")
-                            }
-                            .tint(.green)
+                        .contextMenu {
+                            upNextActions(item)
+                            downloadAction(item)
                         }
+                        .swipeActions(edge: .trailing) { upNextActions(item) }
                         .swipeActions(edge: .leading) { downloadAction(item) }
                 }
                 .onMove { store.moveUpNext(from: $0, to: $1) }
@@ -560,15 +622,8 @@ struct ListenView: View {
                 Section("History") {
                     ForEach(store.history) { item in
                         row(item)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) { attempt { try listen.remove([item.id]) } } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
-                                Button { attempt { try store.setStatus([item.id], .unplayed) } } label: {
-                                    Label("Up Next", systemImage: "text.badge.plus")
-                                }
-                                .tint(.blue)
-                            }
+                            .contextMenu { historyActions(item) }
+                            .swipeActions(edge: .trailing) { historyActions(item) }
                     }
                     Button("Clear History", role: .destructive) { listen.clearHistory() }
                 }
@@ -576,43 +631,95 @@ struct ListenView: View {
         }
         .accessibilityIdentifier(embedded ? "podcastsScreen" : "listenScreen")
         .navigationTitle(embedded ? "Podcasts" : "Listen")
-        .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { EditButton() }
-        }
-        .alert("Couldn't Update Listen", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(failure ?? "")
-        }
     }
 
     private func row(_ item: ListenItem) -> some View {
         Button {
             Task { await attemptAsync { try await player.play(item.id) } }
         } label: {
-            HStack(spacing: 12) {
-                ListenArtwork(item: item, size: 44, store: listen.artwork)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title)
-                        .font(.subheadline.weight(player.currentID == item.id ? .semibold : .regular))
-                        .foregroundStyle(player.currentID == item.id ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                        .lineLimit(2)
-                    Text(detail(item))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if player.currentID == item.id {
-                    PlayingBars(animating: player.status == .playing)
-                } else {
-                    downloadBadge(item)
-                }
-            }
-            .contentShape(Rectangle())
+            ListenLibraryRow(listen: listen, item: item, isActive: isActive)
         }
         .buttonStyle(.plain)
+    }
+
+    // Shared by swipe and context menus so mouse access has identical semantics.
+    @ViewBuilder private func upNextActions(_ item: ListenItem) -> some View {
+        removeAction(item)
+        Button { Task { await attemptAsync { try await listen.finish([item.id], as: .played) } } } label: {
+            Label("Played", systemImage: "checkmark.circle")
+        }
+        .tint(.green)
+    }
+
+    @ViewBuilder private func historyActions(_ item: ListenItem) -> some View {
+        removeAction(item)
+        Button { attempt { try store.setStatus([item.id], .unplayed) } } label: {
+            Label("Up Next", systemImage: "text.badge.plus")
+        }
+        .tint(.blue)
+    }
+
+    private func removeAction(_ item: ListenItem) -> some View {
+        Button(role: .destructive) { attempt { try listen.remove([item.id]) } } label: {
+            Label("Remove", systemImage: "trash")
+        }
+    }
+
+    @ViewBuilder private func downloadAction(_ item: ListenItem) -> some View {
+        switch item.download {
+        case .downloaded:
+            Button { listen.downloader.deleteFile(item.id) } label: { Label("Delete Download", systemImage: "trash.circle") }
+        case .queued, .downloading:
+            if listen.downloader.isCachingForPlayback(item.id) {
+                Button { listen.downloader.download(item.id) } label: {
+                    Label("Download for Offline", systemImage: "arrow.down.circle")
+                }
+                .tint(.cyan)
+            }
+            Button { listen.downloader.cancel(item.id) } label: { Label("Cancel", systemImage: "xmark.circle") }
+        case .none, .failed:
+            Button { listen.downloader.download(item.id) } label: { Label("Download", systemImage: "arrow.down.circle") }
+                .tint(.cyan)
+        }
+    }
+
+    private func attempt(_ action: () throws -> Void) {
+        do { try action() } catch { failure = error.localizedDescription }
+    }
+
+    private func attemptAsync(_ action: () async throws -> Void) async {
+        do { try await action() } catch { failure = error.localizedDescription }
+    }
+}
+
+/// Progress updates invalidate row labels, not the entire library.
+struct ListenLibraryRow: View {
+    let listen: Listen
+    let item: ListenItem
+    var isActive = true
+    private var player: ListenPlayer { listen.player }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ListenArtwork(item: item, size: 44, store: listen.artwork)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.subheadline.weight(player.currentID == item.id ? .semibold : .regular))
+                    .foregroundStyle(player.currentID == item.id ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                    .lineLimit(2)
+                Text(detail(item))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if player.currentID == item.id {
+                PlayingBars(animating: isActive && player.status == .playing)
+            } else {
+                downloadBadge(item)
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder private func downloadBadge(_ item: ListenItem) -> some View {
@@ -622,18 +729,6 @@ struct ListenView: View {
             ListenDownloadRing(fraction: listen.downloader.progress[item.id]?.fraction)
         case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).accessibilityLabel("Download failed")
         case .none: EmptyView()
-        }
-    }
-
-    @ViewBuilder private func downloadAction(_ item: ListenItem) -> some View {
-        switch item.download {
-        case .downloaded:
-            Button { listen.downloader.deleteFile(item.id) } label: { Label("Delete Download", systemImage: "trash.circle") }
-        case .queued, .downloading:
-            Button { listen.downloader.cancel(item.id) } label: { Label("Cancel", systemImage: "xmark.circle") }
-        case .none, .failed:
-            Button { listen.downloader.download(item.id) } label: { Label("Download", systemImage: "arrow.down.circle") }
-                .tint(.cyan)
         }
     }
 
@@ -652,11 +747,13 @@ struct ListenView: View {
         switch item.download {
         case .queued: parts.append("Waiting to download")
         case .downloading:
-            let saving = listen.downloader.isCachingForPlayback(item.id) ? "Saving" : "Downloading"
-            if let fraction = listen.downloader.progress[item.id]?.fraction {
-                parts.append("\(saving) \(Int(fraction * 100))%")
+            if listen.downloader.isCachingForPlayback(item.id) {
+                parts.append(listen.downloader.progress[item.id].map { "Playback cache · " + ListenFormat.bytes($0.received) }
+                             ?? "Playback cache")
+            } else if let fraction = listen.downloader.progress[item.id]?.fraction {
+                parts.append("Downloading \(Int(fraction * 100))%")
             } else {
-                parts.append(saving + "…")
+                parts.append("Downloading…")
             }
         case .downloaded:
             if let bytes = item.downloadedBytes, bytes > 0 { parts.append(ListenFormat.bytes(bytes)) }
@@ -666,13 +763,6 @@ struct ListenView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func attempt(_ action: () throws -> Void) {
-        do { try action() } catch { failure = error.localizedDescription }
-    }
-
-    private func attemptAsync(_ action: () async throws -> Void) async {
-        do { try await action() } catch { failure = error.localizedDescription }
-    }
 }
 
 // MARK: - Shared
@@ -812,12 +902,25 @@ struct ListenConnectionStatus: View {
         case .queued:
             Label("Waiting to save on iPhone…", systemImage: "arrow.down.circle")
         case .downloading:
-            HStack(spacing: 6) {
-                ListenDownloadRing(fraction: downloader.progress[item.id]?.fraction, size: 12)
-                Text(downloader.progress[item.id].map { ListenFormat.progress($0, verb: "Saving on iPhone") }
-                     ?? "Saving on iPhone…")
-                Button("Stop") { downloader.cancel(item.id) }
-                    .font(.caption.weight(.semibold))
+            let caching = downloader.isCachingForPlayback(item.id)
+            VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    if caching {
+                        Image(systemName: "internaldrive")
+                        Text(downloader.progress[item.id].map { "Playback cache · " + ListenFormat.bytes($0.received) }
+                             ?? "Playback cache")
+                    } else {
+                        ListenDownloadRing(fraction: downloader.progress[item.id]?.fraction, size: 12)
+                        Text(downloader.progress[item.id].map { ListenFormat.progress($0, verb: "Saving on iPhone") }
+                             ?? "Saving on iPhone…")
+                    }
+                    Button("Stop") { downloader.cancel(item.id) }
+                        .font(.caption.weight(.semibold))
+                }
+                if caching {
+                    Button("Download for offline") { downloader.download(item.id) }
+                        .font(.caption.weight(.semibold))
+                }
             }
         case .none, .failed:
             Button { downloader.download(item.id) } label: {

@@ -700,3 +700,354 @@ private final class VoiceNavigationWaiter: NSObject, WKNavigationDelegate {
         finish(.failure(error))
     }
 }
+
+// Menu/keyboard routing is native policy, independent of server or WebKit timing.
+@MainActor
+final class DesktopCommandTests: XCTestCase {
+    private func policy(tab: AppTab = .agents, enabled: Bool = true, sources: Bool = true,
+                        chat: Bool = true, parked: Bool = false, back: Bool = true, zoom: Bool = true) -> DesktopCommandPolicy {
+        .init(tab: tab, enabled: enabled, hasSources: sources, chatAvailable: chat,
+              chatParked: parked, canGoBack: back, canZoom: zoom)
+    }
+
+    func testTabShortcutsOnlySelectExistingDestinations() {
+        XCTAssertEqual(DesktopCommand.tabs.compactMap(\.tab), AppTab.allCases)
+        XCTAssertEqual(DesktopCommand.tabs.map(\.input), ["1", "2", "3", "4"])
+        XCTAssertEqual(DesktopCommand.settings.input, ",")
+        XCTAssertEqual(DesktopCommand.refresh.input, "r")
+        XCTAssertEqual(DesktopCommand.back.input, "[")
+        XCTAssertEqual(DesktopCommand.zoom.map(\.input), ["+", "-", "0"])
+        XCTAssertEqual(DesktopCommand.allCases.count, 10, "No unsafe new-conversation command")
+    }
+
+    func testRefreshNeverTargetsHiddenRetainedChat() {
+        XCTAssertEqual(policy(tab: .agents).refresh, .agents)
+        XCTAssertNil(policy(tab: .agents, sources: false).refresh)
+        for tab: AppTab in [.music, .podcasts] {
+            let state = policy(tab: tab)
+            XCTAssertNil(state.refresh)
+            XCTAssertFalse(state.allows(.refresh))
+            XCTAssertFalse(state.allows(.back))
+        }
+        XCTAssertEqual(policy(tab: .chat).refresh, .chat)
+        XCTAssertEqual(policy(tab: .chat, parked: true).refresh, .reopenChat)
+        XCTAssertNil(policy(tab: .chat, chat: false).refresh)
+    }
+
+    func testBackRequiresVisibleLiveChatWithHistory() {
+        for tab in AppTab.allCases {
+            XCTAssertEqual(policy(tab: tab).allows(.back), tab == .chat)
+        }
+        XCTAssertFalse(policy(tab: .chat, chat: false).allows(.back))
+        XCTAssertFalse(policy(tab: .chat, parked: true).allows(.back))
+        XCTAssertFalse(policy(tab: .chat, back: false).allows(.back))
+        XCTAssertTrue(policy(tab: .chat).allows(.back))
+    }
+
+    func testInactiveOrObscuredContentRejectsEveryCommand() {
+        for tab in AppTab.allCases {
+            let state = policy(tab: tab, enabled: false)
+            XCTAssertNil(state.refresh)
+            for command in DesktopCommand.allCases { XCTAssertFalse(state.allows(command)) }
+        }
+    }
+
+    func testZoomIsLimitedToVisibleLiveChatOnMac() {
+        for command in DesktopCommand.zoom {
+            for tab in AppTab.allCases {
+                XCTAssertEqual(policy(tab: tab).allows(command), tab == .chat)
+            }
+            XCTAssertFalse(policy(tab: .chat, chat: false).allows(command))
+            XCTAssertFalse(policy(tab: .chat, parked: true).allows(command))
+            XCTAssertFalse(policy(tab: .chat, zoom: false).allows(command))
+        }
+    }
+
+    func testZoomDefaultsAndClampsInvalidOrOutOfRangePreferences() {
+        XCTAssertEqual(DesktopChatAppearance.defaultZoom, 1.25)
+        XCTAssertEqual(DesktopChatAppearance.clamped(0.5), 0.75)
+        XCTAssertEqual(DesktopChatAppearance.clamped(3), 2)
+        XCTAssertEqual(DesktopChatAppearance.clamped(.nan), 1.25)
+        XCTAssertEqual(DesktopChatAppearance.clamped(.infinity), 1.25)
+        XCTAssertEqual(DesktopChatAppearance.adjusted(1.25, by: 0.25), 1.5)
+        XCTAssertEqual(DesktopChatAppearance.adjusted(0.75, by: -0.25), 0.75)
+        XCTAssertEqual(DesktopChatAppearance.adjusted(2, by: 0.25), 2)
+    }
+
+    func testCommandsAreDiscoverableWithoutPreemptingTextEditing() {
+        for intent in DesktopCommand.allCases {
+            let command = intent.keyCommand()
+            XCTAssertEqual(command.title, intent.title)
+            XCTAssertEqual(command.action, #selector(DesktopCommandController.performDesktopCommand(_:)))
+            XCTAssertEqual(command.input, intent.input)
+            XCTAssertEqual(command.modifierFlags, .command)
+            XCTAssertEqual(command.propertyList as? String, intent.rawValue)
+            XCTAssertFalse(command.wantsPriorityOverSystemBehavior)
+        }
+    }
+
+    func testLocalResponderRoutesCommandsWithoutTakingTextFieldFocus() throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        let controller = DesktopCommandController()
+        controller.policy = policy(tab: .chat)
+        var received: [DesktopCommand] = []
+        controller.onCommand = { received.append($0) }
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            previousKeyWindow?.makeKey()
+        }
+        XCTAssertTrue(controller.becomeFirstResponder())
+        let back = DesktopCommand.back.keyCommand()
+        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: back, for: nil)
+        XCTAssertEqual(received, [.back])
+
+        // Revalidate against current state, even for an already-created command.
+        controller.policy = policy(tab: .music)
+        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: back, for: nil)
+        XCTAssertEqual(received, [.back])
+
+        let field = UITextField(frame: CGRect(x: 20, y: 20, width: 200, height: 40))
+        controller.view.addSubview(field)
+        XCTAssertTrue(field.becomeFirstResponder())
+        controller.viewDidAppear(false)
+        XCTAssertTrue(field.isFirstResponder)
+        let settings = DesktopCommand.settings.keyCommand()
+        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: settings, for: nil)
+        XCTAssertEqual(received, [.back, .settings])
+
+        controller.present(UIViewController(), animated: false)
+        XCTAssertFalse(controller.canPerformAction(#selector(DesktopCommandController.performDesktopCommand(_:)), withSender: settings))
+        controller.performDesktopCommand(settings)
+        XCTAssertEqual(received, [.back, .settings])
+        controller.dismiss(animated: false)
+    }
+
+    func testUnattachedResponderCannotExecuteOrBroadcastToAnotherScene() {
+        let controller = DesktopCommandController()
+        controller.policy = policy(tab: .chat)
+        var received: [DesktopCommand] = []
+        controller.onCommand = { received.append($0) }
+        for intent in DesktopCommand.allCases {
+            let command = intent.keyCommand()
+            XCTAssertFalse(controller.canPerformAction(#selector(DesktopCommandController.performDesktopCommand(_:)), withSender: command))
+            controller.performDesktopCommand(command)
+        }
+        XCTAssertTrue(received.isEmpty)
+        XCTAssertFalse(controller.isFirstResponder)
+    }
+}
+
+@MainActor
+extension BrowserLifecycleTests {
+    func testWorkspacePlatformKeepsPhoneTabsRegardlessOfWidthOrSizeClass() {
+        XCTAssertEqual(WorkspacePlatform(idiom: .phone, isIOSAppOnMac: false), .phone)
+        XCTAssertEqual(WorkspacePlatform(idiom: .pad, isIOSAppOnMac: false), .pad)
+        XCTAssertEqual(WorkspacePlatform(idiom: .pad, isIOSAppOnMac: true), .mac)
+        XCTAssertEqual(WorkspacePlatform(idiom: .phone, isIOSAppOnMac: true), .mac)
+        for width: CGFloat in [320, 599, 768, 899, 900, 1440] {
+            let policy = WorkspaceLayoutPolicy(platform: .phone, width: width, overlayPresented: true)
+            XCTAssertFalse(policy.platform.usesWorkspaceChrome)
+            XCTAssertFalse(policy.supportsPersistentSidebar)
+            XCTAssertFalse(policy.showsSidebar)
+            XCTAssertFalse(policy.showsSidebarToggle)
+            XCTAssertEqual(policy.contentInset, 0)
+        }
+    }
+
+    func testWorkspaceSidebarBreakpointDimensionsAndManualCollapse() {
+        for platform: WorkspacePlatform in [.pad, .mac] {
+            let sidebarWidth: CGFloat = platform == .mac ? 220 : 200
+            for width: CGFloat in [320, 599, 768, 899] {
+                var policy = WorkspaceLayoutPolicy(platform: platform, width: width)
+                XCTAssertTrue(policy.platform.usesWorkspaceChrome, "Narrow workspaces must not become phone tabs")
+                XCTAssertEqual(policy.sidebarWidth, sidebarWidth)
+                XCTAssertFalse(policy.showsSidebar)
+                XCTAssertTrue(policy.showsSidebarToggle)
+                XCTAssertEqual(policy.contentInset, 0)
+                policy.overlayPresented = true
+                XCTAssertTrue(policy.showsOverlaySidebar)
+                XCTAssertEqual(policy.contentInset, 0, "An overlay must not shrink or reparent content")
+            }
+            for width: CGFloat in [900, 1194, 1440] {
+                var policy = WorkspaceLayoutPolicy(platform: platform, width: width, overlayPresented: true)
+                XCTAssertTrue(policy.showsPersistentSidebar)
+                XCTAssertFalse(policy.showsOverlaySidebar)
+                XCTAssertFalse(policy.showsSidebarToggle)
+                XCTAssertEqual(policy.contentInset, sidebarWidth)
+                policy.persistentSidebarHidden = true
+                XCTAssertFalse(policy.showsSidebar)
+                XCTAssertTrue(policy.showsSidebarToggle)
+                XCTAssertEqual(policy.contentInset, 0)
+            }
+        }
+    }
+
+    /// Exercise the production generic container, not just its policy. This
+    /// mounts a real local WKWebView without network, credentials or bridges.
+    /// A structurally conditional split/tab implementation would dismantle or
+    /// recreate it when crossing 900 pt or leaving Chat.
+    func testWorkspaceContainerRetainsActualWebViewAcrossSelectionAndWidthChanges() async throws {
+        for platform: WorkspacePlatform in [.pad, .mac] {
+            let mounted = expectation(description: "Mounted one \(platform) chat web view")
+            let model = WorkspaceIdentityModel(onMount: { mounted.fulfill() })
+            let host = UIHostingController(rootView: WorkspaceIdentityFixture(model: model, platform: platform))
+            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+            let previousKeyWindow = scene.keyWindow
+            let window = UIWindow(windowScene: scene)
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            defer {
+                window.isHidden = true
+                window.rootViewController = nil
+                previousKeyWindow?.makeKey()
+            }
+            host.view.layoutIfNeeded()
+            await fulfillment(of: [mounted], timeout: 3)
+            let original = try XCTUnwrap(model.webViews.first)
+            let identity = ObjectIdentifier(original)
+            XCTAssertNotNil(original.window)
+            let navigation = VoiceNavigationWaiter()
+            original.navigationDelegate = navigation
+            original.loadHTMLString("""
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>html,body{margin:0}body{height:5000px}textarea{position:absolute;top:80px;width:200px;height:100px}</style>
+                <textarea aria-label="Draft"></textarea><p>Local retained document</p>
+                """, baseURL: nil)
+            try await navigation.wait()
+            let initialScroll = try await original.callAsyncJavaScript("""
+                document.querySelector('textarea').value = 'unsent workspace draft';
+                window.scrollTo(0, 640);
+                return window.scrollY;
+                """, contentWorld: .page) as? Double
+            XCTAssertEqual(try XCTUnwrap(initialScroll), 640, accuracy: 1)
+            // WebKit acknowledges scrollTo in the web process before its native
+            // scroll view receives the transaction. Establish the real viewport
+            // before hiding it; otherwise the test detaches an uncommitted scroll.
+            for _ in 0..<100 where abs(original.scrollView.contentOffset.y - 640) > 1 {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(original.scrollView.contentOffset.y, 640, accuracy: 1, "Initial native scroll must agree with the document before detachment")
+
+            // Wide split -> overlay-capable portrait -> very narrow iPad/Mac ->
+            // split again, while visiting every actual destination slot.
+            let transitions: [(CGFloat, AppTab)] = [(1194, .agents), (768, .music), (500, .podcasts),
+                                                   (899, .chat), (900, .agents), (1440, .chat)]
+            for (width, tab) in transitions {
+                model.width = width
+                model.selection = tab
+                host.view.setNeedsLayout()
+                host.view.layoutIfNeeded()
+                try await Task.sleep(for: .milliseconds(60))
+                host.view.layoutIfNeeded()
+                XCTAssertEqual(model.webViews.count, 1, "Chat was recreated at \(width) / \(tab)")
+                XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(model.webViews.last)), identity)
+                XCTAssertEqual(model.dismantles, 0, "Chat must stay mounted while hidden")
+                if tab == .chat {
+                    XCTAssertNotNil(original.window, "Visible Chat must reattach the retained web view")
+                    let layout = WorkspaceLayoutPolicy(platform: platform, width: width)
+                    let railWidth: CGFloat = layout.showsSidebarToggle ? 44 : 0
+                    XCTAssertEqual(original.bounds.width, width - layout.contentInset - railWidth, accuracy: 1,
+                                   "The test must exercise real container resizing, including the Chat rail")
+                    let draft = try await original.callAsyncJavaScript("return document.querySelector('textarea').value;",
+                                                                       contentWorld: .page) as? String
+                    XCTAssertEqual(draft, "unsent workspace draft")
+                    let scroll = try await original.callAsyncJavaScript("return window.scrollY;", contentWorld: .page) as? Double
+                    XCTAssertEqual(try XCTUnwrap(scroll), 640, accuracy: 2,
+                                   "Detachment must not reset document scroll: \(platform), width \(width), native offset \(original.scrollView.contentOffset)")
+                } else {
+                    XCTAssertNil(original.window, "Opacity alone does not hide a page from WebKit; Chat must leave its window")
+                    XCTAssertEqual(model.updatedVisibilities.last, false, "The browser coordinator must receive hidden state before detachment")
+                }
+                XCTAssertTrue(model.updateIdentities.allSatisfy { $0 == identity })
+            }
+            XCTAssertGreaterThan(model.updateIdentities.count, 1, "The hosted fixture must actually receive state updates")
+            model.selection = .agents
+            try await Task.sleep(for: .milliseconds(60))
+            // A replacement document in the same retained WKWebView must not
+            // inherit the old page's native scroll checkpoint.
+            let replacementNavigation = VoiceNavigationWaiter()
+            original.navigationDelegate = replacementNavigation
+            original.loadHTMLString("<body style='height:5000px'><textarea>new document</textarea></body>", baseURL: nil)
+            try await replacementNavigation.wait()
+            model.selection = .chat
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(60))
+            XCTAssertNotNil(original.window)
+            let replacementScroll = try await original.callAsyncJavaScript("return window.scrollY;", contentWorld: .page) as? Double
+            XCTAssertEqual(try XCTUnwrap(replacementScroll), 0, accuracy: 1, "Navigation must invalidate the old document's scroll checkpoint")
+            XCTAssertEqual(model.webViews.count, 1)
+            model.selection = .agents
+            try await Task.sleep(for: .milliseconds(60))
+            model.chatAvailable = false
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(60))
+            XCTAssertEqual(model.dismantles, 1, "Revocation must tear down a hidden protected document immediately")
+            XCTAssertNil(original.window)
+        }
+    }
+
+    private final class WorkspaceIdentityModel: ObservableObject {
+        @Published var selection: AppTab = .chat
+        @Published var width: CGFloat = 1200
+        @Published var chatAvailable = true
+        var webViews: [WKWebView] = []
+        var updateIdentities: [ObjectIdentifier] = []
+        var updatedVisibilities: [Bool] = []
+        var dismantles = 0
+        let onMount: () -> Void
+        init(onMount: @escaping () -> Void) { self.onMount = onMount }
+    }
+
+    private struct WorkspaceIdentityFixture: View {
+        @ObservedObject var model: WorkspaceIdentityModel
+        let platform: WorkspacePlatform
+
+        var body: some View {
+            WorkspaceShell(platform: platform, selection: model.selection, visitedTabs: Set(AppTab.allCases),
+                           chatAgentName: "Fixture Agent", onSelect: { model.selection = $0 }, onSettings: {}) { _ in
+                Text("Agents")
+            } chat: {
+                if model.chatAvailable {
+                    WorkspaceWebViewProbe(model: model, isVisible: model.selection == .chat)
+                } else {
+                    Text("Authorization revoked")
+                }
+            } music: { _ in
+                Text("Music")
+            } podcasts: { _ in
+                Text("Podcasts")
+            } shelf: {
+                Text("Shared playback shelf")
+            }
+            .frame(width: model.width, height: 600)
+        }
+    }
+
+    private struct WorkspaceWebViewProbe: UIViewRepresentable {
+        let model: WorkspaceIdentityModel
+        let isVisible: Bool
+        func makeCoordinator() -> WorkspaceIdentityModel { model }
+        func makeUIView(context: Context) -> WKWebView {
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
+            let view = WKWebView(frame: .zero, configuration: configuration)
+            model.webViews.append(view)
+            model.onMount()
+            return view
+        }
+        func updateUIView(_ view: WKWebView, context: Context) {
+            model.updateIdentities.append(ObjectIdentifier(view))
+            model.updatedVisibilities.append(isVisible)
+        }
+        static func dismantleUIView(_ view: WKWebView, coordinator: WorkspaceIdentityModel) {
+            coordinator.dismantles += 1
+        }
+    }
+}

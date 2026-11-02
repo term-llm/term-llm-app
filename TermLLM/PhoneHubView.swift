@@ -8,6 +8,9 @@ struct PhoneHubView: View {
     let isVisible: Bool
     let onOpenChat: (UUID, URL) -> Void
     let onSettings: () -> Void
+    /// Only the Mac/iPad workspace supplies chrome; the phone keeps its native bar.
+    var usesWorkspaceChrome = false
+    var onToggleSidebar: (() -> Void)? = nil
     @State private var panel: Panel = .nodes
     /// Offline agents cannot be opened, so they are hidden from the list by
     /// default; the opt-in lives with connection management, not the list.
@@ -106,22 +109,42 @@ struct PhoneHubView: View {
             // Pinned outside the List: a list row clips the control with its
             // own rounded shape, and a pinned switcher stays reachable.
             .safeAreaInset(edge: .top, spacing: 0) {
-                if !connections.connections.isEmpty {
-                    VStack(spacing: 8) {
-                        PhoneHubPanelSelector(selection: panel, attention: attentionBadge, onSelect: { panel = $0 })
-                            .equatable()
-                        if panel == .sessions { sessionControls }
+                VStack(spacing: 0) {
+                    if usesWorkspaceChrome {
+                        WorkspaceHeader(title: "Agents", subtitle: "All connections", onToggleSidebar: onToggleSidebar) {
+                            Button { aggregate.refresh() } label: {
+                                ZStack {
+                                    Image(systemName: "arrow.clockwise").opacity(loadingSources.isEmpty ? 1 : 0)
+                                    ProgressView().opacity(loadingSources.isEmpty ? 0 : 1)
+                                }
+                                .frame(width: 32, height: 44)
+                            }
+                            .accessibilityLabel(loadingSources.isEmpty ? "Refresh" : "Syncing connections")
+                            .disabled(isRefreshing || aggregate.sources.isEmpty)
+                            .accessibilityIdentifier("phoneHub.refresh")
+                        }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
-                    .background(Color(.systemGroupedBackground))
+                    if !connections.connections.isEmpty {
+                        VStack(alignment: usesWorkspaceChrome ? .leading : .center, spacing: 8) {
+                            PhoneHubPanelSelector(selection: panel, attention: attentionBadge, onSelect: { panel = $0 })
+                                .equatable()
+                                .frame(maxWidth: usesWorkspaceChrome ? 480 : .infinity)
+                            if panel == .sessions { sessionControls }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, usesWorkspaceChrome ? 12 : 6)
+                        .frame(maxWidth: usesWorkspaceChrome ? 900 : .infinity)
+                        .frame(maxWidth: .infinity)
+                        .background(Color(.systemGroupedBackground))
+                    }
                 }
             }
+            .modifier(WorkspaceListWidth(enabled: usesWorkspaceChrome))
             .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
+            .toolbar(isVisible && !usesWorkspaceChrome ? .visible : .hidden, for: .navigationBar)
             .toolbar {
-                if isVisible {
+                if isVisible && !usesWorkspaceChrome {
                     ToolbarItem(placement: .principal) {
                         Text("Agents").font(.headline).accessibilityIdentifier("phoneHub.home")
                     }
@@ -163,6 +186,8 @@ struct PhoneHubView: View {
             .navigationDestination(for: PhoneHubAgentRoute.self) { route in
                 PhoneHubAgentView(route: route, aggregate: aggregate, isVisible: isVisible,
                                   onOpenChat: onOpenChat, onSettings: onSettings)
+                    // A pushed agent still owns its native back/navigation controls.
+                    .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
                     // An edited endpoint is a new source identity: start over
                     // with it rather than keep the old one's history.
                     .id(aggregate.source(route.sourceID).map(ObjectIdentifier.init))
@@ -591,7 +616,10 @@ struct PhoneHubConnectionsView: View {
                 Text("Servers")
             } footer: {
                 if !(reviewSources.isEmpty && aggregate.sources.isEmpty) {
-                    Text("Tap a connection to see its status, sign in, or manage it.")
+                    Text("Select a connection to see its status, sign in, or manage it.")
+                }
+                if ProcessInfo.processInfo.isiOSAppOnMac {
+                    Text("To link a device on Mac, open the one-use pairing link from the host’s Settings → Linked devices. You don’t need to scan a QR code.")
                 }
             }
             Section {
@@ -803,7 +831,7 @@ private struct PhoneHubConnectionDetailView: View {
             }
             .accessibilityIdentifier("phoneHub.remove.confirm")
         } message: {
-            Text(isLinked ? "This iPhone will need to be linked again to use this device."
+            Text(isLinked ? "This app will need to be linked again to use this device."
                  : "Its agents disappear from the app. You can add it again later.")
         }
         .sheet(item: $editor) { editor in
@@ -1135,6 +1163,9 @@ struct PhoneHubFixtureBanner: View {
                             }
                         } footer: {
                             Text("Hub or Direct Node is detected automatically. Sign in after connecting—never put a token in the address.")
+                            if serverURL?.host?.lowercased().hasSuffix(".ts.net") == true {
+                                Text("For Tailscale, connect both devices to your tailnet and use the full HTTPS name covered by the server’s certificate. The server must offer HTTPS, for example through Tailscale Serve.")
+                            }
                         }
                         .disabled(isSaving)
                         if isSaving {
@@ -1157,7 +1188,7 @@ struct PhoneHubFixtureBanner: View {
                                     .font(.headline).foregroundStyle(.orange)
                                     .accessibilityIdentifier("phoneHub.connection.error")
                                 Text(error).font(.subheadline)
-                                Text("Check that the address includes any server path, and that the server is online and reachable from your phone.")
+                                Text("Check that the address includes any server path, and that the server is online and reachable from this device.")
                                     .font(.subheadline).foregroundStyle(.secondary)
                                 Button("Try again", action: save)
                                     .disabled(serverURL == nil)
@@ -1243,6 +1274,75 @@ struct PhoneHubFixtureBanner: View {
                     .font(.caption).foregroundStyle(.secondary)
             }.navigationTitle("Node Authentication")
                 .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+/// Quiet, native root chrome for the larger-screen workspace. Live Chat never
+/// uses this: its existing web header remains the sole conversation header.
+struct WorkspaceHeader<Actions: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    var onToggleSidebar: (() -> Void)? = nil
+    @ViewBuilder var actions: () -> Actions
+    @ScaledMetric(relativeTo: .headline) private var titleSize = 16
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let onToggleSidebar {
+                Button(action: onToggleSidebar) {
+                    Image(systemName: "sidebar.left")
+                        .frame(width: 32, height: 44)
+                }
+                .accessibilityLabel("Show sidebar")
+                .accessibilityIdentifier("workspace.sidebar.toggle")
+            }
+            Text(title)
+                .font(.system(size: titleSize, weight: .semibold))
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("workspace.header.title")
+            if let subtitle {
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
+            }
+            Spacer(minLength: 8)
+            actions()
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+        .frame(minHeight: 52)
+        .background(Color(.secondarySystemGroupedBackground))
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("workspace.header")
+    }
+}
+
+/// Wide lists keep a comfortable reading measure without constraining their
+/// navigation stacks or changing the phone's standard grouped-list margins.
+struct WorkspaceListWidth: ViewModifier {
+    var enabled: Bool
+    @State private var width: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .contentMargins(.horizontal, max(20, (width - 900) / 2), for: .scrollContent)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .onAppear { width = geometry.size.width }
+                            .onChange(of: geometry.size.width) { _, value in width = value }
+                    }
+                }
+        } else {
+            content
         }
     }
 }
