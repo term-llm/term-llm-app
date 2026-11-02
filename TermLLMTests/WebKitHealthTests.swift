@@ -1,3 +1,4 @@
+import SwiftUI
 import WebKit
 import XCTest
 @testable import TermLLM
@@ -298,6 +299,18 @@ final class WebKitHealthFindingsTests: XCTestCase {
         XCTAssertFalse(evaluate(context: WebKitPageContext(userCanSee: false),
                                 samples: reports(from: 30, through: 60, ["vis": "hidden"]), hiddenSince: 20)
             .contains("visibility"))
+    }
+
+    func testOnlyReportsSentAfterHidingShowAHiddenPageRunningAsVisible() {
+        let offScreen = WebKitPageContext(userCanSee: false)
+        // Sent while Chat was on screen; once hidden, the page went quiet.
+        let onScreen = reports(from: 5, through: 30, ["vis": "visible"])
+        XCTAssertFalse(evaluate(context: offScreen, samples: onScreen, hiddenSince: 32).contains("visibility"))
+        let late = onScreen + [TimedPageSample(uptime: 45, sample: report(["vis": "visible"]))]
+        XCTAssertFalse(evaluate(context: offScreen, samples: late, hiddenSince: 32).contains("visibility"),
+                       "one late report is not a page running at full speed")
+        let sustained = onScreen + reports(from: 45, through: 55, ["vis": "visible"])
+        XCTAssertTrue(evaluate(context: offScreen, samples: sustained, hiddenSince: 32).contains("visibility"))
     }
 
     func testSeparatesAppCPUFromOtherProcessesAndLeakedViews() {
@@ -795,6 +808,33 @@ final class WebKitHealthMonitorTests: XCTestCase {
         withExtendedLifetime(web) {}
     }
 
+    func testHiddenChatIsNotJudgedByReportsItSentOnScreen() {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        var context = WebKitPageContext(userCanSee: true, inWindow: true)
+        session.contextProvider = { context }
+        for time in stride(from: 0.0, through: 30, by: 5) {
+            monitor.record(report(["vis": "visible", "seq": Int(time)]), from: session, now: time)
+            monitor.tick(now: time, native: native(time))
+        }
+        // Chat leaves the window; WebKit throttles or suspends the hidden page.
+        context = WebKitPageContext(userCanSee: false)
+        for time in stride(from: 35.0, through: 95, by: 5) {
+            monitor.tick(now: time, native: native(time))
+            XCTAssertFalse(monitor.status.findings.contains { $0.id == "visibility" }, "at \(time) s")
+            XCTAssertEqual(monitor.status.pageState, .offScreenQuiet, "at \(time) s")
+        }
+        XCTAssertFalse(monitor.events.contains { ["visibility", "finding"].contains($0.kind) },
+                       "\(monitor.events.map(\.message))")
+        // A report from the hidden page shows it is awake, and hidden as it should be.
+        monitor.record(report(["vis": "hidden", "seq": 100]), from: session, now: 100)
+        monitor.tick(now: 100, native: native(100))
+        XCTAssertEqual(monitor.status.pageState, .offScreenAwake)
+        XCTAssertFalse(monitor.status.findings.contains { $0.id == "visibility" })
+        withExtendedLifetime(web) {}
+    }
+
     func testOnlyRecordsWhatItWouldStopWhenStoppingIsOff() {
         let monitor = monitor()
         monitor.autoStopEnabled = false
@@ -850,5 +890,90 @@ final class WebKitHealthMonitorTests: XCTestCase {
         XCTAssertNotNil(sample.appCPU)
         XCTAssertNotNil(sample.wakeupsPerSecond)
         XCTAssertNotNil(sample.footprintMB)
+    }
+}
+
+/// Renders the diagnostics screen with sample data in a real window, like
+/// `ListenViewRenderingTests`; screenshots are attached to the test result.
+@MainActor
+final class WebKitHealthViewRenderingTests: XCTestCase {
+    /// Chat drew on screen for a while, then this screen took it off screen.
+    private func sampleMonitor(_ web: WKWebView) -> WebKitHealthMonitor {
+        let monitor = WebKitHealthMonitor(defaults: UserDefaults(suiteName: "WebKitHealthRender-\(UUID().uuidString)")!,
+                                          journal: nil)
+        let session = monitor.makeSession(for: web, now: 0)
+        var context = WebKitPageContext(userCanSee: true, inWindow: true)
+        session.contextProvider = { context }
+        monitor.record("native-cpu", "run 7145B9C4-E1AF-4B24-8F15-62BA171F5CC0; app 53% over 5.5 s; episode peak 53%; "
+                       + "active true, background false; views 1, pages 1; [app 53% · device 3.4 cores · thermal normal]; "
+                       + "wakeups 77/s; memory 120 MB; threads (recent decaying CPU): main#10042 41%")
+        let threads = [ThreadUsage(name: "main", cpu: 0.14, threadID: 1),
+                       ThreadUsage(name: "com.apple.NSURLConnectionLoader", cpu: 0.04, threadID: 2)]
+        for time in stride(from: 0.0, through: 170, by: 5) {
+            if time == 150 { context = WebKitPageContext(userCanSee: false) }
+            if time < 150 {
+                monitor.record(report(["vis": "visible", "frames": 140, "running": 1, "resources": 2, "seq": Int(time),
+                                       "anims": [["name": "pulse", "target": "span.dot", "props": ["opacity"]]]]),
+                               from: session, now: time)
+            }
+            monitor.tick(now: time, native: native(time, app: 0.08, device: 1.4, thermal: time >= 120 ? .fair : .nominal),
+                         threadUsage: threads)
+        }
+        monitor.record("app", "Entered background. [app 3% · device 1.2 cores · thermal normal · chat off screen]")
+        return monitor
+    }
+
+    private func render<Content: View>(_ view: Content, named name: String, scheme: ColorScheme) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        // Tall enough to lay out every section, not just the first screen.
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 3_400)
+        window.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
+        window.rootViewController = UIHostingController(rootView: view)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previousKeyWindow?.makeKey() }
+        try await Task.sleep(for: .milliseconds(800))
+        // The render server only snapshots on-screen windows; draw the layers
+        // directly so the sections below the first screen are included too.
+        window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { context in
+            window.layer.render(in: context.cgContext)
+        }
+        let pixels = try XCTUnwrap(image.cgImage?.dataProvider?.data as Data?)
+        // A blank-screen guard, not evidence of layout quality.
+        XCTAssertTrue(stride(from: 0, to: max(0, pixels.count - 4), by: 4 * 97).contains {
+            pixels[$0..<$0 + 4] != pixels.prefix(4)
+        }, "\(name) rendered a blank screen")
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testHistoryEntriesLeadWithASummary() {
+        func entry(_ kind: String, _ message: String) -> (title: String, body: String) {
+            let entry = WebKitHealthView.historyEntry(WebKitHealthEvent(date: Date(), kind: kind, message: message))
+            return (entry.title, entry.body)
+        }
+        let finding = entry("finding", "Page draws 28 frames/s. A requestAnimationFrame loop keeps rendering every frame.")
+        XCTAssertEqual(finding.title, "Page draws 28 frames/s")
+        XCTAssertEqual(finding.body, "A requestAnimationFrame loop keeps rendering every frame.")
+        XCTAssertEqual(entry("app", "Returned to foreground.").title, "Back in foreground")
+        XCTAssertEqual(entry("app", "Returned to foreground.").body, "")
+        XCTAssertEqual(entry("app", "Entered background. [app 3%]").body, "[app 3%]")
+        XCTAssertEqual(entry("native-cpu", "run 1; app 53%").title, "High app CPU")
+        XCTAssertEqual(entry("native-cpu", "run 1; app 53%").body, "run 1; app 53%")
+    }
+
+    func testDiagnosticsScreen() async throws {
+        let web = WKWebView(frame: .zero)
+        let monitor = sampleMonitor(web)
+        for (scheme, size) in [(ColorScheme.light, DynamicTypeSize.large), (.dark, .accessibility2)] {
+            try await render(NavigationStack { WebKitHealthView(monitor: monitor, parked: nil, onReload: {}) }
+                                .environment(\.dynamicTypeSize, size),
+                             named: "webkit-health-\(scheme)-\(size)", scheme: scheme)
+        }
+        withExtendedLifetime(web) {}
     }
 }

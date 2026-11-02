@@ -445,9 +445,10 @@ struct BrowserView: UIViewRepresentable {
 
         @MainActor
         private func healthContext(_ view: WKWebView) -> WebKitPageContext {
-            WebKitPageContext(
-                userCanSee: pushContentIsVisible && view.window != nil,
-                appBackground: UIApplication.shared.applicationState == .background,
+            let background = UIApplication.shared.applicationState == .background
+            return WebKitPageContext(
+                userCanSee: Self.healthPageIsOnScreen(parent, inWindow: view.window != nil, appBackground: background),
+                appBackground: background,
                 inWindow: view.window != nil,
                 viewHidden: view.isHidden,
                 capturing: capturingMedia,
@@ -653,6 +654,17 @@ struct BrowserView: UIViewRepresentable {
         private var pushContentIsVisible: Bool {
             parent.isContentVisible && parent.scenePhase == .active && !parent.isSigningIn
                 && !parent.loginRequired && parent.loadError == nil
+        }
+
+        /// On screen for the health monitor. Unlike notification presence, an
+        /// inactive scene counts: a Mac window without focus, iPad multitasking
+        /// or Control Center still shows the page, and WebKit runs it as visible.
+        /// Treating that as hidden flagged a false mismatch and could stop a
+        /// page the user can see.
+        @MainActor
+        static func healthPageIsOnScreen(_ parent: BrowserView, inWindow: Bool, appBackground: Bool) -> Bool {
+            parent.isContentVisible && parent.scenePhase != .background && !appBackground && inWindow
+                && !parent.isSigningIn && !parent.loginRequired && parent.loadError == nil
         }
 
         /// Installs the push bridge for the configured server's origin.

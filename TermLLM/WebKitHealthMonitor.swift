@@ -330,34 +330,36 @@ enum WebKitHealthFindings {
         if otherValues.count >= 6, average(otherValues) >= 1.5 {
             findings.append(.init(id: "other-cpu", severity: .warning,
                                   title: "Other processes busy (\(String(format: "%.1f", average(otherValues))) cores)",
-                                  detail: "CPU outside this app: WebKit's web, GPU and network processes, the render server or iOS itself."))
+                                  detail: "Work outside this app: WebKit, graphics or iOS itself."))
         }
         if webViewsAlive > pages {
-            findings.append(.init(id: "web-views", severity: .warning, title: "\(webViewsAlive - pages) closed web view(s) still alive",
+            findings.append(.init(id: "web-views", severity: .warning, title: "\(count(webViewsAlive - pages, "closed web view")) still alive",
                                   detail: "A closed browser should release its web view and page process."))
         }
         guard let page else { return findings.sorted { $0.severity > $1.severity } }
         switch page.verdict {
         case .stalled(let seconds):
             findings.append(.init(id: "stalled", severity: .critical, title: "Page not responding (\(Int(seconds)) s)",
-                                  detail: "The page's main thread has not run its 1 s heartbeat."))
+                                  detail: "The page's main thread is blocked."))
         case .teardown(let reason, let detail):
             findings.append(.init(id: "stop-" + reason.rawValue, severity: .critical, title: reason.title, detail: detail))
         case .healthy:
             break
         }
-        let recent = page.samples.filter { now - $0.uptime <= 65 }.map(\.sample)
+        let recentReports = page.samples.filter { now - $0.uptime <= 65 }
+        let recent = recentReports.map(\.sample)
         guard let latest = recent.last else { return findings.sorted { $0.severity > $1.severity } }
-        if !page.context.userCanSee, latest.isVisible, let hidden = page.hiddenSince, now - hidden >= 10 {
-            findings.append(.init(id: "visibility", severity: .warning, title: "Page runs as if on screen while hidden",
-                                  detail: "WebKit still reports it visible (\(page.context.inWindow ? "view in window" : "view not in window")\(page.context.viewHidden ? ", isHidden" : "")), so its timers, animations and streams keep full speed."))
+        if runsAsVisibleWhileHidden(recentReports, hiddenSince: page.hiddenSince, userCanSee: page.context.userCanSee) {
+            findings.append(.init(id: "visibility", severity: .warning, title: "Hidden page runs at full speed",
+                                  detail: "WebKit still treats the chat page as visible, so its timers and animations aren't slowed."))
         }
         let visible = recent.filter(\.isVisible)
         if visible.count >= 6 {
             let busy = average(visible.map(\.busyFraction))
             if busy >= 0.5 {
+                let longest = (visible.map(\.maxLateMilliseconds).max() ?? 0) / 1000
                 findings.append(.init(id: "busy", severity: .warning, title: "Page main thread \(percent(busy)) busy",
-                                      detail: "Long tasks kept the page's 1 s heartbeat waiting (longest \(Int(visible.map(\.maxLateMilliseconds).max() ?? 0)) ms)."))
+                                      detail: "Long main-thread tasks; the longest took \(String(format: "%.1f", longest)) s."))
             }
             let fps = average(visible.map(\.framesPerSecond))
             if fps >= 20 {
@@ -372,13 +374,13 @@ enum WebKitHealthFindings {
                 if !repainting.isEmpty { detail.append("Repaint every frame: " + describe(repainting) + ".") }
                 if !composited.isEmpty { detail.append("Compositor only: " + describe(composited) + ".") }
                 findings.append(.init(id: "animations", severity: repainting.isEmpty ? .info : .warning,
-                                      title: "\(visible.last?.runningAnimations ?? 0) animation(s) running continuously",
+                                      title: "\(count(visible.last?.runningAnimations ?? 0, "animation")) running continuously",
                                       detail: detail.joined(separator: " ")))
             }
         }
         if recent.count >= 6, recent.allSatisfy({ $0.audioContextsRunning > 0 }), !page.context.capturing {
             findings.append(.init(id: "audio", severity: .warning, title: "Audio engine running without a call",
-                                  detail: "\(latest.audioContextsRunning) Web Audio context(s) keep the audio hardware and their render thread active."))
+                                  detail: "Web Audio keeps the audio hardware and its render thread active."))
         }
         let connections = latest.webSockets + latest.eventSources
         if connections >= 5 || latest.peerConnections >= 2 {
@@ -392,6 +394,18 @@ enum WebKitHealthFindings {
         return findings.sorted { $0.severity > $1.severity }
     }
 
+    /// WebKit keeps running a page the user cannot see as visible: the last
+    /// two reports that arrived 10 s or more after it was hidden both say so.
+    /// A report sent while it was still on screen is not evidence (a hidden
+    /// page usually goes quiet as WebKit throttles or suspends it), and
+    /// neither is a single late report.
+    static func runsAsVisibleWhileHidden(_ reports: [TimedPageSample], hiddenSince: TimeInterval?,
+                                         userCanSee: Bool) -> Bool {
+        guard !userCanSee, let hiddenSince else { return false }
+        let afterHiding = reports.filter { $0.uptime - hiddenSince >= 10 }.suffix(2)
+        return afterHiding.count == 2 && afterHiding.allSatisfy(\.sample.isVisible)
+    }
+
     static func describe(_ animations: [WebPageHealthSample.Animation]) -> String {
         animations.prefix(4).map { animation in
             let props = animation.properties.isEmpty ? "" : " [\(animation.properties.joined(separator: ","))]"
@@ -400,6 +414,8 @@ enum WebKitHealthFindings {
     }
 
     static func average(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count) }
+    /// "1 animation", "2 animations".
+    static func count(_ value: Int, _ noun: String) -> String { "\(value) \(noun)\(value == 1 ? "" : "s")" }
     static func percent(_ fraction: Double) -> String { "\(Int((fraction * 100).rounded()))%" }
 }
 
@@ -680,8 +696,8 @@ final class WebKitHealthMonitor: ObservableObject {
             record("blocked", "Page main thread blocked for \(String(format: "%.1f", sample.maxLateMilliseconds / 1000)) s.")
         }
         let context = session.context
-        if !context.userCanSee, sample.isVisible, !session.reportedMismatch,
-           let hidden = session.hiddenSince, now - hidden >= 10 {
+        if !session.reportedMismatch, WebKitHealthFindings.runsAsVisibleWhileHidden(
+            session.samples, hiddenSince: session.hiddenSince, userCanSee: context.userCanSee) {
             session.reportedMismatch = true
             record("visibility", "Chat page off screen but WebKit still runs it as visible (view \(context.inWindow ? "in" : "not in") window\(context.viewHidden ? ", isHidden" : ""), app \(context.appBackground ? "background" : "foreground")). \(describe(sample))")
         }
@@ -920,8 +936,12 @@ final class WebKitHealthMonitor: ObservableObject {
                 next.lastOnScreen = visible.sample
                 next.lastOnScreenAge = now - visible.uptime
             }
-            // On screen the probe reports every 5 s, hidden every 15 s.
-            let reporting = primary.lastSampleAt.map { now - $0 <= (primary.context.userCanSee ? 15 : 40) } ?? false
+            // On screen the probe reports every 5 s, hidden every 15 s. Off screen,
+            // only a report sent after hiding shows the page is still awake.
+            let reporting = primary.lastSampleAt.map { last in
+                primary.context.userCanSee ? now - last <= 15
+                    : now - last <= 40 && primary.hiddenSince.map { last - $0 >= 2 } ?? true
+            } ?? false
             // The page clock has 1 ms steps: average over all of this page's
             // retained reports (up to 10 min) rather than the last few.
             let reports = primary.samples.map(\.sample)

@@ -675,6 +675,29 @@ final class BrowserLifecycleTests: XCTestCase {
         coordinator.tearDown()
         XCTAssertEqual(reports, [true, false, true, false])
     }
+
+    /// The health monitor's "off screen" must not include a page the user can
+    /// still see: an unfocused Mac window or iPad multitasking is only inactive.
+    func testHealthCountsAShownPageInAnInactiveSceneAsOnScreen() {
+        let state = State()
+        func onScreen(_ parent: BrowserView, inWindow: Bool = true, background: Bool = false) -> Bool {
+            BrowserView.Coordinator.healthPageIsOnScreen(parent, inWindow: inWindow, appBackground: background)
+        }
+        XCTAssertTrue(onScreen(browser(state)))
+        XCTAssertTrue(onScreen(browser(state, phase: .inactive)))
+        XCTAssertFalse(onScreen(browser(state, phase: .background)))
+        XCTAssertFalse(onScreen(browser(state, phase: .inactive), background: true))
+        XCTAssertFalse(onScreen(browser(state), inWindow: false))
+        XCTAssertFalse(onScreen(browser(state, signingIn: true)))
+        var otherTab = browser(state)
+        otherTab.isContentVisible = false
+        XCTAssertFalse(onScreen(otherTab))
+        state.loginRequired = true
+        XCTAssertFalse(onScreen(browser(state)))
+        state.loginRequired = false
+        state.error = "The server could not be reached."
+        XCTAssertFalse(onScreen(browser(state)))
+    }
 }
 
 @MainActor
