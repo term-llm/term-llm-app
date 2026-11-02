@@ -1,11 +1,12 @@
 import Network
+import SwiftUI
 import WebKit
 import XCTest
 @testable import TermLLM
 
 @MainActor
 final class LiveHangUpTests: XCTestCase {
-    private func makeWebView() async throws -> WKWebView {
+    private func makeWebView(configure: ((URL, WKUserContentController) -> Void)? = nil) async throws -> WKWebView {
         let server = try LoopbackServer()
         addTeardownBlock { server.stop() }
         let url = try await server.start()
@@ -13,6 +14,7 @@ final class LiveHangUpTests: XCTestCase {
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addUserScript(WKUserScript(
             source: LiveHangUp.userScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        configure?(url, configuration.userContentController)
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 480), configuration: configuration)
         let waiter = HangUpNavigationWaiter()
         view.navigationDelegate = waiter
@@ -82,6 +84,92 @@ final class LiveHangUpTests: XCTestCase {
         XCTAssertEqual(clicked, 1)
     }
 
+    func testCancelDisarmsBothTheUploadObserverAndGraceFlush() async throws {
+        let view = try await makeWebView()
+        _ = try await js(view, "return window.__termLLMLiveHangUp.request(true)")
+        let cancelled = try await js(view, "return window.__termLLMLiveHangUp.cancel()") as? String
+        XCTAssertEqual(cancelled, "idle")
+        _ = try await js(view, "await fetch('/v1/live/sessions/live-1/tool_calls/req-1/result', { method: 'POST' })")
+        // Barrier behind resource-observer delivery, rather than inferring
+        // cancellation just from the synchronous cancel() return value.
+        _ = try await js(view, "await new Promise(resolve => setTimeout(resolve, 300))")
+        let clicked = try await clicks(view)
+        XCTAssertEqual(clicked, 0, "a retired handover must not react to a later upload")
+        let flushed = try await js(view, "return window.__termLLMLiveHangUp.flush()") as? String
+        XCTAssertEqual(flushed, "idle")
+        let afterFlush = try await clicks(view)
+        XCTAssertEqual(afterFlush, 0)
+
+        _ = try await js(view, "return window.__termLLMLiveHangUp.request(true)")
+        _ = try await js(view, "return window.__termLLMLiveHangUp.flush()")
+        let fresh = try await clicks(view)
+        XCTAssertEqual(fresh, 1, "cancellation must not disable a future handover")
+    }
+
+    /// Real WebKit -> WebMCP -> media_add -> native playback notification ->
+    /// result upload -> page Stop. Audio itself is a test double here; the
+    /// separate engine-transfer suite exercises the real AVPlayer.
+    func testMCPPodcastHandoverStopsVoiceWhileAnUnrelatedToolIsStillRunning() async throws {
+        let engine = FakeListenEngine()
+        let media = FakeMediaServer()
+        let mediaURL = URL(string: "https://pod.example/handover.mp3")!
+        media.serve(mediaURL, .init(body: mediaBody(128_000)))
+        let listen = makeListen(engine: engine, server: media)
+        let music = MusicPlayer(engine: FakeEngine(), defaults: isolatedDefaults())
+        let center = NotificationCenter()
+        Listen.connectToMusic(music, listen: listen, notificationCenter: center)
+        let slowStarted = expectation(description: "unrelated tool started")
+        let slow = HandoverToolGate()
+        let registry = DeviceToolRegistry(tools: listen.tools + [
+            DeviceTool(name: "slow", description: "Unrelated work held open") { _ in
+                slowStarted.fulfill()
+                await slow.wait()
+                return DeviceToolResult(text: "slow finished")
+            },
+        ])
+        var owner: BrowserView.Coordinator?
+        let view = try await makeWebView { url, controller in
+            let browser = BrowserView(url: url, loading: .constant(false), canGoBack: .constant(false),
+                                      loadError: .constant(nil), loginRequired: .constant(false),
+                                      reloadCount: 0, backCount: 0, authenticatedCount: 0,
+                                      scenePhase: .active, isSigningIn: false,
+                                      onLoginRequired: {}, onRevealControls: {})
+            let coordinator = browser.makeCoordinator()
+            coordinator.syncDeviceTools(url: url, registry: registry, controller: controller)
+            owner = coordinator
+        }
+        let coordinator = try XCTUnwrap(owner)
+        coordinator.webView = view
+        let token = center.addObserver(forName: .appWillStartPlayback, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { coordinator.appWillStartPlayback() }
+        }
+        defer {
+            center.removeObserver(token)
+            slow.open()
+            listen.player.stop()
+            coordinator.tearDown()
+        }
+        _ = try await js(view, "window.slowResult = document.modelContext.executeTool('slow', {}); return true")
+        await fulfillment(of: [slowStarted], timeout: 5)
+        _ = try await js(view, """
+            const result = await document.modelContext.executeTool('media_add', {
+              items: [{ url: 'https://pod.example/handover.mp3', title: 'Handover fixture' }],
+              position: 'now', download: 'never'
+            });
+            await fetch('/v1/live/sessions/live-1/tool_calls/play-1/result', { method: 'POST', body: result });
+            return result;
+            """)
+        XCTAssertTrue(engine.playing)
+        for _ in 0..<40 {
+            if try await clicks(view) == 1 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let stopped = try await clicks(view)
+        XCTAssertEqual(stopped, 1, "The playback tool's result, not an unrelated tool's lifetime, gates voice shutdown")
+        slow.open()
+        _ = try await js(view, "return await window.slowResult")
+    }
+
     func testStartingMusicOrAPodcastAnnouncesPlayback() async throws {
         let center = NotificationCenter()
         var posts = 0
@@ -98,6 +186,23 @@ final class LiveHangUpTests: XCTestCase {
         let items = try await listen.add([draft("a")], placement: .end, download: .never)
         try await listen.player.play(items[0].id)
         XCTAssertEqual(posts, 2)
+    }
+}
+
+@MainActor
+private final class HandoverToolGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

@@ -576,6 +576,69 @@ final class ListenEngineTransferTests: XCTestCase {
         XCTAssertEqual(server.bytesSent, body.count, "streaming and saving fetched each byte once: \(server.ranges(for: url))")
     }
 
+    /// Exercises repeated streamed playback lifetimes with the real player.
+    /// CPU is diagnostic evidence, not a portable pass/fail threshold: the
+    /// simulator shares the Mac's audio/rendering services and is not a phone.
+    func testRepeatedStreamPlaybackKeepsBufferCallbacksBounded() async throws {
+        let url = URL(string: "https://media.example/show/silence.mp3")!
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: Self.silentMP3(seconds: 120)))
+        let realSession = ProcessInfo.processInfo.environment["TERMLLM_LISTEN_REAL_AUDIO_SESSION"] == "1"
+        let engine = realSession ? AVListenEngine() : AVListenEngine(audioSession: QuietAudioSession())
+        defer { engine.stop() }
+        var bufferEvents = 0
+        engine.onEvent = { event in
+            if event == .buffer { bufferEvents += 1 }
+        }
+        var diagnostics: [String] = []
+        // Opt in to a longer local reproduction without slowing normal CI.
+        let sampleSeconds = ProcessInfo.processInfo.environment["TERMLLM_LISTEN_CPU_SAMPLE_SECONDS"]
+            .flatMap(Int.init).map { min(60, max(2, $0)) } ?? 2
+        func measure(_ state: String, cycle: Int) async throws {
+            let sampler = ProcessUsageSampler()
+            _ = sampler.sample(appActive: true, appBackground: false)
+            let before = bufferEvents
+            try await Task.sleep(for: .seconds(sampleSeconds))
+            let sample = sampler.sample(appActive: true, appBackground: false)
+            let interval = sample.cpuInterval ?? Double(sampleSeconds)
+            XCTAssertLessThanOrEqual(bufferEvents - before,
+                                     Int(ceil(interval / ListenBufferCallbackCoalescer.updateInterval)) + 1,
+                                     "streaming must not flood the main thread with buffering updates")
+            diagnostics.append("cycle \(cycle), \(state), real session \(realSession): app CPU cores=\(sample.appCPU.map(String.init(describing:)) ?? "unavailable"), "
+                               + "wakeups/s=\(sample.wakeupsPerSecond.map(String.init(describing:)) ?? "unavailable"), "
+                               + "buffer deliveries=\(bufferEvents - before) over \(interval)s")
+        }
+        for cycle in 0..<3 {
+            let (transfer, _) = transfer(server, url)
+            transfer.start()
+            defer { transfer.cancel(keepingPartial: false) }
+            try await engine.load(ListenSource(url: url, transfer: transfer), startAt: 10)
+            try await engine.play(rate: 1)
+            await eventually(10) { engine.currentTime > 10.5 }
+            XCTAssertGreaterThan(engine.currentTime, 10.5)
+            engine.pause()
+            await engine.seek(to: 30)
+            try await engine.play(rate: 1)
+            await eventually(10) { engine.currentTime > 30.5 }
+            XCTAssertGreaterThan(engine.currentTime, 30.5)
+
+            try await measure("playing", cycle: cycle)
+            if realSession {
+                engine.pause()
+                try await measure("paused", cycle: cycle)
+            }
+            engine.stop()
+            if realSession { try await measure("stopped", cycle: cycle) }
+            let stopped = bufferEvents
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(bufferEvents, stopped, "replaced/stopped items must not keep delivering buffer events")
+        }
+        let attachment = XCTAttachment(string: diagnostics.joined(separator: "\n"))
+        attachment.name = "simulator-stream-playback-cpu-diagnostics"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testPlaysAACFromAServerThatDoesNotNameTheType() async throws {
         let url = URL(string: "https://media.example/episodes/42")!
         let body = try silentM4A(seconds: 30)

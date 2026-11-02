@@ -61,6 +61,82 @@ final class WebMCPBridgeTests: XCTestCase {
         XCTAssertEqual(malformed, .failure(.init(message: "Malformed device tool call")))
     }
 
+    func testInvocationScopeAndReplyCallbacksArePerCallAndOutsideHandling() async throws {
+        let probe = InvocationProbe()
+        let started = InvocationTestGate()
+        let finish = InvocationTestGate()
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "scoped", description: "Captures the invocation") { _ in
+                await probe.capture()
+                await started.open()
+                await finish.wait()
+                return DeviceToolResult(text: "done")
+            },
+        ])
+        let bridge = WebMCPBridge(serverURL: server, registry: registry, device: "iPhone")
+        probe.bridge = bridge
+        probe.otherBridge = self.bridge()
+        var replies = 0
+        var callbackIDs: [UUID] = []
+        var settled = 0
+        bridge.onCallReplied = { callID in
+            XCTAssertNil(WebMCPBridge.currentInvocation, "Scope must not leak into reply callbacks")
+            XCTAssertEqual(replies, callbackIDs.count + 1, "The reply handler must run first")
+            callbackIDs.append(callID)
+        }
+        bridge.onCallsSettled = {
+            XCTAssertEqual(replies, 2)
+            XCTAssertEqual(callbackIDs.count, 2)
+            settled += 1
+        }
+        func start() -> Task<Void, Never> {
+            bridge.startCall(body: ["name": "scoped"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { result, error in
+                XCTAssertNil(WebMCPBridge.currentInvocation)
+                XCTAssertEqual(result as? String, "done")
+                XCTAssertNil(error)
+                replies += 1
+            }
+        }
+        let first = start()
+        await started.wait()
+        let second = start()
+        // Both invocations suspend on the same gate. Wait for their captures,
+        // without relying on wall-clock timing or WebKit message delivery.
+        await probe.twoCaptures.wait()
+        XCTAssertEqual(bridge.activeCalls, 2)
+        XCTAssertEqual(settled, 0)
+        XCTAssertEqual(Set(probe.invocations.map(\.callID)).count, 2)
+        XCTAssertEqual(Set(probe.invocations.map(\.bridgeID)).count, 1)
+        finish.open()
+        await first.value
+        await second.value
+        XCTAssertEqual(Set(callbackIDs), Set(probe.invocations.map(\.callID)))
+        XCTAssertEqual(bridge.activeCalls, 0)
+        XCTAssertEqual(settled, 1)
+        XCTAssertNil(WebMCPBridge.currentInvocation)
+    }
+
+    func testEscapedChildRetainsContextButCannotClaimFinishedInvocation() async throws {
+        let probe = InvocationProbe()
+        let releaseChild = InvocationTestGate()
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "escape", description: "Spawns an inheriting child") { _ in
+                await probe.spawnChild(waitingOn: releaseChild)
+                return DeviceToolResult(text: "done")
+            },
+        ])
+        let bridge = WebMCPBridge(serverURL: server, registry: registry, device: "iPhone")
+        probe.bridge = bridge
+        let call = bridge.startCall(body: ["name": "escape"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+        await call.value
+        XCTAssertEqual(bridge.activeCalls, 0)
+        releaseChild.open()
+        let child = try XCTUnwrap(probe.child)
+        await child.value
+        XCTAssertNotNil(probe.escapedInvocation, "A child really did inherit the task local")
+        XCTAssertNil(probe.escapedPlaybackCallID, "An inherited context alone must not defer playback")
+    }
+
     func testToolSpecsCarryWebMCPAnnotations() {
         guard case .array(let specs) = WebMCPBridge.toolSpecs(registry().tools) else { return XCTFail() }
         XCTAssertEqual(specs.first?["name"], "ping")
@@ -222,6 +298,54 @@ final class WebMCPBridgeTests: XCTestCase {
             catch (error) { return String(error && error.message || error); }
             """) as? String
         XCTAssertEqual(message, "Device tools are not available to this page")
+    }
+}
+
+@MainActor
+private final class InvocationTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+}
+
+@MainActor
+private final class InvocationProbe {
+    var bridge: WebMCPBridge?
+    var otherBridge: WebMCPBridge?
+    var invocations: [WebMCPBridge.Invocation] = []
+    let twoCaptures = InvocationTestGate()
+    var child: Task<Void, Never>?
+    var escapedInvocation: WebMCPBridge.Invocation?
+    var escapedPlaybackCallID: UUID?
+
+    func capture() {
+        guard let invocation = WebMCPBridge.currentInvocation else {
+            XCTFail("Tool execution must have a scoped invocation")
+            return
+        }
+        invocations.append(invocation)
+        XCTAssertEqual(bridge?.currentPlaybackCallID, invocation.callID)
+        XCTAssertNil(otherBridge?.currentPlaybackCallID, "Only the initiating bridge may defer")
+        if invocations.count == 2 { twoCaptures.open() }
+    }
+
+    func spawnChild(waitingOn gate: InvocationTestGate) {
+        child = Task { @MainActor in
+            await gate.wait()
+            escapedInvocation = WebMCPBridge.currentInvocation
+            escapedPlaybackCallID = bridge?.currentPlaybackCallID
+        }
     }
 }
 

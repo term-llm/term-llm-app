@@ -225,7 +225,7 @@ final class ListenBufferCallbackCoalescer: @unchecked Sendable {
 final class AVListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
 
-    private let player = AVPlayer()
+    private let player: AVPlayer
     private let audioSession: ListenAudioSessionQueue
     /// Bumped by every play, pause, and stop so a play that finishes
     /// activating after a later pause or stop doesn't start audio.
@@ -242,7 +242,8 @@ final class AVListenEngine: ListenEngine {
     /// How long to wait for a stream to become playable.
     static let loadTimeout: Duration = .seconds(30)
 
-    init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance()) {
+    init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance(), player: AVPlayer = AVPlayer()) {
+        self.player = player
         self.audioSession = ListenAudioSessionQueue(session: audioSession)
         player.automaticallyWaitsToMinimizeStalling = true
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
@@ -273,6 +274,13 @@ final class AVListenEngine: ListenEngine {
                 self.onEvent?(.outputLost)
             }
         })
+    }
+
+    isolated deinit {
+        bufferCallbacks?.invalidate()
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        itemObservers.forEach(NotificationCenter.default.removeObserver)
+        sessionObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     var currentTime: TimeInterval {

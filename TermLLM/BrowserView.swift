@@ -338,7 +338,7 @@ struct BrowserView: UIViewRepresentable {
         private(set) var capturingMedia = false
         var pushChangeCount = 0
         private var handledPushNavigation: UUID?
-        private var bridge: WebMCPBridge?
+        private(set) var bridge: WebMCPBridge?
         private(set) var pushBridge: NativePushBridge?
         private var registeredPushWindowID: String?
         private weak var registeredPushScene: UIWindowScene?
@@ -349,9 +349,14 @@ struct BrowserView: UIViewRepresentable {
         private var voiceNavigated = false
         private var voiceClicked = false
         weak var webView: WKWebView?
-        /// The app's audio started during a device tool call; hang up once it replies.
-        private var hangUpAfterToolCall = false
-        private var hangUpTask: Task<Void, Never>?
+        /// Only invocations that actually started playback may delay handover.
+        private var playbackCallIDs: Set<UUID> = []
+        private var hangUpGeneration = UUID()
+        private(set) var hangUpTask: Task<Void, Never>?
+        /// Injectable so lifecycle tests can release grace without wall-clock sleeps.
+        var waitForPlaybackHandoverGrace: @Sendable () async throws -> Void = {
+            try await Task.sleep(for: LiveHangUp.toolResultGrace)
+        }
         private var healthBridge: WebKitHealthBridge?
         private(set) var healthSession: WebKitPageSession?
         /// The page is unloading before the monitor's requested close.
@@ -376,9 +381,8 @@ struct BrowserView: UIViewRepresentable {
             voiceTask?.cancel()
             voiceTask = nil
             NotificationCenter.default.removeObserver(self, name: .appWillStartPlayback, object: nil)
-            hangUpTask?.cancel()
-            hangUpTask = nil
-            hangUpAfterToolCall = false
+            invalidatePlaybackHandover(cancelPageRequest: true)
+            MainActor.assumeIsolated { bridge?.onCallReplied = nil }
             backObservation?.invalidate()
             backObservation = nil
             urlObservation?.invalidate()
@@ -785,6 +789,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            invalidatePlaybackHandover(cancelPageRequest: false)
             if let healthSession { MainActor.assumeIsolated { parent.health?.contentProcessTerminated(healthSession) } }
             if closingPage {
                 // Nothing left to unload; the view is closing anyway.
@@ -824,26 +829,49 @@ struct BrowserView: UIViewRepresentable {
         /// This app is about to play music or a podcast: end this page's live
         /// call, which would otherwise keep listening over the audio.
         @objc func appWillStartPlayback() {
-            guard let view = webView, let current = view.url, sameOrigin(current, parent.url) else { return }
-            if MainActor.assumeIsolated({ (bridge?.activeCalls ?? 0) > 0 }) {
-                // Likely the agent's own play tool: its result must reach the
-                // server first, or the voice turn records the tool as failed.
-                hangUpAfterToolCall = true
-            } else {
+            guard !closingPage, let view = webView, let current = view.url, sameOrigin(current, parent.url),
+                  !MainActor.assumeIsolated({ WebMCPBridge.hasStalePlaybackInvocation }) else { return }
+            if let callID = MainActor.assumeIsolated({ bridge?.currentPlaybackCallID }) {
+                // Repeated starts from this invocation coalesce. A newer playback
+                // tool supersedes an already-armed grace request without letting
+                // that older request discard the newer tool's result.
+                if hangUpTask != nil { cancelPlaybackGrace(cancelPageRequest: true) }
+                playbackCallIDs.insert(callID)
+            } else if playbackCallIDs.isEmpty {
+                cancelPlaybackGrace(cancelPageRequest: true)
                 Self.runHangUpScript(LiveHangUp.requestScript(afterToolResult: false), in: view)
             }
         }
 
-        private func deviceToolCallsSettled() {
-            guard hangUpAfterToolCall else { return }
-            hangUpAfterToolCall = false
-            guard let view = webView, let current = view.url, sameOrigin(current, parent.url) else { return }
+        private func deviceToolCallReplied(_ callID: UUID) {
+            guard playbackCallIDs.remove(callID) != nil, playbackCallIDs.isEmpty else { return }
+            guard !closingPage, let view = webView, let current = view.url, sameOrigin(current, parent.url) else { return }
             Self.runHangUpScript(LiveHangUp.requestScript(afterToolResult: true), in: view)
-            hangUpTask?.cancel()
-            hangUpTask = Task { @MainActor [weak view] in
-                do { try await Task.sleep(for: LiveHangUp.toolResultGrace) } catch { return }
-                if let view { Self.runHangUpScript(LiveHangUp.flushScript, in: view) }
+            let generation = hangUpGeneration
+            let waitForGrace = waitForPlaybackHandoverGrace
+            hangUpTask = Task { @MainActor [weak self, weak view] in
+                do { try await waitForGrace() } catch { return }
+                guard !Task.isCancelled, let self, self.hangUpGeneration == generation else { return }
+                self.hangUpTask = nil
+                guard let view, self.webView === view, !self.closingPage,
+                      let current = view.url, self.sameOrigin(current, self.parent.url) else { return }
+                Self.runHangUpScript(LiveHangUp.flushScript, in: view)
             }
+        }
+
+        private func cancelPlaybackGrace(cancelPageRequest: Bool) {
+            if hangUpTask != nil, cancelPageRequest, let view = webView {
+                Self.runHangUpScript(LiveHangUp.cancelScript, in: view)
+            }
+            hangUpGeneration = UUID()
+            hangUpTask?.cancel()
+            hangUpTask = nil
+        }
+
+        private func invalidatePlaybackHandover(cancelPageRequest: Bool) {
+            cancelPlaybackGrace(cancelPageRequest: cancelPageRequest)
+            playbackCallIDs.removeAll()
+            MainActor.assumeIsolated { bridge?.invalidatePlaybackInvocations() }
         }
 
         /// Fire-and-forget; the scripts evaluate to undefined.
@@ -857,12 +885,17 @@ struct BrowserView: UIViewRepresentable {
         func syncDeviceTools(url: URL, registry: DeviceToolRegistry?, controller: WKUserContentController) -> Bool {
             if let bridge, let registry, bridge.serverURL == url, bridge.registry === registry { return false }
             if bridge == nil && registry == nil { return false }
+            invalidatePlaybackHandover(cancelPageRequest: true)
+            MainActor.assumeIsolated { bridge?.onCallReplied = nil }
             bridge?.uninstall()
             bridge = nil
             if let registry {
                 let bridge = WebMCPBridge(serverURL: url, registry: registry, device: UIDevice.current.model)
                 MainActor.assumeIsolated {
-                    bridge.onCallsSettled = { [weak self] in self?.deviceToolCallsSettled() }
+                    bridge.onCallReplied = { [weak self, weak bridge] callID in
+                        guard let self, let bridge, self.bridge === bridge else { return }
+                        self.deviceToolCallReplied(callID)
+                    }
                 }
                 bridge.install(into: controller)
                 self.bridge = bridge
@@ -897,6 +930,9 @@ struct BrowserView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // Provisional navigation does not retire the still-live document.
+            // At actual commit, never send an old request/flush to the new page.
+            invalidatePlaybackHandover(cancelPageRequest: false)
             if closingPage {
                 // The chat document has unloaded and saved its draft.
                 MainActor.assumeIsolated { pushBridge?.documentCommitted() }

@@ -56,6 +56,8 @@ enum LiveHangUp {
             pending = true;
             return 'pending';
           },
+          // Retiring a document/bridge must not stop a later voice call.
+          cancel() { pending = false; return 'idle'; },
           // The grace period ran out: end a still-pending call regardless.
           flush() { return pending ? stop() : 'idle'; },
         }),
@@ -69,4 +71,5 @@ enum LiveHangUp {
     }
 
     static let flushScript = "window.__termLLMLiveHangUp?.flush(); void 0;"
+    static let cancelScript = "window.__termLLMLiveHangUp?.cancel(); void 0;"
 }

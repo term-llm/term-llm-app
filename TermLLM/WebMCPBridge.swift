@@ -16,10 +16,45 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// Weak: the controller retains its message handlers (this bridge).
     private weak var installedController: WKUserContentController?
     private var installedScript: WKUserScript?
+    /// Task locals can be inherited by escaped child tasks. Consumers must also
+    /// validate membership in the bridge's still-active, current-document calls.
+    struct Invocation: Equatable, Sendable {
+        let bridgeID: UUID
+        let callID: UUID
+        fileprivate let lifetime: InvocationLifetime
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.bridgeID == rhs.bridgeID && lhs.callID == rhs.callID
+        }
+    }
+    @MainActor fileprivate final class InvocationLifetime {
+        var isCurrent = true
+    }
+    @TaskLocal static var currentInvocation: Invocation?
+    private let bridgeID = UUID()
+    @MainActor private var activeInvocations: [UUID: Invocation] = [:]
     /// Tool calls still running; their replies have not reached the page yet.
-    @MainActor private(set) var activeCalls = 0
+    @MainActor var activeCalls: Int { activeInvocations.count }
+    /// Runs on the main actor after a particular call's reply handler returns.
+    @MainActor var onCallReplied: ((UUID) -> Void)?
     /// Runs on the main actor after the last running call has replied.
     @MainActor var onCallsSettled: (() -> Void)?
+
+    @MainActor static var hasStalePlaybackInvocation: Bool {
+        currentInvocation.map { !$0.lifetime.isCurrent } ?? false
+    }
+
+    @MainActor var currentPlaybackCallID: UUID? {
+        guard let invocation = Self.currentInvocation, invocation.bridgeID == bridgeID,
+              invocation.lifetime.isCurrent, activeInvocations[invocation.callID] != nil else { return nil }
+        return invocation.callID
+    }
+
+    /// Old calls still count for health and still receive their replies, but
+    /// cannot defer playback handover in a replacement document.
+    @MainActor func invalidatePlaybackInvocations() {
+        for invocation in activeInvocations.values { invocation.lifetime.isCurrent = false }
+    }
 
     init(serverURL: URL, registry: DeviceToolRegistry, device: String) {
         self.serverURL = serverURL
@@ -54,18 +89,29 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let origin = message.frameInfo.securityOrigin
         let frameOrigin = Self.originString(scheme: origin.protocol, host: origin.host, port: origin.port)
-        let body = message.body
-        let isMainFrame = message.frameInfo.isMainFrame
-        let registry = registry
-        let expected = expectedOrigin
-        activeCalls += 1
-        Task { @MainActor in
-            switch await Self.handle(body: body, frameOrigin: frameOrigin, isMainFrame: isMainFrame,
-                                     expectedOrigin: expected, registry: registry) {
+        startCall(body: message.body, frameOrigin: frameOrigin, isMainFrame: message.frameInfo.isMainFrame,
+                  replyHandler: replyHandler)
+    }
+
+    /// The same dispatch path is used by WebKit and deterministic lifecycle tests.
+    /// Keep the scoped context around tool handling only, never around callbacks.
+    @discardableResult
+    @MainActor func startCall(body: Any, frameOrigin: String, isMainFrame: Bool,
+                             replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) -> Task<Void, Never> {
+        let invocation = Invocation(bridgeID: bridgeID, callID: UUID(), lifetime: InvocationLifetime())
+        activeInvocations[invocation.callID] = invocation
+        return Task { @MainActor in
+            let result = await Self.$currentInvocation.withValue(invocation) {
+                await Self.handle(body: body, frameOrigin: frameOrigin, isMainFrame: isMainFrame,
+                                  expectedOrigin: expectedOrigin, registry: registry)
+            }
+            switch result {
             case .success(let text): replyHandler(text, nil)
             case .failure(let error): replyHandler(nil, error.message)
             }
-            activeCalls -= 1
+            activeInvocations.removeValue(forKey: invocation.callID)
+            invocation.lifetime.isCurrent = false
+            onCallReplied?(invocation.callID)
             if activeCalls == 0 { onCallsSettled?() }
         }
     }

@@ -572,6 +572,27 @@ private final class Flag {
 
 @MainActor
 final class ListenAudioSessionTests: XCTestCase {
+    private final class ObserverRecordingPlayer: AVPlayer {
+        var observerRemovals = 0
+
+        override func removeTimeObserver(_ observer: Any) {
+            observerRemovals += 1
+            super.removeTimeObserver(observer)
+        }
+    }
+
+    func testReleasingEngineExplicitlyRemovesItsPeriodicObserver() {
+        let player = ObserverRecordingPlayer()
+        var engine: AVListenEngine? = AVListenEngine(audioSession: FakeListenAudioSession(), player: player)
+        weak var released = engine
+        XCTAssertNotNil(released)
+        XCTAssertEqual(player.observerRemovals, 0)
+        engine = nil
+        XCTAssertNil(released)
+        XCTAssertEqual(player.observerRemovals, 1,
+                       "Releasing a time-observer token without removeTimeObserver is undefined behavior")
+    }
+
     func testNormalPlaybackDoesNotMix() async throws {
         let session = FakeListenAudioSession()
         let engine = AVListenEngine(audioSession: session)

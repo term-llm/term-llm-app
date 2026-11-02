@@ -45,6 +45,16 @@ final class BrowserLifecycleTests: XCTestCase {
         var requests: [URLRequest] = []
         var reloads = 0
         var backs = 0
+        var hangUpScripts: [String] = []
+        override func evaluateJavaScript(_ javaScriptString: String,
+                                         completionHandler: (@MainActor @Sendable (Any?, Error?) -> Void)? = nil) {
+            if javaScriptString.contains("__termLLMLiveHangUp") {
+                hangUpScripts.append(javaScriptString)
+                completionHandler?(nil, nil)
+            } else {
+                super.evaluateJavaScript(javaScriptString, completionHandler: completionHandler)
+            }
+        }
         override var url: URL? { currentURL }
         override var canGoBack: Bool { hasBackItem }
         override func load(_ request: URLRequest) -> WKNavigation? {
@@ -676,6 +686,263 @@ final class BrowserLifecycleTests: XCTestCase {
         XCTAssertEqual(reports, [true, false, true, false])
     }
 
+    // This regression deliberately uses only the pre-fix public entry points,
+    // so it can also run with the original bridge/coordinator for red evidence.
+    func testManualPlaybackDoesNotWaitForAnUnrelatedTool() async throws {
+        let started = PlaybackTestGate()
+        let finish = PlaybackTestGate()
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "slow", description: "Unrelated slow work") { _ in
+                await started.open()
+                await finish.wait()
+                return DeviceToolResult(text: "slow result")
+            },
+        ])
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        coordinator.webView = view
+        coordinator.syncDeviceTools(url: server, registry: registry,
+                                    controller: view.configuration.userContentController)
+        defer { coordinator.tearDown() }
+        let waiter = VoiceNavigationWaiter()
+        view.navigationDelegate = waiter
+        view.loadHTMLString("<!doctype html><body>Playback regression</body>", baseURL: server)
+        try await waiter.wait()
+        let call = Task { @MainActor in
+            try await view.callAsyncJavaScript("return await document.modelContext.executeTool('slow', {})", contentWorld: .page) as? String
+        }
+        await started.wait()
+        coordinator.appWillStartPlayback()
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: false)],
+                       "Manual playback must not wait for an unrelated active tool")
+        finish.open()
+        let reply = try await call.value
+        XCTAssertEqual(reply, "slow result")
+    }
+
+    func testPlaybackWaitsForExactlyTheInitiatingReplyNotOtherCalls() async throws {
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        let started = PlaybackTestGate()
+        let finishPlay = PlaybackTestGate()
+        let finishSlow = PlaybackTestGate()
+        let grace = PlaybackTestGate()
+        coordinator.waitForPlaybackHandoverGrace = { await grace.wait() }
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "play", description: "Starts playback") { _ in
+                await MainActor.run {
+                    coordinator.appWillStartPlayback()
+                    coordinator.appWillStartPlayback() // Repeated starts from one invocation coalesce.
+                }
+                await started.open()
+                await finishPlay.wait()
+                return DeviceToolResult(text: "play result")
+            },
+            DeviceTool(name: "slow", description: "Unrelated") { _ in
+                await finishSlow.wait()
+                return DeviceToolResult(text: "slow result")
+            },
+            DeviceTool(name: "other", description: "Another unrelated reply") { _ in
+                DeviceToolResult(text: "other result")
+            },
+        ])
+        coordinator.webView = view
+        coordinator.syncDeviceTools(url: server, registry: registry,
+                                    controller: view.configuration.userContentController)
+        let bridge = try XCTUnwrap(coordinator.bridge)
+        defer { grace.open(); coordinator.tearDown() }
+        let slow = bridge.startCall(body: ["name": "slow"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+        var playReplied = false
+        let play = bridge.startCall(body: ["name": "play"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { result, error in
+            XCTAssertEqual(result as? String, "play result")
+            XCTAssertNil(error)
+            XCTAssertTrue(view.hangUpScripts.isEmpty, "Never hang up before handing off the initiating result")
+            playReplied = true
+        }
+        await started.wait()
+        let other = bridge.startCall(body: ["name": "other"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+        await other.value
+        XCTAssertTrue(view.hangUpScripts.isEmpty, "Another call's reply cannot settle the initiating call")
+        finishPlay.open()
+        await play.value
+        XCTAssertTrue(playReplied)
+        XCTAssertEqual(bridge.activeCalls, 1)
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: true)])
+        finishSlow.open()
+        await slow.value
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: true)],
+                       "An unrelated reply must not issue another handover")
+        let graceTask = try XCTUnwrap(coordinator.hangUpTask)
+        coordinator.webView(view, didStartProvisionalNavigation: nil)
+        coordinator.webView(view, didFailProvisionalNavigation: nil,
+                            withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        grace.open()
+        await graceTask.value
+        XCTAssertEqual(view.hangUpScripts.last, LiveHangUp.flushScript,
+                       "A failed provisional navigation must preserve the current document's grace")
+    }
+
+    func testPlaybackFromAnotherBridgeDoesNotDeferThisPage() async {
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        coordinator.webView = view
+        let foreign = WebMCPBridge(serverURL: server, registry: DeviceToolRegistry(tools: [
+            DeviceTool(name: "play", description: "Other page's tool") { _ in
+                await MainActor.run { coordinator.appWillStartPlayback() }
+                return DeviceToolResult(text: "done")
+            },
+        ]), device: "iPhone")
+        let call = foreign.startCall(body: ["name": "play"], frameOrigin: foreign.expectedOrigin, isMainFrame: true) { _, _ in }
+        await call.value
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: false)])
+        coordinator.tearDown()
+    }
+
+    func testHandoverGraceCannotFlushAfterDocumentCommitTerminationTeardownOrBridgeReplacement() async throws {
+        for invalidation in ["commit", "termination", "teardown", "replacement"] {
+            let coordinator = coordinator(browser(State(), phase: .background))
+            let view = webView(server)
+            let graceStarted = PlaybackTestGate()
+            let finishGrace = PlaybackTestGate()
+            coordinator.waitForPlaybackHandoverGrace = {
+                await graceStarted.open()
+                // Deliberately ignore cancellation: the document/token check must
+                // also defend against a grace operation that has already resumed.
+                await finishGrace.wait()
+            }
+            let registry = DeviceToolRegistry(tools: [
+                DeviceTool(name: "play", description: "Starts playback") { _ in
+                    await MainActor.run { coordinator.appWillStartPlayback() }
+                    return DeviceToolResult(text: "done")
+                },
+            ])
+            coordinator.webView = view
+            coordinator.syncDeviceTools(url: server, registry: registry,
+                                        controller: view.configuration.userContentController)
+            let bridge = try XCTUnwrap(coordinator.bridge)
+            let call = bridge.startCall(body: ["name": "play"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+            await call.value
+            await graceStarted.wait()
+            XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: true)])
+            let graceTask = try XCTUnwrap(coordinator.hangUpTask)
+            coordinator.webView(view, didStartProvisionalNavigation: nil)
+            switch invalidation {
+            case "commit": coordinator.webView(view, didCommit: nil)
+            case "termination": coordinator.webViewWebContentProcessDidTerminate(view)
+            case "teardown": coordinator.tearDown()
+            default:
+                coordinator.syncDeviceTools(url: server, registry: nil,
+                                            controller: view.configuration.userContentController)
+            }
+            finishGrace.open()
+            await graceTask.value
+            XCTAssertFalse(view.hangUpScripts.contains(LiveHangUp.flushScript), invalidation)
+            coordinator.tearDown()
+        }
+    }
+
+    func testOldDocumentToolReplyCannotStartHandoverInNewDocument() async throws {
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        let started = PlaybackTestGate()
+        let finish = PlaybackTestGate()
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "play", description: "Starts playback") { _ in
+                await MainActor.run { coordinator.appWillStartPlayback() }
+                await started.open()
+                await finish.wait()
+                // The task local is still inherited, but this invocation belongs
+                // to the old document and must not defer the new page's playback.
+                await MainActor.run { coordinator.appWillStartPlayback() }
+                return DeviceToolResult(text: "done")
+            },
+        ])
+        coordinator.webView = view
+        coordinator.syncDeviceTools(url: server, registry: registry,
+                                    controller: view.configuration.userContentController)
+        let bridge = try XCTUnwrap(coordinator.bridge)
+        let call = bridge.startCall(body: ["name": "play"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+        await started.wait()
+        coordinator.webView(view, didCommit: nil)
+        finish.open()
+        await call.value
+        XCTAssertTrue(view.hangUpScripts.isEmpty,
+                      "A retired document's still-running invocation must not stop the new page at all")
+        coordinator.tearDown()
+    }
+
+    func testManualPlaybackSupersedesExistingGrace() async throws {
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        let graceStarted = PlaybackTestGate()
+        let finishGrace = PlaybackTestGate()
+        coordinator.waitForPlaybackHandoverGrace = {
+            await graceStarted.open()
+            await finishGrace.wait()
+        }
+        let registry = DeviceToolRegistry(tools: [
+            DeviceTool(name: "play", description: "Starts playback") { _ in
+                await MainActor.run { coordinator.appWillStartPlayback() }
+                return DeviceToolResult(text: "done")
+            },
+        ])
+        coordinator.webView = view
+        coordinator.syncDeviceTools(url: server, registry: registry,
+                                    controller: view.configuration.userContentController)
+        let bridge = try XCTUnwrap(coordinator.bridge)
+        let call = bridge.startCall(body: ["name": "play"], frameOrigin: bridge.expectedOrigin, isMainFrame: true) { _, _ in }
+        await call.value
+        await graceStarted.wait()
+        let graceTask = try XCTUnwrap(coordinator.hangUpTask)
+        coordinator.appWillStartPlayback()
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: true),
+                                            LiveHangUp.cancelScript,
+                                            LiveHangUp.requestScript(afterToolResult: false)])
+        finishGrace.open()
+        await graceTask.value
+        XCTAssertFalse(view.hangUpScripts.contains(LiveHangUp.flushScript))
+        coordinator.tearDown()
+    }
+
+    func testActualMediaPlayToolPreservesScopeAcrossListenMainActorHop() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let listen = Listen(store: ListenStore(fileURL: directory.appending(path: "library.json")),
+                            engine: FakeListenEngine(), cookies: FakeCookieJar(), server: { nil },
+                            downloadDirectory: directory, defaults: isolatedDefaults())
+        let items = try await listen.add([ListenDraft(url: URL(string: "http://media.example/episode.mp3")!, title: "Episode")],
+                                         placement: .end, download: .never)
+        let coordinator = coordinator(browser(State()))
+        let view = webView(server)
+        let grace = PlaybackTestGate()
+        coordinator.waitForPlaybackHandoverGrace = { await grace.wait() }
+        coordinator.webView = view
+        coordinator.syncDeviceTools(url: server, registry: DeviceToolRegistry(tools: listen.tools),
+                                    controller: view.configuration.userContentController)
+        let bridge = try XCTUnwrap(coordinator.bridge)
+        NotificationCenter.default.addObserver(coordinator, selector: #selector(BrowserView.Coordinator.appWillStartPlayback),
+                                               name: .appWillStartPlayback, object: nil)
+        var playbackNotifications = 0
+        listen.player.willStartPlayback = {
+            playbackNotifications += 1
+            XCTAssertNotNil(bridge.currentPlaybackCallID, "The real media tool's actor hop must preserve correlation")
+            NotificationCenter.default.post(name: .appWillStartPlayback, object: nil)
+        }
+        let call = bridge.startCall(body: ["name": "media_play", "arguments": "{\"item\":\"\(items[0].id)\"}"],
+                                    frameOrigin: bridge.expectedOrigin, isMainFrame: true) { result, error in
+            XCTAssertNotNil(result)
+            XCTAssertNil(error)
+            XCTAssertTrue(view.hangUpScripts.isEmpty)
+        }
+        await call.value
+        XCTAssertEqual(playbackNotifications, 1)
+        XCTAssertEqual(listen.player.status, .playing)
+        XCTAssertEqual(view.hangUpScripts, [LiveHangUp.requestScript(afterToolResult: true)])
+        coordinator.tearDown()
+        grace.open()
+        listen.player.stop()
+    }
+
     /// The health monitor's "off screen" must not include a page the user can
     /// still see: an unfocused Mac window or iPad multitasking is only inactive.
     func testHealthCountsAShownPageInAnInactiveSceneAsOnScreen() {
@@ -697,6 +964,24 @@ final class BrowserLifecycleTests: XCTestCase {
         state.loginRequired = false
         state.error = "The server could not be reached."
         XCTAssertFalse(onScreen(browser(state)))
+    }
+}
+
+@MainActor
+private final class PlaybackTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
 

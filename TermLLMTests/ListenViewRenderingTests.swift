@@ -126,6 +126,73 @@ final class ListenViewRenderingTests: XCTestCase {
         }
     }
 
+    /// Unlike the engine-only test, includes production Listen state, system
+    /// now-playing integration, MusicKit observation, and the native tab shelf.
+    /// Records comparative evidence rather than assuming a portable CPU limit.
+    func testProductionPlaybackPathCPUAcrossShelfAndPauseStates() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = URL(string: "https://pod.example/production-cpu.mp3")!
+        var frame = Data(count: 417)
+        frame.replaceSubrange(0..<4, with: [0xFF, 0xFB, 0x90, 0xC4])
+        let body = Data((0..<Int(120.0 * 44_100 / 1_152)).flatMap { _ in frame })
+        let server = FakeMediaServer()
+        server.serve(url, .init(body: body))
+        let artwork = ListenArtworkStore(directory: directory.appending(path: "Artwork"), cookies: nil, server: { nil })
+        let listen = Listen(store: ListenStore(fileURL: directory.appending(path: "library.json")),
+                            engine: AVListenEngine(), cookies: FakeCookieJar(), server: { nil },
+                            nowPlaying: SystemNowPlaying(artwork: artwork), artwork: artwork,
+                            downloadDirectory: directory.appending(path: "Downloads"), fetching: server,
+                            defaults: isolatedDefaults())
+        let music = MusicLibrary.shared.player
+        listen.player.willStartPlayback = { if music.isPlaying { music.pause() } }
+        let items = try await listen.add([ListenDraft(url: url, title: "Production playback CPU fixture", kind: .episode)],
+                                         placement: .end, download: .never)
+        let previousKeyWindow = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        let window = try hostedWindow(MediaShelfRenderingHarness(listen: listen, music: music))
+        defer {
+            listen.player.stop()
+            window.isHidden = true
+            previousKeyWindow?.makeKey()
+        }
+        var evidence: [String] = []
+        let sampleSeconds = ProcessInfo.processInfo.environment["TERMLLM_LISTEN_CPU_SAMPLE_SECONDS"]
+            .flatMap(Int.init).map { min(30, max(2, $0)) } ?? 2
+        func measure(_ state: String) async throws {
+            try await Task.sleep(for: .milliseconds(500))
+            let sampler = ProcessUsageSampler()
+            _ = sampler.sample(appActive: true, appBackground: false)
+            try await Task.sleep(for: .seconds(sampleSeconds))
+            let sample = sampler.sample(appActive: true, appBackground: false)
+            evidence.append("\(state): CPU cores=\(sample.appCPU.map(String.init(describing:)) ?? "unavailable"), "
+                            + "wakeups/s=\(sample.wakeupsPerSecond.map(String.init(describing:)) ?? "unavailable")")
+        }
+        try await measure("idle native shelf")
+        try await listen.player.play(items[0].id)
+        XCTAssertEqual(listen.player.status, .playing)
+        try await measure("playing native shelf 1x")
+        XCTAssertGreaterThan(listen.player.position, 0.5, "The production player must actually advance")
+        listen.player.setRate(1.5)
+        try await measure("playing native shelf 1.5x")
+        listen.player.pause()
+        try await measure("paused native shelf")
+        window.isHidden = true
+        try await measure("paused window hidden")
+        try await listen.player.resume()
+        try await measure("playing window hidden")
+        window.rootViewController = UIHostingController(rootView:
+            MediaShelfRenderingHarness(listen: listen, music: music, forceFallback: true))
+        window.makeKeyAndVisible()
+        try await measure("playing fallback shelf")
+        listen.player.stop()
+        try await measure("stopped fallback shelf")
+        let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+        attachment.name = "simulator-production-playback-path-cpu"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testSharedMediaShelfLight() async throws {
         try await renderShelves(scheme: .light)
     }
