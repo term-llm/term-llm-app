@@ -307,15 +307,21 @@ struct ContentView: View {
                 guard let pushWindowID, push.isKeyScene(pushWindowID) else { return false }
                 return voiceLaunchError != nil || push.navigationIssue != nil
             },
-            set: { if !$0 { voiceLaunchError = nil; push.navigationIssue = nil } }
+            set: { if !$0 { voiceLaunchError = nil; push.dismissNavigationIssue() } }
         )) {
-            Button("OK", role: .cancel) { voiceLaunchError = nil; push.navigationIssue = nil }
             if push.navigationIssue != nil {
-                Button("Notification settings") {
-                    voiceLaunchError = nil; push.navigationIssue = nil
-                    openSettings()
+                // Capture the page now: dismissal may clear it before the action runs.
+                if let unrouted = push.unroutedNavigation, let pushWindowID {
+                    Button("Open Here") {
+                        voiceLaunchError = nil
+                        push.openHere(unrouted, windowID: pushWindowID)
+                    }
+                    Button("Cancel", role: .cancel) { voiceLaunchError = nil; push.dismissNavigationIssue() }
+                } else {
+                    Button("OK", role: .cancel) { voiceLaunchError = nil; push.dismissNavigationIssue() }
                 }
             } else {
+                Button("OK", role: .cancel) { voiceLaunchError = nil }
                 Button("Voice settings") {
                     voiceLaunchError = nil
                     openSettings()

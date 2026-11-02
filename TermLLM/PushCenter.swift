@@ -199,6 +199,10 @@ final class PushCenter: NSObject, ObservableObject {
     @Published private(set) var badgeIssue: String?
     @Published var pendingCleanupCount = 0
     @Published var navigationIssue: String?
+    /// A tapped page iOS could not show in its owning (or a fresh) window. It is
+    /// kept only so the user can choose to open it in the window they are using;
+    /// it is never substituted there without that choice.
+    @Published private(set) var unroutedNavigation: PushNavigation?
     let deliveries: PushDeliveryStore
     let windows = PushWindowRegistry()
     let inbox: PushNotificationInbox
@@ -588,32 +592,67 @@ final class PushCenter: NSObject, ObservableObject {
         }
         // If the exact scene is gone, only the scene activity may claim a fresh
         // destination. Existing sibling BrowserViews cannot consume nil owner.
-        // When no sibling can be substituted, the scene iOS shows replaces the
-        // gone owner: single-scene apps (iPhone) cannot create a fresh scene,
-        // and with every window closed the launching scene is the fresh one.
-        // Route those like manual taps instead of requesting a scene that
-        // iOS refuses (single-scene) or that duplicates the launching window.
-        let ownerGone = (isCompletion || windowID != nil) && session == nil
-        let shownSceneReplacesOwner = ownerGone && (!supportsMultipleScenes() || windows.existingWindowIDs().isEmpty)
-        let completion = (isCompletion || windowID != nil) && !shownSceneReplacesOwner
+        // When there is no sibling, the scene iOS shows owns the tap instead.
+        // A single-scene app (every current build) has exactly one scene, and
+        // iOS already brings it forward for the tap: it is the owner, or it
+        // replaces an owner whose session was discarded. UIKit rejects every
+        // activation request in that mode, even for the existing scene ("The
+        // current device does not support multiple scenes"), and that rejection
+        // used to drop the tap. With every window closed, the launching scene is
+        // the fresh one. Route those like manual taps; never request a scene.
+        let ownerClaim = isCompletion || windowID != nil
+        let shownSceneOwns = ownerClaim && (!supportsMultipleScenes() || (session == nil && windows.existingWindowIDs().isEmpty))
+        let completion = ownerClaim && !shownSceneOwns
         let navigation = PushNavigation(id: UUID(), url: url,
-            windowID: completion ? (session == nil ? nil : windowID) : windows.keyWindowID(), isCompletion: completion,
+            windowID: completion ? (session == nil ? nil : windowID) : shownWindowID(), isCompletion: completion,
             excludedWindowIDs: completion && session == nil ? windows.existingWindowIDs() : [],
             connectionID: connectionID)
         pendingNavigation = navigation
         navigationIssue = nil
+        unroutedNavigation = nil
         // Manual/legacy alerts have no owner claim: use the current key scene,
         // or wait for it to attach on cold launch. Never create a scene for them.
         guard completion else { return }
         let activity = NSUserActivity(activityType: Self.navigationActivity)
         activity.userInfo = ["navigation_id": navigation.id.uuidString]
-        activateScene(session, activity) { [weak self] _ in
+        activateScene(session, activity) { [weak self] error in
+            let reason = (error as NSError).domain + " \((error as NSError).code)"
             Task { @MainActor in
+                pushLog.error("Notification window activation failed: \(reason, privacy: .public)")
                 guard let self, self.pendingNavigation?.id == navigation.id else { return }
-                self.pendingNavigation = nil
-                self.navigationIssue = "iOS could not open the notification's owning or fresh window. No other conversation was substituted."
+                self.offerShownScene(navigation,
+                    issue: "iOS couldn’t open the window this conversation belongs to. Open it here instead?")
             }
         }
+    }
+
+    /// Where a tap without a live owner opens: the current key scene. The only
+    /// scene of a single-scene app qualifies before it is key again, such as
+    /// while iOS is still bringing it back from the background.
+    private func shownWindowID() -> String? {
+        if !supportsMultipleScenes(), let sole = windows.soleWindowID() { return sole }
+        return windows.keyWindowID()
+    }
+
+    /// The owner or a fresh window could not show the page. The scene the user
+    /// is looking at never takes it silently; offer it there instead.
+    private func offerShownScene(_ navigation: PushNavigation, issue: String) {
+        if pendingNavigation?.id == navigation.id { pendingNavigation = nil }
+        unroutedNavigation = navigation
+        navigationIssue = issue
+    }
+
+    /// The user chose to open a page its owner could not show in this scene.
+    func openHere(_ navigation: PushNavigation, windowID: String) {
+        unroutedNavigation = nil
+        navigationIssue = nil
+        pendingNavigation = PushNavigation(id: UUID(), url: navigation.url, windowID: windowID,
+                                           connectionID: navigation.connectionID)
+    }
+
+    func dismissNavigationIssue() {
+        navigationIssue = nil
+        unroutedNavigation = nil
     }
 
     /// Most specific saved mount containing `url`; the selected connection wins
@@ -705,8 +744,8 @@ final class PushCenter: NSObject, ObservableObject {
 
     func routeManualToKeyScene() {
         guard var navigation = pendingNavigation, !navigation.isCompletion, navigation.windowID == nil,
-              let key = windows.keyWindowID() else { return }
-        navigation.windowID = key
+              let shown = shownWindowID() else { return }
+        navigation.windowID = shown
         pendingNavigation = navigation
     }
 
@@ -735,8 +774,7 @@ final class PushCenter: NSObject, ObservableObject {
               var navigation = pendingNavigation, navigation.isCompletion, navigation.id.uuidString == id,
               navigation.windowID == nil || navigation.windowID == windowID else { return }
         if navigation.windowID == nil, navigation.excludedWindowIDs.contains(windowID) {
-            pendingNavigation = nil
-            navigationIssue = "iOS did not create a fresh notification window. An existing conversation was not substituted."
+            offerShownScene(navigation, issue: "iOS couldn’t open a new window for this conversation. Open it here instead?")
             return
         }
         navigation.windowID = windowID

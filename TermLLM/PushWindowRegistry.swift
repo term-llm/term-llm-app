@@ -48,6 +48,16 @@ final class PushWindowRegistry {
         return ids
     }
 
+    /// The only scene still attached to the app in any activation state (the
+    /// key scene counts); nil when there is none yet or more than one.
+    func soleWindowID() -> String? {
+        var ids = Set(scenes.compactMap { id, scene in
+            scene.value.flatMap { $0.activationState == .unattached ? nil : id }
+        })
+        if let key = keyWindowID() { ids.insert(key) }
+        return ids.count == 1 ? ids.first : nil
+    }
+
     func bind(windowID: String, documentID: String, origin: String) {
         if bindings[windowID]?.documentID == documentID { return }
         bindings[windowID] = Binding(documentID: documentID, origin: origin)

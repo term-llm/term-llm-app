@@ -97,6 +97,7 @@ def check_native_review_contract():
     assert "errorHandler: failed" in center and "navigationIssue" in center
     opened = center.split("    func open(", 1)[1].split("    func routeManualToKeyScene", 1)[0]
     assert opened.index("guard completion else { return }") < opened.index("activateScene(session, activity)")
+    assert "ownerClaim && (!supportsMultipleScenes() ||" in opened, "single-scene taps never request scene activation"
     bridge = (ROOT / "TermLLM/NativePushBridge.swift").read_text()
     assert "guard center.disable(" in bridge and "guard center.unsubscribe(" in bridge
     coordinator = (ROOT / "TermLLM/BrowserView.swift").read_text()

@@ -40,17 +40,24 @@ working but automatic completion targeting disabled.
   Newer sequences, replacement stores, sibling nodes and manual messages remain.
   A tap/open alone is not an ACK. Pending APNs remote queues are not exposed by
   UserNotifications; the watermark also gates subsequent NSE admission.
-- Taps activate the exact owner scene session, including restorable sessions.
-  If gone, UIKit is asked to create a new scene with a single-use navigation
-  activity. An arbitrary currently rendered sibling cannot consume an unclaimed
-  navigation. Ownerless manual/legacy taps instead use the current key scene,
-  waiting for that scene on cold launch, without requesting another scene. An
-  activation error clears the exact pending completion and surfaces an explanation;
-  it never falls back to a sibling. Multi-scene creation remains **disabled** while
-  voice/listen singleton behavior is unproven. The global voice request can be
-  claimed once by its intended key scene. UIKit may reject a fresh-scene request
-  in single-scene mode; this is an honest routing limitation, not silent success.
-  Scene activation/restoration remains a simulator/device release gate.
+- With multiple scenes, taps activate the exact owner scene session, including
+  restorable sessions. If gone, UIKit is asked to create a new scene with a
+  single-use navigation activity. An arbitrary currently rendered sibling cannot
+  consume an unclaimed navigation. Ownerless manual/legacy taps instead use the
+  current key scene, waiting for that scene on cold launch, without requesting
+  another scene. An activation error (or iOS reusing an existing window) clears the
+  exact pending completion and offers **Open Here** for the current key scene; it
+  is never substituted there without that explicit choice. Multi-scene creation
+  remains **disabled** while voice/listen singleton behavior is unproven. The
+  global voice request can be claimed once by its intended key scene.
+- In single-scene mode (every current build) UIKit rejects every activation
+  request, even for the existing foreground scene (`UISceneErrorDomain` 0, "does
+  not support multiple scenes"; observed in the iOS 26.5 simulator). No scene is
+  requested there: iOS already brings the only scene forward for the tap, and it
+  is the owner or replaces an owner whose session was discarded. Completion taps
+  route like manual taps to that scene, binding to it while it is still in the
+  background, or waiting for it to attach on cold launch. There is no sibling to
+  exclude. Scene activation/restoration remains a simulator/device release gate.
 
 ## Durable opt-out and cleanup
 

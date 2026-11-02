@@ -274,6 +274,8 @@ final class NotificationReviewRegressionTests: XCTestCase {
         first.claimNavigation(try XCTUnwrap(activation), windowID: "native_key")
         XCTAssertNil(first.pendingNavigation, "UIKit reuse of an existing scene is not a fresh-owner destination")
         XCTAssertNotNil(first.navigationIssue)
+        XCTAssertEqual(first.unroutedNavigation?.url.absoluteString, origin + "/node/A/chat/session",
+                       "offered to the user instead of silently substituted")
         first.open(urlString: origin + "/node/A/chat/session", configuredServer: URL(string: origin), windowID: "native_closed", isCompletion: true)
         first.claimNavigation(try XCTUnwrap(activation), windowID: "native_fresh")
         XCTAssertEqual(first.pendingNavigation?.windowID, "native_fresh")
@@ -305,7 +307,46 @@ final class NotificationReviewRegressionTests: XCTestCase {
         XCTAssertNil(first.navigationIssue)
     }
 
-    func testSceneActivationFailureClearsPendingCompletionAndSurfacesLimitation() async {
+    /// UIKit rejects every activation request in single-scene mode, even for the
+    /// existing foreground scene (UISceneErrorDomain 0). That rejection used to
+    /// drop the tap and show an error whenever it beat the page load.
+    func testSingleSceneCompletionWithLiveOrRestorableOwnerNeverRequestsActivation() throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
+                                  "hosted tests run in the app's scene")
+        let owner = PushCenter.windowID(for: scene)
+        let target = origin + "/node/A/chat/session"
+        // The same owner lookup requests activation in multi-scene mode.
+        let multi = center()
+        multi.windows.register(windowID: owner, scene: scene)
+        var activated: UISceneSession?
+        multi.activateScene = { session, _, _ in activated = session }
+        multi.open(urlString: target, configuredServer: URL(string: origin), windowID: owner, isCompletion: true)
+        XCTAssertEqual(activated?.persistentIdentifier, scene.session.persistentIdentifier)
+
+        let live = center() // activation would XCTFail
+        live.supportsMultipleScenes = { false }
+        live.windows.register(windowID: owner, scene: scene)
+        live.open(urlString: target, configuredServer: URL(string: origin), windowID: owner, isCompletion: true)
+        XCTAssertEqual(live.pendingNavigation?.windowID, owner, "the only scene is the owner")
+        XCTAssertEqual(live.pendingNavigation?.isCompletion, false)
+        XCTAssertEqual(live.pendingNavigation?.url.absoluteString, target)
+        XCTAssertNil(live.navigationIssue)
+
+        // Relaunch after iOS ended the process: the session is restorable but
+        // its scene has not attached yet. Wait for it instead of activating.
+        defaults.set([owner: scene.session.persistentIdentifier], forKey: PushCenter.windowSessionsKey)
+        let restored = center()
+        restored.supportsMultipleScenes = { false }
+        restored.windows.keyWindowOverride = { nil }
+        restored.open(urlString: target, configuredServer: URL(string: origin), windowID: owner, isCompletion: true)
+        XCTAssertNil(restored.pendingNavigation?.windowID)
+        restored.windows.keyWindowOverride = { owner }
+        restored.routeManualToKeyScene()
+        XCTAssertEqual(restored.pendingNavigation?.windowID, owner)
+        XCTAssertNil(restored.navigationIssue)
+    }
+
+    func testSceneActivationFailureOffersTheShownSceneInsteadOfDroppingTheTap() async throws {
         let first = center()
         first.windows.keyWindowOverride = { "native_sibling" }
         let surfaced = expectation(description: "activation error surfaced")
@@ -314,8 +355,30 @@ final class NotificationReviewRegressionTests: XCTestCase {
         first.activateScene = { _, _, failed in failed(ReviewStorageError.injected) }
         first.open(urlString: origin + "/node/A/chat/session", configuredServer: URL(string: origin), windowID: "native_closed", isCompletion: true)
         await fulfillment(of: [surfaced], timeout: 5)
-        XCTAssertNil(first.pendingNavigation)
+        observation.cancel()
+        XCTAssertNil(first.pendingNavigation, "never substituted without the user's choice")
         XCTAssertNotNil(first.navigationIssue)
+        let unrouted = try XCTUnwrap(first.unroutedNavigation)
+        XCTAssertEqual(unrouted.url.absoluteString, origin + "/node/A/chat/session")
+
+        first.openHere(unrouted, windowID: "native_sibling")
+        XCTAssertEqual(first.pendingNavigation?.windowID, "native_sibling")
+        XCTAssertEqual(first.pendingNavigation?.url, unrouted.url)
+        XCTAssertEqual(first.pendingNavigation?.isCompletion, false)
+        XCTAssertNotEqual(first.pendingNavigation?.id, unrouted.id, "a stale activity cannot claim the new route")
+        XCTAssertNil(first.navigationIssue)
+        XCTAssertNil(first.unroutedNavigation)
+
+        var activity: NSUserActivity?
+        first.activateScene = { _, value, _ in activity = value }
+        first.open(urlString: origin + "/node/A/chat/other", configuredServer: URL(string: origin), windowID: "native_closed", isCompletion: true)
+        first.claimNavigation(try XCTUnwrap(activity), windowID: "native_sibling")
+        XCTAssertEqual(first.unroutedNavigation?.url.absoluteString, origin + "/node/A/chat/other",
+                       "iOS reusing an existing window offers the page too")
+        first.dismissNavigationIssue()
+        XCTAssertNil(first.navigationIssue)
+        XCTAssertNil(first.unroutedNavigation)
+        XCTAssertNil(first.pendingNavigation, "dismissing does not open the page anywhere")
     }
 
     func testCommittedDocumentInvalidatesButProvisionalFailureDoesNotNeedRebinding() {
