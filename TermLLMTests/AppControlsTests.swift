@@ -5,6 +5,26 @@ import XCTest
 
 @MainActor
 final class AppControlsTests: XCTestCase {
+    func testThemeAccentAdaptsAndKeepsWhiteButtonLabelsLegible() throws {
+        let accent = try XCTUnwrap(UIColor(named: "AccentColor", in: .main, compatibleWith: nil))
+        func luminance(_ color: UIColor) -> Double {
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            XCTAssertTrue(color.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+            XCTAssertEqual(alpha, 1)
+            func linear(_ value: CGFloat) -> Double {
+                let value = Double(value)
+                return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        }
+        let light = luminance(accent.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light)))
+        let dark = luminance(accent.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark)))
+        XCTAssertGreaterThan(dark, light, "Dark mode needs a lighter accent, not a forced appearance")
+        for value in [light, dark] {
+            XCTAssertGreaterThanOrEqual(1.05 / (value + 0.05), 4.5, "White prominent-button labels must stay readable")
+        }
+    }
+
     private final class State {
         var expanded = false
         var actions: [AppControlAction] = []

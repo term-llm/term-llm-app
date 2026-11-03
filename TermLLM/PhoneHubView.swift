@@ -63,6 +63,12 @@ struct PhoneHubView: View {
                     Section {
                         VStack(spacing: 16) {
                             Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
+                                .overlay(alignment: .bottomTrailing) {
+                                    FridayMask()
+                                        .frame(width: 20, height: 26)
+                                        .offset(x: 14, y: 6)
+                                }
+                                .accessibilityHidden(true)
                             Text("Your agents, all in one place").font(.title3.bold())
                             Text("Add a connection to bring your agents together.")
                                 .foregroundStyle(.secondary)
@@ -1344,5 +1350,32 @@ struct WorkspaceListWidth: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// An original, understated hockey-mask nod; decorative, not a new control.
+private struct FridayMask: View {
+    var body: some View {
+        Canvas { context, size in
+            let scale = CGAffineTransform(scaleX: size.width, y: size.height)
+            var outline = Path()
+            outline.move(to: CGPoint(x: 0.5, y: 0.04))
+            outline.addCurve(to: CGPoint(x: 0.5, y: 0.96),
+                             control1: CGPoint(x: 1.12, y: -0.02), control2: CGPoint(x: 0.98, y: 0.92))
+            outline.addCurve(to: CGPoint(x: 0.5, y: 0.04),
+                             control1: CGPoint(x: 0.02, y: 0.92), control2: CGPoint(x: -0.12, y: -0.02))
+            outline.closeSubpath()
+            context.fill(outline.applying(scale), with: .color(Color(.systemBackground)))
+            context.stroke(outline.applying(scale), with: .color(Color("AccentColor")), lineWidth: 1.5)
+            for eye in [CGRect(x: 0.19, y: 0.32, width: 0.23, height: 0.12),
+                        CGRect(x: 0.58, y: 0.32, width: 0.23, height: 0.12)] {
+                context.fill(Path(ellipseIn: eye).applying(scale), with: .color(Color("AccentColor")))
+            }
+            for x in [0.35, 0.5, 0.65] {
+                let vent = CGRect(x: x - 0.035, y: 0.66, width: 0.07, height: 0.07)
+                context.fill(Path(ellipseIn: vent).applying(scale), with: .color(Color("AccentColor")))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
