@@ -230,7 +230,7 @@ struct ContentView: View {
                 showingHub = true
             }
         }
-        .tint(.blue)
+        .tint(Color("AccentColor"))
         .background(NativeSceneReader { scene in
             guard !isFixture else { return }
             let id = PushCenter.windowID(for: scene)

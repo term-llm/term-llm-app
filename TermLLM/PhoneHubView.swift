@@ -24,6 +24,8 @@ struct PhoneHubView: View {
     /// Search keeps its own order: relevance by default, per query session.
     @State private var searchSort: PhoneHubSessionSort = .relevance
     @FocusState private var sessionSearchFocused: Bool
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .largeTitle) private var maskWidth = 24
 
     enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
     struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
@@ -63,6 +65,12 @@ struct PhoneHubView: View {
                     Section {
                         VStack(spacing: 16) {
                             Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
+                                .overlay(alignment: .bottomTrailing) {
+                                    FridayMask()
+                                        .frame(width: maskWidth, height: maskWidth * 1.25)
+                                        .offset(x: maskWidth * 0.5, y: maskWidth * 0.2)
+                                }
+                                .accessibilityHidden(true)
                             Text("Your agents, all in one place").font(.title3.bold())
                             Text("Add a connection to bring your agents together.")
                                 .foregroundStyle(.secondary)
@@ -88,6 +96,18 @@ struct PhoneHubView: View {
                             }.accessibilityIdentifier("phoneHub.demo")
                         }
                         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 28)
+                        .background {
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                FridayLake()
+                                    .overlay(alignment: .top) {
+                                        FridayBat(isVisible: isVisible && agentPath.isEmpty && editor == nil)
+                                            .frame(height: 32)
+                                    }
+                                    .clipped()
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                     }
                 }
                 if !connections.connections.isEmpty {
@@ -1344,5 +1364,262 @@ struct WorkspaceListWidth: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Original goalie-mask geometry: broad temples, short chin, slits and small marks.
+private struct FridayMask: View {
+    var body: some View {
+        Canvas { context, size in
+            let scale = CGAffineTransform(scaleX: size.width, y: size.height)
+            var shell = Path()
+            shell.move(to: CGPoint(x: 0.32, y: 0.05))
+            shell.addQuadCurve(to: CGPoint(x: 0.82, y: 0.14), control: CGPoint(x: 0.68, y: -0.01))
+            shell.addCurve(to: CGPoint(x: 0.72, y: 0.85),
+                           control1: CGPoint(x: 1.01, y: 0.4), control2: CGPoint(x: 0.91, y: 0.68))
+            shell.addQuadCurve(to: CGPoint(x: 0.38, y: 0.94), control: CGPoint(x: 0.61, y: 0.99))
+            shell.addCurve(to: CGPoint(x: 0.12, y: 0.31),
+                           control1: CGPoint(x: 0.19, y: 0.86), control2: CGPoint(x: 0.05, y: 0.56))
+            shell.addQuadCurve(to: CGPoint(x: 0.32, y: 0.05), control: CGPoint(x: 0.15, y: 0.1))
+            shell.closeSubpath()
+            // Bone stays pale in both appearances, unlike the old black egg in dark mode.
+            context.fill(shell.applying(scale), with: .color(Color(red: 0.89, green: 0.87, blue: 0.81)))
+            context.stroke(shell.applying(scale), with: .color(Color("AccentColor")), lineWidth: 1.25)
+            for x in [0.22, 0.57] {
+                var eye = Path()
+                eye.move(to: CGPoint(x: x, y: 0.36))
+                eye.addQuadCurve(to: CGPoint(x: x + 0.23, y: 0.39), control: CGPoint(x: x + 0.12, y: 0.33))
+                eye.addQuadCurve(to: CGPoint(x: x, y: 0.36), control: CGPoint(x: x + 0.1, y: 0.49))
+                context.fill(eye.applying(scale), with: .color(.black.opacity(0.8)))
+            }
+            for points in [[CGPoint(x: 0.42, y: 0.17), CGPoint(x: 0.61, y: 0.17), CGPoint(x: 0.52, y: 0.3)],
+                           [CGPoint(x: 0.23, y: 0.5), CGPoint(x: 0.36, y: 0.52), CGPoint(x: 0.25, y: 0.65)],
+                           [CGPoint(x: 0.64, y: 0.52), CGPoint(x: 0.77, y: 0.5), CGPoint(x: 0.75, y: 0.65)]] {
+                var mark = Path()
+                mark.addLines(points)
+                mark.closeSubpath()
+                context.fill(mark.applying(scale), with: .color(Color("AccentColor")))
+            }
+            for x in [0.41, 0.59] {
+                for y in [0.7, 0.81] {
+                    context.fill(Path(ellipseIn: CGRect(x: x - 0.025, y: y, width: 0.05, height: 0.04)).applying(scale),
+                                 with: .color(.black.opacity(0.65)))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A second-glance summer-camp shoreline, behind content, never above controls.
+private struct FridayLake: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Canvas { context, size in
+            let dark = colorScheme == .dark
+            context.fill(Path(ellipseIn: CGRect(x: size.width * 0.78 - 16, y: 2, width: 32, height: 32)),
+                         with: .color(Color("AccentColor").opacity(dark ? 0.16 : 0.1)))
+            var pines = Path()
+            let baseline = size.height - 9
+            for (x, height) in [(0.04, 8.0), (0.1, 14), (0.16, 10), (0.23, 6),
+                                (0.77, 8), (0.84, 13), (0.9, 17), (0.97, 10)] {
+                let x = size.width * x
+                pines.move(to: CGPoint(x: x, y: baseline - height))
+                for point in [CGPoint(x: x + height * 0.22, y: baseline - height * 0.5),
+                              CGPoint(x: x + height * 0.1, y: baseline - height * 0.5),
+                              CGPoint(x: x + height * 0.38, y: baseline),
+                              CGPoint(x: x - height * 0.38, y: baseline),
+                              CGPoint(x: x - height * 0.1, y: baseline - height * 0.5),
+                              CGPoint(x: x - height * 0.22, y: baseline - height * 0.5)] {
+                    pines.addLine(to: point)
+                }
+                pines.closeSubpath()
+            }
+            context.fill(pines, with: .color(.secondary.opacity(dark ? 0.2 : 0.16)))
+            var water = Path()
+            for (left, right, y) in [(0.07, 0.93, baseline + 1), (0.63, 0.86, baseline + 4), (0.7, 0.81, baseline + 7)] {
+                water.move(to: CGPoint(x: size.width * left, y: y))
+                water.addLine(to: CGPoint(x: size.width * right, y: y))
+            }
+            context.stroke(water, with: .color(.secondary.opacity(dark ? 0.14 : 0.1)), lineWidth: 0.75)
+        }
+    }
+}
+
+private struct FridayBat: View {
+    let isVisible: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        FridayBatLayers(mode: FridayBatFlight.mode(visible: isVisible, active: scenePhase == .active,
+                                                   reduceMotion: reduceMotion))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct FridayBatLayers: UIViewRepresentable {
+    let mode: FridayBatFlight.Mode
+    func makeUIView(context: Context) -> FridayBatView { FridayBatView() }
+    func updateUIView(_ view: FridayBatView, context: Context) { view.mode = mode }
+    static func dismantleUIView(_ view: FridayBatView, coordinator: ()) { view.mode = .hidden }
+}
+
+/// Like PlayingBarsView, animation runs in the compositor, not a SwiftUI frame loop.
+/// One delayed pass per visible/active appearance; the model layer is hidden afterwards.
+final class FridayBatView: UIView {
+    let bat = CAShapeLayer()
+    private var played = false
+    private var flightSize = CGSize.zero
+    var mode: FridayBatFlight.Mode = .hidden {
+        didSet {
+            guard mode != oldValue else { return }
+            bat.removeAllAnimations()
+            played = false
+            updateFlight()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        accessibilityElementsHidden = true
+        layer.addSublayer(bat)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: FridayBatView, _: UITraitCollection) in
+            view.updateFlight()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.size != flightSize {
+            bat.removeAllAnimations()
+            played = false
+            flightSize = bounds.size
+        }
+        updateFlight()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            bat.removeAllAnimations()
+            played = false
+        }
+        updateFlight()
+    }
+
+    private func updateFlight() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let dark = traitCollection.userInterfaceStyle == .dark
+        bat.fillColor = (dark ? (UIColor(named: "AccentColor") ?? .label).resolvedColor(with: traitCollection).withAlphaComponent(0.85)
+                             : UIColor.label.resolvedColor(with: traitCollection).withAlphaComponent(0.72)).cgColor
+        bat.path = FridayBatFlight.wingPath(fold: 0)
+        bat.position = CGPoint(x: bounds.width * 0.65, y: 17)
+        bat.opacity = mode == .parked ? 1 : 0
+        CATransaction.commit()
+        guard window != nil, bounds.width > 0, mode == .flight, !played else { return }
+        played = true
+
+        // Precompute a small set of geometry/wing keyframes once. No timers or tasks.
+        let samples = FridayBatFlight.samples
+        let position = CAKeyframeAnimation(keyPath: "position")
+        position.values = samples.map { NSValue(cgPoint: FridayBatFlight.position(at: $0, width: bounds.width)) }
+        position.calculationMode = .cubic
+        let bank = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        bank.values = samples.map { FridayBatFlight.bank(at: $0, width: bounds.width) }
+        let wings = CAKeyframeAnimation(keyPath: "path")
+        wings.values = samples.map { FridayBatFlight.wingPath(fold: FridayBatFlight.fold(at: $0)) }
+        let visibility = CAKeyframeAnimation(keyPath: "opacity")
+        visibility.values = [1, 1]
+        let animations = [position, bank, wings, visibility]
+        for animation in animations {
+            animation.duration = FridayBatFlight.duration
+            animation.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 60, preferred: 30)
+        }
+        let flight = CAAnimationGroup()
+        flight.animations = animations
+        flight.duration = FridayBatFlight.duration
+        flight.beginTime = bat.convertTime(CACurrentMediaTime(), from: nil) + FridayBatFlight.delay
+        flight.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 60, preferred: 30)
+        // Default removal exposes opacity=0 at completion; even the delay is cancelled on hide.
+        bat.add(flight, forKey: "flight")
+    }
+}
+
+/// Pure geometry and policy shared by the compositor and regression tests.
+enum FridayBatFlight {
+    enum Mode { case hidden, parked, flight }
+    static let delay = 1.2
+    static let duration = 5.5
+    static let samples = (0...110).map { Double($0) * duration / 110 }
+    static let waypoints: [CGPoint] = [CGPoint(x: -0.08, y: 0.55), CGPoint(x: 0.18, y: 0.8),
+                                      CGPoint(x: 0.34, y: 0.3), CGPoint(x: 0.52, y: 0.62),
+                                      CGPoint(x: 0.72, y: 0.2), CGPoint(x: 0.88, y: 0.45), CGPoint(x: 1.08, y: 0.35)]
+
+    static func mode(visible: Bool, active: Bool, reduceMotion: Bool) -> Mode {
+        guard visible && active else { return .hidden }
+        return reduceMotion ? .parked : .flight
+    }
+
+    static func fold(at time: Double) -> CGFloat {
+        // Whole 5 Hz cycles meet each glide with extended wings: no pose snaps.
+        for (start, end) in [(0.0, 0.8), (1.4, 2.4), (2.9, 3.9), (4.5, 5.5)] where time >= start && time <= end {
+            return CGFloat((1 - cos((time - start) * 10 * .pi)) / 2)
+        }
+        return 0
+    }
+
+    static func position(at time: Double, width: CGFloat) -> CGPoint {
+        let progress = min(1, max(0, time / duration)) * Double(waypoints.count - 1)
+        let index = min(waypoints.count - 2, Int(progress))
+        let t = CGFloat(progress - Double(index))
+        let a = waypoints[index], b = waypoints[index + 1]
+        // Monotone x; smooth vertical waypoint transitions keep the small sky band bounded.
+        let ease = t * t * (3 - 2 * t)
+        let bob = sin(time * 10 * .pi) * Double(fold(at: time))
+        return CGPoint(x: (a.x + (b.x - a.x) * t) * width,
+                       y: 9 + (a.y + (b.y - a.y) * ease) * 16 + bob)
+    }
+
+    static func bank(at time: Double, width: CGFloat) -> Double {
+        let a = position(at: time - 0.04, width: width), b = position(at: time + 0.04, width: width)
+        let angle = atan2(Double(b.y - a.y), Double(b.x - a.x)) * 0.6
+        return min(14 * Double.pi / 180, max(-14 * Double.pi / 180, angle))
+    }
+
+    /// Same path topology at every pose; shoulders stay fixed while wrists lift and tuck.
+    static func wingPath(fold: CGFloat) -> CGPath {
+        let f = min(1, max(0, fold))
+        let path = CGMutablePath()
+        for side: CGFloat in [-1, 1] {
+            func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: x * side * (side < 0 ? 0.9 : 1), y: y + (side < 0 ? 1 : 0))
+            }
+            let wing = CGMutablePath()
+            wing.move(to: p(1, -3))
+            wing.addQuadCurve(to: p(10 - 4 * f, -7 - 5 * f), control: p(5, -8 - 2 * f))
+            wing.addQuadCurve(to: p(19 - 9 * f, -3 - 7 * f), control: p(15 - 7 * f, -7 - 5 * f))
+            wing.addQuadCurve(to: p(12 - 5 * f, 3 - 7 * f), control: p(13 - 5 * f, -3 - 4 * f))
+            wing.addQuadCurve(to: p(7 - 2 * f, 5 - 4 * f), control: p(9 - 3 * f, -1 - 3 * f))
+            wing.addQuadCurve(to: p(1, 5), control: p(4, 1))
+            wing.closeSubpath()
+            // Reflection reverses winding. Keep overlapping shoulder/body fills additive,
+            // otherwise the left membrane cuts a white seam through the body.
+            path.addPath(side < 0 ? UIBezierPath(cgPath: wing).reversing().cgPath : wing)
+        }
+        path.move(to: CGPoint(x: -2.5, y: -3))
+        path.addLines(between: [CGPoint(x: -2, y: -7), CGPoint(x: 0, y: -5),
+                               CGPoint(x: 3, y: -7), CGPoint(x: 3, y: -3)])
+        path.addCurve(to: CGPoint(x: 0, y: 8), control1: CGPoint(x: 5, y: 2), control2: CGPoint(x: 1, y: 6))
+        path.addCurve(to: CGPoint(x: -2.5, y: -3), control1: CGPoint(x: -3, y: 5), control2: CGPoint(x: -4, y: 0))
+        path.closeSubpath()
+        return path
     }
 }

@@ -5,6 +5,125 @@ import XCTest
 
 @MainActor
 final class AppControlsTests: XCTestCase {
+    func testThemeAccentAdaptsAndKeepsWhiteButtonLabelsLegible() throws {
+        let accent = try XCTUnwrap(UIColor(named: "AccentColor", in: .main, compatibleWith: nil))
+        func luminance(_ color: UIColor) -> Double {
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            XCTAssertTrue(color.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+            XCTAssertEqual(alpha, 1)
+            func linear(_ value: CGFloat) -> Double {
+                let value = Double(value)
+                return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        }
+        let light = luminance(accent.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light)))
+        let dark = luminance(accent.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark)))
+        XCTAssertGreaterThan(dark, light, "Dark mode needs a lighter accent, not a forced appearance")
+        for value in [light, dark] {
+            XCTAssertGreaterThanOrEqual(1.05 / (value + 0.05), 4.5, "White prominent-button labels must stay readable")
+        }
+    }
+
+    func testFridayBatOnlyAnimatesWhileVisibleActiveAndMotionAllowed() {
+        for visible in [false, true] {
+            for active in [false, true] {
+                for reduceMotion in [false, true] {
+                    let mode = FridayBatFlight.mode(visible: visible, active: active, reduceMotion: reduceMotion)
+                    XCTAssertEqual(mode == .flight, visible && active && !reduceMotion)
+                    XCTAssertEqual(mode == .parked, visible && active && reduceMotion)
+                    XCTAssertEqual(mode == .hidden, !visible || !active)
+                }
+            }
+        }
+    }
+
+    func testFridayBatCrossesOnceWithinSkyBandAndBanksGently() {
+        for width: CGFloat in [280, 360, 900] {
+            var previousX = -CGFloat.infinity
+            for frame in 0...330 {
+                let time = Double(frame) / 60
+                let point = FridayBatFlight.position(at: time, width: width)
+                XCTAssertGreaterThanOrEqual(point.x, previousX)
+                XCTAssertTrue((10...23).contains(point.y))
+                XCTAssertLessThanOrEqual(abs(FridayBatFlight.bank(at: time, width: width)), 14 * .pi / 180)
+                previousX = point.x
+            }
+            XCTAssertLessThan(FridayBatFlight.position(at: 0, width: width).x, -19)
+            XCTAssertGreaterThan(FridayBatFlight.position(at: FridayBatFlight.duration, width: width).x, width + 19)
+            XCTAssertEqual(FridayBatFlight.position(at: 100, width: width),
+                           FridayBatFlight.position(at: FridayBatFlight.duration, width: width))
+        }
+        XCTAssertEqual(FridayBatFlight.samples.first, 0)
+        XCTAssertEqual(FridayBatFlight.samples.last, FridayBatFlight.duration)
+    }
+
+    func testFridayBatHasFiveHertzFlutterAndStillGlides() {
+        for start in [0.0, 1.4, 2.9, 4.5] {
+            XCTAssertEqual(FridayBatFlight.fold(at: start), 0, accuracy: 0.001)
+            XCTAssertEqual(FridayBatFlight.fold(at: start + 0.1), 1, accuracy: 0.001)
+            XCTAssertEqual(FridayBatFlight.fold(at: start + 0.2), 0, accuracy: 0.001)
+        }
+        for time in [0.85, 1.1, 1.35, 2.45, 2.7, 2.85, 3.95, 4.2, 4.45] {
+            XCTAssertEqual(FridayBatFlight.fold(at: time), 0)
+        }
+    }
+
+    func testFridayBatWingPosesShareTopologyAndNeverFlattenIntoADash() {
+        func elements(_ path: CGPath) -> [CGPathElementType] {
+            var result: [CGPathElementType] = []
+            path.applyWithBlock { result.append($0.pointee.type) }
+            return result
+        }
+        let extended = FridayBatFlight.wingPath(fold: 0)
+        for fold: CGFloat in [0, 0.5, 1] {
+            let path = FridayBatFlight.wingPath(fold: fold)
+            XCTAssertEqual(elements(path), elements(extended))
+            XCTAssertGreaterThan(path.boundingBoxOfPath.height, 14)
+            XCTAssertGreaterThan(path.boundingBoxOfPath.width, 18)
+            for x: CGFloat in [-2.5, 2.5] {
+                for y: CGFloat in [0, 1, 2] {
+                    XCTAssertTrue(path.contains(CGPoint(x: x, y: y)), "Wing roots must join the body, not cancel its fill")
+                }
+            }
+        }
+        XCTAssertLessThan(FridayBatFlight.wingPath(fold: 1).boundingBoxOfPath.width,
+                          extended.boundingBoxOfPath.width * 0.7)
+    }
+
+    func testFridayBatLayerSchedulesOneFinitePassAndCancelsEvenDuringDelay() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 360, height: 100))
+        let view = FridayBatView(frame: CGRect(x: 0, y: 0, width: 360, height: 32))
+        window.addSubview(view)
+        view.layoutIfNeeded()
+        view.mode = .parked
+        XCTAssertNil(view.bat.animationKeys(), "Reduce Motion must not schedule even a delayed animation")
+        XCTAssertEqual(view.bat.opacity, 1)
+        view.mode = .flight
+        let flight = try XCTUnwrap(view.bat.animation(forKey: "flight") as? CAAnimationGroup)
+        XCTAssertEqual(flight.duration, 5.5)
+        XCTAssertEqual(flight.repeatCount, 0)
+        XCTAssertTrue(flight.isRemovedOnCompletion)
+        XCTAssertEqual(flight.preferredFrameRateRange.preferred, 30)
+        XCTAssertGreaterThan(flight.beginTime, CACurrentMediaTime())
+        XCTAssertEqual(view.bat.opacity, 0, "Hidden model layer is restored after the one pass")
+        view.bat.removeAllAnimations() // Simulate completion, then an ordinary SwiftUI/layout update.
+        view.mode = .flight
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        XCTAssertNil(view.bat.animationKeys(), "Layout must not restart a completed flight")
+        view.mode = .hidden
+        view.mode = .flight
+        XCTAssertNotNil(view.bat.animationKeys(), "A new active appearance rearms the pass")
+        view.mode = .parked
+        XCTAssertNil(view.bat.animationKeys(), "Reduce Motion cancels an in-flight or delayed pass")
+        view.mode = .flight
+        view.removeFromSuperview()
+        XCTAssertNil(view.bat.animationKeys(), "Detached onboarding cannot keep pending work")
+        view.mode = .hidden
+        XCTAssertEqual(view.bat.opacity, 0)
+    }
+
     private final class State {
         var expanded = false
         var actions: [AppControlAction] = []
