@@ -94,6 +94,12 @@ struct PhoneHubView: View {
                             }.accessibilityIdentifier("phoneHub.demo")
                         }
                         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 28)
+                        .overlay(alignment: .top) {
+                            FridayBat(isVisible: isVisible && agentPath.isEmpty)
+                                .frame(height: 26)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 4)
+                        }
                     }
                 }
                 if !connections.connections.isEmpty {
@@ -1377,5 +1383,65 @@ private struct FridayMask: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// A bounded, low-cadence decoration, never a hit target or accessibility element.
+private struct FridayBat: View {
+    let isVisible: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var started = Date()
+
+    var body: some View {
+        Group {
+            if FridayBatFlight.animates(visible: isVisible, active: scenePhase == .active, reduceMotion: reduceMotion) {
+                TimelineView(.animation(minimumInterval: 1.0 / 12)) { timeline in
+                    drawing(elapsed: timeline.date.timeIntervalSince(started))
+                }
+            } else {
+                drawing(elapsed: 0)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func drawing(elapsed: TimeInterval) -> some View {
+        let pose = FridayBatFlight.pose(elapsed: elapsed)
+        return Canvas { context, size in
+            context.translateBy(x: 18 + max(0, size.width - 36) * pose.x, y: 13 + pose.bob)
+            var wings = Path()
+            for side in [-1.0, 1.0] {
+                let transform = CGAffineTransform(scaleX: side, y: pose.wingScale)
+                var wing = Path()
+                wing.move(to: CGPoint(x: 2, y: -3))
+                wing.addQuadCurve(to: CGPoint(x: 17, y: -8), control: CGPoint(x: 10, y: -11))
+                wing.addLine(to: CGPoint(x: 14, y: 3))
+                wing.addQuadCurve(to: CGPoint(x: 9, y: 3), control: CGPoint(x: 12, y: -1))
+                wing.addQuadCurve(to: CGPoint(x: 3, y: 5), control: CGPoint(x: 6, y: 0))
+                wing.closeSubpath()
+                wings.addPath(wing, transform: transform)
+            }
+            context.fill(wings, with: .color(Color("AccentColor")))
+            var body = Path(ellipseIn: CGRect(x: -3, y: -5, width: 6, height: 12))
+            body.move(to: CGPoint(x: -3, y: -2))
+            body.addLines([CGPoint(x: -3, y: -8), CGPoint(x: 0, y: -5),
+                           CGPoint(x: 3, y: -8), CGPoint(x: 3, y: -2)])
+            body.closeSubpath()
+            context.fill(body, with: .color(Color("AccentColor")))
+        }
+    }
+}
+
+/// Kept independent of drawing so motion bounds and accessibility policy are testable.
+enum FridayBatFlight {
+    static func animates(visible: Bool, active: Bool, reduceMotion: Bool) -> Bool {
+        visible && active && !reduceMotion
+    }
+
+    static func pose(elapsed: TimeInterval) -> (x: Double, bob: Double, wingScale: Double) {
+        let phase = elapsed * 2 * Double.pi
+        return (0.5 + 0.5 * sin(phase / 8), 2 * sin(phase / 4), 0.6 + 0.4 * cos(phase * 1.5))
     }
 }

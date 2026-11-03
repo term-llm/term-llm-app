@@ -25,6 +25,29 @@ final class AppControlsTests: XCTestCase {
         }
     }
 
+    func testFridayBatOnlyAnimatesWhileVisibleActiveAndMotionAllowed() {
+        for visible in [false, true] {
+            for active in [false, true] {
+                for reduceMotion in [false, true] {
+                    XCTAssertEqual(FridayBatFlight.animates(visible: visible, active: active, reduceMotion: reduceMotion),
+                                   visible && active && !reduceMotion)
+                }
+            }
+        }
+    }
+
+    func testFridayBatFlightStaysInBoundsAndFlaps() {
+        for frame in 0...192 {
+            let pose = FridayBatFlight.pose(elapsed: Double(frame) / 12)
+            XCTAssertTrue((0...1).contains(pose.x))
+            XCTAssertLessThanOrEqual(abs(pose.bob), 2)
+            XCTAssertTrue((0.19...1.01).contains(pose.wingScale))
+        }
+        XCTAssertNotEqual(FridayBatFlight.pose(elapsed: 0).x, FridayBatFlight.pose(elapsed: 2).x)
+        XCTAssertGreaterThan(FridayBatFlight.pose(elapsed: 0).wingScale,
+                             FridayBatFlight.pose(elapsed: 1.0 / 3).wingScale)
+    }
+
     private final class State {
         var expanded = false
         var actions: [AppControlAction] = []
