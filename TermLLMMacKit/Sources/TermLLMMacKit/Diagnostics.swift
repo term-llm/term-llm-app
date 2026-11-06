@@ -186,7 +186,7 @@ public enum CompanionDiagnostics {
         checks.append(DiagnosticCheck(id: "token", title: "Local authentication",
                                       level: tokenAvailable ? .ok : .warning,
                                       detail: tokenAvailable
-                                        ? "Bearer credential read from the core's managed store; held in memory and injected only into the embedded chat."
+                                        ? "Bearer credential read from the core's managed store on demand and proven against the protected /v1/capabilities JSON; written only into this loopback origin's WebKit storage for the embedded chat (never a URL or log)."
                                         : "The local credential could not be read. Open the chat again after the service is ready."))
         checks.append(DiagnosticCheck(id: "login-item", title: "Open app at login",
                                       level: loginItemEnabled ? .ok : .info,
