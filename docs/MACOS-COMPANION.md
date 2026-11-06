@@ -107,8 +107,12 @@ term-llm service status web --json    # schema_version 1
 The app creates a fresh owned loopback service with an **explicit bearer auth
 mode** (`service install web -- --auth bearer`). It does not rely on a default
 that could change. The token stays in the core's login Keychain; the app reads it
-on demand, verifies it against `/api/auth/session`, and injects it into the
-embedded web UI with a document-start script for that exact loopback origin. The
+on demand and proves it against the protected `/v1/capabilities` JSON endpoint
+(not `/api/auth/session`, which bearer-mode web serves as a 200 text/html SPA
+shell). The probe requires a non-redirecting 2xx `application/json` response with
+the expected capabilities shape, with cookies and caches disabled, then injects
+the token into the embedded web UI with a document-start script for that exact
+loopback origin. The
 web UI then keeps it in that origin's WebKit local storage (the same place its
 normal token form would). The token never appears in a URL, a log, or
 diagnostics.

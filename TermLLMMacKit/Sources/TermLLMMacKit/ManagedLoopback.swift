@@ -106,6 +106,13 @@ public struct ManagedLoopbackEndpoint: Equatable, Sendable {
     public func healthURL() -> URL {
         baseURL.appendingPathComponent("healthz")
     }
+
+    /// Protected JSON endpoint used to prove the bearer credential. It is
+    /// registered behind the core's auth middleware (unlike unknown `/api/...`
+    /// paths, which the web UI answers with its 200 text/html SPA shell).
+    public var capabilitiesURL: URL {
+        baseURL.appendingPathComponent("v1/capabilities")
+    }
 }
 
 /// Human-facing readiness derived from service status. Kept separate from the

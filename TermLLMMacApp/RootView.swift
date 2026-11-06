@@ -80,7 +80,7 @@ private struct ChatPane: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if let outcome = model.sessionOutcome {
-                            Text(outcome.isAuthenticated ? "Session verified" : outcome.description)
+                            Text(outcome.isAuthenticated ? "Protected API verified" : outcome.description)
                                 .font(.caption)
                                 .foregroundStyle(outcome.isAuthenticated ? .green : .orange)
                         }
