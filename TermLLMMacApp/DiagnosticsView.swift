@@ -86,46 +86,42 @@ struct MenuBarContent: View {
     @EnvironmentObject private var model: CompanionModel
     @Environment(\.openWindow) private var openWindow
 
-    private var serviceAutostart: Binding<Bool> {
-        Binding(get: { model.status?.autostart ?? false },
-                set: { model.setServiceAutostart($0) })
-    }
-
-    private var loginItem: Binding<Bool> {
-        Binding(get: { model.loginItemEnabled },
-                set: { model.setLoginItem($0) })
-    }
-
     var body: some View {
-        Text(statusLine)
+        Text(model.statusTitle)
         Divider()
-        Button("Open TermLLM") { show(.setup) }
-        Button("Open Local Chat") { model.openChat(); show(.chat) }
+        Button("Open Chat") { model.openChat(); show(.chat) }
+        Button("Setup…") { show(.setup) }
         Divider()
         if model.status?.running == true {
-            Button("Stop Local Service") { model.stopService() }
+            Button("Stop Service") { model.stopService() }
+                .disabled(!canControlService)
         } else {
-            Button("Start Local Service") { model.startService() }
+            Button("Start Service") { model.startService() }
+                .disabled(!canControlService)
         }
-        Button("Restart Local Service") { model.restartService() }
-        Toggle("Start local service at login", isOn: serviceAutostart)
-            .disabled(model.status?.installed != true)
-        Toggle("Open menu-bar app at login", isOn: loginItem)
+        Button("Restart Service") { model.restartService() }
+            .disabled(!canControlService || model.status?.running != true)
         Divider()
-        Button("Permissions & Diagnostics…") { show(.diagnostics) }
-        Divider()
-        Button("Quit menu bar app") { model.quitMenuBarApp() }
-        Button("Quit and stop local service…") { model.confirmStopAndQuit() }
-            .disabled(model.status?.installed != true)
+        if #available(macOS 15.0, *) {
+            quitButton.modifierKeyAlternate(.option) { stopAndQuitButton }
+        } else {
+            quitButton
+            stopAndQuitButton
+        }
     }
 
-    private var statusLine: String {
-        if let status = model.status {
-            var line = "term-llm · \(model.statusTitle)"
-            if let port = status.port { line += " · 127.0.0.1:\(port)" }
-            return line
-        }
-        return "term-llm · \(model.statusTitle)"
+    private var canControlService: Bool {
+        !model.busy && model.status?.installed == true
+    }
+
+    private var quitButton: some View {
+        Button("Quit term-llm") { model.quitMenuBarApp() }
+            .keyboardShortcut("q")
+    }
+
+    private var stopAndQuitButton: some View {
+        Button("Stop Service and Quit…") { model.confirmStopAndQuit() }
+            .disabled(model.busy || model.status?.installed != true)
     }
 
     private func show(_ tab: CompanionTab) {

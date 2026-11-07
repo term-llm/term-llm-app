@@ -19,7 +19,7 @@ struct TermLLMMacApp: App {
         .defaultSize(width: 1000, height: 700)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Open Local Chat") { model.openChat() }
+                Button("Open Chat") { model.openChat() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                 Button("Refresh Service Status") { Task { await model.refresh() } }
                     .keyboardShortcut("r", modifiers: [.command])

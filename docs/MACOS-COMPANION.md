@@ -16,7 +16,7 @@ shell.
 | Piece | Status |
 |---|---|
 | Native app target `TermLLMMac` | Implemented; builds with Xcode 26.2 on macOS 15 x86_64 |
-| Menu-bar item | Implemented: status, open chat, start/stop/restart, two independent login toggles, diagnostics, quit variants |
+| Menu-bar item | Implemented: status, chat, setup, start/stop/restart, quit (Option: stop and quit); login preferences live in Setup |
 | Onboarding/Setup | Implemented: CLI provisioning, owned service creation, authenticated chat, app login item |
 | CLI installation | Implemented: bundled darwin payload → stable per-user runtime, manifest, checksum, backups, transactional replacement |
 | Authenticated local chat | Implemented: real service, real bearer session, server web UI in WebKit |
@@ -132,8 +132,10 @@ Start/stop/restart and the two login preferences are independent:
 Starting/stopping the service never rewrites autostart; the app uses
 `start --no-enable` and `stop --keep-enabled`. The app login item is written for
 the next login and is never bootstrapped while the app is running (that would
-start a duplicate process). Quitting the menu bar leaves the service running;
-"Quit and stop local service…" stops it and preserves the autostart preference.
+start a duplicate process). The two login preferences live in Setup. "Quit term-llm"
+leaves the service running; holding Option reveals "Stop Service and Quit…",
+which stops it and preserves the autostart preference. On macOS 13–14 the latter
+is a separate menu item.
 
 ### Passkey limitation in test environments
 
