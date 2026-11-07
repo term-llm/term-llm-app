@@ -149,6 +149,13 @@
 		A633D910B85C23F03349FEA4 /* PhoneHubAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */; };
 		A606D0DADCBADBD4FD3399A0 /* PhoneHubAgentSessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */; };
 		407AC317A3BDC0A564FB47B1 /* HubSessionBrowsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */; };
+		CC0000000000000000000011 /* TermLLMMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000001 /* TermLLMMacApp.swift */; };
+		CC0000000000000000000012 /* CompanionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000002 /* CompanionModel.swift */; };
+		CC0000000000000000000013 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000003 /* RootView.swift */; };
+		CC0000000000000000000014 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* SetupView.swift */; };
+		CC0000000000000000000015 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000005 /* DiagnosticsView.swift */; };
+		CC0000000000000000000016 /* ChatWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* ChatWebView.swift */; };
+		CC0000000000000000000052 /* TermLLMMacKit in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000051 /* TermLLMMacKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -331,6 +338,14 @@
 		EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentView.swift; sourceTree = "<group>"; };
 		85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentSessions.swift; sourceTree = "<group>"; };
 		122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HubSessionBrowsing.swift; sourceTree = "<group>"; };
+		CC0000000000000000000001 /* TermLLMMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermLLMMacApp.swift; sourceTree = "<group>"; };
+		CC0000000000000000000002 /* CompanionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionModel.swift; sourceTree = "<group>"; };
+		CC0000000000000000000003 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		CC0000000000000000000004 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
+		CC0000000000000000000005 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		CC0000000000000000000006 /* ChatWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWebView.swift; sourceTree = "<group>"; };
+		CC0000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		CC0000000000000000000008 /* TermLLMMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TermLLMMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -363,6 +378,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC0000000000000000000021 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000052 /* TermLLMMacKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -370,6 +393,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000004 /* TermLLM */,
+				CC0000000000000000000040 /* TermLLMMacApp */,
 				000000000000000000000460 /* Shared */,
 				000000000000000000000461 /* TermLLMNotificationService */,
 				000000000000000000000703 /* TermLLMUITests */,
@@ -382,6 +406,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000030 /* TermLLM.app */,
+				CC0000000000000000000008 /* TermLLMMac.app */,
 				000000000000000000000702 /* TermLLMUITests.xctest */,
 				000000000000000000000031 /* TermLLMTests.xctest */,
 				000000000000000000000440 /* TermLLMNotificationService.appex */,
@@ -570,6 +595,20 @@
 			path = Fixtures;
 			sourceTree = "<group>";
 		};
+		CC0000000000000000000040 /* TermLLMMacApp */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000001 /* TermLLMMacApp.swift */,
+				CC0000000000000000000002 /* CompanionModel.swift */,
+				CC0000000000000000000003 /* RootView.swift */,
+				CC0000000000000000000004 /* SetupView.swift */,
+				CC0000000000000000000005 /* DiagnosticsView.swift */,
+				CC0000000000000000000006 /* ChatWebView.swift */,
+				CC0000000000000000000007 /* Info.plist */,
+			);
+			path = TermLLMMacApp;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -648,6 +687,27 @@
 			productReference = 000000000000000000000702 /* TermLLMUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		CC0000000000000000000030 /* TermLLMMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC0000000000000000000031 /* Build configuration list for PBXNativeTarget "TermLLMMac" */;
+			buildPhases = (
+				CC0000000000000000000020 /* Sources */,
+				CC0000000000000000000021 /* Frameworks */,
+				CC0000000000000000000022 /* Resources */,
+				CC0000000000000000000023 /* Copy CLI payload */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TermLLMMac;
+			packageProductDependencies = (
+				CC0000000000000000000051 /* TermLLMMacKit */,
+			);
+			productName = TermLLMMac;
+			productReference = CC0000000000000000000008 /* TermLLMMac.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -668,6 +728,7 @@
 			mainGroup = 000000000000000000000002;
 			packageReferences = (
 				A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */,
+				CC0000000000000000000050 /* XCLocalSwiftPackageReference "TermLLMMacKit" */,
 			);
 			productRefGroup = 000000000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -677,6 +738,7 @@
 				000000000000000000000704 /* TermLLMUITests */,
 				000000000000000000000011 /* TermLLMTests */,
 				000000000000000000000470 /* TermLLMNotificationService */,
+				CC0000000000000000000030 /* TermLLMMac */,
 			);
 		};
 /* End PBXProject section */
@@ -714,7 +776,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC0000000000000000000022 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		CC0000000000000000000023 /* Copy CLI payload */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Copy CLI payload";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nif [ -d \"$SRCROOT/build/cli\" ]; then\n  DEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/cli\"\n  mkdir -p \"$DEST\"\n  cp -R \"$SRCROOT/build/cli/.\" \"$DEST/\"\n  chmod 755 \"$DEST/term-llm\" 2>/dev/null || true\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000000000050 /* Sources */ = {
@@ -878,6 +965,19 @@
 				000000000000000000000700 /* NativeHubUITests.swift in Sources */,
 				9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */,
 				000000000000000000000B9F /* WebKitHealthUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0000000000000000000020 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000011 /* TermLLMMacApp.swift in Sources */,
+				CC0000000000000000000012 /* CompanionModel.swift in Sources */,
+				CC0000000000000000000013 /* RootView.swift in Sources */,
+				CC0000000000000000000014 /* SetupView.swift in Sources */,
+				CC0000000000000000000015 /* DiagnosticsView.swift in Sources */,
+				CC0000000000000000000016 /* ChatWebView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1151,6 +1251,65 @@
 			};
 			name = Release;
 		};
+		CC0000000000000000000032 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TermLLMMacApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		CC0000000000000000000033 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TermLLMMacApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1199,7 +1358,23 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		CC0000000000000000000031 /* Build configuration list for PBXNativeTarget "TermLLMMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC0000000000000000000032 /* Debug */,
+				CC0000000000000000000033 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		CC0000000000000000000050 /* XCLocalSwiftPackageReference "TermLLMMacKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = TermLLMMacKit;
+		};
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
 		A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
@@ -1217,6 +1392,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A30000000000000000000001 /* XCRemoteSwiftPackageReference "WebRTC" */;
 			productName = WebRTC;
+		};
+		CC0000000000000000000051 /* TermLLMMacKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC0000000000000000000050 /* XCLocalSwiftPackageReference "TermLLMMacKit" */;
+			productName = TermLLMMacKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -1,5 +1,10 @@
 # Mac support and tailnet connections
 
+> For the separate native macOS companion target (`TermLLMMac`), including its
+> development-only delivery status, CLI provisioning and local service controls,
+> see [Native macOS companion](MACOS-COMPANION.md). This document describes the
+> existing iOS app running on Apple Silicon Macs.
+
 ## Apple Silicon Mac
 
 The app runs as **Designed for iPad/iPhone**, not as a native macOS or Mac Catalyst target. Development builds must provision both the app and notification extension for the Mac. This does not establish App Store availability or distribution-build behavior.
