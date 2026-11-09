@@ -1,5 +1,8 @@
 import SwiftUI
 import WebKit
+#if os(iOS)
+import UIKit
+#endif
 
 struct VoiceBrowserLaunch: Equatable {
     let id: UUID
@@ -55,6 +58,7 @@ enum VoiceLaunchScript {
     """
 }
 
+#if os(iOS)
 /// Observes a pull without depending on which (possibly nested) web scroller moves.
 struct BrowserControlsPullGesture {
     private var eligible = false
@@ -90,8 +94,12 @@ struct BrowserControlsPullGesture {
         return true
     }
 }
+#endif
 
-struct BrowserView: UIViewRepresentable {
+/// The Chat document. iPhone/iPad host a UIKit WKWebView; the Mac app hosts
+/// AppKit's, which (unlike Mac Catalyst's) supports microphone capture.
+@MainActor
+struct BrowserView {
     enum Recovery: Equatable {
         case signIn
         case httpError(Int)
@@ -122,9 +130,8 @@ struct BrowserView: UIViewRepresentable {
     let backCount: Int
     let authenticatedCount: Int
     var scenePhase: ScenePhase = .active
-    /// Mac-only text scale. WebKit page zoom stays at 100% so viewport-sized
-    /// headers and composers continue to fit. Phone/iPad sizing is untouched.
-    var textScale: Double = 1.25
+    /// Mac-only Chat zoom (WebKit page zoom). Phone/iPad sizing is untouched.
+    var textScale: Double = DesktopChatAppearance.defaultZoom
     var isSigningIn = false
     /// Device tools to expose to this server's page via WebMCP, or nil when
     /// the user has not opted this server in.
@@ -196,138 +203,96 @@ struct BrowserView: UIViewRepresentable {
             (originPort == 0 ? defaultPort : originPort) == (url.port ?? defaultPort)
     }
 
-    nonisolated static func normalizedMacTextScale(_ value: Double) -> Double {
-        DesktopChatAppearance.clamped(value)
+    #if os(macOS)
+    /// Chat zoom on Mac is AppKit WebKit page zoom, like Safari's View menu:
+    /// the page reflows at the window's width. No script touches the page.
+    static func applyChatZoom(_ value: Double, to view: WKWebView) {
+        let zoom = DesktopChatAppearance.clamped(value)
+        if abs(view.pageZoom - zoom) > 0.001 { view.pageZoom = zoom }
     }
-
-    static func configureMacBrowsing(_ configuration: WKWebViewConfiguration, isMac: Bool) {
-        guard isMac else { return }
-        // This is a UIKit WebView even on Mac. Its desktop content mode can
-        // impose a wide effective viewport, then shrink/clip that layout inside
-        // a narrow app window. Honor the page's width=device-width viewport;
-        // responsive CSS still selects the desktop layout when there is room.
-        // Readability is controlled independently by text scaling, not by
-        // fitting an oversized desktop canvas into the native bounds.
-        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
-    }
-
-    private static let macTextSizingMarker = "// term-llm Mac text sizing\n"
-
-    nonisolated static func macTextSizingScript(_ value: Double) -> String {
-        let percent = normalizedMacTextScale(value) * 100
-        return """
-        // term-llm Mac text sizing
-        (() => {
-            const size = '\(percent)%';
-            for (const element of [document.documentElement, document.body]) {
-                if (!element) continue;
-                for (const property of ['-webkit-text-size-adjust', 'text-size-adjust']) {
-                    if (element.style.getPropertyValue(property) !== size ||
-                        element.style.getPropertyPriority(property) !== 'important') {
-                        element.style.setProperty(property, size, 'important');
-                    }
-                }
-            }
-        })();
-        """
-    }
-
-    /// UIKit pageZoom changes the visual viewport without consistently resizing
-    /// fixed 100%-wide layouts. Use WebKit's text-only adjustment instead: text
-    /// reflows at the real width, and no navigation, draft or DOM replacement is
-    /// needed. The presentation script has no native handlers or credentials.
-    static func applyMacTextScale(_ value: Double, to view: WKWebView, isMac: Bool,
-                                  documentFinished: Bool = false) {
-        guard isMac else { return }
-        if abs(view.pageZoom - 1) > 0.001 { view.pageZoom = 1 }
-        let source = macTextSizingScript(value)
-        let controller = view.configuration.userContentController
-        let previous = controller.userScripts.first { $0.source.hasPrefix(macTextSizingMarker) }
-        let changed = previous?.source != source
-        if changed {
-            if let previous { controller.removeUserScript(previous) }
-            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd,
-                                                  forMainFrameOnly: true, in: .defaultClient))
-        }
-        // Reapply on commit completion if a preference changed during a load.
-        // Normal SwiftUI/polling updates with an unchanged size do no page work.
-        if (changed || documentFinished), view.url != nil {
-            view.evaluateJavaScript(source, in: nil, in: .defaultClient) { _ in }
-        }
-    }
+    #endif
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeWebView(coordinator: Coordinator) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        Self.configureMacBrowsing(configuration, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
         configuration.websiteDataStore = websiteDataStore ?? (HubFixture.isEnabled ? HubFixture.websiteDataStore : .default())
         if let authenticationScript {
             configuration.userContentController.addUserScript(WKUserScript(source: authenticationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
+        #if os(iOS)
         configuration.allowsInlineMediaPlayback = true
+        #endif
         configuration.userContentController.addUserScript(WKUserScript(source: LiveHangUp.userScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        context.coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
-        context.coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
+        coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
+        coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
         let view = WKWebView(frame: .zero, configuration: configuration)
-        Self.applyMacTextScale(textScale, to: view, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
-        context.coordinator.webView = view
-        context.coordinator.syncHealth(view)
-        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.appWillStartPlayback),
+        #if os(macOS)
+        Self.applyChatZoom(textScale, to: view)
+        #endif
+        coordinator.webView = view
+        coordinator.syncHealth(view)
+        NotificationCenter.default.addObserver(coordinator, selector: #selector(Coordinator.appWillStartPlayback),
                                                name: .appWillStartPlayback, object: nil)
 #if DEBUG
         view.isInspectable = true
 #endif
-        view.navigationDelegate = context.coordinator
-        view.uiDelegate = context.coordinator
-        context.coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+        view.navigationDelegate = coordinator
+        view.uiDelegate = coordinator
+        coordinator.backObservation = view.observe(\.canGoBack, options: [.new]) { [weak coordinator] webView, _ in
             MainActor.assumeIsolated { coordinator?.parent.canGoBack = webView.canGoBack }
         }
-        context.coordinator.urlObservation = view.observe(\.url, options: [.initial, .new]) { [weak coordinator = context.coordinator] webView, _ in
+        coordinator.urlObservation = view.observe(\.url, options: [.initial, .new]) { [weak coordinator] webView, _ in
             MainActor.assumeIsolated { coordinator?.parent.push?.visibleURL = webView.url }
         }
-        context.coordinator.captureObservations = [
-            view.observe(\.microphoneCaptureState, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+        coordinator.captureObservations = [
+            view.observe(\.microphoneCaptureState, options: [.new]) { [weak coordinator] webView, _ in
                 MainActor.assumeIsolated { coordinator?.setMediaCapturing(webView.isCapturingMedia) }
             },
-            view.observe(\.cameraCaptureState, options: [.new]) { [weak coordinator = context.coordinator] webView, _ in
+            view.observe(\.cameraCaptureState, options: [.new]) { [weak coordinator] webView, _ in
                 MainActor.assumeIsolated { coordinator?.setMediaCapturing(webView.isCapturingMedia) }
             },
         ]
         view.allowsBackForwardNavigationGestures = true
+        #if os(iOS)
         view.scrollView.contentInsetAdjustmentBehavior = .never
-        let pull = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePull(_:)))
-        pull.delegate = context.coordinator
+        let pull = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePull(_:)))
+        pull.delegate = coordinator
         pull.cancelsTouchesInView = false
         pull.delaysTouchesBegan = false
         pull.delaysTouchesEnded = false
         pull.minimumNumberOfTouches = 1
         pull.maximumNumberOfTouches = 1
         view.scrollView.addGestureRecognizer(pull)
-        context.coordinator.loadedURL = url
-        context.coordinator.pushChangeCount = pushChangeCount
-        // Ownership is resolved from the attached UIWindowScene in updateUIView.
+        #endif
+        coordinator.loadedURL = url
+        coordinator.pushChangeCount = pushChangeCount
+        // Ownership is resolved from the attached scene in updateWebView.
         // Do not let a newly created sibling consume the app-global tap here.
         view.load(URLRequest(url: url))
         return view
     }
 
-    func updateUIView(_ view: WKWebView, context: Context) {
-        Self.applyMacTextScale(textScale, to: view, isMac: ProcessInfo.processInfo.isiOSAppOnMac)
-        context.coordinator.update(view, parent: self)
+    func updateWebView(_ view: WKWebView, coordinator: Coordinator) {
+        #if os(macOS)
+        Self.applyChatZoom(textScale, to: view)
+        #endif
+        coordinator.update(view, parent: self)
     }
 
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+    static func dismantleWebView(_ view: WKWebView, coordinator: Coordinator) {
         coordinator.tearDown()
         view.navigationDelegate = nil
         view.uiDelegate = nil
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var parent: BrowserView
         var loadedURL: URL?
         var rejectedHTTPResponse = false
-        private var controlsPull = BrowserControlsPullGesture()
+        #if os(iOS)
+        fileprivate var controlsPull = BrowserControlsPullGesture()
+        #endif
         var reloadCount = 0
         var backCount = 0
         var authenticatedCount = 0
@@ -341,7 +306,7 @@ struct BrowserView: UIViewRepresentable {
         private(set) var bridge: WebMCPBridge?
         private(set) var pushBridge: NativePushBridge?
         private var registeredPushWindowID: String?
-        private weak var registeredPushScene: UIWindowScene?
+        private weak var registeredPushScene: NativeWindowScene?
         private var recoveryPending = false
         private var lastAutomaticRecovery: TimeInterval?
         private var voiceTask: Task<Void, Never>?
@@ -377,7 +342,9 @@ struct BrowserView: UIViewRepresentable {
 
         func tearDown() {
             MainActor.assumeIsolated { pushBridge?.documentCommitted() }
+            #if os(iOS)
             controlsPull.reset()
+            #endif
             voiceTask?.cancel()
             voiceTask = nil
             NotificationCenter.default.removeObserver(self, name: .appWillStartPlayback, object: nil)
@@ -449,7 +416,7 @@ struct BrowserView: UIViewRepresentable {
 
         @MainActor
         private func healthContext(_ view: WKWebView) -> WebKitPageContext {
-            let background = UIApplication.shared.applicationState == .background
+            let background = NativeApp.state == .background
             return WebKitPageContext(
                 userCanSee: Self.healthPageIsOnScreen(parent, inWindow: view.window != nil, appBackground: background),
                 appBackground: background,
@@ -539,7 +506,7 @@ struct BrowserView: UIViewRepresentable {
                 // Keep the document alive when returning to the native Hub, but
                 // do not let its hidden focused input cover the native screens.
                 // This is a native responder handoff, not JS or a navigation.
-                view.endEditing(true)
+                view.resignNativeFocus()
             }
             // Mirror native visibility. This alone does not throttle the page:
             // WebKit runs a web view as visible while it is in a window,
@@ -553,11 +520,11 @@ struct BrowserView: UIViewRepresentable {
             let destination = parent.nativeDestination
             let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
             nativeDestinationID = destination?.id
-            if let scene = view.window?.windowScene {
+            if let scene = view.nativeScene {
                 registerPushScene(scene)
             }
             if parent.scenePhase != .active || parent.isSigningIn || parent.loginRequired || parent.loadError != nil {
-                if let scene = view.window?.windowScene {
+                if let scene = view.nativeScene {
                     MainActor.assumeIsolated { parent.push?.windows.release(windowID: PushCenter.windowID(for: scene)) }
                 }
             }
@@ -615,7 +582,7 @@ struct BrowserView: UIViewRepresentable {
             if !serverChanged && !backRequested && !reloadRequested {
                 startVoiceLaunchIfNeeded(view)
             }
-            if let navigation = parent.pushNavigation, let scene = view.window?.windowScene,
+            if let navigation = parent.pushNavigation, let scene = view.nativeScene,
                navigation.windowID == MainActor.assumeIsolated({ PushCenter.windowID(for: scene) }),
                navigation.id != handledPushNavigation,
                HubNavigation.isWithinMount(navigation.url, server: parent.connectionMount ?? parent.url) {
@@ -634,7 +601,7 @@ struct BrowserView: UIViewRepresentable {
             refreshHealth()
         }
 
-        func registerPushScene(_ scene: UIWindowScene) {
+        func registerPushScene(_ scene: NativeWindowScene) {
             // Runs on every SwiftUI update of the browser. Registration persists
             // a scene-session map in UserDefaults, so only redo it when the scene
             // (or its identifier) actually changes, not on every render pass.
@@ -890,7 +857,7 @@ struct BrowserView: UIViewRepresentable {
             bridge?.uninstall()
             bridge = nil
             if let registry {
-                let bridge = WebMCPBridge(serverURL: url, registry: registry, device: UIDevice.current.model)
+                let bridge = WebMCPBridge(serverURL: url, registry: registry, device: NativeDevice.model)
                 MainActor.assumeIsolated {
                     bridge.onCallReplied = { [weak self, weak bridge] callID in
                         guard let self, let bridge, self.bridge === bridge else { return }
@@ -901,21 +868,6 @@ struct BrowserView: UIViewRepresentable {
                 self.bridge = bridge
             }
             return true
-        }
-
-        // Observe the pull without stealing WebKit's own scrolling or link gestures.
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
-        }
-
-        @objc func handlePull(_ gesture: UIPanGestureRecognizer) {
-            guard let scrollView = gesture.view as? UIScrollView else { return }
-            if controlsPull.update(state: gesture.state, location: gesture.location(in: scrollView),
-                                   translation: gesture.translation(in: scrollView),
-                                   boundsMinY: scrollView.bounds.minY) {
-                parent.onRevealControls()
-            }
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -943,7 +895,7 @@ struct BrowserView: UIViewRepresentable {
             MainActor.assumeIsolated {
                 if let healthSession { parent.health?.documentWillChange(healthSession) }
                 let owner: String?
-                if let scene = webView.window?.windowScene { owner = PushCenter.windowID(for: scene) }
+                if let scene = webView.nativeScene { owner = PushCenter.windowID(for: scene) }
                 else { owner = nil }
                 pushBridge?.documentCommitted(windowID: owner)
             }
@@ -951,9 +903,7 @@ struct BrowserView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard !closingPage else { return }
-            BrowserView.applyMacTextScale(parent.textScale, to: webView,
-                                          isMac: ProcessInfo.processInfo.isiOSAppOnMac, documentFinished: true)
-            if let scene = webView.window?.windowScene {
+            if let scene = webView.nativeScene {
                 registerPushScene(scene)
             }
             rejectedHTTPResponse = false
@@ -1039,7 +989,7 @@ struct BrowserView: UIViewRepresentable {
                 // Never load a sibling/ancestor into this credential's origin
                 // storage. An explicit external link may leave in Safari.
                 if navigationAction.navigationType == .linkActivated, navigationAction.targetFrame?.isMainFrame != false {
-                    UIApplication.shared.open(destination)
+                    NativeApp.open(destination)
                 }
                 decisionHandler(.cancel)
                 return
@@ -1055,7 +1005,7 @@ struct BrowserView: UIViewRepresentable {
                destination.scheme == parent.url.scheme {
                 decisionHandler(.allow)
             } else {
-                UIApplication.shared.open(destination)
+                NativeApp.open(destination)
                 decisionHandler(.cancel)
             }
         }
@@ -1065,13 +1015,13 @@ struct BrowserView: UIViewRepresentable {
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let url = navigationAction.request.url {
                 if let mount = parent.connectionMount, !HubNavigation.isWithinMount(url, server: mount) {
-                    UIApplication.shared.open(url)
+                    NativeApp.open(url)
                 } else if isLoginRoute(url) {
                     parent.onLoginRequired()
                 } else if url.scheme == parent.url.scheme, url.host == parent.url.host, url.port == parent.url.port {
                     webView.load(navigationAction.request)
                 } else {
-                    UIApplication.shared.open(url)
+                    NativeApp.open(url)
                 }
             }
             return nil
@@ -1115,3 +1065,38 @@ struct BrowserView: UIViewRepresentable {
 private extension WKWebView {
     var isCapturingMedia: Bool { microphoneCaptureState != .none || cameraCaptureState != .none }
 }
+
+#if os(iOS)
+extension BrowserView: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView { makeWebView(coordinator: context.coordinator) }
+    func updateUIView(_ view: WKWebView, context: Context) { updateWebView(view, coordinator: context.coordinator) }
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        dismantleWebView(view, coordinator: coordinator)
+    }
+}
+
+extension BrowserView.Coordinator: UIGestureRecognizerDelegate {
+    // Observe the pull without stealing WebKit's own scrolling or link gestures.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    @objc func handlePull(_ gesture: UIPanGestureRecognizer) {
+        guard let scrollView = gesture.view as? UIScrollView else { return }
+        if controlsPull.update(state: gesture.state, location: gesture.location(in: scrollView),
+                               translation: gesture.translation(in: scrollView),
+                               boundsMinY: scrollView.bounds.minY) {
+            parent.onRevealControls()
+        }
+    }
+}
+#elseif os(macOS)
+extension BrowserView: NSViewRepresentable {
+    func makeNSView(context: Context) -> WKWebView { makeWebView(coordinator: context.coordinator) }
+    func updateNSView(_ view: WKWebView, context: Context) { updateWebView(view, coordinator: context.coordinator) }
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        dismantleWebView(view, coordinator: coordinator)
+    }
+}
+#endif

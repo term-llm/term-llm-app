@@ -310,6 +310,7 @@ final class NotificationReviewRegressionTests: XCTestCase {
     /// UIKit rejects every activation request in single-scene mode, even for the
     /// existing foreground scene (UISceneErrorDomain 0). That rejection used to
     /// drop the tap and show an error whenever it beat the page load.
+    #if os(iOS)
     func testSingleSceneCompletionWithLiveOrRestorableOwnerNeverRequestsActivation() throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
                                   "hosted tests run in the app's scene")
@@ -345,6 +346,8 @@ final class NotificationReviewRegressionTests: XCTestCase {
         XCTAssertEqual(restored.pendingNavigation?.windowID, owner)
         XCTAssertNil(restored.navigationIssue)
     }
+
+    #endif
 
     func testSceneActivationFailureOffersTheShownSceneInsteadOfDroppingTheTap() async throws {
         let first = center()

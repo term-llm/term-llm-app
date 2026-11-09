@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 // Shared building blocks for the Music screens.
 
@@ -13,7 +17,7 @@ struct ArtworkView: View {
     var store: ListenArtworkStore?
 
     @Environment(\.displayScale) private var displayScale
-    @State private var loaded: (key: String, image: UIImage)?
+    @State private var loaded: (key: String, image: PlatformImage)?
 
     var body: some View {
         let store = store ?? .music
@@ -23,7 +27,7 @@ struct ArtworkView: View {
             ?? (key != nil && loaded?.key == key ? loaded?.image : nil)
         Group {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+                Image(platformImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "music.note").foregroundStyle(.secondary)
             }
@@ -103,6 +107,7 @@ struct PlayingBars: View {
     }
 }
 
+#if os(iOS)
 private struct PlayingBarsLayers: UIViewRepresentable {
     let animating: Bool
 
@@ -110,8 +115,20 @@ private struct PlayingBarsLayers: UIViewRepresentable {
     func updateUIView(_ view: PlayingBarsView, context: Context) { view.animating = animating }
 }
 
+typealias PlayingBarsBaseView = UIView
+#elseif os(macOS)
+private struct PlayingBarsLayers: NSViewRepresentable {
+    let animating: Bool
+
+    func makeNSView(context: Context) -> PlayingBarsView { PlayingBarsView() }
+    func updateNSView(_ view: PlayingBarsView, context: Context) { view.animating = animating }
+}
+
+typealias PlayingBarsBaseView = NSView
+#endif
+
 /// Three tinted capsules whose heights Core Animation varies.
-final class PlayingBarsView: UIView {
+final class PlayingBarsView: PlayingBarsBaseView {
     static let barWidth: CGFloat = 3
     static let spacing: CGFloat = 2
     static let width = barWidth * 3 + spacing * 2
@@ -132,11 +149,16 @@ final class PlayingBarsView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        #if os(iOS)
         isUserInteractionEnabled = false
         bars.forEach { layer.addSublayer($0) }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: PlayingBarsView, _: UITraitCollection) in
             view.updateColor()
         }
+        #else
+        wantsLayer = true
+        bars.forEach { layer?.addSublayer($0) }
+        #endif
         updateColor()
     }
 
@@ -144,8 +166,31 @@ final class PlayingBarsView: UIView {
 
     override var intrinsicContentSize: CGSize { CGSize(width: Self.width, height: Self.height) }
 
+    #if os(iOS)
     override func layoutSubviews() {
         super.layoutSubviews()
+        layoutBars()
+    }
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        updateColor()
+    }
+    #else
+    override func layout() {
+        super.layout()
+        layoutBars()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColor()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    #endif
+
+    private func layoutBars() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let left = bounds.midX - Self.width / 2
@@ -158,13 +203,13 @@ final class PlayingBarsView: UIView {
         CATransaction.commit()
     }
 
-    override func tintColorDidChange() {
-        super.tintColorDidChange()
-        updateColor()
-    }
-
     private func updateColor() {
+        #if os(iOS)
         let color = tintColor.resolvedColor(with: traitCollection).cgColor
+        #else
+        var color = NSColor.controlAccentColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance { color = NSColor.controlAccentColor.cgColor }
+        #endif
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         bars.forEach { $0.backgroundColor = color }

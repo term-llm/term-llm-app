@@ -232,6 +232,7 @@ final class BrowserLifecycleTests: XCTestCase {
         coordinator.tearDown()
     }
 
+    #if os(iOS)
     func testControlsPullUsesViewportAtTopScrolledAndBouncingOffsets() {
         for offset: CGFloat in [0, 420, -90] {
             var pull = BrowserControlsPullGesture()
@@ -375,6 +376,8 @@ final class BrowserLifecycleTests: XCTestCase {
         coordinator.handlePull(pan)
         XCTAssertEqual(state.reveals, 2)
     }
+
+    #endif
 
     func testHealthyForegroundAndOrdinaryUpdatesDoNotReload() {
         let state = State()
@@ -662,7 +665,7 @@ final class BrowserLifecycleTests: XCTestCase {
         let coordinator = coordinator(browser(state, phase: .background))
         let view = webView(server)
         coordinator.webViewWebContentProcessDidTerminate(view)
-        BrowserView.dismantleUIView(view, coordinator: coordinator)
+        BrowserView.dismantleWebView(view, coordinator: coordinator)
         coordinator.parent = browser(state)
         coordinator.recoverIfNeeded(view)
         XCTAssertTrue(view.requests.isEmpty)
@@ -681,7 +684,7 @@ final class BrowserLifecycleTests: XCTestCase {
         coordinator.setMediaCapturing(true)
         coordinator.setMediaCapturing(false)
         coordinator.setMediaCapturing(true)
-        BrowserView.dismantleUIView(webView(server), coordinator: coordinator)
+        BrowserView.dismantleWebView(webView(server), coordinator: coordinator)
         coordinator.tearDown()
         XCTAssertEqual(reports, [true, false, true, false])
     }
@@ -1025,6 +1028,7 @@ final class DesktopCommandTests: XCTestCase {
         XCTAssertEqual(DesktopCommand.refresh.input, "r")
         XCTAssertEqual(DesktopCommand.back.input, "[")
         XCTAssertEqual(DesktopCommand.zoom.map(\.input), ["+", "-", "0"])
+        XCTAssertEqual(DesktopCommand.zoom.map(\.title), ["Zoom In", "Zoom Out", "Actual Size"])
         XCTAssertEqual(DesktopCommand.allCases.count, 10, "No unsafe new-conversation command")
     }
 
@@ -1072,91 +1076,28 @@ final class DesktopCommandTests: XCTestCase {
     }
 
     func testZoomDefaultsAndClampsInvalidOrOutOfRangePreferences() {
-        XCTAssertEqual(DesktopChatAppearance.defaultZoom, 1.25)
+        XCTAssertEqual(DesktopChatAppearance.defaultZoom, 1.0)
         XCTAssertEqual(DesktopChatAppearance.clamped(0.5), 0.75)
         XCTAssertEqual(DesktopChatAppearance.clamped(3), 2)
-        XCTAssertEqual(DesktopChatAppearance.clamped(.nan), 1.25)
-        XCTAssertEqual(DesktopChatAppearance.clamped(.infinity), 1.25)
+        XCTAssertEqual(DesktopChatAppearance.clamped(.nan), 1.0)
+        XCTAssertEqual(DesktopChatAppearance.clamped(.infinity), 1.0)
         XCTAssertEqual(DesktopChatAppearance.adjusted(1.25, by: 0.25), 1.5)
         XCTAssertEqual(DesktopChatAppearance.adjusted(0.75, by: -0.25), 0.75)
         XCTAssertEqual(DesktopChatAppearance.adjusted(2, by: 0.25), 2)
     }
 
-    func testCommandsAreDiscoverableWithoutPreemptingTextEditing() {
-        for intent in DesktopCommand.allCases {
-            let command = intent.keyCommand()
-            XCTAssertEqual(command.title, intent.title)
-            XCTAssertEqual(command.action, #selector(DesktopCommandController.performDesktopCommand(_:)))
-            XCTAssertEqual(command.input, intent.input)
-            XCTAssertEqual(command.modifierFlags, .command)
-            XCTAssertEqual(command.propertyList as? String, intent.rawValue)
-            XCTAssertFalse(command.wantsPriorityOverSystemBehavior)
-        }
-    }
 
-    func testLocalResponderRoutesCommandsWithoutTakingTextFieldFocus() throws {
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive })
-        let previousKeyWindow = scene.keyWindow
-        let window = UIWindow(windowScene: scene)
-        let controller = DesktopCommandController()
-        controller.policy = policy(tab: .chat)
-        var received: [DesktopCommand] = []
-        controller.onCommand = { received.append($0) }
-        window.rootViewController = controller
-        window.makeKeyAndVisible()
-        defer {
-            window.isHidden = true
-            previousKeyWindow?.makeKey()
-        }
-        XCTAssertTrue(controller.becomeFirstResponder())
-        let back = DesktopCommand.back.keyCommand()
-        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: back, for: nil)
-        XCTAssertEqual(received, [.back])
-
-        // Revalidate against current state, even for an already-created command.
-        controller.policy = policy(tab: .music)
-        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: back, for: nil)
-        XCTAssertEqual(received, [.back])
-
-        let field = UITextField(frame: CGRect(x: 20, y: 20, width: 200, height: 40))
-        controller.view.addSubview(field)
-        XCTAssertTrue(field.becomeFirstResponder())
-        controller.viewDidAppear(false)
-        XCTAssertTrue(field.isFirstResponder)
-        let settings = DesktopCommand.settings.keyCommand()
-        UIApplication.shared.sendAction(#selector(DesktopCommandController.performDesktopCommand(_:)), to: nil, from: settings, for: nil)
-        XCTAssertEqual(received, [.back, .settings])
-
-        controller.present(UIViewController(), animated: false)
-        XCTAssertFalse(controller.canPerformAction(#selector(DesktopCommandController.performDesktopCommand(_:)), withSender: settings))
-        controller.performDesktopCommand(settings)
-        XCTAssertEqual(received, [.back, .settings])
-        controller.dismiss(animated: false)
-    }
-
-    func testUnattachedResponderCannotExecuteOrBroadcastToAnotherScene() {
-        let controller = DesktopCommandController()
-        controller.policy = policy(tab: .chat)
-        var received: [DesktopCommand] = []
-        controller.onCommand = { received.append($0) }
-        for intent in DesktopCommand.allCases {
-            let command = intent.keyCommand()
-            XCTAssertFalse(controller.canPerformAction(#selector(DesktopCommandController.performDesktopCommand(_:)), withSender: command))
-            controller.performDesktopCommand(command)
-        }
-        XCTAssertTrue(received.isEmpty)
-        XCTAssertFalse(controller.isFirstResponder)
-    }
 }
 
 @MainActor
 extension BrowserLifecycleTests {
     func testWorkspacePlatformKeepsPhoneTabsRegardlessOfWidthOrSizeClass() {
-        XCTAssertEqual(WorkspacePlatform(idiom: .phone, isIOSAppOnMac: false), .phone)
-        XCTAssertEqual(WorkspacePlatform(idiom: .pad, isIOSAppOnMac: false), .pad)
-        XCTAssertEqual(WorkspacePlatform(idiom: .pad, isIOSAppOnMac: true), .mac)
-        XCTAssertEqual(WorkspacePlatform(idiom: .phone, isIOSAppOnMac: true), .mac)
+        #if os(iOS)
+        XCTAssertEqual(WorkspacePlatform(idiom: .phone), .phone)
+        XCTAssertEqual(WorkspacePlatform(idiom: .pad), .pad)
+        #else
+        XCTAssertEqual(WorkspacePlatform.current, .mac)
+        #endif
         for width: CGFloat in [320, 599, 768, 899, 900, 1440] {
             let policy = WorkspaceLayoutPolicy(platform: .phone, width: width, overlayPresented: true)
             XCTAssertFalse(policy.platform.usesWorkspaceChrome)
@@ -1199,6 +1140,7 @@ extension BrowserLifecycleTests {
     /// mounts a real local WKWebView without network, credentials or bridges.
     /// A structurally conditional split/tab implementation would dismantle or
     /// recreate it when crossing 900 pt or leaving Chat.
+    #if os(iOS)
     func testWorkspaceContainerRetainsActualWebViewAcrossSelectionAndWidthChanges() async throws {
         for platform: WorkspacePlatform in [.pad, .mac] {
             let mounted = expectation(description: "Mounted one \(platform) chat web view")
@@ -1358,4 +1300,5 @@ extension BrowserLifecycleTests {
             coordinator.dismantles += 1
         }
     }
+    #endif
 }

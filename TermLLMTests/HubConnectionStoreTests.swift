@@ -218,4 +218,217 @@ final class HubConnectionStoreTests: XCTestCase {
         XCTAssertEqual(store.selected?.kind, .hub)
         XCTAssertNotEqual(store.selectedID, old.id)
     }
+
+    func testManagedLocalServiceValidatorAllowsOnlyExactLoopbackHTTP() {
+        for (raw, canonical) in [
+            ("http://127.0.0.1:8737", "http://127.0.0.1:8737/"),
+            ("http://localhost:8737/", "http://localhost:8737/"),
+            ("HTTP://LOCALHOST:8737/mount", "http://localhost:8737/mount/"),
+            ("http://127.0.0.1:8737/mount/", "http://127.0.0.1:8737/mount/")
+        ] {
+            XCTAssertEqual(HubConnectionStore.canonicalManagedLocalServiceURL(raw)?.absoluteString, canonical, raw)
+        }
+        for raw in ["https://127.0.0.1:8737/", "http://example.com:8737/", "http://localhost.evil.com:8737/",
+                    "http://127.0.0.2:8737/", "http://0.0.0.0:8737/", "http://[::1]:8737/",
+                    "http://127.0.0.1/", "http://127.0.0.1:0/", "http://127.0.0.1:65536/",
+                    "http://u:p@127.0.0.1:8737/", "http://127.0.0.1:8737/?token=secret",
+                    "http://127.0.0.1:8737/#fragment", "http://127.0.0.1:8737/a/../b",
+                    "http://127.0.0.1:8737/a//b", "http://127.0.0.1:8737/%2e%2e/",
+                    "http://127.0.0.1:8737/%252f", "http://127.0.0.1:8737/a\\b"] {
+            XCTAssertNil(HubConnectionStore.canonicalManagedLocalServiceURL(raw), raw)
+        }
+        // Ordinary saved connections keep the HTTPS policy; the local exception is not general.
+        XCTAssertNil(HubConnectionStore.canonicalURL("http://127.0.0.1:8737/"))
+        XCTAssertNotNil(HubConnectionStore.canonicalURL("https://example.com/"))
+    }
+
+    func testManagedLocalServiceFlagIsOnlyModelMetadata() {
+        let url = URL(string: "http://127.0.0.1:8737/")!
+        XCTAssertFalse(HubConnection(id: UUID(), name: "Mac", kind: .directNode, url: url).isManagedLocalService)
+        XCTAssertFalse(HubConnection(id: UUID(), name: "Mac", kind: .directNode, url: url,
+                                     managedLocalService: false).isManagedLocalService)
+        let managed = HubConnection(id: UUID(), name: "Mac", kind: .directNode, url: url,
+                                    managedLocalService: true)
+        XCTAssertTrue(managed.isManagedLocalService)
+        XCTAssertFalse(managed.isLinkedDevices, "The local-service flag never implies a linked peer identity")
+    }
+
+    #if !os(macOS)
+    func testManagedLocalFlagIsRejectedOutsideTheMacBuild() throws {
+        let url = URL(string: "http://127.0.0.1:8737/")!
+        let ordinary = HubConnection(id: UUID(), name: "Work", kind: .hub,
+                                     url: URL(string: "https://example.com/")!)
+        let good = try JSONEncoder().encode(HubConnectionStore.Document(connections: [ordinary], selectedID: ordinary.id))
+        XCTAssertEqual(try HubConnectionStore.validatedDocument(good).connections, [ordinary])
+
+        let flagged = HubConnection(id: UUID(), name: "This Mac", kind: .directNode, url: url,
+                                    managedLocalService: true)
+        let raw = try JSONEncoder().encode(HubConnectionStore.Document(connections: [flagged], selectedID: flagged.id))
+        XCTAssertThrowsError(try HubConnectionStore.validatedDocument(raw)) {
+            XCTAssertEqual($0 as? HubConnectionStore.ValidationError, .corrupt)
+        }
+        let defaults = defaults()
+        defaults.set(raw, forKey: HubConnectionStore.storageKey)
+        let store = HubConnectionStore(defaults: defaults)
+        XCTAssertTrue(store.connections.isEmpty)
+        XCTAssertNotNil(store.persistenceError)
+        XCTAssertEqual(defaults.data(forKey: HubConnectionStore.storageKey), raw,
+                       "The unreadable catalog must be preserved, not rewritten")
+        XCTAssertNil(ServerAddress.browserURL(url.absoluteString, selectedConnection: flagged),
+                     "Only the Mac build can use the managed local HTTP exception")
+    }
+    #endif
+
+    #if os(macOS)
+    func testManagedLocalServiceCatalogRoundTripAndIdentity() throws {
+        let defaults = defaults()
+        let store = HubConnectionStore(defaults: defaults)
+        let saved = try store.saveManagedLocalService(address: "http://127.0.0.1:8737")
+        XCTAssertEqual(saved.url.absoluteString, "http://127.0.0.1:8737/")
+        XCTAssertEqual(saved.kind, .directNode)
+        XCTAssertTrue(saved.isManagedLocalService)
+        XCTAssertEqual(store.selectedID, saved.id)
+
+        // The same canonical endpoint is the same trust identity, not a duplicate.
+        XCTAssertEqual(try store.saveManagedLocalService(address: "http://127.0.0.1:8737/").id, saved.id)
+        XCTAssertEqual(store.connections, [saved])
+        let other = try store.saveManagedLocalService(address: "http://127.0.0.1:9000/")
+        XCTAssertNotEqual(other.id, saved.id)
+        XCTAssertTrue(other.isManagedLocalService)
+
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: XCTUnwrap(defaults.data(forKey: HubConnectionStore.storageKey))) as? [String: Any])
+        let records = try XCTUnwrap(object["connections"] as? [[String: Any]])
+        XCTAssertEqual(Set(records[0].keys), ["id", "name", "kind", "url", "managedLocalService"],
+                       "Persist only the metadata flag, never a credential")
+        XCTAssertEqual((records[0]["managedLocalService"] as? NSNumber)?.boolValue, true)
+
+        let reloaded = HubConnectionStore(defaults: defaults)
+        XCTAssertNil(reloaded.persistenceError)
+        XCTAssertEqual(reloaded.connections, store.connections)
+        XCTAssertEqual(reloaded.selectedID, saved.id)
+    }
+
+    /// A running local service joins the app as This Mac without typing an
+    /// address; removing it is respected until the user opens local chat again.
+    func testBackgroundInclusionAddsThisMacOnceAndRespectsRemoval() throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let added = try XCTUnwrap(store.attachManagedLocalService(address: "http://127.0.0.1:8737/ui/"))
+        XCTAssertEqual(added.name, "This Mac")
+        XCTAssertTrue(added.isManagedLocalService)
+        XCTAssertEqual(store.selectedID, added.id)
+        XCTAssertEqual(try store.attachManagedLocalService(address: "http://127.0.0.1:8737/ui/")?.id, added.id)
+        XCTAssertEqual(store.connections.count, 1)
+
+        store.remove(added.id)
+        XCTAssertTrue(store.localServiceDeclined)
+        XCTAssertNil(try store.attachManagedLocalService(address: "http://127.0.0.1:8737/ui/"),
+                     "A removed This Mac must not come back on its own")
+        XCTAssertTrue(store.connections.isEmpty)
+
+        let reopened = try store.saveManagedLocalService(address: "http://127.0.0.1:8737/ui/")
+        XCTAssertFalse(store.localServiceDeclined, "Opening local chat again re-enables inclusion")
+        XCTAssertEqual(try store.attachManagedLocalService(address: "http://127.0.0.1:8737/ui/")?.id, reopened.id)
+    }
+
+    func testBackgroundInclusionMovesThisMacToANewPortWithoutADuplicate() throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let remote = try store.save(name: "Work", kind: .hub, address: "https://example.com/")
+        let old = try XCTUnwrap(store.attachManagedLocalService(address: "http://127.0.0.1:8737/"))
+        store.select(old.id)
+        let moved = try XCTUnwrap(store.attachManagedLocalService(address: "http://127.0.0.1:9000/"))
+        XCTAssertNotEqual(moved.id, old.id)
+        XCTAssertEqual(store.connections.filter(\.isManagedLocalService), [moved])
+        XCTAssertEqual(store.selectedID, moved.id, "A selected This Mac stays selected after it moves")
+        XCTAssertTrue(store.connections.contains(remote))
+        XCTAssertFalse(store.localServiceDeclined, "Moving isn't the user removing it")
+        XCTAssertThrowsError(try store.attachManagedLocalService(address: "https://example.com/"))
+    }
+
+    func testManagedLocalFlagRejectsLinkedAndNonNodeSources() throws {
+        let url = URL(string: "http://127.0.0.1:8737/")!
+        let key = LinkedDevicesBase64URL.encode(Data(repeating: 1, count: 32))
+        let valid = HubConnection(id: UUID(), name: "This Mac", kind: .directNode, url: url,
+                                  managedLocalService: true)
+        let doc = try HubConnectionStore.validatedDocument(
+            try JSONEncoder().encode(HubConnectionStore.Document(connections: [valid], selectedID: valid.id)))
+        XCTAssertEqual(doc.connections.first?.url.absoluteString, "http://127.0.0.1:8737/")
+        XCTAssertTrue(try XCTUnwrap(doc.connections.first).isManagedLocalService)
+
+        let invalid = [
+            HubConnection(id: UUID(), name: "This Mac", kind: .hub, url: url, managedLocalService: true),
+            HubConnection(id: UUID(), name: "This Mac", kind: .directNode, url: url,
+                          linkedDevicesHostKey: key, managedLocalService: true),
+            HubConnection(id: UUID(), name: "This Mac", kind: .directNode,
+                          url: URL(string: "https://127.0.0.1:8737/")!, managedLocalService: true),
+            HubConnection(id: UUID(), name: "This Mac", kind: .directNode,
+                          url: URL(string: "http://example.com:8737/")!, managedLocalService: true)
+        ]
+        for source in invalid {
+            let raw = try JSONEncoder().encode(HubConnectionStore.Document(connections: [source],
+                                                                           selectedID: source.id))
+            XCTAssertThrowsError(try HubConnectionStore.validatedDocument(raw), source.url.absoluteString) {
+                XCTAssertEqual($0 as? HubConnectionStore.ValidationError, .corrupt)
+            }
+        }
+    }
+
+    func testManagedLocalSaveCannotBorrowAnotherSourcesEndpoint() throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let linked = try store.saveLinkedDevices(id: UUID(), name: "Phone",
+                                                 hostKey: Data(repeating: 2, count: 32), bridgePort: 8737)
+        XCTAssertThrowsError(try store.saveManagedLocalService(address: linked.url.absoluteString)) {
+            XCTAssertEqual($0 as? HubConnectionStore.ValidationError, .duplicate)
+        }
+        XCTAssertEqual(store.connections, [linked])
+        XCTAssertFalse(try XCTUnwrap(store.connections.first).isManagedLocalService)
+        XCTAssertTrue(try XCTUnwrap(store.connections.first).isLinkedDevices)
+    }
+
+    func testManagedLocalLabelEditKeepsTrustButEndpointMoveRotatesIdentity() async throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let managed = try store.saveManagedLocalService(address: "http://127.0.0.1:8737/")
+        let renamed = try await store.saveDetectingKind(id: managed.id, name: "Local",
+                                                        address: managed.url.absoluteString) { _ in
+            XCTFail("A label-only edit of a managed source must not rediscover it")
+            return .unknown
+        }
+        XCTAssertEqual(renamed.id, managed.id)
+        XCTAssertEqual(renamed.kind, .directNode)
+        XCTAssertTrue(renamed.isManagedLocalService)
+        XCTAssertEqual(store.connections, [renamed])
+
+        // The HTTP exception is the exact saved spelling, not a general loopback grant.
+        do {
+            _ = try await store.saveDetectingKind(id: managed.id, name: "Local",
+                                                  address: "http://127.0.0.1:8737") { _ in .unknown }
+            XCTFail("Only the exact saved managed URL may skip ordinary validation")
+        } catch {
+            XCTAssertEqual(error as? HubConnectionStore.ValidationError, .invalid)
+        }
+
+        let moved = try await store.saveDetectingKind(id: managed.id, name: "Moved",
+                                                      address: "https://example.com/") { _ in .direct }
+        XCTAssertNotEqual(moved.id, managed.id, "A new endpoint is a new trust realm")
+        XCTAssertFalse(moved.isManagedLocalService)
+        XCTAssertEqual(moved.url.absoluteString, "https://example.com/")
+        XCTAssertEqual(store.selectedID, moved.id)
+    }
+
+    func testManagedLocalBrowserEntryPointRequiresTheExactOwnedBaseURL() throws {
+        let store = HubConnectionStore(defaults: defaults())
+        let managed = try store.saveManagedLocalService(address: "http://127.0.0.1:8737/")
+        XCTAssertEqual(ServerAddress.browserURL("http://127.0.0.1:8737", selectedConnection: managed),
+                       managed.url)
+        for other in ["http://127.0.0.1:8738/", "http://127.0.0.1:8737/other/",
+                      "http://localhost:8737/", "https://127.0.0.1:8737/",
+                      "http://u:p@127.0.0.1:8737/", "http://127.0.0.1:8737/?token=secret"] {
+            XCTAssertNil(ServerAddress.browserURL(other, selectedConnection: managed), other)
+        }
+        // Catalyst is not the simulator: ordinary HTTP input stays rejected.
+        XCTAssertNil(ServerAddress.parse("http://localhost:8737/"))
+        XCTAssertNil(ServerAddress.browserURL("http://localhost:8737/", selectedConnection: nil))
+        XCTAssertNotNil(ServerAddress.parse("https://example.com/"))
+    }
+    #endif
 }

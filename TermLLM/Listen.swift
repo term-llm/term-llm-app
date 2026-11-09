@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if os(iOS)
 import UIKit
+#endif
 
 /// Wires Listen together once: the library, downloads, the player, and the
 /// agent's media tools all share the same state.
@@ -13,7 +15,7 @@ final class Listen {
         let artwork = ListenArtworkStore(cookies: cookies, server: server)
         let listen = Listen(store: ListenStore(), engine: AVListenEngine(), cookies: cookies, server: server,
                             nowPlaying: SystemNowPlaying(artwork: artwork), artwork: artwork)
-        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.willTerminateNotification] {
+        for name in [NativeApp.didEnterBackground, NativeApp.willTerminate] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { listen.player.savePlayingPosition() }
             }

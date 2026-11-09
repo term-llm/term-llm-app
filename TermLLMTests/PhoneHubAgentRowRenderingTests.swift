@@ -3,6 +3,7 @@ import XCTest
 @testable import TermLLM
 
 /// Lays out an agent page row in a real window and measures what it draws.
+#if os(iOS)
 @MainActor
 final class PhoneHubAgentRowRenderingTests: XCTestCase {
     private let now = Date()
@@ -99,9 +100,11 @@ final class PhoneHubAgentRowRenderingTests: XCTestCase {
         return band.map { CGFloat($0.lowerBound) / scale...CGFloat($0.upperBound + 1) / scale }
     }
 }
+#endif
 
 @MainActor
 final class WorkspaceChromeTests: XCTestCase {
+    #if os(iOS)
     func testQuietHeaderUsesOne52PointRowAtDefaultTextSize() {
         let header = WorkspaceHeader(title: "Agents", subtitle: "All connections", onToggleSidebar: {}) {
             Button {} label: { Image(systemName: "arrow.clockwise").frame(width: 32, height: 44) }
@@ -120,6 +123,8 @@ final class WorkspaceChromeTests: XCTestCase {
             .environment(\.dynamicTypeSize, .accessibility5))
         XCTAssertGreaterThan(host.sizeThatFits(in: CGSize(width: 568, height: 500)).height, 52)
     }
+
+    #endif
 
     func testPhoneHomeDefaultsToExistingSystemNavigationChrome() {
         let view = PhoneHubView(connections: HubConnectionStore(defaults: isolatedDefaults()),

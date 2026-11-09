@@ -1,13 +1,51 @@
 import Foundation
+import ServiceManagement
 
-/// The menu-bar app's own launch-at-login preference.
+/// Registration state of the app in System Settings › General › Login Items.
+public enum MainAppLoginStatus: Equatable, Sendable {
+    case notRegistered, enabled, requiresApproval, notFound
+}
+
+/// The system's Open at Login registration for the running app. Injectable so
+/// tests never register a test executable as the user's login item.
+public protocol MainAppLoginService: Sendable {
+    var status: MainAppLoginStatus { get }
+    func register() throws
+    func unregister() throws
+}
+
+/// `SMAppService.mainApp`: listed under Open at Login with the app's own name and
+/// icon, instead of a launch agent under Allow in the Background.
+public struct SystemMainAppLoginService: MainAppLoginService {
+    public init() {}
+
+    public var status: MainAppLoginStatus {
+        switch SMAppService.mainApp.status {
+        case .enabled: return .enabled
+        case .requiresApproval: return .requiresApproval
+        case .notFound: return .notFound
+        case .notRegistered: return .notRegistered
+        @unknown default: return .notRegistered
+        }
+    }
+
+    public func register() throws { try SMAppService.mainApp.register() }
+    public func unregister() throws { try SMAppService.mainApp.unregister() }
+}
+
+/// The unified Mac app's own launch-at-login preference.
 ///
 /// This is deliberately separate from the core service's autostart: one brings
-/// up the GUI, the other brings up the local server. The plist is owned by this
-/// companion (marker checked before any write or delete) and launchd remains the
-/// mechanism; there is no app-specific watchdog.
+/// up the GUI, the other brings up the local server. It uses the system Open at
+/// Login registration. The older launch agent remains only as a fallback for
+/// builds that can't register (for example unsigned development builds) and is
+/// migrated away whenever registration works. The plist is owned by this app
+/// (marker checked before any write or delete); there is no app-specific watchdog.
 public struct AppLoginItem: Sendable {
+    // Keep the legacy label/marker so an opted-in companion login preference
+    // migrates to the full app rather than creating two launch agents.
     public static let label = "com.term-llm.companion.menubar"
+    public static let bundleIdentifier = "com.termllm.app"
     public static let markerKey = "TermLLMCompanionOwner"
     public static let markerValue = "app-login-item-v1"
 
@@ -30,11 +68,21 @@ public struct AppLoginItem: Sendable {
 
     public let home: URL
     public let fileManager: FileManager
+    /// nil uses only the launch agent.
+    public let mainApp: MainAppLoginService?
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                fileManager: FileManager = .default) {
+                fileManager: FileManager = .default,
+                mainApp: MainAppLoginService? = nil) {
         self.home = home
         self.fileManager = fileManager
+        self.mainApp = mainApp
+    }
+
+    /// The system registration, but only inside TermLLM.app itself: tests and
+    /// other executables must never register themselves as a login item.
+    public static var systemService: MainAppLoginService? {
+        Bundle.main.bundleIdentifier == bundleIdentifier ? SystemMainAppLoginService() : nil
     }
 
     public var plistURL: URL {
@@ -42,9 +90,19 @@ public struct AppLoginItem: Sendable {
             .appendingPathComponent(Self.label + ".plist")
     }
 
-    /// True only for a plist this companion wrote. An unrelated agent with the
+    public var isEnabled: Bool { isRegistered || legacyEnabled }
+
+    /// Registered, but macOS still needs the user to allow it in Login Items.
+    public var needsApproval: Bool { mainApp?.status == .requiresApproval }
+
+    private var isRegistered: Bool {
+        guard let status = mainApp?.status else { return false }
+        return status == .enabled || status == .requiresApproval
+    }
+
+    /// True only for a launch agent this app wrote. An unrelated agent with the
     /// same name is never reported as ours or removed.
-    public var isEnabled: Bool {
+    public var legacyEnabled: Bool {
         guard let data = try? Data(contentsOf: plistURL),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             return false
@@ -61,23 +119,71 @@ public struct AppLoginItem: Sendable {
             "KeepAlive": false,
             "ProcessType": "Interactive",
             "LimitLoadToSessionType": "Aqua",
-            "AssociatedBundleIdentifiers": ["com.termllm.companion"],
+            "AssociatedBundleIdentifiers": [Self.bundleIdentifier],
         ]
         return try PropertyListSerialization.data(fromPropertyList: plist,
                                                   format: .xml,
                                                   options: 0)
     }
 
-    /// Writes the app's own launch agent for the next login. It deliberately
-    /// does not bootstrap the job now: the app is already running, and forcing
-    /// an immediate load would start a duplicate process (LaunchServices
-    /// single-instance rules do not apply to a direct launchd exec). The plist
-    /// is read by launchd at login, and disabling only removes this owned file
-    /// so the running app is never terminated as a side effect.
+    /// Opens the app at the next login. Prefers the system registration and
+    /// removes the older launch agent once that works; otherwise writes the
+    /// launch agent. The running app is never started a second time.
     public func enable(appExecutable: URL) throws {
         guard fileManager.isExecutableFile(atPath: appExecutable.path) else {
             throw LoginItemError.appNotExecutable(appExecutable.path)
         }
+        if registerWithSystem() {
+            if legacyEnabled { try removeLegacy() }
+            return
+        }
+        try writeLegacy(appExecutable: appExecutable)
+    }
+
+    public func disable() throws {
+        if isRegistered, let mainApp {
+            do {
+                try mainApp.unregister()
+            } catch {
+                throw LoginItemError.writeFailed(error.localizedDescription)
+            }
+            if legacyEnabled { try removeLegacy() }
+            return
+        }
+        try removeLegacy()
+    }
+
+    /// Moves an older launch-agent login item to the system registration, or,
+    /// when that isn't possible, rewrites a stale executable path after the app
+    /// has moved. Only ever touches our own plist, and only if it exists.
+    public func refreshIfNeeded(appExecutable: URL) {
+        guard legacyEnabled else { return }
+        if registerWithSystem() {
+            try? removeLegacy()
+            return
+        }
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String],
+              arguments.first != appExecutable.path ||
+                plist["AssociatedBundleIdentifiers"] as? [String] != [Self.bundleIdentifier] else { return }
+        try? writeLegacy(appExecutable: appExecutable)
+    }
+
+    private func registerWithSystem() -> Bool {
+        guard let mainApp else { return false }
+        if !isRegistered {
+            // Unsigned development builds can fail here; the launch agent remains.
+            do { try mainApp.register() } catch { return false }
+        }
+        return isRegistered
+    }
+
+    /// Writes the launch agent for the next login. It deliberately does not
+    /// bootstrap the job now: the app is already running, and forcing an
+    /// immediate load would start a duplicate process (LaunchServices
+    /// single-instance rules do not apply to a direct launchd exec).
+    private func writeLegacy(appExecutable: URL) throws {
         let directory = plistURL.deletingLastPathComponent()
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -85,7 +191,7 @@ public struct AppLoginItem: Sendable {
         } catch {
             throw LoginItemError.writeFailed(error.localizedDescription)
         }
-        if fileManager.fileExists(atPath: plistURL.path) && !isEnabled {
+        if fileManager.fileExists(atPath: plistURL.path) && !legacyEnabled {
             throw LoginItemError.foreignFile(plistURL.path)
         }
         do {
@@ -96,28 +202,15 @@ public struct AppLoginItem: Sendable {
         }
     }
 
-    public func disable() throws {
-        guard fileManager.fileExists(atPath: plistURL.path) else {
-            // Already off (another instance or a prior clean disable); toggling
-            // off is idempotent rather than an error.
-            return
-        }
-        guard isEnabled else { throw LoginItemError.foreignFile(plistURL.path) }
+    /// Removes only our own launch agent file, so the running app is never
+    /// terminated as a side effect. Missing is already off.
+    private func removeLegacy() throws {
+        guard fileManager.fileExists(atPath: plistURL.path) else { return }
+        guard legacyEnabled else { throw LoginItemError.foreignFile(plistURL.path) }
         do {
             try fileManager.removeItem(at: plistURL)
         } catch {
             throw LoginItemError.writeFailed(error.localizedDescription)
         }
     }
-
-    /// Rewrites a stale executable path after the app has been moved, but only
-    /// for our own plist.
-    public func refreshIfNeeded(appExecutable: URL) {
-        guard isEnabled, let data = try? Data(contentsOf: plistURL),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let arguments = plist["ProgramArguments"] as? [String],
-              arguments.first != appExecutable.path else { return }
-        try? enable(appExecutable: appExecutable)
-    }
-
 }

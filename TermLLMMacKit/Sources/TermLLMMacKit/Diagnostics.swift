@@ -36,7 +36,7 @@ public struct DiagnosticsReport: Equatable, Sendable {
     /// report never includes the service token.
     public func redactedText(appVersion: String, home: URL) -> String {
         var lines = [
-            "term-llm macOS companion diagnostics",
+            "term-llm Mac local-service diagnostics",
             "app: \(appVersion)",
             "generated: \(ISO8601DateFormatter().string(from: generatedAt))",
             "",
@@ -70,7 +70,6 @@ public enum CompanionDiagnostics {
     /// are observed state rather than independently re-queried, so the panel
     /// matches what the user sees in the menu bar.
     public static func build(appVersion: String,
-                             payloadPresent: Bool,
                              selection: CLISelection?,
                              selectionError: String?,
                              problems: [CLIProblem],
@@ -80,44 +79,42 @@ public enum CompanionDiagnostics {
                              tokenAvailable: Bool,
                              loginItemEnabled: Bool,
                              managedMarkerPresent: Bool,
-                             payloadChecksumPresent: Bool) -> DiagnosticsReport {
+                             ownership: String = "Not set up",
+                             signatureVerifiedVersion: String? = nil,
+                             updateState: CLIUpdateState = CLIUpdateState(),
+                             conflicts: [OwnershipConflict] = [],
+                             journal: MigrationJournal? = nil) -> DiagnosticsReport {
         var checks: [DiagnosticCheck] = []
-        checks.append(DiagnosticCheck(id: "app", title: "Companion app",
-                                      level: .ok, detail: "Running \(appVersion) natively on macOS."))
-        checks.append(DiagnosticCheck(id: "payload", title: "Bundled CLI payload",
-                                      level: payloadPresent ? .ok : .warning,
-                                      detail: payloadPresent
-                                        ? "The app bundle contains a term-llm payload."
-                                        : "No CLI payload is bundled in this build; select an existing installation instead."))
+        checks.append(DiagnosticCheck(id: "app", title: "term-llm app",
+                                      level: .ok, detail: "Running \(appVersion) with native Mac service integration."))
+        checks.append(DiagnosticCheck(id: "ownership-mode", title: "Ownership", level: .info, detail: ownership))
+        checks.append(DiagnosticCheck(id: "signature", title: "Signature-verified version", level: signatureVerifiedVersion == nil ? .warning : .ok,
+                                      detail: signatureVerifiedVersion ?? "Not verified"))
+        checks.append(DiagnosticCheck(id: "updates", title: "Last update check", level: updateState.lastError == nil ? .info : .warning,
+                                      detail: updateState.lastCheckedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "Never"))
+        checks.append(DiagnosticCheck(id: "conflicts", title: "Migration conflicts", level: conflicts.isEmpty ? .ok : .warning,
+                                      detail: conflicts.isEmpty ? "None" : conflicts.map(\.description).joined(separator: "\n")))
+        checks.append(DiagnosticCheck(id: "migration", title: "Migration journal", level: .info,
+                                      detail: journal.map { $0.complete ? "Complete" : ($0.rolledBack ? "Rolled back" : "Incomplete — Resume or Roll Back") } ?? "None"))
 
         if let selectionError {
             checks.append(DiagnosticCheck(id: "cli", title: "CLI selection",
                                           level: .failed, detail: selectionError))
         } else if let selection {
-            let integrity = problems.isEmpty ? "integrity verified" : problems.map(\.description).joined(separator: " ")
+            let verified = selection.source == .release && signatureVerifiedVersion != nil && problems.isEmpty
+            let integrity = verified ? "signature and checksum verified" : (problems.isEmpty ? "not verified for managed use" : problems.map(\.description).joined(separator: " "))
             checks.append(DiagnosticCheck(id: "cli", title: "term-llm CLI",
-                                          level: problems.isEmpty ? .ok : .failed,
+                                          level: verified ? .ok : (problems.isEmpty ? .warning : .failed),
                                           detail: "\(selection.source.rawValue) \(selection.version.isEmpty ? "(version unknown)" : selection.version) at \(selection.binaryPath) — \(integrity)"))
         } else {
             checks.append(DiagnosticCheck(id: "cli", title: "term-llm CLI",
                                           level: .warning,
-                                          detail: "No CLI selected yet. Install the bundled CLI or use an existing installation."))
+                                          detail: "Not set up. Install the official signed release from this app."))
         }
 
-        if payloadPresent {
-            checks.append(DiagnosticCheck(id: "payload-checksum", title: "Payload provenance",
-                                          level: payloadChecksumPresent ? .ok : .warning,
-                                          detail: payloadChecksumPresent
-                                            ? "The bundled payload carries a SHA-256 sidecar and is verified before installation."
-                                            : "No SHA-256 sidecar was found for this development payload; installation cannot verify provenance."))
-        }
-
-        if let selection, selection.source == .bundled {
-            checks.append(DiagnosticCheck(id: "ownership", title: "Upgrade ownership",
-                                          level: managedMarkerPresent ? .ok : .warning,
-                                          detail: managedMarkerPresent
-                                            ? "Managed-install marker present; term-llm self-upgrade refuses to replace this verified payload."
-                                            : "The managed-install marker is missing; the app recreates it on launch and while running. Until then `term-llm upgrade` could replace the app-managed binary."))
+        if selection?.source == .release && !ownership.hasPrefix("Developer mode") {
+            checks.append(DiagnosticCheck(id: "marker", title: "Ownership marker", level: managedMarkerPresent ? .ok : .warning,
+                                          detail: managedMarkerPresent ? "The app owns updates for this copy." : "Ownership marker missing. Repair explicitly reinstalls the signed release; polling never recreates it."))
         }
 
         if let pathLink {
@@ -131,10 +128,7 @@ public enum CompanionDiagnostics {
             case .notLinked(let path):
                 checks.append(DiagnosticCheck(id: "path", title: "Terminal command",
                                               level: .info,
-                                              detail: "\(path) is not linked yet. The managed binary is still usable by absolute path; installing the bundled CLI creates the link."))
-            case .skippedExternal:
-                checks.append(DiagnosticCheck(id: "path", title: "Terminal command",
-                                              level: .info, detail: "Using the external installation's own command."))
+                                              detail: "\(path) is not linked yet. The managed binary is still usable by absolute path; setting up term-llm creates the link."))
             case .collision(let path):
                 checks.append(DiagnosticCheck(id: "path", title: "Terminal command",
                                               level: .warning,
@@ -186,7 +180,7 @@ public enum CompanionDiagnostics {
         checks.append(DiagnosticCheck(id: "token", title: "Local authentication",
                                       level: tokenAvailable ? .ok : .warning,
                                       detail: tokenAvailable
-                                        ? "Bearer credential read from the core's managed store on demand and proven against the protected /v1/capabilities JSON; written only into this loopback origin's WebKit storage for the embedded chat (never a URL or log)."
+                                        ? "Bearer credential read from the core's managed store on demand and proven against the protected /v1/capabilities JSON; handed in memory to the full client's isolated connection/credential lifecycle (never a URL or log)."
                                         : "The local credential could not be read. Open the chat again after the service is ready."))
         checks.append(DiagnosticCheck(id: "login-item", title: "Open app at login",
                                       level: loginItemEnabled ? .ok : .info,

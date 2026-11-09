@@ -1,12 +1,15 @@
 import Network
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 import WebKit
 import XCTest
 @testable import TermLLM
 
 /// The real injected probe and the real close path, inside WebKit. Pages are
 /// loaded with an https base URL, so no network is involved.
+#if os(iOS)
 @MainActor
 final class WebKitHealthLiveTests: XCTestCase {
     private static let server = URL(string: "https://example.com/ui/")!
@@ -289,6 +292,7 @@ final class WebKitHealthLiveTests: XCTestCase {
         XCTAssertEqual(web.url, Self.chat, "no unload navigation into a hung page")
     }
 }
+#endif
 
 /// Loopback HTTP server answering every request with one small page, so a
 /// real `BrowserView` can load without the network.

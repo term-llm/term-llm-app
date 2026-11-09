@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 @MainActor
 final class LinkedDevicesPairingModel: ObservableObject {
@@ -45,7 +47,7 @@ final class LinkedDevicesPairingModel: ObservableObject {
     func begin(catalog: HubConnectionStore, runtime: LinkedDevicesRuntime) {
         guard let link, phase == .review else { return }
         phase = .requesting
-        let deviceName = UIDevice.current.name
+        let deviceName = NativeDevice.name
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -97,7 +99,7 @@ struct LinkedDevicesPairingView: View {
                 .padding(24)
             }
             .navigationTitle("Linked devices")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if model.canDismiss {

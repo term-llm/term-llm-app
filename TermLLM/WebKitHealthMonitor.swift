@@ -1,6 +1,8 @@
 import Foundation
 import os
+#if os(iOS)
 import UIKit
+#endif
 import WebKit
 
 let webKitHealthLog = Logger(subsystem: "com.termllm.app", category: "webkit-health")
@@ -503,8 +505,7 @@ final class WebKitHealthMonitor: ObservableObject {
                 self.minutes = Array((minutes + self.minutes).suffix(360))
             }
         }
-        let device = UIDevice.current
-        record("launch", "Run \(runID). App \(Self.appVersion) on \(Self.deviceModel) iOS \(device.systemVersion), \(sampler.cpuCount) cores. "
+        record("launch", "Run \(runID). App \(Self.appVersion) on \(Self.deviceModel) \(NativeDevice.platformName) \(NativeDevice.systemVersion), \(sampler.cpuCount) cores. "
                + "Probe \(probeEnabled ? "on" : "off"), stop runaway pages \(autoStopEnabled ? "on" : "off").")
         let center = NotificationCenter.default
         observers = [
@@ -516,10 +517,10 @@ final class WebKitHealthMonitor: ObservableObject {
                     self?.record("power", "Low Power Mode \(ProcessInfo.processInfo.isLowPowerModeEnabled ? "on" : "off").")
                 }
             },
-            center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+            center.addObserver(forName: NativeApp.didReceiveMemoryWarning, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.record("memory", "Memory warning. \(self?.snapshot() ?? "")") }
             },
-            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            center.addObserver(forName: NativeApp.didEnterBackground, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.applicationDidEnterBackground()
@@ -527,7 +528,7 @@ final class WebKitHealthMonitor: ObservableObject {
                     self.schedule(every: Self.backgroundInterval)
                 }
             },
-            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            center.addObserver(forName: NativeApp.willEnterForeground, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.applicationWillEnterForeground()
@@ -536,7 +537,7 @@ final class WebKitHealthMonitor: ObservableObject {
                 }
             },
         ]
-        schedule(every: UIApplication.shared.applicationState == .background ? Self.backgroundInterval : Self.interval)
+        schedule(every: NativeApp.state == .background ? Self.backgroundInterval : Self.interval)
         tick()
     }
 
@@ -737,7 +738,7 @@ final class WebKitHealthMonitor: ObservableObject {
         defer { charge(since: began) }
         invalidateAfterSamplingGap(now: now)
         lastNativeTickAt = now
-        let application = UIApplication.shared.applicationState
+        let application = NativeApp.state
         let sample = native ?? sampler.sample(uptime: now, appActive: application == .active,
                                               appBackground: application == .background)
         natives.append(sample)
@@ -1021,7 +1022,7 @@ final class WebKitHealthMonitor: ObservableObject {
     func report(now: Date = Date(), compact: Bool = false) -> String {
         WebKitHealthReport.make(status: status, events: events, minutes: minutes, natives: natives,
                                 probeEnabled: probeEnabled, autoStop: autoStopEnabled, now: now,
-                                device: "\(Self.deviceModel) iOS \(UIDevice.current.systemVersion)", app: Self.appVersion, compact: compact,
+                                device: "\(Self.deviceModel) \(NativeDevice.platformName) \(NativeDevice.systemVersion)", app: Self.appVersion, compact: compact,
                                 listenUsage: ListenNetworkUsage.shared.snapshot(now: now))
     }
 
@@ -1031,10 +1032,7 @@ final class WebKitHealthMonitor: ObservableObject {
     }
 
     static var deviceModel: String {
-        var system = utsname()
-        uname(&system)
-        let model = withUnsafeBytes(of: system.machine) { raw in String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self) }
-        return WebKitHealthProbe.token(model, limit: 32) ?? UIDevice.current.model
+        WebKitHealthProbe.token(NativeDevice.modelIdentifier, limit: 32) ?? NativeDevice.model
     }
 }
 
@@ -1213,6 +1211,8 @@ enum WebKitHealthReport {
         lines.append("Generated ISO8601: " + now.ISO8601Format())
 #if targetEnvironment(simulator)
         lines.append("Runtime: Simulator (device CPU measures the Mac host)")
+#elseif os(macOS)
+        lines.append("Runtime: Mac app")
 #else
         lines.append("Runtime: physical device")
 #endif

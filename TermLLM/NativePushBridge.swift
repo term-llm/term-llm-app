@@ -93,7 +93,7 @@ final class NativePushBridge: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             let owner: String?
-            if let scene = webView?.window?.windowScene {
+            if let scene = webView?.nativeScene {
                 let id = PushCenter.windowID(for: scene)
                 center.registerWindow(id, scene: scene)
                 self.boundWindowID = id

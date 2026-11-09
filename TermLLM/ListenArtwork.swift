@@ -1,7 +1,9 @@
 import CryptoKit
 import Foundation
 import ImageIO
+#if os(iOS)
 import UIKit
+#endif
 import UniformTypeIdentifiers
 
 /// Artwork kept on the phone, for Listen and (in a folder of its own, see
@@ -25,7 +27,7 @@ final class ListenArtworkStore {
     private let cookies: ListenCookieJar?
     private let server: () -> ListenServer?
     private let session: URLSession
-    private let images = NSCache<NSString, UIImage>()
+    private let images = NSCache<NSString, PlatformImage>()
     private var saved: Set<String> = []
     private var loads: [String: Task<URL?, Never>] = [:]
     private var failures: [String: ContinuousClock.Instant] = [:]
@@ -119,23 +121,23 @@ final class ListenArtworkStore {
     }
 
     /// `item`'s artwork decoded at `pixels`, from its file.
-    func image(for item: ListenItem, pixels: Int) async -> UIImage? {
+    func image(for item: ListenItem, pixels: Int) async -> PlatformImage? {
         guard let url = item.artworkURL else { return nil }
         return await image(url: url, owner: item.sourceID, credentialed: isSameServer(item, url), pixels: pixels)
     }
 
     /// Public artwork at `url` (Apple Music) decoded at `pixels`; never
     /// fetched with cookies.
-    func image(url: URL, pixels: Int) async -> UIImage? {
+    func image(url: URL, pixels: Int) async -> PlatformImage? {
         await image(url: url, owner: nil, credentialed: false, pixels: pixels)
     }
 
     /// Already decoded at `pixels`, without waiting.
-    func cachedImage(for item: ListenItem, pixels: Int) -> UIImage? {
+    func cachedImage(for item: ListenItem, pixels: Int) -> PlatformImage? {
         fileName(for: item).flatMap { images.object(forKey: Self.key($0, pixels)) }
     }
 
-    func cachedImage(url: URL, pixels: Int) -> UIImage? {
+    func cachedImage(url: URL, pixels: Int) -> PlatformImage? {
         images.object(forKey: Self.key(fileName(url: url, owner: nil), pixels))
     }
 
@@ -157,7 +159,7 @@ final class ListenArtworkStore {
         }
     }
 
-    private func image(url: URL, owner: UUID?, credentialed: Bool, pixels: Int) async -> UIImage? {
+    private func image(url: URL, owner: UUID?, credentialed: Bool, pixels: Int) async -> PlatformImage? {
         let key = Self.key(fileName(url: url, owner: owner), pixels)
         if let image = images.object(forKey: key) { return image }
         guard let file = await file(url: url, owner: owner, credentialed: credentialed) else { return nil }
@@ -165,7 +167,7 @@ final class ListenArtworkStore {
             ListenArtworkStore.decode(file, maxPixels: pixels)
         }.value
         if let image {
-            images.setObject(image, forKey: key, cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0)
+            images.setObject(image, forKey: key, cost: image.platformCGImage.map { $0.bytesPerRow * $0.height } ?? 0)
         }
         return image
     }
@@ -209,8 +211,8 @@ final class ListenArtworkStore {
     }
 
     /// Decodes `file` straight to at most `maxPixels` on the longer side.
-    nonisolated static func decode(_ file: URL, maxPixels: Int) -> UIImage? {
-        downsample(CGImageSourceCreateWithURL(file as CFURL, nil), maxPixels: maxPixels).map { UIImage(cgImage: $0) }
+    nonisolated static func decode(_ file: URL, maxPixels: Int) -> PlatformImage? {
+        downsample(CGImageSourceCreateWithURL(file as CFURL, nil), maxPixels: maxPixels).map { PlatformImage.fromCGImage($0) }
     }
 
     private nonisolated static func downsample(_ source: CGImageSource?, maxPixels: Int) -> CGImage? {

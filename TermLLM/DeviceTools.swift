@@ -1,5 +1,7 @@
 import Foundation
+#if os(iOS)
 import UIKit
+#endif
 
 /// Result of a device tool call. `isError` maps to MCP `isError`, so the agent
 /// sees a tool failure rather than a protocol error.
@@ -70,28 +72,20 @@ struct DeviceInfoSnapshot: Equatable, Sendable {
 
     @MainActor
     static func current() -> DeviceInfoSnapshot {
-        let device = UIDevice.current
-        device.isBatteryMonitoringEnabled = true
-        let batteryState: String
-        switch device.batteryState {
-        case .charging: batteryState = "charging"
-        case .full: batteryState = "full"
-        case .unplugged: batteryState = "unplugged"
-        default: batteryState = "unknown"
-        }
+        let battery = NativeDevice.battery()
         let appState: String
-        switch UIApplication.shared.applicationState {
+        switch NativeApp.state {
         case .active: appState = "active"
         case .inactive: appState = "inactive"
-        default: appState = "background"
+        case .background: appState = "background"
         }
         return DeviceInfoSnapshot(
-            model: device.model,
-            systemName: device.systemName,
-            systemVersion: device.systemVersion,
+            model: NativeDevice.model,
+            systemName: NativeDevice.systemName,
+            systemVersion: NativeDevice.systemVersion,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
-            batteryLevel: device.batteryLevel >= 0 ? device.batteryLevel : nil,
-            batteryState: batteryState,
+            batteryLevel: battery.level,
+            batteryState: battery.state,
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
             appState: appState
         )
@@ -104,7 +98,7 @@ enum DeviceToolPlatform: Sendable {
     case iPhone, mac
 
     static var current: Self {
-        ProcessInfo.processInfo.isiOSAppOnMac ? .mac : .iPhone
+        AppPlatform.isMac ? .mac : .iPhone
     }
 
     var name: String { self == .mac ? "Mac" : "iPhone" }

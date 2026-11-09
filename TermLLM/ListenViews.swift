@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 // MARK: - Playback shelf
 
@@ -443,11 +445,11 @@ struct ListenPlayerView: View {
             }
             .padding(.horizontal, 24)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .platformLeading) {
                     Button { dismiss() } label: { Image(systemName: "chevron.down") }
                         .accessibilityLabel("Close")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     NavigationLink { ListenView(listen: listen, embedded: true) } label: {
                         Image(systemName: "list.bullet")
                     }
@@ -535,7 +537,7 @@ struct ListenView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var failure: String?
-    @State private var workspaceEditMode: EditMode = .inactive
+    @State private var workspaceEditMode: PlatformEditMode = .inactive
     private var player: ListenPlayer { listen.player }
     private var store: ListenStore { listen.store }
 
@@ -546,7 +548,7 @@ struct ListenView: View {
             NavigationStack {
                 content.toolbar {
                     if !usesWorkspaceChrome {
-                        ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
+                        ToolbarItem(placement: .platformLeading) { Button("Done") { dismiss() } }
                     }
                 }
             }
@@ -565,24 +567,24 @@ struct ListenView: View {
     @ViewBuilder private var rootContent: some View {
         if usesWorkspaceChrome {
             libraryList
-                .toolbar(.hidden, for: .navigationBar)
-                .safeAreaInset(edge: .top, spacing: 0) {
+                .navigationBarVisibility(.hidden)
+                .workspaceTopBar {
                     WorkspaceHeader(title: embedded ? "Podcasts" : "Listen", onToggleSidebar: onToggleSidebar) {
                         if !embedded {
                             Button("Done") { dismiss() }
                         }
-                        EditButton()
+                        PlatformEditButton()
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("listenWorkspaceHeader")
                 }
                 // The inset and list must share the same edit-mode binding.
-                .environment(\.editMode, $workspaceEditMode)
+                .platformEditMode($workspaceEditMode)
         } else {
             libraryList
-                .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+                .navigationBarVisibility(isActive ? .visible : .hidden)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                    ToolbarItem(placement: .platformTrailing) { PlatformEditButton() }
                 }
         }
     }
@@ -961,7 +963,7 @@ struct ListenArtwork: View {
     let store: ListenArtworkStore
 
     @Environment(\.displayScale) private var displayScale
-    @State private var loaded: (key: String, image: UIImage)?
+    @State private var loaded: (key: String, image: PlatformImage)?
 
     var body: some View {
         let pixels = ListenArtworkStore.pixels(for: size, scale: displayScale)
@@ -970,7 +972,7 @@ struct ListenArtwork: View {
         let image = store.cachedImage(for: item, pixels: pixels) ?? (key != nil && loaded?.key == key ? loaded?.image : nil)
         Group {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+                Image(platformImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: symbol)
                     .font(.system(size: size * 0.4))

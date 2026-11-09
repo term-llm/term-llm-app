@@ -237,6 +237,65 @@ final class AppControlsTests: XCTestCase {
         XCTAssertTrue(state.defaults.bool(forKey: AppControlsBar.hintAcknowledgedKey))
     }
 
+    func testHiddenMacWindowUsesBackgroundPhaseWithoutDiscardingTheScene() {
+        for phase in [ScenePhase.active, .inactive, .background] {
+            XCTAssertEqual(MacLocalServiceBridge.effectiveScenePhase(phase, isMainWindowVisible: false), .background,
+                           "A retained hidden scene must not poll or count as foreground attendance")
+            XCTAssertEqual(MacLocalServiceBridge.effectiveScenePhase(phase, isMainWindowVisible: true), phase,
+                           "A visible window still follows the real app activation state")
+        }
+    }
+
+    func testNativePlatformSelectsItsWorkspace() {
+        #if os(iOS)
+        XCTAssertEqual(WorkspacePlatform(idiom: .pad), .pad)
+        XCTAssertEqual(WorkspacePlatform(idiom: .phone), .phone)
+        #else
+        XCTAssertEqual(WorkspacePlatform.current, .mac)
+        XCTAssertTrue(WorkspacePlatform.current.usesWorkspaceChrome)
+        #endif
+        XCTAssertEqual(WorkspaceLayoutPolicy(platform: .mac, width: 640).sidebarWidth, 220)
+    }
+
+    func testUserVisibleAppNameIsExactlyTheProductName() {
+        // The Mac app menu, About panel, Dock, Finder and Login Items show the
+        // bundle name and file name; the Home screen shows the display name.
+        let info = Bundle.main.infoDictionary ?? [:]
+        XCTAssertEqual(info["CFBundleName"] as? String, "term-llm")
+        XCTAssertEqual(info["CFBundleDisplayName"] as? String, "term-llm")
+        XCTAssertEqual(Bundle.main.bundleURL.lastPathComponent, "term-llm.app")
+    }
+
+    func testLocalServiceHandoffRejectsInvalidEndpointsAndTokens() {
+        let valid = MacLocalServiceBridge.request(baseURL: "http://127.0.0.1:8737/", token: "opaque-token", open: true)
+        XCTAssertEqual(valid?.baseURL.absoluteString, "http://127.0.0.1:8737/")
+        XCTAssertEqual(valid?.token, "opaque-token")
+        let localhost = MacLocalServiceBridge.request(baseURL: "http://localhost:8737", token: "opaque-token", open: true)
+        XCTAssertEqual(localhost?.baseURL.absoluteString, "http://localhost:8737/")
+        for token in ["", "   ", "line\rbreak", "line\nbreak"] {
+            XCTAssertNil(MacLocalServiceBridge.request(baseURL: "http://127.0.0.1:8737/", token: token, open: true))
+        }
+        for baseURL in ["", "https://127.0.0.1:8737/", "http://example.com:8737/", "http://127.0.0.1/",
+                        "http://u:p@127.0.0.1:8737/", "http://127.0.0.1:8737/?token=secret",
+                        "http://127.0.0.1:8737/#fragment", "http://127.0.0.1:8737/a/../b"] {
+            XCTAssertNil(MacLocalServiceBridge.request(baseURL: baseURL, token: "opaque-token", open: true), baseURL)
+        }
+    }
+
+    func testLocalServiceHandoffOpenFlagDistinguishesBackgroundInclusion() {
+        for open in [true, false] {
+            XCTAssertEqual(MacLocalServiceBridge.request(baseURL: "http://127.0.0.1:8737/",
+                                                       token: "opaque-token", open: open)?.open, open)
+        }
+    }
+
+    func testHostedUnitTestsDoNotStartTheRealMacIntegration() {
+        // The Mac test host shares the app's defaults and keychain; starting the
+        // integration here would add This Mac to the developer's real setup.
+        XCTAssertTrue(MacLocalServiceBridge.isHostedTestRun)
+    }
+
+    #if os(iOS)
     func testControlsAndTeacherLayouts() async throws {
         let state = State()
         try await render(bar(state), named: "app-controls-first-use")
@@ -342,4 +401,5 @@ final class AppControlsTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+    #endif
 }

@@ -165,7 +165,7 @@ final class MapKitRoutePlanner: RoutePlanner {
 
     func describe(_ coordinate: Coordinate) async throws -> NavigationPlace? {
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) {
             guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
             return try await request.mapItems.first.map(Self.place)
         }
@@ -175,6 +175,7 @@ final class MapKitRoutePlanner: RoutePlanner {
 
     /// Pre-iOS 26 reverse geocoding result as a place.
     @available(iOS, deprecated: 26.0)
+    @available(macOS, deprecated: 26.0)
     private static func place(_ placemark: CLPlacemark, at coordinate: Coordinate) -> NavigationPlace {
         var parts: [String] = []
         for part in [placemark.name, placemark.locality, placemark.administrativeArea, placemark.country] {
@@ -187,7 +188,7 @@ final class MapKitRoutePlanner: RoutePlanner {
     private static func place(_ item: MKMapItem) -> NavigationPlace {
         let coordinate: CLLocationCoordinate2D
         let address: String?
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) {
             coordinate = item.location.coordinate
             address = item.address?.shortAddress ?? item.address?.fullAddress
         } else {
@@ -200,7 +201,7 @@ final class MapKitRoutePlanner: RoutePlanner {
 
     private static func mapItem(_ coordinate: Coordinate, name: String?) -> MKMapItem {
         let item: MKMapItem
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) {
             item = MKMapItem(location: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude), address: nil)
         } else {
             item = MKMapItem(placemark: MKPlacemark(coordinate: cl(coordinate)))

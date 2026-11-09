@@ -24,6 +24,17 @@ struct PlaylistDetailView: View {
         }
     }
 
+    private func actionsMenu(_ playlist: Playlist) -> some View {
+        Menu {
+            Button { addingSongs = true } label: { Label("Add Songs", systemImage: "plus") }
+            Button { newName = playlist.name; renaming = true } label: { Label("Rename", systemImage: "pencil") }
+            Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete Playlist", systemImage: "trash") }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("Playlist Actions")
+    }
+
     private func content(_ playlist: Playlist) -> some View {
         List {
             if !playlist.entries.isEmpty {
@@ -53,6 +64,14 @@ struct PlaylistDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(playlist.containsSampleTracks)
+                    #if os(macOS)
+                    // Mac lists have no edit mode or swipe-to-delete.
+                    .contextMenu {
+                        Button("Remove from Playlist", role: .destructive) {
+                            attempt { try store.remove(entries: [entry.id], from: playlist.id) }
+                        }
+                    }
+                    #endif
                 }
                 .onDelete { offsets in
                     attempt { try store.remove(entries: Set(offsets.map { playlist.entries[$0].id }), from: playlist.id) }
@@ -74,19 +93,24 @@ struct PlaylistDetailView: View {
         .animation(.snappy(duration: 0.25), value: player.nowPlaying)
         .animation(.snappy(duration: 0.25), value: player.startingEntryID)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if !playlist.entries.isEmpty { EditButton() }
-                Menu {
-                    Button { addingSongs = true } label: { Label("Add Songs", systemImage: "plus") }
-                    Button { newName = playlist.name; renaming = true } label: { Label("Rename", systemImage: "pencil") }
-                    Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete Playlist", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .accessibilityLabel("Playlist Actions")
+        #if os(macOS)
+        // The header below has the Back button; none in the window toolbar.
+        .navigationBarBackButtonHidden(true)
+        .workspaceTopBar {
+            PushedPageHeader(title: playlist.name, subtitle: playlist.entries.isEmpty ? nil : playlist.songCountText) {
+                actionsMenu(playlist)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
             }
         }
+        #else
+        .toolbar {
+            ToolbarItemGroup(placement: .platformTrailing) {
+                if !playlist.entries.isEmpty { PlatformEditButton() }
+                actionsMenu(playlist)
+            }
+        }
+        #endif
         .sheet(isPresented: $addingSongs) {
             MusicSearchView(library: library, playlistID: playlist.id)
         }

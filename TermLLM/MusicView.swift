@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 /// The Music screen: what's playing and the playlists saved on this device.
 struct MusicView: View {
@@ -26,7 +28,7 @@ struct MusicView: View {
             rootContent
             .navigationDestination(for: UUID.self) {
                 PlaylistDetailView(library: library, playlistID: $0)
-                    .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+                    .navigationBarVisibility(isActive ? .visible : .hidden)
             }
             .alert("New Playlist", isPresented: $creating) {
                 TextField("Name", text: $newName)
@@ -50,8 +52,8 @@ struct MusicView: View {
     @ViewBuilder private var rootContent: some View {
         if usesWorkspaceChrome {
             libraryList
-                .toolbar(.hidden, for: .navigationBar)
-                .safeAreaInset(edge: .top, spacing: 0) {
+                .navigationBarVisibility(.hidden)
+                .workspaceTopBar {
                     WorkspaceHeader(title: "Music", onToggleSidebar: onToggleSidebar) {
                         if !embedded {
                             Button("Done") { dismiss() }
@@ -63,14 +65,14 @@ struct MusicView: View {
                 }
         } else {
             libraryList
-                .toolbar(isActive ? .visible : .hidden, for: .navigationBar)
+                .navigationBarVisibility(isActive ? .visible : .hidden)
                 .toolbar {
                     if !embedded {
-                        ToolbarItem(placement: .topBarLeading) {
+                        ToolbarItem(placement: .platformLeading) {
                             Button("Done") { dismiss() }
                         }
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .platformTrailing) {
                         newPlaylistButton
                     }
                 }
@@ -125,12 +127,12 @@ struct MusicView: View {
                 Label("Apple Music access is off", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
                 Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    if let url = NativeApp.appSettingsURL { openURL(url) }
                 }
             }
         } footer: {
             Text(usesWorkspaceChrome
-                 ? "Playlists are saved on this device. Searching and playing songs uses Apple Music."
+                 ? (AppPlatform.isMac ? "Playlists are saved on this Mac. Searching and playing songs uses Apple Music." : "Playlists are saved on this device. Searching and playing songs uses Apple Music.")
                  : "Playlists are saved on this iPhone. Searching and playing songs uses Apple Music.")
         }
     }
@@ -170,7 +172,7 @@ struct MusicView: View {
         Section("Playlists") {
             if library.store.playlists.isEmpty {
                 ContentUnavailableView("No Playlists", systemImage: "music.note.list",
-                                       description: Text("Tap + to make one, or ask the agent to."))
+                                       description: Text(AppPlatform.isMac ? "Create a playlist with +, or ask the agent to." : "Tap + to make one, or ask the agent to."))
             }
             ForEach(library.store.playlists) { playlist in
                 NavigationLink(value: playlist.id) { PlaylistRow(playlist: playlist, player: player) }

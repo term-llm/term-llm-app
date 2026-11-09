@@ -255,11 +255,15 @@ final class PushCenterTests: XCTestCase {
         await center.setEnabled(true)
         center.updateAttentionBadge(count: 3)
         await waitForBadge { self.badgeSink.badge == 3 }
+        #if os(iOS)
         authorizer.current = .ephemeral
         await center.refreshAuthorization()
         center.updateAttentionBadge(count: 4)
         await waitForBadge { self.badgeSink.badge == 4 }
         XCTAssertEqual(badgeSink.attempts, [3, 4])
+        #else
+        XCTAssertEqual(badgeSink.attempts, [3])
+        #endif
         XCTAssertEqual(authorizer.requests, 0)
     }
 

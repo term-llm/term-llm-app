@@ -61,6 +61,8 @@ struct LinkedDevicesKeychainStorage: LinkedDevicesSecureStorage {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+            // Implicit on iOS; required for the native Mac app (see HubKeychainBearerStorage).
+            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 

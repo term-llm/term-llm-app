@@ -504,10 +504,21 @@ final class ListenEngineTransferTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    #if os(iOS)
     private final class QuietAudioSession: ListenAudioSession, @unchecked Sendable {
         func setCategory(_ category: AVAudioSession.Category, mode: AVAudioSession.Mode,
                          policy: AVAudioSession.RouteSharingPolicy, options: AVAudioSession.CategoryOptions) throws {}
         func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {}
+    }
+
+    #endif
+
+    private func quietEngine() -> AVListenEngine {
+        #if os(iOS)
+        AVListenEngine(audioSession: QuietAudioSession())
+        #else
+        AVListenEngine()
+        #endif
     }
 
     private final class Outcome: @unchecked Sendable {
@@ -556,7 +567,7 @@ final class ListenEngineTransferTests: XCTestCase {
         server.hold(160_000 ..< 400_000)
         let (transfer, outcome) = transfer(server, url)
         transfer.start()
-        let engine = AVListenEngine(audioSession: QuietAudioSession())
+        let engine = quietEngine()
         defer { engine.stop() }
 
         try await engine.load(ListenSource(url: url, transfer: transfer), startAt: 0)
@@ -584,7 +595,7 @@ final class ListenEngineTransferTests: XCTestCase {
         let server = FakeMediaServer()
         server.serve(url, .init(body: Self.silentMP3(seconds: 120)))
         let realSession = ProcessInfo.processInfo.environment["TERMLLM_LISTEN_REAL_AUDIO_SESSION"] == "1"
-        let engine = realSession ? AVListenEngine() : AVListenEngine(audioSession: QuietAudioSession())
+        let engine = realSession ? AVListenEngine() : quietEngine()
         defer { engine.stop() }
         var bufferEvents = 0
         engine.onEvent = { event in
@@ -646,7 +657,7 @@ final class ListenEngineTransferTests: XCTestCase {
         server.serve(url, .init(body: body, mime: "application/octet-stream"))
         let (transfer, outcome) = transfer(server, url)
         transfer.start()
-        let engine = AVListenEngine(audioSession: QuietAudioSession())
+        let engine = quietEngine()
         defer { engine.stop() }
 
         try await engine.load(ListenSource(url: url, transfer: transfer), startAt: 20)

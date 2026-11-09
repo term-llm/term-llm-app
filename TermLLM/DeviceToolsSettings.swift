@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 /// Device tools and whether agents may use them. Tools reach an agent only
 /// through its open chat page (WebMCP); one switch covers every connection.
@@ -47,7 +49,7 @@ final class DeviceToolsSettings: ObservableObject {
 /// Plain-language explanation of what "Share device tools" exposes.
 struct DeviceToolsInfoView: View {
     var platform: DeviceToolPlatform = .current
-    var deviceModel: String = UIDevice.current.model
+    var deviceModel: String = NativeDevice.model
 
     var statusTitle: String { "\(platform == .mac ? platform.name : deviceModel) status" }
     var statusSummary: String { "Battery, \(platform.systemVersionLabel) and whether the app is open." }
@@ -92,6 +94,6 @@ struct DeviceToolsInfoView: View {
             }
         }
         .navigationTitle("Device tools")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 }

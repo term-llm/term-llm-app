@@ -108,7 +108,7 @@ struct PhoneHubView: View {
             .contentMargins(.top, 8, for: .scrollContent)
             // Pinned outside the List: a list row clips the control with its
             // own rounded shape, and a pinned switcher stays reachable.
-            .safeAreaInset(edge: .top, spacing: 0) {
+            .workspaceTopBar {
                 VStack(spacing: 0) {
                     if usesWorkspaceChrome {
                         WorkspaceHeader(title: "Agents", subtitle: "All connections", onToggleSidebar: onToggleSidebar) {
@@ -135,20 +135,20 @@ struct PhoneHubView: View {
                         .padding(.vertical, usesWorkspaceChrome ? 12 : 6)
                         .frame(maxWidth: usesWorkspaceChrome ? 900 : .infinity)
                         .frame(maxWidth: .infinity)
-                        .background(Color(.systemGroupedBackground))
+                        .background(Color.platformGroupedBackground)
                     }
                 }
             }
             .modifier(WorkspaceListWidth(enabled: usesWorkspaceChrome))
             .navigationTitle("Agents")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(isVisible && !usesWorkspaceChrome ? .visible : .hidden, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarVisibility(isVisible && !usesWorkspaceChrome ? .visible : .hidden)
             .toolbar {
                 if isVisible && !usesWorkspaceChrome {
                     ToolbarItem(placement: .principal) {
                         Text("Agents").font(.headline).accessibilityIdentifier("phoneHub.home")
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .platformTrailing) {
                         // Connections live in Settings; their issues badge it.
                         Button(action: onSettings) {
                             Image(systemName: "gearshape")
@@ -161,7 +161,7 @@ struct PhoneHubView: View {
                         .accessibilityValue(connectionIssueCount == 0 ? "" : "\(connectionIssueCount) connection\(connectionIssueCount == 1 ? "" : "s") need attention")
                         .accessibilityIdentifier("phoneHub.settings")
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .platformTrailing) {
                         Button { aggregate.refresh() } label: {
                             ZStack {
                                 Image(systemName: "arrow.clockwise").opacity(loadingSources.isEmpty ? 1 : 0)
@@ -187,7 +187,7 @@ struct PhoneHubView: View {
                 PhoneHubAgentView(route: route, aggregate: aggregate, isVisible: isVisible,
                                   onOpenChat: onOpenChat, onSettings: onSettings)
                     // A pushed agent still owns its native back/navigation controls.
-                    .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
+                    .navigationBarVisibility(isVisible ? .visible : .hidden)
                     // An edited endpoint is a new source identity: start over
                     // with it rather than keep the old one's history.
                     .id(aggregate.source(route.sourceID).map(ObjectIdentifier.init))
@@ -274,7 +274,7 @@ struct PhoneHubView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
                 TextField("Search sessions", text: $sessionSearch)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                     .submitLabel(.search)
                     .onSubmit { aggregate.searchAllAgents() }
                     .focused($sessionSearchFocused)
@@ -292,7 +292,7 @@ struct PhoneHubView: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color.platformSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 10))
             Menu {
                 Picker("Sort by", selection: Binding(get: { current }, set: { if searching { searchSort = $0 } else { sessionSort = $0 } })) {
                     ForEach(options) { Text($0.label).tag($0) }
@@ -300,7 +300,7 @@ struct PhoneHubView: View {
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
                     .frame(width: 36, height: 36)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color.platformSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 10))
             }
             .accessibilityLabel("Sort sessions")
             .accessibilityValue(current.label)
@@ -609,7 +609,7 @@ struct PhoneHubConnectionsView: View {
                     }
                 }
                 if reviewSources.isEmpty && aggregate.sources.isEmpty {
-                    Text("No connections yet. Tap + to add a server.")
+                    Text(AppPlatform.isMac ? "No connections yet. Use + to add a server." : "No connections yet. Tap + to add a server.")
                         .foregroundStyle(.secondary)
                 }
             } header: {
@@ -618,7 +618,7 @@ struct PhoneHubConnectionsView: View {
                 if !(reviewSources.isEmpty && aggregate.sources.isEmpty) {
                     Text("Select a connection to see its status, sign in, or manage it.")
                 }
-                if ProcessInfo.processInfo.isiOSAppOnMac {
+                if AppPlatform.isMac {
                     Text("To link a device on Mac, open the one-use pairing link from the host’s Settings → Linked devices. You don’t need to scan a QR code.")
                 }
             }
@@ -633,7 +633,7 @@ struct PhoneHubConnectionsView: View {
         }
         .transaction { $0.animation = nil }
         .navigationTitle("Connections")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Add Connection", systemImage: "plus") { editor = PhoneHubView.Editor() }
@@ -821,7 +821,7 @@ private struct PhoneHubConnectionDetailView: View {
         }
         .accessibilityIdentifier("phoneHub.connectionDetail")
         .navigationTitle(source.connection.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .confirmationDialog(isLinked ? "Forget \(source.connection.name)?" : "Remove \(source.connection.name)?",
                             isPresented: $confirmingRemove, titleVisibility: .visible) {
             Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) {
@@ -1011,7 +1011,7 @@ private struct PhoneHubConnectionDetailView: View {
             }
         }
         .padding(2)
-        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(Color.platformTertiaryFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("phoneHub.panels")
@@ -1041,7 +1041,7 @@ private struct PhoneHubConnectionDetailView: View {
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color(.systemBackground))
+                        .fill(Color.platformBackground)
                         .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
                 }
             }
@@ -1115,7 +1115,7 @@ struct PhoneHubFixtureBanner: View {
                             .accessibilityIdentifier("phoneHub.connection.done")
                     }
                     .padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.systemGroupedBackground))
+                    .background(Color.platformGroupedBackground)
                 } else {
                     Form {
                         Section {
@@ -1132,8 +1132,7 @@ struct PhoneHubFixtureBanner: View {
                                 Text("Server address").font(.subheadline.weight(.medium))
                                 HStack {
                                     TextField("https://server.example/", text: $address)
-                                        .textContentType(.URL).keyboardType(.URL)
-                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                        .urlTextEntry().autocorrectionDisabled()
                                         .focused($focusedField, equals: .address)
                                         .submitLabel(.next)
                                         .onSubmit { focusedField = .name }
@@ -1211,7 +1210,7 @@ struct PhoneHubFixtureBanner: View {
             .sensoryFeedback(.success, trigger: saved != nil)
             .sensoryFeedback(.error, trigger: error != nil)
             .navigationTitle(saved == nil ? (source == nil ? "Add Connection" : "Edit Connection") : "All set")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 if saved == nil {
                     ToolbarItem(placement: .cancellationAction) {
@@ -1280,6 +1279,22 @@ struct PhoneHubFixtureBanner: View {
 
 /// Quiet, native root chrome for the larger-screen workspace. Live Chat never
 /// uses this: its existing web header remains the sole conversation header.
+extension View {
+    /// Pins workspace chrome above scrolling content. iPhone/iPad scroll the
+    /// content under it as a safe-area inset; Mac lists apply that inset
+    /// twice, so the Mac stacks the bar above the list instead.
+    @ViewBuilder func workspaceTopBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            bar()
+            self
+        }
+        #else
+        safeAreaInset(edge: .top, spacing: 0, content: bar)
+        #endif
+    }
+}
+
 struct WorkspaceHeader<Actions: View>: View {
     let title: String
     var subtitle: String? = nil
@@ -1317,7 +1332,7 @@ struct WorkspaceHeader<Actions: View>: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 4)
         .frame(minHeight: 52)
-        .background(Color(.secondarySystemGroupedBackground))
+        .background(Color.platformSecondaryGroupedBackground)
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.header")

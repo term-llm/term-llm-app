@@ -1,7 +1,7 @@
 import Combine
 import CryptoKit
 import Foundation
-import UIKit
+import Security
 import OSLog
 import UserNotifications
 
@@ -16,6 +16,9 @@ enum PushEnvironment: String, Codable {
     static let current: PushEnvironment = {
         #if targetEnvironment(simulator)
         return .development
+        #elseif os(macOS)
+        // A Mac app's own signed entitlement names its APNs environment.
+        return signedEnvironment() ?? .production
         #else
         // App Store and TestFlight installs carry no embedded profile.
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
@@ -23,6 +26,15 @@ enum PushEnvironment: String, Codable {
         return parse(provisioningProfile: data) ?? .production
         #endif
     }()
+
+    #if os(macOS)
+    static func signedEnvironment() -> PushEnvironment? {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.aps-environment" as CFString, nil)
+                as? String else { return nil }
+        return PushEnvironment(rawValue: value)
+    }
+    #endif
 
     /// Reads `aps-environment` from the plist inside a CMS-signed profile.
     static func parse(provisioningProfile data: Data) -> PushEnvironment? {
@@ -207,16 +219,16 @@ final class PushCenter: NSObject, ObservableObject {
     let windows = PushWindowRegistry()
     let inbox: PushNotificationInbox
     /// Injected by tests; production requests the exact scene or a fresh scene.
-    var activateScene: (UISceneSession?, NSUserActivity, @escaping (Error) -> Void) -> Void = { session, activity, failed in
-        UIApplication.shared.requestSceneSessionActivation(session, userActivity: activity, options: nil, errorHandler: failed)
+    var activateScene: (NativeSceneSession?, NSUserActivity, @escaping (Error) -> Void) -> Void = { session, activity, failed in
+        NativeApp.activate(session, activity: activity, failed: failed)
     }
     static let navigationActivity = "com.termllm.app.notification"
     static let windowSessionsKey = "push.windowSessions"
     /// Legacy diagnostic only. A URL is never attendance or read authority.
     var visibleURL: URL?
-    var isActive: () -> Bool = { UIApplication.shared.applicationState == .active }
-    /// Injected by tests; false on iPhone, where only one scene can exist.
-    var supportsMultipleScenes: () -> Bool = { UIApplication.shared.supportsMultipleScenes }
+    var isActive: () -> Bool = { NativeApp.state == .active }
+    /// Injected by tests; false on iPhone and Mac, where only one scene can exist.
+    var supportsMultipleScenes: () -> Bool = { NativeApp.supportsMultipleScenes }
 
     private let defaults: UserDefaults
     private let identities: PushIdentityStore
@@ -243,7 +255,7 @@ final class PushCenter: NSObject, ObservableObject {
          identities: PushIdentityStore = PushIdentityStore(),
          authorizer: PushAuthorizer = SystemPushAuthorizer(),
          relayTransport: @escaping PushRelayClient.Transport = PushRelayClient.defaultTransport,
-         registerForRemote: @escaping @MainActor () -> Void = { UIApplication.shared.registerForRemoteNotifications() },
+         registerForRemote: @escaping @MainActor () -> Void = { NativeApp.registerForRemoteNotifications() },
          environment: PushEnvironment = .current,
          tokenTimeout: Duration = .seconds(20),
          deliveries: PushDeliveryStore = PushDeliveryStore(),
@@ -320,7 +332,11 @@ final class PushCenter: NSObject, ObservableObject {
     }
 
     private var isAuthorized: Bool {
+        #if os(iOS)
         [.authorized, .provisional, .ephemeral].contains(authorization)
+        #else
+        [.authorized, .provisional].contains(authorization)
+        #endif
     }
 
     // MARK: App lifecycle
@@ -588,7 +604,7 @@ final class PushCenter: NSObject, ObservableObject {
         }
         let sessions = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
         let session = windowID.flatMap { id in
-            windows.scene(windowID: id)?.session ?? UIApplication.shared.openSessions.first { $0.persistentIdentifier == sessions[id] }
+            windows.scene(windowID: id)?.sceneSession ?? sessions[id].flatMap(NativeApp.openSession(identifier:))
         }
         // If the exact scene is gone, only the scene activity may claim a fresh
         // destination. Existing sibling BrowserViews cannot consume nil owner.
@@ -751,17 +767,17 @@ final class PushCenter: NSObject, ObservableObject {
 
     func isKeyScene(_ windowID: String) -> Bool { windows.keyWindowID() == windowID }
 
-    static func windowID(for scene: UIWindowScene) -> String {
-        PushWindowRegistry.identifier(persistentIdentifier: scene.session.persistentIdentifier)
+    static func windowID(for scene: NativeWindowScene) -> String {
+        PushWindowRegistry.identifier(persistentIdentifier: scene.sceneIdentifier)
     }
 
-    func registerWindow(_ windowID: String, scene: UIWindowScene) {
+    func registerWindow(_ windowID: String, scene: NativeWindowScene) {
         windows.register(windowID: windowID, scene: scene)
         let stored = defaults.dictionary(forKey: Self.windowSessionsKey) as? [String: String] ?? [:]
         // Retain only live/restorable scene sessions; no unbounded scene history.
-        let live = Set(UIApplication.shared.openSessions.map(\.persistentIdentifier))
+        let live = NativeApp.openSceneIdentifiers
         var sessions = stored.filter { live.contains($0.value) }
-        sessions[windowID] = scene.session.persistentIdentifier
+        sessions[windowID] = scene.sceneIdentifier
         // Callers re-register on page loads and bridge messages; only touch
         // the defaults store when the persisted map actually changes.
         if sessions != stored { defaults.set(sessions, forKey: Self.windowSessionsKey) }

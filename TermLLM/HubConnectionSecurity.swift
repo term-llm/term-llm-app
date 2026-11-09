@@ -5,7 +5,8 @@ import WebKit
 /// Simulator fixture has no production settings, cookies, keychain, push, or tools.
 enum PhoneHubFixture {
     static var isEnabled: Bool {
-        #if DEBUG && targetEnvironment(simulator)
+        // Debug builds on the Simulator or a Mac only; never shipped.
+        #if DEBUG && (targetEnvironment(simulator) || os(macOS))
         ProcessInfo.processInfo.environment["TERMLLM_PHONE_HUB_FIXTURE_URL"] == "http://localhost:8767/"
         #else
         false
@@ -58,9 +59,12 @@ protocol HubBearerStorage {
 /// Actual SDK Keychain implementation. UUID scope separates even sibling mounts.
 struct HubKeychainBearerStorage: HubBearerStorage {
     private func query(_ id: UUID) -> [String: Any] {
+        // The data-protection keychain is implicit on iOS; a native Mac app
+        // must ask for it, or items land in the legacy login keychain instead.
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.termllm.app.phoneHub.bearer",
-         kSecAttrAccount as String: id.uuidString]
+         kSecAttrAccount as String: id.uuidString,
+         kSecUseDataProtectionKeychain as String: true]
     }
     func read(id: UUID) throws -> String? {
         var query = query(id)

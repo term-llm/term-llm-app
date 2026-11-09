@@ -2,7 +2,9 @@ import AuthenticationServices
 import CryptoKit
 import Foundation
 import Security
+#if os(iOS)
 import UIKit
+#endif
 import WebKit
 
 /// Authenticates in the system browser, then imports only the newly issued
@@ -13,10 +15,7 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
     private let callbackScheme = "termllm-auth"
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) ?? UIWindow()
+        NativeApp.keyWindow ?? ASPresentationAnchor()
     }
 
     var cookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?

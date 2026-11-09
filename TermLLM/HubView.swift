@@ -177,15 +177,15 @@ struct HubView: View {
                         case .security: securityPanel
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .platformInsetGroupedListStyle()
                     .transaction { $0.animation = nil }
                     .refreshable { await store.refresh() }
                 }
             }
             .navigationTitle(source?.connection.name ?? "Hub")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTrailing) {
                     Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Refresh Hub")
                         .accessibilityIdentifier("hub.refresh")
@@ -328,7 +328,7 @@ struct HubView: View {
             }.accessibilityIdentifier("hub.sessions")
         }
         .navigationTitle(node.name)
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { HubBackButton() } }
+        .toolbar { ToolbarItem(placement: .platformTrailing) { HubBackButton() } }
     }
 
     private func sessionButton(_ session: HubNodeSession, node: HubNode) -> some View {
@@ -462,7 +462,7 @@ struct HubView: View {
                 Text("This Hub does not support saving nodes. Configure its node store on the host.")
             } else {
                 TextField("Name", text: $nodeName).accessibilityIdentifier("hub.nodeName")
-                TextField("HTTPS server URL", text: $nodeURL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("HTTPS server URL", text: $nodeURL).urlTextEntry().autocorrectionDisabled()
                 SecureField("Node token", text: $nodeToken)
                 HStack {
                     Button("Test connection") { Task { await store.testNode(nodeForm) } }
@@ -653,7 +653,7 @@ struct HubView: View {
     private func openSecurityInBrowser() {
         // Pinned Hub has no /auth/security route or security deep link.
         // Open its real dashboard; the user explicitly chooses Security there.
-        UIApplication.shared.open(server)
+        NativeApp.open(server)
     }
 }
 

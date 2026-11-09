@@ -184,7 +184,16 @@ public struct ServiceController: Sendable {
     }
 
     public func status() throws -> ServiceStatusReport {
-        let result = try invoke(["service", "status", kind, "--json"], timeout: 15)
+        try report(["service", "status", kind, "--json"])
+    }
+
+    /// Web and Hub from one invocation, so polling spawns a single CLI process.
+    public func statusAll() throws -> ServiceStatusReport {
+        try report(["service", "status", "--json"])
+    }
+
+    private func report(_ arguments: [String]) throws -> ServiceStatusReport {
+        let result = try invoke(arguments, timeout: 15)
         guard result.succeeded else {
             throw ServiceContractError.commandFailed(status: result.status,
                                                       message: Self.message(from: result))
@@ -213,7 +222,7 @@ public struct ServiceController: Sendable {
     /// requested; this app does not rely on core defaults, so a future default
     /// change cannot silently downgrade the connection mode.
     public func installFresh(authMode: String = "bearer", port: Int? = nil) throws -> CommandResult {
-        var args = ["service", "install", kind, "--yes", "--"]
+        var args = ["service", "install", kind, "--yes", "--binary", executable.path, "--"]
         args.append("--auth")
         args.append(authMode)
         if let port { args.append(contentsOf: ["--port", String(port)]) }
@@ -238,6 +247,52 @@ public struct ServiceController: Sendable {
 
     public func setAutostart(_ enabled: Bool) throws -> CommandResult {
         try invoke(["service", "autostart", kind, enabled ? "on" : "off"], timeout: 60)
+    }
+
+    private struct CapabilityKey: Hashable, Sendable {
+        let file: FileIdentity
+        let operation: String
+    }
+    private static let capabilities = FileCheckCache<CapabilityKey, Bool>()
+
+    /// True only when this CLI implements `service <operation>`. CLIs without
+    /// the subcommand (0.9.94 included) answer `service <operation> --help`,
+    /// and even `service reload web`, with the parent `service` help and exit
+    /// 0, so success alone proves nothing. The probe requires the subcommand's
+    /// own usage line. Answers are cached until the executable is replaced.
+    public func supports(_ operation: String) -> Bool {
+        let key = FileIdentity(executable).map { CapabilityKey(file: $0, operation: operation) }
+        if let key, let cached = Self.capabilities.value(for: key) { return cached }
+        guard let result = try? invoke(["service", operation, "--help"], timeout: 10) else { return false }
+        let supported = result.succeeded && Self.usageNamesSubcommand(result.stdout, operation: operation)
+        if let key { Self.capabilities.set(supported, for: key) }
+        return supported
+    }
+
+    /// Matches cobra's `Usage:` section, e.g. `  term-llm service rebind [web|hub] [flags]`.
+    static func usageNamesSubcommand(_ help: String, operation: String) -> Bool {
+        let lines = help.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let usage = lines.firstIndex(of: "Usage:"), usage + 1 < lines.count else { return false }
+        let words = lines[usage + 1].split(separator: " ")
+        return words.count >= 3 && words[1] == "service" && words[2] == Substring(operation)
+    }
+
+    /// Core restarts a running service and may restore the previous binary, each
+    /// step bounded by launchd's exit timeout and a readiness wait. Killing the
+    /// CLI mid-rollback would leave the service half-switched, so allow ample time.
+    public func rebind(binary: String) throws {
+        try requireSuccess(invoke(["service", "rebind", kind, "--binary", binary], timeout: 300))
+    }
+
+    public func reload() throws {
+        try requireSuccess(invoke(["service", "reload", kind], timeout: 20))
+    }
+
+    public func requireSuccess(_ result: CommandResult) throws {
+        guard result.succeeded else {
+            // Child output is not trusted to be credential-free.
+            throw ServiceContractError.commandFailed(status: result.status, message: "The service command failed (exit \(result.status)).")
+        }
     }
 
     public func uninstall() throws -> CommandResult {
@@ -270,7 +325,7 @@ public struct ServiceController: Sendable {
             throw ServiceContractError.executableUnavailable(executable.path)
         }
         return try runner.run(executable: executable, arguments: arguments,
-                              environment: ["TERM_LLM_NO_PROMPT": "1"], timeout: timeout)
+                              environment: ["TERM_LLM_NO_PROMPT": "1", "TERM_LLM_SKIP_UPDATE_CHECK": "1"], timeout: timeout)
     }
 
     public static func message(from result: CommandResult) -> String {

@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if os(iOS)
 import UIKit
+#endif
 
 /// Supplies device location. The real one wraps `CLLocationManager`.
 @MainActor
@@ -162,7 +164,7 @@ final class NavigationService {
     init(location: LocationProvider, planner: RoutePlanner, now: @escaping () -> Date = Date.init,
          makeID: @escaping () -> String = { String(UUID().uuidString.prefix(8)).lowercased() },
          thresholds: RouteTracker.Thresholds = RouteTracker.Thresholds(), timeZone: TimeZone = .current,
-         appActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active },
+         appActive: @escaping () -> Bool = { NativeApp.state == .active },
          stallCheck: Duration = .seconds(60)) {
         self.timeZone = timeZone
         self.location = location

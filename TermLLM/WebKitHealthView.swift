@@ -1,6 +1,11 @@
 import Charts
 import SwiftUI
+import UniformTypeIdentifiers
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// Settings row: names the worst current finding, otherwise the thermal state.
 struct WebKitHealthSettingsRow: View {
@@ -61,7 +66,7 @@ struct WebKitHealthView: View {
             }
         }
         .navigationTitle("Web page health")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .onAppear { monitor.detailed = true }
         .onDisappear { monitor.detailed = false }
         .task {
@@ -76,6 +81,7 @@ struct WebKitHealthView: View {
         } message: {
             Text("Try again, or use Copy for diagnosis.")
         }
+        #if os(iOS)
         .sheet(item: $sharing, onDismiss: {
             if let exportURL {
                 try? FileManager.default.removeItem(at: exportURL.deletingLastPathComponent())
@@ -85,6 +91,7 @@ struct WebKitHealthView: View {
             ActivitySheet(items: [report.url])
                 .ignoresSafeArea()
         }
+        #endif
     }
 
     // MARK: Sections
@@ -219,12 +226,20 @@ struct WebKitHealthView: View {
     private var reportSection: some View {
         Section {
             Button {
-                UIPasteboard.general.string = monitor.report(compact: true)
+                NativeApp.copy(monitor.report(compact: true))
                 copied = true
             } label: {
                 Label(copied ? "Copied" : "Copy for diagnosis", systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .accessibilityIdentifier("webKitHealth.copy")
+            #if os(macOS)
+            Button {
+                saveReport()
+            } label: {
+                Label("Save full report…", systemImage: "square.and.arrow.down")
+            }
+            .accessibilityIdentifier("webKitHealth.share")
+            #else
             Button {
                 do {
                     let url = try WebKitHealthReport.writeFile(monitor.report())
@@ -237,6 +252,7 @@ struct WebKitHealthView: View {
                 Label("Share full report", systemImage: "square.and.arrow.up")
             }
             .accessibilityIdentifier("webKitHealth.share")
+            #endif
         } header: {
             Text("Report")
         } footer: {
@@ -492,6 +508,25 @@ private struct HealthMetric: View {
     }
 }
 
+#if os(macOS)
+extension WebKitHealthView {
+    /// A Mac saves the full report where the user chooses instead of sharing it.
+    fileprivate func saveReport() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "term-llm-health.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try Data(monitor.report().utf8).write(to: url, options: .atomic)
+        } catch {
+            exportFailed = true
+        }
+    }
+}
+#endif
+
+#if os(iOS)
 private struct ActivitySheet: UIViewControllerRepresentable {
     let items: [Any]
 
@@ -501,3 +536,4 @@ private struct ActivitySheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
+#endif

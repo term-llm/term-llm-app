@@ -91,7 +91,7 @@ final class DeviceToolsTests: XCTestCase {
     }
 
     func testRuntimePlatformDrivesDefaultToolCopy() {
-        let expected: DeviceToolPlatform = ProcessInfo.processInfo.isiOSAppOnMac ? .mac : .iPhone
+        let expected: DeviceToolPlatform = AppPlatform.isMac ? .mac : .iPhone
         XCTAssertEqual(DeviceToolPlatform.current, expected)
         XCTAssertEqual(BuiltInDeviceTools.ping().title, "Ping \(expected.name)")
         XCTAssertEqual(BuiltInDeviceTools.standardRegistry().tool(named: "device_info")?.title, "\(expected.name) status")

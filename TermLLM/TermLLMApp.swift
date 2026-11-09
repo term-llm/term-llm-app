@@ -1,6 +1,7 @@
 import SwiftUI
-import UIKit
 import WebKit
+#if os(iOS)
+import UIKit
 
 @main
 struct TermLLMApp: App {
@@ -14,6 +15,18 @@ struct TermLLMApp: App {
         WindowGroup {
             ContentView()
         }
+    }
+}
+#endif
+
+/// The native AppKit build (TermLLMMac). iPhone/iPad builds never run on a Mac.
+enum AppPlatform {
+    static var isMac: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
     }
 }
 
@@ -30,8 +43,10 @@ enum AppTab: String, CaseIterable {
     }
 }
 
+/// Mac Chat zoom: whole-page zoom like Safari's View menu, reflowing at the
+/// window's width. 100% matches the server's own rendering in a browser.
 enum DesktopChatAppearance {
-    static let defaultZoom = 1.25
+    static let defaultZoom = 1.0
     static func clamped(_ zoom: Double) -> Double {
         zoom.isFinite ? min(2, max(0.75, zoom)) : defaultZoom
     }
@@ -50,9 +65,9 @@ enum DesktopCommand: String, CaseIterable {
         case .settings: "Settings…"
         case .refresh: "Refresh Current View"
         case .back: "Back in Chat"
-        case .zoomIn: "Larger Chat Text"
-        case .zoomOut: "Smaller Chat Text"
-        case .resetZoom: "Reset Chat Text to 125%"
+        case .zoomIn: "Zoom In"
+        case .zoomOut: "Zoom Out"
+        case .resetZoom: "Actual Size"
         default: tab!.title
         }
     }
@@ -69,14 +84,6 @@ enum DesktopCommand: String, CaseIterable {
         case .zoomOut: "-"
         case .resetZoom: "0"
         }
-    }
-    @MainActor func keyCommand() -> UIKeyCommand {
-        let command = UIKeyCommand(title: title, action: #selector(DesktopCommandController.performDesktopCommand(_:)),
-                                   input: input, modifierFlags: .command, propertyList: rawValue,
-                                   discoverabilityTitle: title)
-        // Do not preempt WebKit/native editing, focus, or unmodified text keys.
-        command.wantsPriorityOverSystemBehavior = false
-        return command
     }
 }
 
@@ -110,109 +117,23 @@ struct DesktopCommandPolicy: Equatable {
     }
 }
 
-/// A stable ancestor of the actual content (including WKWebView), not a hidden
-/// sibling that needs to steal first responder or broadcast global notifications.
-struct DesktopCommandHost<Content: View>: UIViewControllerRepresentable {
-    let policy: DesktopCommandPolicy
-    let onCommand: (DesktopCommand) -> Void
-    @ViewBuilder var content: () -> Content
-
-    func makeUIViewController(context: Context) -> DesktopCommandController {
-        let controller = DesktopCommandController()
-        let host = UIHostingController(rootView: content())
-        controller.addChild(host)
-        controller.view.addSubview(host.view)
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: controller.view.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor)
-        ])
-        host.didMove(toParent: controller)
-        return controller
-    }
-
-    func updateUIViewController(_ controller: DesktopCommandController, context: Context) {
-        // Updating a hosting root of the same type preserves SwiftUI/WebKit identity.
-        (controller.children.first as? UIHostingController<Content>)?.rootView = content()
-        let changed = controller.policy != policy
-        controller.policy = policy
-        controller.onCommand = onCommand
-        if changed { UIMenuSystem.main.setNeedsRevalidate() }
-    }
-}
-
-final class DesktopCommandController: UIViewController {
-    var policy: DesktopCommandPolicy?
-    var onCommand: ((DesktopCommand) -> Void)?
-
-    override var keyCommands: [UIKeyCommand]? { DesktopCommand.allCases.map { $0.keyCommand() } }
-    override var canBecomeFirstResponder: Bool { true }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // Supply an initial keyboard target on native screens, but never displace
-        // a WebKit/native text field that already owns the keyboard.
-        func containsFirstResponder(_ view: UIView) -> Bool {
-            view.isFirstResponder || view.subviews.contains(where: containsFirstResponder)
-        }
-        if let window = view.window, !containsFirstResponder(window) { becomeFirstResponder() }
-    }
-
-    private var ownsActiveContent: Bool {
-        guard let window = viewIfLoaded?.window, window.isKeyWindow,
-              window.windowScene?.activationState == .foregroundActive else { return false }
-        // Sheets/alerts (including descendants' editors) own their own keyboard
-        // interaction. Do not navigate or reload the obscured document behind them.
-        func hasPresentation(_ controller: UIViewController) -> Bool {
-            controller.presentedViewController != nil || controller.children.contains(where: hasPresentation)
-        }
-        return window.rootViewController.map { !hasPresentation($0) } ?? false
-    }
-
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(performDesktopCommand(_:)) {
-            guard ownsActiveContent, let command = sender as? UICommand,
-                  let value = command.propertyList as? String,
-                  let intent = DesktopCommand(rawValue: value) else { return false }
-            return policy?.allows(intent) == true
-        }
-        return super.canPerformAction(action, withSender: sender)
-    }
-
-    override func validate(_ command: UICommand) {
-        super.validate(command)
-        guard let value = command.propertyList as? String, let intent = DesktopCommand(rawValue: value) else { return }
-        if let tab = intent.tab { command.state = policy?.tab == tab ? .on : .off }
-        if intent == .refresh {
-            switch policy?.refresh {
-            case .agents: command.title = "Refresh Agents"
-            case .chat, .reopenChat: command.title = "Reload Chat"
-            case nil: command.title = intent.title
-            }
-        }
-    }
-
-    @objc func performDesktopCommand(_ sender: UICommand) {
-        // Recheck at execution, not only when the menu was built/validated.
-        guard canPerformAction(#selector(performDesktopCommand(_:)), withSender: sender),
-              let value = sender.propertyList as? String, let command = DesktopCommand(rawValue: value) else { return }
-        onCommand?(command)
-    }
-}
-
 /// A scene's shell is chosen by device, not size class or window width. In
 /// particular, a narrow iPad never becomes the phone TabView (or reparents Chat).
 enum WorkspacePlatform: Equatable {
     case phone, pad, mac
 
-    init(idiom: UIUserInterfaceIdiom, isIOSAppOnMac: Bool) {
-        self = isIOSAppOnMac ? .mac : (idiom == .pad ? .pad : .phone)
+    #if os(iOS)
+    init(idiom: UIUserInterfaceIdiom) {
+        self = idiom == .pad ? .pad : .phone
     }
+    #endif
 
     @MainActor static var current: Self {
-        Self(idiom: UIDevice.current.userInterfaceIdiom, isIOSAppOnMac: ProcessInfo.processInfo.isiOSAppOnMac)
+        #if os(macOS)
+        .mac
+        #else
+        Self(idiom: UIDevice.current.userInterfaceIdiom)
+        #endif
     }
 
     var usesWorkspaceChrome: Bool { self != .phone }
@@ -250,6 +171,7 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
     let chatAgentName: String?
     let onSelect: (AppTab) -> Void
     let onSettings: () -> Void
+    var onLocalService: (() -> Void)? = nil
     @ViewBuilder var agents: ((() -> Void)?) -> Agents
     @ViewBuilder var chat: () -> Chat
     @ViewBuilder var music: ((() -> Void)?) -> Music
@@ -276,7 +198,7 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
                     }
                     .frame(width: selection == .chat && layout.showsSidebarToggle ? 44 : 0)
                     .frame(maxHeight: .infinity)
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color.platformSecondaryBackground)
                     .clipped()
                     .accessibilityElement(children: .contain)
                     .opacity(selection == .chat && layout.showsSidebarToggle ? 1 : 0)
@@ -319,7 +241,7 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
                 sidebar(layout)
                     .frame(width: layout.sidebarWidth)
                     .frame(maxHeight: .infinity)
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color.platformSecondaryBackground)
                     .overlay(alignment: .trailing) { Divider() }
                     .offset(x: layout.showsSidebar ? 0 : -layout.sidebarWidth)
                     .opacity(layout.showsSidebar ? 1 : 0)
@@ -400,6 +322,17 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
             }
             Spacer(minLength: 0)
             Divider().padding(.horizontal, 16)
+            if let onLocalService {
+                Button(action: onLocalService) {
+                    Label("Local Service…", systemImage: "desktopcomputer")
+                        .font(.system(size: 15))
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("workspace.localService")
+            }
             Button {
                 overlayPresented = false
                 onSettings()
@@ -418,6 +351,18 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
 }
 
 private extension View {
+    #if os(macOS)
+    /// A Mac window has one toolbar and title, so each native destination is
+    /// hosted apart from them and draws its own headers (a hidden Agents page
+    /// cannot leave its back button or search over Chat).
+    func workspaceNativeDestination(isVisible: Bool) -> some View {
+        WorkspaceRetainedDestination(isVisible: isVisible, detachesWhenHidden: false) {
+            // A separate hosting root: restate the client's appearance.
+            self.tint(.blue).formStyle(.grouped)
+        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    #else
     func workspaceNativeDestination(isVisible: Bool) -> some View {
         frame(maxWidth: .infinity, maxHeight: .infinity)
             .opacity(isVisible ? 1 : 0)
@@ -425,8 +370,10 @@ private extension View {
             .accessibilityElement(children: .contain)
             .accessibilityHidden(!isVisible)
     }
+    #endif
 }
 
+#if os(iOS)
 /// Opacity/accessibility hiding is not enough for WKWebView: while attached to a
 /// window WebKit still treats the page as visible. Keep the hosting controller
 /// and its root identity, but detach its view just as a native inactive tab does.
@@ -600,3 +547,4 @@ struct WorkspaceSidebarButton: UIViewRepresentable {
         @objc func invoke() { action() }
     }
 }
+#endif

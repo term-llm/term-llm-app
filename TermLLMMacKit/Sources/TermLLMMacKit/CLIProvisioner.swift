@@ -2,28 +2,26 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// On-disk selection of the `term-llm` executable the companion manages or
-/// adopts. A bundled install is copied outside the app so a Terminal invocation
-/// keeps working when the GUI is closed or moved. An external (Homebrew,
-/// standalone) install is only referenced; the companion never updates it.
+/// Release manifest. Legacy sources are decoded for migration only.
 public struct CLISelection: Codable, Equatable, Sendable {
     public enum Source: String, Codable, Sendable {
-        case bundled
+        case release
+        case bundled // schema 1 only
         case external
     }
 
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     public var schemaVersion: Int
     public var source: Source
-    /// Absolute path to the executable that should be run.
+    /// Managed path for releases; display-only legacy path for schema 1.
     public var binaryPath: String
-    /// Managed install version. Empty when adopted from an external install.
+    /// Release version. Legacy bundled versions are not trusted.
     public var version: String
     /// SHA-256 of the managed binary at install time. Empty for external.
     public var sha256: String
     public var installedAt: Date
-    /// Human-readable provenance, e.g. "Homebrew" for `/opt/homebrew/...`.
+    /// Official release URL (legacy manifests may carry a human-readable label).
     public var provenance: String
 
     public init(schemaVersion: Int = CLISelection.schemaVersion,
@@ -47,44 +45,27 @@ public struct CLISelection: Codable, Equatable, Sendable {
     public var binaryURL: URL { URL(fileURLWithPath: binaryPath) }
 }
 
-public struct ExternalCLI: Equatable, Sendable {
-    public var path: String
-    public var resolvedPath: String
-    public var version: String
-    public var provenance: String
-
-    public init(path: String, resolvedPath: String, version: String, provenance: String) {
-        self.path = path
-        self.resolvedPath = resolvedPath
-        self.version = version
-        self.provenance = provenance
-    }
-}
-
 public enum CLIProvisionerError: Error, LocalizedError, Equatable {
-    case payloadMissing(String)
-    case payloadInvalid(String)
+    case candidateMissing(String)
+    case candidateInvalid(String)
     case checksumMismatch(expected: String, actual: String)
     case installFailed(String)
     case notInstalled
-    case externalMissing(String)
     case notExecutable(String)
     case unsafeLocation(String)
 
     public var errorDescription: String? {
         switch self {
-        case .payloadMissing(let path):
-            return "The app does not contain a CLI payload (expected at \(path))."
-        case .payloadInvalid(let reason):
-            return "The bundled CLI payload is not usable: \(reason)"
+        case .candidateMissing(let path):
+            return "The verified candidate is missing (expected at \(path))."
+        case .candidateInvalid(let reason):
+            return "The CLI candidate is not usable: \(reason)"
         case .checksumMismatch:
-            return "The copied CLI payload failed its checksum check; the previous installation was kept."
+            return "The copied CLI candidate failed its checksum check; the previous installation was kept."
         case .installFailed(let reason):
             return "Could not install the CLI: \(reason)"
         case .notInstalled:
             return "No managed term-llm CLI is installed."
-        case .externalMissing(let path):
-            return "The selected external CLI no longer exists at \(path)."
         case .notExecutable(let path):
             return "Not an executable file: \(path)"
         case .unsafeLocation(let path):
@@ -99,7 +80,6 @@ public enum PATHLinkStatus: Equatable, Sendable {
     case linked(String)
     case alreadyLinked(String)
     case notLinked(String)
-    case skippedExternal(String)
     case collision(String)
     case failed(String)
 }
@@ -120,15 +100,15 @@ public enum CLIProblem: Equatable, Sendable {
     }
 }
 
-/// Owns the stable per-user runtime outside the `.app`. Layout:
+/// Owns the stable per-user runtime outside the `.app`, next to term-llm's
+/// own settings so it is in the same place on every OS. Layout:
 ///
-///     ~/Library/Application Support/TermLLM/
+///     ~/.config/term-llm/app/
 ///       install.json          selection + integrity manifest
-///       bin/term-llm          managed executable (bundled installs)
+///       bin/term-llm          managed executable (signed releases)
 ///       backups/<stamp>/...   previous managed executable during an update
 ///       logs/                 optional provisioning logs
 public struct CLIProvisioner {
-    public static let directoryName = "TermLLM"
     public static let executableName = "term-llm"
 
     public let home: URL
@@ -143,9 +123,10 @@ public struct CLIProvisioner {
         self.runner = runner
     }
 
+    /// Fixed under `home`, not `$XDG_CONFIG_HOME`: GUI apps don't see shell
+    /// variables, and tests must never resolve to the developer's real folder.
     public var supportDirectory: URL {
-        home.appendingPathComponent("Library/Application Support", isDirectory: true)
-            .appendingPathComponent(Self.directoryName, isDirectory: true)
+        home.appendingPathComponent(".config/term-llm/app", isDirectory: true)
     }
 
     public var binDirectory: URL { supportDirectory.appendingPathComponent("bin", isDirectory: true) }
@@ -159,7 +140,28 @@ public struct CLIProvisioner {
     public var managedMarkerPresent: Bool {
         fileManager.fileExists(atPath: managedMarkerURL.path)
     }
-    static let markerOwner = "term-llm macOS companion"
+    static let markerOwner = "the term-llm app"
+    static let markerBundleID = "com.termllm.app"
+    var markerUpdateHint: String {
+        "Update it from the term-llm app. If that app is no longer installed, delete \(managedMarkerURL.path) so `term-llm upgrade` can manage this copy."
+    }
+
+    /// `term-llm upgrade` shows the marker's owner and hint when it refuses to
+    /// update this copy. Rewords an existing marker of ours left by an older
+    /// app; never creates one or changes ownership. Skips while an install runs.
+    public func refreshManagedMarkerWording() throws {
+        try requireManagementEnabled()
+        func outdated() -> Bool {
+            guard let data = try? Data(contentsOf: managedMarkerURL),
+                  let marker = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  marker["app_bundle_id"] as? String == Self.markerBundleID else { return false }
+            return marker["owner"] as? String != Self.markerOwner || marker["update_hint"] as? String != markerUpdateHint
+        }
+        guard outdated() else { return }
+        try withInstallLock(waiting: false) {
+            if outdated() { try writeManagedMarker() }
+        }
+    }
     public var backupDirectory: URL { supportDirectory.appendingPathComponent("backups", isDirectory: true) }
     public var pathLink: URL {
         home.appendingPathComponent(".local/bin", isDirectory: true)
@@ -172,10 +174,15 @@ public struct CLIProvisioner {
         guard fileManager.fileExists(atPath: manifestURL.path) else { return .success(nil) }
         do {
             let data = try Data(contentsOf: manifestURL)
-            let selection = try Self.decoder.decode(CLISelection.self, from: data)
-            guard selection.schemaVersion == CLISelection.schemaVersion else {
+            var selection = try Self.decoder.decode(CLISelection.self, from: data)
+            guard [1, CLISelection.schemaVersion].contains(selection.schemaVersion) else {
                 return .failure(.installFailed("Unsupported CLI manifest version \(selection.schemaVersion)."))
             }
+            guard (selection.schemaVersion == 1 && selection.source != .release) ||
+                    (selection.schemaVersion == 2 && selection.source == .release) else {
+                return .failure(.installFailed("CLI manifest source does not match its schema."))
+            }
+            if selection.schemaVersion == 1 && selection.source == .bundled { selection.version = "" }
             return .success(selection)
         } catch {
             return .failure(.installFailed("The CLI manifest is unreadable: \(error.localizedDescription)"))
@@ -190,7 +197,7 @@ public struct CLIProvisioner {
         guard fileManager.isExecutableFile(atPath: url.path) else {
             return [.notExecutable(url.path)]
         }
-        if selection.source == .bundled,
+        if selection.source != .external,
            !selection.sha256.isEmpty,
            let digest = try? Self.cachedSHA256(of: url),
            digest != selection.sha256 {
@@ -207,7 +214,7 @@ public struct CLIProvisioner {
     }
     var failurePoint: InstallFailurePoint?
 
-    /// Installs the app's bundled payload into the managed location.
+    /// Promotes an already signature-verified release candidate into the managed location.
     ///
     /// The previous executable is *copied* to a backup and the verified staging
     /// file is renamed over the live name, so `term-llm` never disappears
@@ -216,35 +223,40 @@ public struct CLIProvisioner {
     /// previous marker/manifest (or removes them for a first install). This is
     /// what makes the operation transactional rather than best-effort.
     @discardableResult
-    public func installBundled(payload: URL,
-                               version: String,
-                               expectedSHA256: String? = nil) throws -> CLISelection {
+    public func installVerified(binary candidate: URL,
+                                version: String,
+                                sha256 expectedSHA256: String,
+                                provenance: String) throws -> CLISelection {
         // Serialise the whole promotion across app instances. The managed
         // directory is user-owned, so an advisory lock file is sufficient; it
         // is never used to infer ownership.
-        try withInstallLock {
-            try installBundledLocked(payload: payload, version: version, expectedSHA256: expectedSHA256)
+        try requireManagementEnabled()
+        return try withInstallLock {
+            try installVerifiedLocked(candidate: candidate, version: version, expectedSHA256: expectedSHA256, provenance: provenance)
         }
     }
 
-    private func installBundledLocked(payload: URL,
+    private func installVerifiedLocked(candidate: URL,
                                       version: String,
-                                      expectedSHA256: String?) throws -> CLISelection {
-        guard fileManager.fileExists(atPath: payload.path) else {
-            throw CLIProvisionerError.payloadMissing(payload.path)
+                                      expectedSHA256: String, provenance: String,
+                                      restoring: CLISelection? = nil, marker: Data? = nil) throws -> CLISelection {
+        guard fileManager.fileExists(atPath: candidate.path) else {
+            throw CLIProvisionerError.candidateMissing(candidate.path)
         }
-        let payloadDigest: String
+        let candidateDigest: String
         do {
-            payloadDigest = try Self.sha256(of: payload)
+            candidateDigest = try Self.sha256(of: candidate)
         } catch {
-            throw CLIProvisionerError.payloadInvalid(error.localizedDescription)
+            throw CLIProvisionerError.candidateInvalid(error.localizedDescription)
         }
-        if let expectedSHA256, !expectedSHA256.isEmpty, expectedSHA256.lowercased() != payloadDigest {
-            throw CLIProvisionerError.checksumMismatch(expected: expectedSHA256, actual: payloadDigest)
+        if expectedSHA256.lowercased() != candidateDigest {
+            throw CLIProvisionerError.checksumMismatch(expected: expectedSHA256, actual: candidateDigest)
         }
-        let attributes = (try? fileManager.attributesOfItem(atPath: payload.path)) ?? [:]
+        var info = stat()
+        guard lstat(candidate.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw CLIProvisionerError.candidateInvalid("not a regular file") }
+        let attributes = (try? fileManager.attributesOfItem(atPath: candidate.path)) ?? [:]
         let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-        guard size > 0 else { throw CLIProvisionerError.payloadInvalid("the file is empty") }
+        guard size > 0 else { throw CLIProvisionerError.candidateInvalid("the file is empty") }
 
         do {
             try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true,
@@ -262,12 +274,12 @@ public struct CLIProvisioner {
         let previousMarker = try? Data(contentsOf: managedMarkerURL)
 
         do {
-            try fileManager.copyItem(at: payload, to: staging)
+            try fileManager.copyItem(at: candidate, to: staging)
             try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staging.path)
             let stagedDigest = try Self.sha256(of: staging)
-            guard stagedDigest == payloadDigest else {
+            guard stagedDigest == candidateDigest else {
                 try? fileManager.removeItem(at: staging)
-                throw CLIProvisionerError.checksumMismatch(expected: payloadDigest, actual: stagedDigest)
+                throw CLIProvisionerError.checksumMismatch(expected: candidateDigest, actual: stagedDigest)
             }
             if hadPrevious {
                 try fileManager.createDirectory(at: backupBinary.deletingLastPathComponent(),
@@ -275,6 +287,8 @@ public struct CLIProvisioner {
                                                 attributes: [.posixPermissions: 0o755])
                 // Copy, never move: the live name must stay resolvable.
                 try fileManager.copyItem(at: managedBinary, to: backupBinary)
+                if let previousManifest { try previousManifest.write(to: backupBinary.deletingLastPathComponent().appendingPathComponent("install.json")) }
+                if let previousMarker { try previousMarker.write(to: backupBinary.deletingLastPathComponent().appendingPathComponent("marker.json")) }
             }
         } catch let error as CLIProvisionerError {
             try? fileManager.removeItem(at: staging)
@@ -287,22 +301,28 @@ public struct CLIProvisioner {
         }
 
         do {
+            if let previousManifest,
+               let previous = try? Self.decoder.decode(CLISelection.self, from: previousManifest), previous.source == .external {
+                try previousManifest.write(to: supportDirectory.appendingPathComponent("legacy-selection.json"), options: .atomic)
+            }
             try failIfNeeded(.beforeReplace)
             try Self.replaceAtomically(staging, managedBinary)
         } catch {
             try? fileManager.removeItem(at: staging)
+            try? fileManager.removeItem(at: backupBinary.deletingLastPathComponent())
             if let typed = error as? CLIProvisionerError { throw typed }
             throw CLIProvisionerError.installFailed(error.localizedDescription)
         }
 
-        let selection = CLISelection(source: .bundled,
+        let selection = restoring ?? CLISelection(source: .release,
                                      binaryPath: managedBinary.path,
                                      version: version,
-                                     sha256: payloadDigest,
-                                     provenance: "Bundled with the app")
+                                     sha256: candidateDigest,
+                                     provenance: provenance)
         do {
             try failIfNeeded(.afterReplace)
-            try writeManagedMarker()
+            if let marker { try marker.write(to: managedMarkerURL, options: .atomic) }
+            else { try writeManagedMarker() }
             try failIfNeeded(.afterMarker)
             try writeManifest(selection)
         } catch {
@@ -315,6 +335,9 @@ public struct CLIProvisioner {
             }
             restore(previousMarker, at: managedMarkerURL)
             restore(previousManifest, at: manifestURL)
+            if !fileManager.fileExists(atPath: backupBinary.path) {
+                try? fileManager.removeItem(at: backupBinary.deletingLastPathComponent())
+            }
             throw CLIProvisionerError.installFailed("Could not finalise the CLI update: \(error.localizedDescription)")
         }
         pruneBackups(keeping: 3)
@@ -326,7 +349,7 @@ public struct CLIProvisioner {
         throw CLIProvisionerError.installFailed("injected failure at \(point)")
     }
 
-    private func withInstallLock<T>(_ body: () throws -> T) throws -> T {
+    private func withInstallLock<T>(waiting: Bool = true, _ body: () throws -> T) throws -> T {
         do {
             try fileManager.createDirectory(at: supportDirectory, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o755])
@@ -342,7 +365,7 @@ public struct CLIProvisioner {
             flock(descriptor, LOCK_UN)
             close(descriptor)
         }
-        guard flock(descriptor, LOCK_EX) == 0 else {
+        guard flock(descriptor, waiting ? LOCK_EX : LOCK_EX | LOCK_NB) == 0 else {
             throw CLIProvisionerError.installFailed("could not acquire the install lock")
         }
         return try body()
@@ -366,31 +389,6 @@ public struct CLIProvisioner {
         }
     }
 
-    /// Records an existing external installation without copying or modifying it.
-    public func adoptExternal(_ external: ExternalCLI) throws -> CLISelection {
-        let url = URL(fileURLWithPath: external.path)
-        guard fileManager.fileExists(atPath: url.path) else {
-            throw CLIProvisionerError.externalMissing(external.path)
-        }
-        guard fileManager.isExecutableFile(atPath: url.path) else {
-            throw CLIProvisionerError.notExecutable(external.path)
-        }
-        let selection = CLISelection(source: .external,
-                                     binaryPath: external.path,
-                                     version: external.version,
-                                     sha256: "",
-                                     provenance: external.provenance)
-        try writeManifest(selection)
-        return selection
-    }
-
-    public func forgetSelection() throws {
-        guard fileManager.fileExists(atPath: manifestURL.path) else {
-            throw CLIProvisionerError.notInstalled
-        }
-        try fileManager.removeItem(at: manifestURL)
-    }
-
     private func writeManifest(_ selection: CLISelection) throws {
         try fileManager.createDirectory(at: supportDirectory, withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o755])
@@ -405,33 +403,24 @@ public struct CLIProvisioner {
         try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: manifestURL.path)
     }
 
-    /// Rewrites the ownership marker for an already-installed managed binary.
-    /// This is self-healing for app updates and for users who deleted the
-    /// sidecar; it never creates one for an external installation.
-    @discardableResult
-    public func ensureManagedMarker(for selection: CLISelection) -> Bool {
-        guard selection.source == .bundled,
-              selection.binaryPath == managedBinary.path,
-              fileManager.isExecutableFile(atPath: managedBinary.path) else { return false }
-        if managedMarkerPresent { return true }
-        return (try? writeManagedMarker()) != nil
-    }
-
     private func writeManagedMarker() throws {
         struct Marker: Encodable {
             let schemaVersion: Int
             let owner: String
+            let appBundleID: String
             let updateHint: String
 
             enum CodingKeys: String, CodingKey {
                 case schemaVersion = "schema_version"
                 case owner
+                case appBundleID = "app_bundle_id"
                 case updateHint = "update_hint"
             }
         }
         let marker = Marker(schemaVersion: 1,
                             owner: Self.markerOwner,
-                            updateHint: "Update it from the term-llm macOS app, which verifies the payload and can roll back.")
+                            appBundleID: Self.markerBundleID,
+                            updateHint: markerUpdateHint)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true,
@@ -440,72 +429,13 @@ public struct CLIProvisioner {
         try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: managedMarkerURL.path)
     }
 
-    // MARK: - External detection
-
-    /// Finds `term-llm` executables on the user's PATH and the common Homebrew
-    /// prefixes. The managed binary is excluded. Nothing is executed unless the
-    /// caller asked for versions (still bounded and non-interactive).
-    public func detectExternal(includeVersions: Bool = true,
-                               searchDirectories: [String]? = nil) -> [ExternalCLI] {
-        var directories: [String] = []
-        if let searchDirectories {
-            directories.append(contentsOf: searchDirectories)
-        } else {
-            let env = ProcessInfo.processInfo.environment
-            for key in ["PATH", "TERM_LLM_INSTALL_DIR"] {
-                guard let value = env[key] else { continue }
-                directories.append(contentsOf: value.split(separator: ":").map(String.init))
-            }
-            directories.append(contentsOf: [
-                "\(home.path)/.local/bin",
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-            ])
-        }
-        var seen = Set<String>()
-        var results: [ExternalCLI] = []
-        for directory in directories where !directory.isEmpty {
-            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(Self.executableName)
-            let standardised = candidate.standardizedFileURL
-            guard seen.insert(standardised.path).inserted else { continue }
-            // The standardised PATH entry is our own link; report it as managed,
-            // not as an external installation.
-            if standardised.path == pathLink.standardizedFileURL.path { continue }
-            if standardised.path == managedBinary.standardizedFileURL.path { continue }
-            guard fileManager.isExecutableFile(atPath: candidate.path) else { continue }
-            let resolved = candidate.resolvingSymlinksInPath()
-            if resolved.path == managedBinary.standardizedFileURL.path { continue }
-            var version = ""
-            if includeVersions,
-               let probe = try? runner.run(executable: candidate, arguments: ["--version"],
-                                           environment: nil, timeout: 4) {
-                version = Self.firstLine(probe.stdout.isEmpty ? probe.stderr : probe.stdout)
-            }
-            results.append(ExternalCLI(path: candidate.path,
-                                       resolvedPath: resolved.path,
-                                       version: version,
-                                       provenance: Self.provenance(for: resolved.path)))
-        }
-        return results
-    }
-
-    static func provenance(for resolvedPath: String) -> String {
-        if resolvedPath.hasPrefix("/opt/homebrew/") || resolvedPath.hasPrefix("/usr/local/Cellar/") {
-            return "Homebrew"
-        }
-        if resolvedPath.contains("/Cellar/") { return "Homebrew" }
-        if resolvedPath.hasPrefix("/usr/local/bin/") { return "Local install" }
-        return "Existing install"
-    }
-
     // MARK: - PATH link
 
     /// Exposes a *managed* binary at `~/.local/bin/term-llm`. An external
     /// installation is left alone: its package manager owns that name.
     public func syncPATHLink(for selection: CLISelection) -> PATHLinkStatus {
-        if selection.source == .external {
-            return .skippedExternal("The external installation already provides its own command.")
+        if selection.source != .release || (try? requireManagementEnabled()) == nil {
+            return .notLinked(pathLink.path)
         }
         let managed = managedBinary.standardizedFileURL
         let link = pathLink
@@ -532,8 +462,8 @@ public struct CLIProvisioner {
     /// creates a link, so launching the app does not mutate the user's shell
     /// environment before they choose an install action.
     public func inspectPATHLink(for selection: CLISelection) -> PATHLinkStatus {
-        if selection.source == .external {
-            return .skippedExternal("The external installation already provides its own command.")
+        if selection.source != .release || (try? requireManagementEnabled()) == nil {
+            return .notLinked(pathLink.path)
         }
         let managed = managedBinary.standardizedFileURL
         guard fileManager.fileExists(atPath: pathLink.path)
@@ -549,6 +479,7 @@ public struct CLIProvisioner {
     }
 
     public func removePATHLink() -> Bool {
+        guard (try? requireManagementEnabled()) != nil else { return false }
         guard let destination = try? fileManager.destinationOfSymbolicLink(atPath: pathLink.path) else {
             return false
         }
@@ -564,6 +495,7 @@ public struct CLIProvisioner {
     /// service are untouched by design.
     @discardableResult
     public func removeManagedInstall() throws -> Bool {
+        try requireManagementEnabled()
         var removed = false
         if fileManager.fileExists(atPath: managedBinary.path) {
             try fileManager.removeItem(at: managedBinary)
@@ -581,8 +513,63 @@ public struct CLIProvisioner {
             try fileManager.removeItem(at: backupDirectory)
             removed = true
         }
+        for name in ["staging", "update-state.json"] {
+            let url = supportDirectory.appendingPathComponent(name)
+            if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+        }
         _ = removePATHLink()
         return removed
+    }
+
+    public func requireManagementEnabled() throws {
+        // Existence, not successful decode: a corrupt developer setting fails closed.
+        guard !fileManager.fileExists(atPath: supportDirectory.appendingPathComponent("developer-mode.json").path) else {
+            throw CLIProvisionerError.installFailed("Leave Developer Mode before managing term-llm.")
+        }
+    }
+
+    public func handOver() throws {
+        try requireManagementEnabled()
+        try withInstallLock {
+            for url in [managedMarkerURL, manifestURL, supportDirectory.appendingPathComponent("update-state.json")] {
+                if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+            }
+        }
+    }
+
+    @discardableResult
+    public func rollbackToPrevious() throws -> CLISelection {
+        try requireManagementEnabled()
+        return try withInstallLock {
+            let entries = try fileManager.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: [.creationDateKey])
+                .sorted {
+                    let l = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                    let r = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                    return l == r ? $0.lastPathComponent > $1.lastPathComponent : l > r
+                }
+            guard let backup = entries.first(where: {
+                fileManager.fileExists(atPath: $0.appendingPathComponent("install.json").path) &&
+                fileManager.fileExists(atPath: $0.appendingPathComponent(Self.executableName).path) &&
+                fileManager.fileExists(atPath: $0.appendingPathComponent("marker.json").path)
+            }) else {
+                throw CLIProvisionerError.notInstalled
+            }
+            let binary = backup.appendingPathComponent(Self.executableName)
+            let manifest = try Data(contentsOf: backup.appendingPathComponent("install.json"))
+            let selection = try Self.decoder.decode(CLISelection.self, from: manifest)
+            guard try Self.sha256(of: binary) == selection.sha256 else {
+                throw CLIProvisionerError.installFailed("The backup checksum does not match its manifest.")
+            }
+            // Promotion has the same rollback semantics as installation. Restore
+            // the matching historical metadata only after the binary transaction.
+            let marker = try Data(contentsOf: backup.appendingPathComponent("marker.json"))
+            let restored = try installVerifiedLocked(candidate: binary, version: selection.version,
+                                                     expectedSHA256: selection.sha256, provenance: selection.provenance,
+                                                     restoring: selection, marker: marker)
+            // Consume the restored backup; a later rollback must not select it again.
+            try? fileManager.removeItem(at: backup)
+            return restored
+        }
     }
 
     // MARK: - Helpers
@@ -602,7 +589,7 @@ public struct CLIProvisioner {
     }
 
     /// Digest cache for status polling. Keyed by path, size and modification
-    /// time; installs always hash the fresh payload directly. This keeps a
+    /// time; installs always hash the fresh candidate directly. This keeps a
     /// 4-second UI refresh from re-reading a multi-megabyte binary forever.
     private final class ChecksumCache: @unchecked Sendable {
         struct Entry {
@@ -637,7 +624,7 @@ public struct CLIProvisioner {
         try ChecksumCache.shared.digest(for: url) { try sha256(of: url) }
     }
 
-    static func sha256(of url: URL) throws -> String {
+    public static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()

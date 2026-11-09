@@ -55,6 +55,7 @@ final class WebMCPLiveServerTests: XCTestCase {
     /// TEST_RUNNER_TERMLLM_DEMO_E2E_URL=http://localhost:PORT/.
     /// Exercises the stock frontend's real per-conversation MCP switch, bridge,
     /// and persistent playlist store without Apple Music authorization.
+    #if os(iOS)
     func testDemoCreatesNativeSamplePlaylistOnlyAfterMCPOptIn() async throws {
         guard let raw = ProcessInfo.processInfo.environment["TERMLLM_DEMO_E2E_URL"],
               let server = URL(string: raw) else {
@@ -167,6 +168,8 @@ final class WebMCPLiveServerTests: XCTestCase {
         add(attachment)
         nativeWindow.isHidden = true
     }
+
+    #endif
 
     private func eventually(_ what: String, timeout: TimeInterval = 10,
                             _ condition: () async throws -> Bool) async throws {

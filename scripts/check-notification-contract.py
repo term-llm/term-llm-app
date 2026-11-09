@@ -14,12 +14,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def check_project():
     group = "group.com.termllm.app.shared"
-    for name in ("TermLLM", "TermLLMNotificationService"):
-        data = plistlib.loads((ROOT / name / f"{name}.entitlements").read_bytes())
-        assert data["com.apple.security.application-groups"] == [group]
+    for path in ("TermLLM/TermLLM.entitlements", "TermLLMNotificationService/TermLLMNotificationService.entitlements",
+                 "TermLLMMac/TermLLMMac.entitlements",
+                 "TermLLMNotificationService/TermLLMMacNotificationService.entitlements"):
+        data = plistlib.loads((ROOT / path).read_bytes())
+        assert data["com.apple.security.application-groups"] == [group], path
+    # macOS app extensions must be sandboxed; the Mac app itself manages the CLI.
+    mac_nse = plistlib.loads((ROOT / "TermLLMNotificationService/TermLLMMacNotificationService.entitlements").read_bytes())
+    assert mac_nse["com.apple.security.app-sandbox"] is True
     info = plistlib.loads((ROOT / "TermLLM/Info.plist").read_bytes())
     assert info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"] is False
     assert "com.termllm.app.notification" in info["NSUserActivityTypes"]
+    mac_info = plistlib.loads((ROOT / "TermLLMMac/Info.plist").read_bytes())
+    assert "com.termllm.app.notification" in mac_info["NSUserActivityTypes"]
+    # One client window: the Mac app uses a single `Window` scene, never WindowGroup.
+    mac_app = (ROOT / "TermLLMMac/TermLLMMacApp.swift").read_text()
+    assert 'Window("term-llm", id: "main")' in mac_app and "WindowGroup {" not in mac_app
     project = (ROOT / "TermLLM.xcodeproj/project.pbxproj").read_text()
     definitions = re.findall(r"^\s*([A-F0-9]{24}) /\*[^\n]*?\*/ = ", project, re.M)
     assert len(definitions) == len(set(definitions)), "duplicate Xcode object IDs"
@@ -29,21 +39,26 @@ def check_project():
     for phase, entries in phases.items():
         ids = re.findall(r"([A-F0-9]{24}) /\*", entries)
         actual[phase[-3:]] = {builds[key] for key in ids}
+    # iOS app 050 / NSE 471 / tests 053; Mac app 00A / Mac NSE 00B / Mac tests 00D.
     for name in ("PushDeliveryStore.swift", "PushConsentJournal.swift", "PushMetadata.swift", "PushMessage.swift"):
-        assert name in actual["050"] and name in actual["471"], name
+        for phase in ("050", "471", "00A", "00B"):
+            assert name in actual[phase], (name, phase)
         assert (ROOT / "Shared" / name).is_file(), name
     for name in ("PushWindowRegistry.swift", "NativePushNotifications.swift", "PushNotificationLifecycle.swift"):
-        assert name in actual["050"], name
+        assert name in actual["050"] and name in actual["00A"], name
         assert (ROOT / "TermLLM" / name).is_file(), name
-    assert "NotificationLifecycleTests.swift" in actual["053"]
-    assert "NotificationReviewRegressionTests.swift" in actual["053"]
+    for phase in ("053", "00D"):
+        assert "NotificationLifecycleTests.swift" in actual[phase], phase
+        assert "NotificationReviewRegressionTests.swift" in actual[phase], phase
     resource_phases = dict(re.findall(r"([A-F0-9]{24}) /\* Resources \*/ = \{\s*isa = PBXResourcesBuildPhase;.*?files = \((.*?)\);", project, re.S))
-    fixture_phase = "000000000000000000000522"
-    assert fixture_phase in resource_phases
-    assert "ProducerFixtures in Resources" in resource_phases[fixture_phase]
-    assert all("ProducerFixtures" not in files for phase, files in resource_phases.items() if phase != fixture_phase)
-    test_target = re.search(r'000000000000000000000011 /\* TermLLMTests \*/ = \{(.*?)buildRules', project, re.S).group(1)
-    assert fixture_phase in test_target, "fixtures must belong only to the test bundle"
+    fixture_phases = {"000000000000000000000522": "000000000000000000000011 /\\* TermLLMTests \\*/",
+                      "F2000000000000000000000C": "F20000000000000000000003 /\\* TermLLMMacTests \\*/"}
+    for fixture_phase, target in fixture_phases.items():
+        assert fixture_phase in resource_phases
+        assert "ProducerFixtures in Resources" in resource_phases[fixture_phase]
+        test_target = re.search(target + r" = \{(.*?)buildRules", project, re.S).group(1)
+        assert fixture_phase in test_target, "fixtures must belong only to the test bundles"
+    assert all("ProducerFixtures" not in files for phase, files in resource_phases.items() if phase not in fixture_phases)
     print("PASS: entitlement plists, unique Xcode IDs and notification target memberships (fixtures test-only)")
 
 
@@ -91,10 +106,17 @@ def check_native_review_contract():
     registry = (ROOT / "TermLLM/PushWindowRegistry.swift").read_text()
     assert '"native_" + Data(SHA256.hash(data: Data(persistentIdentifier.utf8))).base64URLEncodedString()' in registry
     center = (ROOT / "TermLLM/PushCenter.swift").read_text()
-    assert "PushWindowRegistry.identifier(persistentIdentifier: scene.session.persistentIdentifier)" in center
+    platform = (ROOT / "TermLLM/PlatformSupport.swift").read_text()
+    # iOS scene session identity; the Mac app's one window persists its own.
+    assert "PushWindowRegistry.identifier(persistentIdentifier: scene.sceneIdentifier)" in center
+    assert "var sceneIdentifier: String { session.persistentIdentifier }" in platform
+    mac_window = (ROOT / "TermLLMMac/MacWorkspace.swift").read_text()
+    assert "defaults.set(sceneIdentifier, forKey: Self.identifierKey)" in mac_window
     assert "Self.pendingConsentKey" in center and "decode(PushConsentJournal.Snapshot.self" in center
     assert "navigation.excludedWindowIDs.contains(windowID)" in center
-    assert "errorHandler: failed" in center and "navigationIssue" in center
+    assert "NativeApp.activate(session, activity: activity, failed: failed)" in center and "navigationIssue" in center
+    assert "requestSceneSessionActivation(session, userActivity: activity, options: nil, errorHandler: failed)" in platform
+    assert "static var supportsMultipleScenes: Bool { false }" in platform, "the Mac client is single-window"
     opened = center.split("    func open(", 1)[1].split("    func routeManualToKeyScene", 1)[0]
     assert opened.index("guard completion else { return }") < opened.index("activateScene(session, activity)")
     assert "ownerClaim && (!supportsMultipleScenes() ||" in opened, "single-scene taps never request scene activation"
@@ -120,7 +142,14 @@ def check_native_review_contract():
     assert "(metadata.runEpoch ?? 0) > 0" in metadata
     voice = (ROOT / "TermLLM/ContentView.swift").read_text()
     launch = voice.split("    private func beginVoiceLaunch(", 1)[1].split("    private func finishVoiceLaunch(", 1)[0]
-    assert "voiceRequest == nil, scenePhase == .active" in launch
+    assert "voiceRequest == nil, effectiveScenePhase == .active" in launch
+    # A hidden (closed) Mac window is background: it neither polls nor counts as attended.
+    assert "macServices.windowPhase" in voice
+    visibility = (ROOT / "TermLLM/MacLocalServiceBridge.swift").read_text()
+    assert "isMainWindowVisible ? phase : .background" in visibility
+    window = (ROOT / "TermLLMMac/MacWorkspace.swift").read_text()
+    assert "MacLocalServiceBridge.effectiveScenePhase(NSApp.isActive ? .active : .inactive," in window
+    assert "isContentVisible: chatIsVisible && macServices.isMainWindowVisible" in voice
     assert 'let windowID = pushWindowID ?? (isFixture ? "fixture" : nil)' in launch
     assert "voiceLaunches.claim(id, windowID: windowID, isKeyScene: isFixture || push.isKeyScene(windowID))" in launch
     assert "guard let pushWindowID, push.isKeyScene(pushWindowID) else { return false }" in voice

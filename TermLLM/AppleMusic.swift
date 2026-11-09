@@ -166,13 +166,18 @@ extension MusicTrack {
     }
 }
 
-/// Plays through the system Music player, so lock screen, Control Center and
-/// CarPlay controls work and playback continues when this app is suspended.
-/// (`ApplicationMusicPlayer` failed to prepare on device in jarvis.)
+/// Plays through the system Music player on iPhone/iPad, so lock screen,
+/// Control Center and CarPlay controls work and playback continues when this
+/// app is suspended. (`ApplicationMusicPlayer` failed to prepare on device in
+/// jarvis.) macOS has no system player for apps; the Mac app plays in-app.
 @MainActor
 final class AppleMusicEngine: MusicPlaybackEngine {
     var onChange: (@MainActor () -> Void)?
+    #if os(macOS)
+    private let player = ApplicationMusicPlayer.shared
+    #else
     private let player = SystemMusicPlayer.shared
+    #endif
     private let catalog: AppleMusicCatalog
     private var observers: Set<AnyCancellable> = []
     /// A newer load/play or explicit pause supersedes work suspended in MusicKit.
@@ -216,7 +221,7 @@ final class AppleMusicEngine: MusicPlaybackEngine {
         guard !songs.isEmpty else { throw MusicError.noPlayableSongs }
         let wanted = tracks.indices.contains(index) ? tracks[index].id : nil
         let start = songs.first { $0.id.rawValue == wanted } ?? songs[0]
-        player.queue = MusicKit.MusicPlayer.Queue(for: songs, startingAt: start)
+        player.queue = .init(for: songs, startingAt: start)
         player.state.shuffleMode = shuffle ? .songs : .off
         return songs.map(MusicTrack.init(song:))
     }

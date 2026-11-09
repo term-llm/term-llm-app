@@ -46,9 +46,9 @@ final class WebMCPBridgeTests: XCTestCase {
             await WebMCPBridge.handle(body: body, frameOrigin: origin, isMainFrame: true, expectedOrigin: origin, registry: registry())
         }
         let ok = await call(["name": "ping", "arguments": #"{"message":"hi"}"#])
-        XCTAssertEqual(ok, .success("pong from term-llm iPhone app at 1970-01-01T00:00:00Z\necho: hi"))
+        XCTAssertEqual(ok, .success("pong from term-llm \(DeviceToolPlatform.current.name) app at 1970-01-01T00:00:00Z\necho: hi"))
         let noArguments = await call(["name": "ping"])
-        XCTAssertEqual(noArguments, .success("pong from term-llm iPhone app at 1970-01-01T00:00:00Z"))
+        XCTAssertEqual(noArguments, .success("pong from term-llm \(DeviceToolPlatform.current.name) app at 1970-01-01T00:00:00Z"))
         let thrown = await call(["name": "boom", "arguments": "{}"])
         XCTAssertEqual(thrown, .failure(.init(message: "kaboom")))
         let soft = await call(["name": "soft_fail", "arguments": "{}"])
@@ -188,10 +188,10 @@ final class WebMCPBridgeTests: XCTestCase {
             const [tool] = (await document.modelContext.getTools()).filter(t => t.name === 'ping');
             return await document.modelContext.executeTool(tool, { message: 'from the page' });
             """) as? String
-        XCTAssertEqual(result, "pong from term-llm iPhone app at 1970-01-01T00:00:00Z\necho: from the page")
+        XCTAssertEqual(result, "pong from term-llm \(DeviceToolPlatform.current.name) app at 1970-01-01T00:00:00Z\necho: from the page")
 
         let byName = try await js(webView, "return await document.modelContext.executeTool('ping', {})") as? String
-        XCTAssertEqual(byName, "pong from term-llm iPhone app at 1970-01-01T00:00:00Z")
+        XCTAssertEqual(byName, "pong from term-llm \(DeviceToolPlatform.current.name) app at 1970-01-01T00:00:00Z")
     }
 
     func testTracksRunningCallsAndReportsWhenTheyHaveReplied() async throws {

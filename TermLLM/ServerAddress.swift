@@ -24,6 +24,15 @@ enum ServerAddress {
     /// HTTP loopback bridge on a physical iPhone.
     @MainActor
     static func browserURL(_ input: String, selectedConnection: HubConnection?) -> URL? {
+        #if os(macOS)
+        if let source = selectedConnection, source.isManagedLocalService {
+            guard source.kind == .directNode, !source.isLinkedDevices,
+                  source.needsKindReview != true,
+                  HubConnectionStore.canonicalManagedLocalServiceURL(source.url.absoluteString) == source.url,
+                  HubConnectionStore.canonicalManagedLocalServiceURL(input) == source.url else { return nil }
+            return source.url
+        }
+        #endif
         guard let source = selectedConnection, source.isLinkedDevices else { return parse(input) }
         guard source.kind == .directNode, source.needsKindReview != true,
               let encodedKey = source.linkedDevicesHostKey,
@@ -36,6 +45,9 @@ enum ServerAddress {
     static func allowsLocalHTTP(host: String) -> Bool {
         #if targetEnvironment(simulator)
         return host.lowercased() == "localhost"
+        #elseif DEBUG && os(macOS)
+        // Debug fixtures only: a Mac app otherwise keeps the HTTPS policy.
+        return (PhoneHubFixture.isEnabled || HubFixture.isEnabled) && host.lowercased() == "localhost"
         #else
         return false
         #endif

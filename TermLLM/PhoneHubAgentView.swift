@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// An agent's page on the Agents stack: start a new conversation, or pick up
 /// a pinned or recent one. History loads 30 at a time as you scroll.
@@ -13,7 +17,7 @@ struct PhoneHubAgentView: View {
     @StateObject private var model: PhoneHubAgentSessions
     @AppStorage("phoneHub.agent.pinnedExpanded", store: PhoneHubFixture.defaults) private var pinnedExpanded = true
     @State private var composeInToolbar = false
-    @State private var editMode: EditMode = .inactive
+    @State private var editMode: PlatformEditMode = .inactive
     @State private var renaming: PhoneHubAgentConversation?
     @State private var renameText = ""
     @State private var searchText = ""
@@ -58,31 +62,36 @@ struct PhoneHubAgentView: View {
                 footer
             }
         }
-        .listStyle(.insetGrouped)
-        .environment(\.editMode, $editMode)
+        .platformInsetGroupedListStyle()
+        .platformEditMode($editMode)
         // Once New conversation scrolls away, it moves into the toolbar.
         .modifier(ScrolledPast(distance: 90) { past in
             guard past != composeInToolbar else { return }
             withAnimation(.snappy) { composeInToolbar = past }
         })
         .accessibilityIdentifier("phoneHub.agent")
-        .navigationTitle(agentName)
-        // Inline like the Agents root: more conversations fit on screen.
-        .navigationBarTitleDisplayMode(.inline)
-        .modifier(AgentSubtitle(text: subtitle))
-        .toolbar(isVisible ? .visible : .hidden, for: .navigationBar)
-        .toolbar {
-            if composeInToolbar && !model.signedOut && query.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: newConversation) {
-                        Image(systemName: "square.and.pencil")
-                    }
-                    .accessibilityLabel("New conversation")
-                    .accessibilityIdentifier("phoneHub.agent.newToolbar")
-                }
+        #if os(macOS)
+        // The header below has the Back button; none in the window toolbar.
+        .navigationBarBackButtonHidden(true)
+        .workspaceTopBar {
+            PushedPageHeader(title: agentName, subtitle: subtitle) {
+                if composeInToolbar && !model.signedOut && query.isEmpty { toolbarCompose }
+                PushedPageSearchField(text: $searchText, prompt: "Search \(agentName)")
             }
         }
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: Text("Search \(agentName)"))
+        #else
+        .navigationTitle(agentName)
+        // Inline like the Agents root: more conversations fit on screen.
+        .inlineNavigationTitle()
+        .modifier(AgentSubtitle(text: subtitle))
+        .navigationBarVisibility(isVisible ? .visible : .hidden)
+        .toolbar {
+            if composeInToolbar && !model.signedOut && query.isEmpty {
+                ToolbarItem(placement: .platformTrailing) { toolbarCompose }
+            }
+        }
+        .searchable(text: $searchText, placement: .platformAlwaysVisible, prompt: Text("Search \(agentName)"))
+        #endif
         .task(id: query) {
             guard !query.isEmpty else {
                 model.endSearch()
@@ -123,6 +132,14 @@ struct PhoneHubAgentView: View {
         } message: {
             Text("The new title shows everywhere \(agentName) is open.")
         }
+    }
+
+    private var toolbarCompose: some View {
+        Button(action: newConversation) {
+            Image(systemName: "square.and.pencil")
+        }
+        .accessibilityLabel("New conversation")
+        .accessibilityIdentifier("phoneHub.agent.newToolbar")
     }
 
     // MARK: Sections
@@ -189,7 +206,8 @@ struct PhoneHubAgentView: View {
                     .accessibilityHint("Shows or hides pinned conversations")
                     .accessibilityIdentifier("phoneHub.agent.pinnedToggle")
                     Spacer(minLength: 0)
-                    if model.canEdit && pins.count > 1 && pinnedExpanded {
+                    // Mac lists reorder by dragging; there is no edit mode to enter.
+                    if model.canEdit && pins.count > 1 && pinnedExpanded && !AppPlatform.isMac {
                         Button(editMode.isEditing ? "Done" : "Edit") {
                             withAnimation(.snappy) { editMode = editMode.isEditing ? .inactive : .active }
                         }
@@ -398,7 +416,7 @@ struct PhoneHubAgentView: View {
             Button { withAnimation(.snappy) { model.markSeen(row.id) } } label: { Label("Mark as Seen", systemImage: "eye") }
         }
         if let url = destination(for: row) {
-            Button { UIPasteboard.general.url = url } label: { Label("Copy Link", systemImage: "link") }
+            Button { NativeApp.copy(url) } label: { Label("Copy Link", systemImage: "link") }
         }
         if model.canEdit {
             Divider()
@@ -491,8 +509,13 @@ struct PhoneHubAgentConversationRow: View {
     /// The time's cap height, from its exact font: `@ScaledMetric` drifts
     /// from the real text size at accessibility sizes.
     private var timeCapHeight: CGFloat {
+        #if os(iOS)
         let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
         return UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits).capHeight
+        #else
+        // Mac text styles have fixed sizes.
+        return NSFont.preferredFont(forTextStyle: .subheadline).capHeight
+        #endif
     }
 
     var body: some View {
@@ -516,11 +539,12 @@ struct PhoneHubAgentConversationRow: View {
                     Spacer(minLength: 8)
                     // Waiting on you is not work in progress.
                     if conversation.running && !conversation.needsInput {
+                        let capHeight = timeCapHeight
                         ProgressView()
                             .controlSize(.mini)
                             // Its own baseline is its top edge, which hung it
                             // below the line; centre it on the time instead.
-                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + timeCapHeight / 2 }
+                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + capHeight / 2 }
                     }
                     Text(PhoneHubAgentDateGroup.timeLabel(conversation.lastActivity, now: now, calendar: .current))
                         .font(.subheadline)
@@ -582,7 +606,7 @@ struct PhoneHubAgentSkeletonRow: View {
                 .frame(height: 12)
             }
         }
-        .foregroundStyle(Color(.systemGray5))
+        .foregroundStyle(Color.platformGray5)
         .padding(.vertical, 6)
         .opacity(dim ? 0.45 : 1)
         .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: dim)
@@ -606,7 +630,7 @@ private struct AgentSubtitle: ViewModifier {
 
 private struct GlassCapsule: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: .capsule)
         } else {
             content
@@ -621,7 +645,7 @@ private struct ScrolledPast: ViewModifier {
     let distance: CGFloat
     let changed: (Bool) -> Void
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
+        if #available(iOS 18.0, macOS 15.0, *) {
             content.onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top > distance
             } action: { _, past in
@@ -637,7 +661,7 @@ private struct ScrolledPast: ViewModifier {
 private struct LegacyVisibility: ViewModifier {
     let changed: (Bool) -> Void
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
+        if #available(iOS 18.0, macOS 15.0, *) {
             content
         } else {
             content

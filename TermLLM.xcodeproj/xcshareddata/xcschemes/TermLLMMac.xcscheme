@@ -14,8 +14,8 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "CC0000000000000000000030"
-               BuildableName = "TermLLMMac.app"
+               BlueprintIdentifier = "F20000000000000000000001"
+               BuildableName = "term-llm.app"
                BlueprintName = "TermLLMMac"
                ReferencedContainer = "container:TermLLM.xcodeproj">
             </BuildableReference>
@@ -28,6 +28,16 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "F20000000000000000000003"
+               BuildableName = "TermLLMMacTests.xctest"
+               BlueprintName = "TermLLMMacTests"
+               ReferencedContainer = "container:TermLLM.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction
@@ -44,8 +54,8 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CC0000000000000000000030"
-            BuildableName = "TermLLMMac.app"
+            BlueprintIdentifier = "F20000000000000000000001"
+            BuildableName = "term-llm.app"
             BlueprintName = "TermLLMMac"
             ReferencedContainer = "container:TermLLM.xcodeproj">
          </BuildableReference>
@@ -61,8 +71,8 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CC0000000000000000000030"
-            BuildableName = "TermLLMMac.app"
+            BlueprintIdentifier = "F20000000000000000000001"
+            BuildableName = "term-llm.app"
             BlueprintName = "TermLLMMac"
             ReferencedContainer = "container:TermLLM.xcodeproj">
          </BuildableReference>

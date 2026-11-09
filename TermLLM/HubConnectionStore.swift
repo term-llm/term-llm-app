@@ -15,6 +15,10 @@ struct HubConnection: Codable, Equatable, Identifiable, Sendable {
     /// not the loopback browser URL, is the durable source/trust identity.
     var linkedDevicesHostKey: String? = nil
     var isLinkedDevices: Bool { linkedDevicesHostKey != nil }
+    /// Set only by the Mac app's in-process, verified service manager. Ordinary
+    /// connection forms and imported links cannot create this HTTP exception.
+    var managedLocalService: Bool? = nil
+    var isManagedLocalService: Bool { managedLocalService == true }
     var mountPath: String {
         let prefix = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return prefix.isEmpty ? "/" : "/" + prefix + "/"
@@ -69,9 +73,19 @@ final class HubConnectionStore: ObservableObject {
         var endpoints = Set<String>()
         for index in doc.connections.indices {
             let source = doc.connections[index]
-            let url = source.linkedDevicesHostKey == nil
-                ? canonicalOrdinaryURL(source.url.absoluteString)
-                : canonicalLinkedDevicesBridgeURL(source.url.absoluteString)
+            let url: URL?
+            if source.isManagedLocalService {
+                #if os(macOS)
+                guard source.kind == .directNode, !source.isLinkedDevices else { throw ValidationError.corrupt }
+                url = canonicalManagedLocalServiceURL(source.url.absoluteString)
+                #else
+                throw ValidationError.corrupt
+                #endif
+            } else {
+                url = source.linkedDevicesHostKey == nil
+                    ? canonicalOrdinaryURL(source.url.absoluteString)
+                    : canonicalLinkedDevicesBridgeURL(source.url.absoluteString)
+            }
             guard !source.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let url, endpoints.insert(url.absoluteString).inserted else {
                 throw ValidationError.corrupt
@@ -127,6 +141,73 @@ final class HubConnectionStore: ObservableObject {
         normalized.path = normalized.path.isEmpty ? "/" : "/" + normalized.path + "/"
         return normalized.url
     }
+
+    /// Syntactic validation only, not a discovery or trust grant. Only the Mac
+    /// service-manager bridge may use this to persist an owned service.
+    static func canonicalManagedLocalServiceURL(_ input: String) -> URL? {
+        guard var parts = URLComponents(string: input),
+              parts.scheme?.lowercased() == "http",
+              let host = parts.host?.lowercased(), ["localhost", "127.0.0.1"].contains(host),
+              let port = parts.port, (1...65535).contains(port),
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              !parts.percentEncodedPath.contains("%"), !parts.path.contains("\\"),
+              !parts.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              !parts.path.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0 == "." || $0 == ".." }),
+              !parts.path.contains("//") else { return nil }
+        parts.scheme = "http"
+        parts.host = host
+        let path = parts.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        parts.path = path.isEmpty ? "/" : "/" + path + "/"
+        return parts.url
+    }
+
+    #if os(macOS)
+    /// Set when the user removes This Mac, so it isn't added back for them.
+    nonisolated static let localServiceDeclinedKey = "phoneHub.localServiceDeclined.v1"
+    var localServiceDeclined: Bool { defaults.bool(forKey: Self.localServiceDeclinedKey) }
+
+    /// Explicit Open Chat: always adds This Mac, and lets it be added
+    /// automatically again after the user had removed it.
+    @discardableResult
+    func saveManagedLocalService(address: String) throws -> HubConnection {
+        guard persistenceError == nil else { throw ValidationError.corrupt }
+        guard let url = Self.canonicalManagedLocalServiceURL(address) else { throw ValidationError.invalid }
+        defaults.removeObject(forKey: Self.localServiceDeclinedKey)
+        if let existing = connections.first(where: { $0.url == url }) {
+            // Never reinterpret another source's trust identity as a local service.
+            guard existing.isManagedLocalService, !existing.isLinkedDevices,
+                  existing.kind == .directNode else { throw ValidationError.duplicate }
+            return existing
+        }
+        var source = HubConnection(id: UUID(), name: "This Mac", kind: .directNode, url: url)
+        source.managedLocalService = true
+        connections.append(source)
+        if selectedID == nil { selectedID = source.id }
+        persist()
+        return source
+    }
+
+    /// Background inclusion of a verified local service. Returns nil when the
+    /// user removed This Mac. A This Mac on an old address (the service moved
+    /// port) is replaced rather than left behind as a dead duplicate.
+    func attachManagedLocalService(address: String) throws -> HubConnection? {
+        guard persistenceError == nil else { throw ValidationError.corrupt }
+        guard let url = Self.canonicalManagedLocalServiceURL(address) else { throw ValidationError.invalid }
+        if let existing = connections.first(where: { $0.url == url && $0.isManagedLocalService }) { return existing }
+        guard !localServiceDeclined else { return nil }
+        // Never reinterpret another source's trust identity as a local service.
+        guard !connections.contains(where: { $0.url == url }) else { throw ValidationError.duplicate }
+        let stale = connections.filter { $0.isManagedLocalService }
+        let wasSelected = stale.contains { $0.id == selectedID }
+        if !stale.isEmpty {
+            connections.removeAll { $0.isManagedLocalService }
+            if wasSelected { selectedID = nil }
+        }
+        let source = try saveManagedLocalService(address: address)
+        if wasSelected { select(source.id) }
+        return source
+    }
+    #endif
 
     /// Dedicated validator for the app-owned loopback bridge. It deliberately
     /// does not call `ServerAddress.parse`: physical devices reject arbitrary
@@ -192,8 +273,10 @@ final class HubConnectionStore: ObservableObject {
     func saveDetectingKind(id: UUID? = nil, name: String, address: String,
                            discover: (URL) async throws -> HubServerRole = HubServerRole.detect) async throws -> HubConnection {
         guard persistenceError == nil else { throw ValidationError.corrupt }
+        let managed = id.flatMap { id in connections.first { $0.id == id && $0.isManagedLocalService } }
+        let candidate = managed?.url.absoluteString == address ? managed?.url : Self.canonicalURL(address)
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let url = Self.canonicalURL(address) else { throw ValidationError.invalid }
+              let url = candidate else { throw ValidationError.invalid }
         guard !connections.contains(where: { $0.id != id && $0.url == url }) else { throw ValidationError.duplicate }
         let previous = connections.first { $0.id == id }
         if id != nil && previous == nil { throw ValidationError.missing }
@@ -216,12 +299,18 @@ final class HubConnectionStore: ObservableObject {
     func save(id: UUID? = nil, name: String, kind: HubConnection.Kind, address: String) throws -> HubConnection {
         guard persistenceError == nil else { throw ValidationError.corrupt }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let url = Self.canonicalURL(address) else { throw ValidationError.invalid }
+        let managed = id.flatMap { id in connections.first { $0.id == id && $0.isManagedLocalService } }
+        let url = managed?.url.absoluteString == address && kind == .directNode
+            ? managed?.url : Self.canonicalURL(address)
+        guard !name.isEmpty, let url else { throw ValidationError.invalid }
         guard !connections.contains(where: { $0.id != id && $0.url == url }) else { throw ValidationError.duplicate }
         var source = HubConnection(id: id ?? UUID(), name: name, kind: kind, url: url)
         if let id {
             guard let index = connections.firstIndex(where: { $0.id == id }) else { throw ValidationError.missing }
             let previous = connections[index]
+            if previous.isManagedLocalService && previous.url == url && previous.kind == kind {
+                source.managedLocalService = true
+            }
             if previous.url != url || previous.kind != kind {
                 // Endpoint/kind is a new trust realm, not just a label edit.
                 source = HubConnection(id: UUID(), name: name, kind: kind, url: url)
@@ -240,6 +329,11 @@ final class HubConnectionStore: ObservableObject {
         persist()
     }
     func remove(_ id: UUID) {
+        #if os(macOS)
+        if connections.first(where: { $0.id == id })?.isManagedLocalService == true {
+            defaults.set(true, forKey: Self.localServiceDeclinedKey)
+        }
+        #endif
         connections.removeAll { $0.id == id }
         if selectedID == id { selectedID = connections.first?.id }
         persist()

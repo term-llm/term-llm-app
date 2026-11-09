@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+#if os(iOS)
 import UIKit
+#endif
 
 #if canImport(WebRTC)
 final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {

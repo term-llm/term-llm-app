@@ -22,6 +22,7 @@ final class MusicViewRenderingTests: XCTestCase {
         return library
     }
 
+    #if os(iOS)
     private func render<Content: View>(_ view: Content, named name: String, width: CGFloat? = nil) async throws {
         // Windows only draw when attached to a scene; borrow the test host's.
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
@@ -121,6 +122,8 @@ final class MusicViewRenderingTests: XCTestCase {
         let bgra = cgImage.bitmapInfo.contains(.byteOrder32Little)
         return bgra ? (third, second, first) : (first, second, third)
     }
+
+    #endif
 
     /// Core Animation moves the bars at a capped rate; nothing in the app
     /// redraws them each frame, and they come to rest when playback stops.

@@ -34,6 +34,44 @@ final class ServiceContractTests: XCTestCase {
         XCTAssertTrue(endpoint.allows(try XCTUnwrap(URL(string: "http://localhost:9000/prefix/chat?x=1"))))
     }
 
+    func testCapabilityProbeRequiresSubcommandUsageNotExitZero() throws {
+        XCTAssertFalse(ServiceController.usageNamesSubcommand(ServiceHelpFixtures.parentHelp, operation: "rebind"),
+                       "Parent help mentioning rebind in Examples is not support")
+        XCTAssertTrue(ServiceController.usageNamesSubcommand(ServiceHelpFixtures.subcommandHelp("rebind"), operation: "rebind"))
+        XCTAssertFalse(ServiceController.usageNamesSubcommand(ServiceHelpFixtures.subcommandHelp("rebind"), operation: "reload"))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("term-llm")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let runner = FakeCommandRunner()
+        runner.handler = { _, args, _ in ServiceHelpFixtures.help(for: args[1], supported: args[1] == "rebind") }
+        let controller = ServiceController(executable: executable, runner: runner)
+        XCTAssertTrue(controller.supports("rebind"))
+        XCTAssertFalse(controller.supports("reload"))
+        XCTAssertTrue(controller.supports("rebind"))
+        XCTAssertEqual(runner.calls.count, 2, "Answers are cached for an unchanged executable")
+
+        // Replacing the executable (new inode) invalidates the cached answer.
+        let replacement = directory.appendingPathComponent("replacement")
+        try Data("#!/bin/sh\n# newer\n".utf8).write(to: replacement)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: replacement.path)
+        XCTAssertEqual(rename(replacement.path, executable.path), 0)
+        runner.handler = { _, args, _ in ServiceHelpFixtures.help(for: args[1], supported: true) }
+        XCTAssertTrue(controller.supports("reload"))
+        XCTAssertEqual(runner.calls.count, 3)
+    }
+
+    func testStatusAllAsksForEveryServiceInOneCall() throws {
+        let runner = FakeCommandRunner()
+        runner.enqueue(CommandResult(status: 0, stdout: ServiceFixtures.readyJSON, stderr: ""))
+        let controller = ServiceController(executable: URL(fileURLWithPath: "/bin/sh"), runner: runner)
+        XCTAssertEqual(try controller.statusAll().service("web")?.state, .ready)
+        XCTAssertEqual(runner.calls.map(\.arguments), [["service", "status", "--json"]])
+    }
+
     func testRejectsUnsupportedSchemaVersion() throws {
         let runner = FakeCommandRunner()
         runner.enqueue(CommandResult(status: 0,
@@ -70,7 +108,7 @@ final class ServiceContractTests: XCTestCase {
             ["service", "restart", "web", "--no-enable"],
             ["service", "autostart", "web", "on"],
             ["service", "autostart", "web", "off"],
-            ["service", "install", "web", "--yes", "--", "--auth", "bearer", "--port", "9123"],
+            ["service", "install", "web", "--yes", "--binary", controller.executable.path, "--", "--auth", "bearer", "--port", "9123"],
         ])
     }
 

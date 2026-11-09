@@ -1,6 +1,9 @@
 import AVFoundation
 import MediaPlayer
+import ImageIO
+#if os(iOS)
 import UIKit
+#endif
 import XCTest
 @testable import TermLLM
 
@@ -576,14 +579,20 @@ final class ListenAudioSessionTests: XCTestCase {
         var observerRemovals = 0
 
         override func removeTimeObserver(_ observer: Any) {
-            observerRemovals += 1
+            MainActor.assumeIsolated { observerRemovals += 1 }
             super.removeTimeObserver(observer)
         }
     }
 
-    func testReleasingEngineExplicitlyRemovesItsPeriodicObserver() {
+    // Run in a Swift task: older simulator runtimes crash in the isolated-
+    // deinit back-deployment shim when XCTest invokes this synchronously.
+    func testReleasingEngineExplicitlyRemovesItsPeriodicObserver() async {
         let player = ObserverRecordingPlayer()
+        #if os(iOS)
         var engine: AVListenEngine? = AVListenEngine(audioSession: FakeListenAudioSession(), player: player)
+        #else
+        var engine: AVListenEngine? = AVListenEngine(player: player)
+        #endif
         weak var released = engine
         XCTAssertNotNil(released)
         XCTAssertEqual(player.observerRemovals, 0)
@@ -593,6 +602,7 @@ final class ListenAudioSessionTests: XCTestCase {
                        "Releasing a time-observer token without removeTimeObserver is undefined behavior")
     }
 
+    #if os(iOS)
     func testNormalPlaybackDoesNotMix() async throws {
         let session = FakeListenAudioSession()
         let engine = AVListenEngine(audioSession: session)
@@ -655,10 +665,12 @@ final class ListenAudioSessionTests: XCTestCase {
         }
         XCTAssertEqual(session.activationCount, 2)
     }
+    #endif
 }
 
 /// Called on the engine's session queue; tests read it only after awaiting
 /// the engine, which orders those reads after the calls.
+#if os(iOS)
 private final class FakeListenAudioSession: ListenAudioSession, @unchecked Sendable {
     var categoryOptions: [AVAudioSession.CategoryOptions] = []
     var activationErrors: [NSError] = []
@@ -683,6 +695,7 @@ private final class FakeListenAudioSession: ListenAudioSession, @unchecked Senda
         if !activationErrors.isEmpty { throw activationErrors.removeFirst() }
     }
 }
+#endif
 
 /// Exercises the real Foundation transport, not just the downloader's Fetch seam.
 @MainActor
@@ -873,17 +886,17 @@ final class ListenArtworkTests: XCTestCase {
         async let first = artwork.image(for: episode, pixels: row)
         async let second = artwork.image(for: episode, pixels: row)
         let images = await [first, second]
-        XCTAssertEqual(images[0]?.cgImage?.width, 160, "decoded at display size")
+        XCTAssertEqual(images[0]?.platformCGImage?.width, 160, "decoded at display size")
         XCTAssertNotNil(images[1])
         XCTAssertEqual(ArtworkProtocol.requests(for: url), 1, "views showing the same artwork share one download")
         XCTAssertNotNil(artwork.cachedImage(for: episode, pixels: row), "a rebuilt view reads it without waiting")
 
         let file = try XCTUnwrap(artwork.savedFile(for: episode))
         XCTAssertEqual(file.deletingLastPathComponent().standardizedFileURL, directory.standardizedFileURL)
-        XCTAssertEqual(ListenArtworkStore.decode(file, maxPixels: 4096)?.cgImage?.width, 1024,
+        XCTAssertEqual(ListenArtworkStore.decode(file, maxPixels: 4096)?.platformCGImage?.width, 1024,
                        "saved at lock-screen size, not the served 1200 px")
         let large = await artwork.image(for: episode, pixels: ListenArtworkStore.pixels(for: 240, scale: 3))
-        XCTAssertEqual(large?.cgImage?.width, 800)
+        XCTAssertEqual(large?.platformCGImage?.width, 800)
 
         // Another launch reads the same file.
         let relaunched = store(session)
@@ -938,7 +951,7 @@ final class ListenArtworkTests: XCTestCase {
         let row = ListenArtworkStore.pixels(for: 44, scale: 3)
         XCTAssertNil(artwork.cachedImage(url: kept, pixels: row))
         let image = await artwork.image(url: kept, pixels: row)
-        XCTAssertEqual(image?.cgImage?.width, 160)
+        XCTAssertEqual(image?.platformCGImage?.width, 160)
         _ = await artwork.image(url: dropped, pixels: row)
         XCTAssertNotNil(artwork.cachedImage(url: kept, pixels: row), "a rebuilt view reads it without waiting")
 
@@ -956,7 +969,7 @@ final class ListenArtworkTests: XCTestCase {
         let file = try XCTUnwrap(ListenArtworkStore.save(ArtworkProtocol.jpeg(side: 3000),
                                                          to: directory.appending(path: "big.img"), in: directory))
         let image = try XCTUnwrap(ListenArtworkStore.decode(file, maxPixels: ListenArtworkStore.savedPixels))
-        XCTAssertEqual(image.cgImage?.width, 1024)
+        XCTAssertEqual(image.platformCGImage?.width, 1024)
         let artwork = UncheckedBox(SystemNowPlaying.artwork(image))
         let rendered = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -976,13 +989,16 @@ final class ArtworkProtocol: URLProtocol, @unchecked Sendable {
     static func requests(for url: URL) -> Int { lock.withLock { counts[url] ?? 0 } }
 
     static func jpeg(side: Int) -> Data {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let size = CGSize(width: side, height: side)
-        return UIGraphicsImageRenderer(size: size, format: format).jpegData(withCompressionQuality: 0.8) { context in
-            UIColor.systemTeal.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-        }
+        let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                                bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: 0, green: 0.7, blue: 0.7, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+        precondition(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".artwork.example") == true }

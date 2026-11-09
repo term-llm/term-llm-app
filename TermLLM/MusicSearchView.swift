@@ -31,10 +31,10 @@ struct MusicSearchView: View {
                 }
             }
             .overlay { placeholder }
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs, artists, albums")
+            .searchable(text: $query, placement: .platformAlwaysVisible, prompt: "Songs, artists, albums")
             .task(id: query) { await search() }
             .navigationTitle("Add to \(playlist?.name ?? "Playlist")")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }

@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 import UserNotifications
 import WebKit
 
@@ -10,6 +12,9 @@ struct ContentView: View {
     @AppStorage(AppControlsBar.hintAcknowledgedKey, store: HubFixture.defaults) private var appControlsHintAcknowledged = false
     @StateObject private var connections = HubConnectionStore(defaults: HubFixture.defaults)
     @StateObject private var aggregate = HubAggregateStore()
+    @StateObject private var macServices = MacLocalServiceBridge.shared
+    @State private var localServiceTask: Task<Void, Never>?
+    @State private var localAttachTask: Task<Void, Never>?
     @State private var draftURL = ""
     @State private var showingSettings = false
     @State private var voiceTarget = VoiceShortcutTarget.load(from: HubFixture.defaults)
@@ -53,6 +58,17 @@ struct ContentView: View {
     @State private var parkedBrowser: WebKitParkedPage?
     private let listen = Listen.shared
 
+    // Closing the Mac window hides and retains it. Do not mistake that hidden
+    // window for an attended/foreground client (or keep polling it). AppKit,
+    // not SwiftUI's scenePhase, knows whether it is hidden or minimized.
+    private var effectiveScenePhase: ScenePhase {
+        #if os(macOS)
+        macServices.windowPhase
+        #else
+        scenePhase
+        #endif
+    }
+
     private var address: URL? {
         ServerAddress.browserURL(serverURL, selectedConnection: connections.selected)
     }
@@ -67,7 +83,7 @@ struct ContentView: View {
     private var desktopCommandPolicy: DesktopCommandPolicy {
         DesktopCommandPolicy(
             tab: selectedTab,
-            enabled: scenePhase == .active && !HubFixture.isEnabled && !showingSettings &&
+            enabled: effectiveScenePhase == .active && !HubFixture.isEnabled && !showingSettings &&
                 !showingMusic && !showingListen && !showingPlayer && !linkedDevicesPairing.isPresented &&
                 importedServer == nil && !isSigningIn,
             hasSources: !aggregate.sources.isEmpty,
@@ -75,7 +91,7 @@ struct ContentView: View {
                 selectedWorkspace?.browserReady == true && !loginRequired && loginError == nil,
             chatParked: parkedBrowser != nil,
             canGoBack: canGoBack,
-            canZoom: ProcessInfo.processInfo.isiOSAppOnMac && appControlsAvailable)
+            canZoom: AppPlatform.isMac && appControlsAvailable)
     }
 
     private func performDesktopCommand(_ command: DesktopCommand) {
@@ -112,15 +128,44 @@ struct ContentView: View {
     }
 
     @ViewBuilder var body: some View {
-        // The extra responder ancestor is only needed by Designed for iPad on Mac.
-        // Platform selection is constant for this scene, never based on its width.
-        if ProcessInfo.processInfo.isiOSAppOnMac {
-            DesktopCommandHost(policy: desktopCommandPolicy, onCommand: performDesktopCommand) {
-                shellContent
-            }
-        } else {
-            shellContent
+        #if os(macOS)
+        // Menu commands act on this window through DesktopCommandCenter.
+        DesktopCommandHost(policy: desktopCommandPolicy, onCommand: performDesktopCommand) {
+            integratedShellContent
         }
+        #else
+        integratedShellContent
+        #endif
+    }
+
+    private var integratedShellContent: some View {
+        shellContent
+        .environment(\.scenePhase, effectiveScenePhase)
+        .task {
+            if !isFixture { macServices.start() }
+            // A background request can arrive before this view observes changes.
+            if let id = macServices.request?.id, let request = macServices.takeRequest(id) {
+                handleLocalServiceRequest(request)
+            }
+        }
+        .alert("Local Service", isPresented: Binding(
+            get: { macServices.error != nil && !showingSettings },
+            set: { if !$0 { macServices.error = nil } })) {
+                Button("OK") { macServices.error = nil }
+            } message: { Text(macServices.error ?? "") }
+        .onChange(of: macServices.request?.id) { _, id in
+            guard let id, let request = macServices.takeRequest(id) else { return }
+            handleLocalServiceRequest(request)
+        }
+    }
+
+    private func handleLocalServiceRequest(_ request: MacLocalServiceBridge.ChatRequest) {
+        if request.open { openManagedLocalChat(request) } else { attachManagedLocalService(request) }
+    }
+
+    private var localServiceAction: (() -> Void)? {
+        guard macServices.isSupported else { return nil }
+        return { macServices.showLocalService() }
     }
 
     private var shellContent: some View {
@@ -133,11 +178,15 @@ struct ContentView: View {
                         setup
                     }
                 } else {
+                    #if os(macOS)
+                    workspaceShell(address)
+                    #else
                     if WorkspacePlatform.current.usesWorkspaceChrome {
                         workspaceShell(address)
                     } else {
                         appShell(address)
                     }
+                    #endif
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -238,7 +287,7 @@ struct ContentView: View {
             pushWindowID = id
         })
         .sheet(isPresented: $showingSettings) {
-            settings.safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            settingsPresentation.safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
         }
         .sheet(isPresented: Binding(get: { linkedDevicesPairing.isPresented }, set: { if !$0 { linkedDevicesPairing.dismiss() } })) {
             LinkedDevicesPairingView(model: linkedDevicesPairing, catalog: connections, runtime: linkedDevices)
@@ -286,7 +335,7 @@ struct ContentView: View {
             // Chat is on screen again: reopen a page stopped while off screen.
             if reopen { resumeParkedBrowser(automatically: true) }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: effectiveScenePhase) { _, phase in
             if phase == .background {
                 aggregate.setPollingSuspended(true)
                 linkedDevices.setForeground(false)
@@ -374,9 +423,7 @@ struct ContentView: View {
 
     private var addressField: some View {
         TextField("https://your-server.example", text: $draftURL)
-            .textContentType(.URL)
-            .keyboardType(.URL)
-            .textInputAutocapitalization(.never)
+            .urlTextEntry()
             .autocorrectionDisabled()
             .submitLabel(.go)
             .onSubmit(saveFixtureAddress)
@@ -387,7 +434,8 @@ struct ContentView: View {
 
     private func workspaceShell(_ url: URL?) -> some View {
         WorkspaceShell(platform: .current, selection: selectedTab, visitedTabs: visitedTabs,
-                       chatAgentName: retainedChat?.agentName, onSelect: selectTab, onSettings: openSettings) { toggle in
+                       chatAgentName: retainedChat?.agentName, onSelect: selectTab, onSettings: openSettings,
+                       onLocalService: localServiceAction) { toggle in
             PhoneHubView(connections: connections, aggregate: aggregate, pendingConnectionURL: $pendingConnectionURL,
                          isVisible: selectedTab == .agents, onOpenChat: openPhoneChat, onSettings: openSettings,
                          usesWorkspaceChrome: true, onToggleSidebar: toggle)
@@ -416,6 +464,7 @@ struct ContentView: View {
         }
     }
 
+    #if os(iOS)
     /// Native tabs own navigation appearance; each destination keeps a stable
     /// identity so switching tabs does not replace the retained browser document.
     @ViewBuilder private func appShell(_ url: URL?) -> some View {
@@ -489,6 +538,7 @@ struct ContentView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { playbackShelf() }
         }
     }
+    #endif
 
     private var shelfPlayback: MediaPlaybackShelf.Playback {
         let music = MusicLibrary.shared.player
@@ -520,7 +570,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height)
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Color.platformGroupedBackground)
     }
 
     private func selectTab(_ tab: AppTab) {
@@ -628,8 +678,8 @@ struct ContentView: View {
                         loadError: $loadError, loginRequired: $loginRequired,
                         reloadCount: reloadCount, backCount: backCount,
                         authenticatedCount: authenticatedCount,
-                        scenePhase: chatIsVisible ? scenePhase : .inactive,
-                        textScale: ProcessInfo.processInfo.isiOSAppOnMac ? DesktopChatAppearance.clamped(macChatZoom) : 1,
+                        scenePhase: chatIsVisible ? effectiveScenePhase : .inactive,
+                        textScale: AppPlatform.isMac ? DesktopChatAppearance.clamped(macChatZoom) : 1,
                         isSigningIn: isSigningIn,
                         deviceTools: !isFixture && !isLinkedDevices && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
                         onLoginRequired: {
@@ -645,7 +695,7 @@ struct ContentView: View {
                         push: isFixture || isLinkedDevices ? nil : push, pushNavigation: isLinkedDevices ? nil : push.pendingNavigation, pushChangeCount: push.changeCount,
                         onPushNavigationHandled: push.navigationHandled,
                         onPushWindowReady: { pushWindowID = $0 }, nativeDestination: hubDestination,
-                        isContentVisible: chatIsVisible,
+                        isContentVisible: chatIsVisible && macServices.isMainWindowVisible,
                         websiteDataStore: HubFixture.isEnabled ? nil : selectedWorkspace?.security?.dataStore,
                         authenticationScript: browserAuthenticationScript,
                         connectionMount: HubFixture.isEnabled ? nil : source?.connection.url,
@@ -708,7 +758,9 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .top) {
-            if appControlsAvailable {
+            // Desktop Back/Reload live in native menus and keyboard commands;
+            // do not teach touch-only pull-down gestures or obscure web chrome.
+            if appControlsAvailable && !AppPlatform.isMac {
                 AppControlsBar(isExpanded: $showingControls,
                                hintAcknowledged: $appControlsHintAcknowledged,
                                canGoBack: canGoBack, showsSettings: HubFixture.isEnabled,
@@ -725,7 +777,7 @@ struct ContentView: View {
 
     /// Off-screen stops reopen without asking once Chat is on screen again.
     private var parkedBrowserShouldReopen: Bool {
-        parkedBrowser?.reason.resumesAutomatically == true && chatIsVisible && scenePhase == .active
+        parkedBrowser?.reason.resumesAutomatically == true && chatIsVisible && effectiveScenePhase == .active
     }
 
     /// Closing the web view ends its page process; the document is reopened
@@ -801,8 +853,8 @@ struct ContentView: View {
     }
 
     private func revealControls() {
-        guard appControlsAvailable, !showingControls else { return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        guard !AppPlatform.isMac, appControlsAvailable, !showingControls else { return }
+        NativeDevice.lightImpact()
         appControlsHintAcknowledged = true
         showingControls = true
     }
@@ -845,10 +897,61 @@ struct ContentView: View {
         }
     }
 
+    /// Keeps a running, verified local service in the app's connections as
+    /// This Mac, so nobody has to type a loopback address. Never navigates or
+    /// alerts, and leaves an already signed-in This Mac (and its open chat) alone.
+    private func attachManagedLocalService(_ request: MacLocalServiceBridge.ChatRequest) {
+        #if os(macOS)
+        localAttachTask?.cancel()
+        localAttachTask = Task { @MainActor in
+            guard let connection = try? connections.attachManagedLocalService(address: request.baseURL.absoluteString)
+            else { return }
+            aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
+            guard !Task.isCancelled, let source = aggregate.source(connection.id), source.isActive else { return }
+            if source.security?.bearer == request.token, !source.store.unauthorized { return }
+            await source.signInWithBearer(request.token)
+        }
+        #endif
+    }
+
+    private func openManagedLocalChat(_ request: MacLocalServiceBridge.ChatRequest) {
+        #if os(macOS)
+        localAttachTask?.cancel()
+        localServiceTask?.cancel()
+        localServiceTask = Task { @MainActor in
+            do {
+                let connection = try connections.saveManagedLocalService(address: request.baseURL.absoluteString)
+                aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
+                guard let source = aggregate.source(connection.id) else { return }
+                // Use the same isolated credential store, auth epochs and WebKit
+                // document lifecycle as any remote Direct Node. Never share jars.
+                await source.signInWithBearer(request.token)
+                guard !Task.isCancelled, source.isActive, aggregate.source(connection.id) === source else { return }
+                guard source.authenticationError == nil, source.browserReady, !source.browserRevoked else {
+                    macServices.error = "Could not authenticate the local service. Check Local Service diagnostics and try again."
+                    return
+                }
+                showingSettings = false
+                openPhoneChat(connection.id, connection.url)
+            } catch {
+                guard !Task.isCancelled else { return }
+                macServices.error = "Could not add the local service. Check the saved connections and Local Service diagnostics."
+            }
+        }
+        #endif
+    }
+
     private func openSettings() {
         showingControls = false
         showingSettings = true
         Task { await push.refreshAuthorization() }
+    }
+
+    private var settingsPresentation: some View {
+        // A Mac sheet otherwise sizes to its content, which clips
+        // connection management and makes desktop settings needlessly cramped.
+        settings.frame(minWidth: AppPlatform.isMac ? 680 : nil,
+                       minHeight: AppPlatform.isMac ? 560 : nil)
     }
 
     private var settings: some View {
@@ -861,8 +964,21 @@ struct ContentView: View {
                     voiceShortcutSection
                     deviceToolsSection
                 }
-                if ProcessInfo.processInfo.isiOSAppOnMac {
+                if AppPlatform.isMac {
                     desktopChatAppearanceSection
+                }
+                if macServices.isSupported {
+                    Section {
+                        Button("Local Service…", systemImage: "desktopcomputer") {
+                            macServices.showLocalService()
+                        }
+                        .accessibilityIdentifier("settings.localService")
+                        Text("Optionally run term-llm on this Mac. Remote connections work without a local service.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if let error = macServices.error {
+                            Text(error).font(.footnote).foregroundStyle(.red)
+                        }
+                    } header: { Text("This Mac") }
                 }
                 notificationsSection
                 if let issue = push.badgeIssue {
@@ -883,7 +999,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { showingSettings = false }
@@ -896,30 +1012,30 @@ struct ContentView: View {
 
     private var desktopChatAppearanceSection: some View {
         Section {
-            LabeledContent("Chat text size", value: DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
+            LabeledContent("Chat zoom", value: DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
                 .accessibilityIdentifier("settings.chatZoom")
             HStack {
-                Button("Smaller", systemImage: "textformat.size.smaller") {
+                Button("Zoom Out", systemImage: "minus.magnifyingglass") {
                     macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: -0.25)
                 }
-                .accessibilityLabel("Decrease chat text size")
+                .accessibilityLabel("Zoom out chat")
                 .accessibilityIdentifier("settings.chatZoom.decrease")
                 .disabled(DesktopChatAppearance.clamped(macChatZoom) <= 0.75)
                 Spacer()
-                Button("Larger", systemImage: "textformat.size.larger") {
+                Button("Zoom In", systemImage: "plus.magnifyingglass") {
                     macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: 0.25)
                 }
-                .accessibilityLabel("Increase chat text size")
+                .accessibilityLabel("Zoom in chat")
                 .accessibilityIdentifier("settings.chatZoom.increase")
                 .disabled(DesktopChatAppearance.clamped(macChatZoom) >= 2)
             }
             .buttonStyle(.borderless)
-            Button("Reset to 125%") { macChatZoom = DesktopChatAppearance.defaultZoom }
+            Button("Actual Size") { macChatZoom = DesktopChatAppearance.defaultZoom }
                 .accessibilityIdentifier("settings.chatZoom.reset")
         } header: {
             Text("Chat appearance")
         } footer: {
-            Text("Text reflows at the window’s width; the page is not magnified or cropped. Adjust from 75% to 200%. This Mac only; your conversation stays open.")
+            Text("Zooms the chat page like Safari; it reflows at the window’s width. Adjust from 75% to 200%. This Mac only; your conversation stays open.")
         }
     }
 
@@ -989,7 +1105,7 @@ struct ContentView: View {
         } header: {
             Text("Voice shortcut")
         } footer: {
-            Text("Runs from the Action Button, Siri or Shortcuts.")
+            Text(AppPlatform.isMac ? "Run with Siri or Shortcuts." : "Runs from the Action Button, Siri or Shortcuts.")
         }
     }
 
@@ -1007,7 +1123,7 @@ struct ContentView: View {
         } header: {
             Text("Device tools")
         } footer: {
-            Text("Let agents use this \(DeviceToolPlatform.current == .mac ? DeviceToolPlatform.current.name : UIDevice.current.model) while you chat.")
+            Text("Let agents use this \(DeviceToolPlatform.current == .mac ? DeviceToolPlatform.current.name : NativeDevice.model) while you chat.")
         }
     }
 
@@ -1039,7 +1155,7 @@ struct ContentView: View {
 
     private func beginVoiceLaunch(_ id: UUID) {
         // Fixtures never register a push window; they run as a single key scene.
-        guard voiceRequest == nil, scenePhase == .active, let windowID = pushWindowID ?? (isFixture ? "fixture" : nil),
+        guard voiceRequest == nil, effectiveScenePhase == .active, let windowID = pushWindowID ?? (isFixture ? "fixture" : nil),
               voiceLaunches.claim(id, windowID: windowID, isKeyScene: isFixture || push.isKeyScene(windowID)) else { return }
         guard let target = voiceTarget, let source = aggregate.source(target.sourceID), source.isActive,
               !source.browserRevoked,
@@ -1190,15 +1306,14 @@ struct ContentView: View {
             .disabled(push.authorization == .denied)
             .accessibilityIdentifier("notificationsToggle")
             if push.authorization == .denied {
-                Button("Allow in iOS Settings") {
-                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
+                Button(AppPlatform.isMac ? "Allow in System Settings" : "Allow in iOS Settings") {
+                    if let url = NativeApp.notificationSettingsURL { NativeApp.open(url) }
                 }
             }
         } footer: {
             if push.authorization == .denied {
-                Text("Notifications are blocked for term-llm in iOS Settings.")
+                Text(AppPlatform.isMac ? "Notifications are blocked for term-llm in System Settings."
+                                       : "Notifications are blocked for term-llm in iOS Settings.")
             }
             if push.pendingCleanupCount > 0 {
                 Text("^[\(push.pendingCleanupCount) agent](inflect: true) may still send notifications until you open it while signed in.")
@@ -1209,8 +1324,10 @@ struct ContentView: View {
     }
 }
 
+#if os(iOS)
 /// Resolve the actual containing scene even on the unconfigured/setup screen;
 /// global shortcut/error handling must not sample an arbitrary current scene.
+/// (The Mac app's reader is in TermLLMMac/MacWorkspace.swift.)
 private struct NativeSceneReader: UIViewRepresentable {
     let ready: (UIWindowScene) -> Void
 
@@ -1240,3 +1357,4 @@ private struct NativeSceneReader: UIViewRepresentable {
         }
     }
 }
+#endif

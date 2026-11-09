@@ -30,6 +30,8 @@ final class AppLoginItemTests: XCTestCase {
         XCTAssertEqual(plist[AppLoginItem.markerKey] as? String, AppLoginItem.markerValue)
         XCTAssertEqual(plist["ProgramArguments"] as? [String], [app.path])
         XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
+        XCTAssertEqual(plist["AssociatedBundleIdentifiers"] as? [String], ["com.termllm.app"])
+        XCTAssertEqual(plist["KeepAlive"] as? Bool, false)
     }
 
     func testEnableRefusesForeignPlist() throws {
@@ -82,5 +84,94 @@ final class AppLoginItemTests: XCTestCase {
         let data = try Data(contentsOf: item.plistURL)
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
         XCTAssertEqual(plist["ProgramArguments"] as? [String], [movedApp.path])
+    }
+    func testRefreshMigratesLegacyCompanionAssociationWithoutAnotherAgent() throws {
+        let item = AppLoginItem(home: home)
+        try item.enable(appExecutable: app)
+        var plist = try XCTUnwrap(try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: item.plistURL), format: nil) as? [String: Any])
+        plist["AssociatedBundleIdentifiers"] = ["com.termllm.companion"]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: item.plistURL)
+        item.refreshIfNeeded(appExecutable: app)
+        let migrated = try XCTUnwrap(try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: item.plistURL), format: nil) as? [String: Any])
+        XCTAssertEqual(migrated["ProgramArguments"] as? [String], [app.path])
+        XCTAssertEqual(migrated["AssociatedBundleIdentifiers"] as? [String], ["com.termllm.app"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: item.plistURL.deletingLastPathComponent().path),
+                       [AppLoginItem.label + ".plist"])
+    }
+
+    // MARK: - Open at Login registration
+
+    func testEnableRegistersWithSystemInsteadOfLaunchAgent() throws {
+        let system = FakeLoginService()
+        let item = AppLoginItem(home: home, mainApp: system)
+        try item.enable(appExecutable: app)
+        XCTAssertEqual(system.calls, ["register"])
+        XCTAssertTrue(item.isEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: item.plistURL.path),
+                       "A registered app must not also appear as a background launch agent")
+        try item.disable()
+        XCTAssertEqual(system.calls, ["register", "unregister"])
+        XCTAssertFalse(item.isEnabled)
+    }
+
+    func testUnsignedBuildFallsBackToLaunchAgent() throws {
+        let system = FakeLoginService()
+        system.failRegistration = true
+        let item = AppLoginItem(home: home, mainApp: system)
+        try item.enable(appExecutable: app)
+        XCTAssertTrue(item.legacyEnabled)
+        XCTAssertTrue(item.isEnabled)
+    }
+
+    func testRefreshMovesLegacyAgentToOpenAtLogin() throws {
+        try AppLoginItem(home: home).enable(appExecutable: app)
+        let system = FakeLoginService()
+        let item = AppLoginItem(home: home, mainApp: system)
+        item.refreshIfNeeded(appExecutable: app)
+        XCTAssertEqual(system.status, .enabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: item.plistURL.path))
+        // Nothing to move the next time, and no repeated registration.
+        item.refreshIfNeeded(appExecutable: app)
+        XCTAssertEqual(system.calls, ["register"])
+    }
+
+    func testRefreshNeverRegistersWithoutAnExistingPreference() {
+        let system = FakeLoginService()
+        AppLoginItem(home: home, mainApp: system).refreshIfNeeded(appExecutable: app)
+        XCTAssertTrue(system.calls.isEmpty)
+    }
+
+    func testPendingApprovalCountsAsEnabled() throws {
+        let system = FakeLoginService()
+        system.statusAfterRegister = .requiresApproval
+        let item = AppLoginItem(home: home, mainApp: system)
+        try item.enable(appExecutable: app)
+        XCTAssertTrue(item.isEnabled)
+        XCTAssertTrue(item.needsApproval)
+    }
+
+    func testSystemRegistrationOnlyInsideTheApp() {
+        XCTAssertNil(AppLoginItem.systemService, "A test runner must never register itself as a login item")
+    }
+}
+
+private final class FakeLoginService: MainAppLoginService, @unchecked Sendable {
+    var status: MainAppLoginStatus = .notRegistered
+    var statusAfterRegister: MainAppLoginStatus = .enabled
+    var failRegistration = false
+    var calls: [String] = []
+
+    func register() throws {
+        calls.append("register")
+        if failRegistration { throw NSError(domain: "SMAppServiceErrorDomain", code: 1) }
+        status = statusAfterRegister
+    }
+
+    func unregister() throws {
+        calls.append("unregister")
+        status = .notRegistered
     }
 }

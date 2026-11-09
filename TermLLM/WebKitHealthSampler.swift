@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import UIKit
 
 /// Device and app-process readings, taken by the monitor every few seconds.
 /// CPU figures are in cores: 1.0 means one core fully busy for the interval.
@@ -94,20 +93,17 @@ final class ProcessUsageSampler {
                 previousWakeups = (uptime, count)
             }
         }
-        let device = UIDevice.current
-        // Also enabled by the device_info tool; never switched off again.
-        if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
-        let level = device.batteryLevel
-        let charging: Bool? = switch device.batteryState {
-        case .charging, .full: true
-        case .unplugged: false
+        let battery = NativeDevice.battery()
+        let charging: Bool? = switch battery.state {
+        case "charging", "full": true
+        case "unplugged": false
         default: nil
         }
         return NativeHealthSample(
             uptime: uptime, date: date, appCPU: appCPU, deviceCPU: deviceCPU, cpuCount: cpuCount,
             wakeupsPerSecond: wakeups, footprintMB: Self.footprintBytes().map { Double($0) / 1_048_576 },
             thermal: ProcessInfo.processInfo.thermalState, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
-            batteryLevel: level >= 0 ? level : nil, charging: charging,
+            batteryLevel: battery.level, charging: charging,
             appActive: appActive, appBackground: appBackground, cpuInterval: cpuInterval)
     }
 

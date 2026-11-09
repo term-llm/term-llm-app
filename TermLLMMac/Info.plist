@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>term-llm</string>
+	<key>CFBundleSpokenName</key>
+	<string>Term L L M</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.termllm.app.native-login</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>termllm-auth</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.termllm.app.connection</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>termllm</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsForMedia</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Search Apple Music and play your playlists, including ones the agent makes for you.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow camera access for web voice and attachments.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>term-llm</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to the term-llm servers you choose on your local network or VPN.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Allow location access so you can share your current location in conversations and get walking or driving directions.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Allow location access so you can share your current location in conversations and get walking or driving directions.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Allow microphone access for live voice conversations.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.termllm.app.notification</string>
+	</array>
+	<key>TermLLMKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)com.termllm.app.shared</string>
+	<key>TermLLMPushRelayURL</key>
+	<string>$(TERMLLM_PUSH_RELAY_URL)</string>
+</dict>
+</plist>

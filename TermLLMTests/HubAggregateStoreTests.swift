@@ -96,7 +96,13 @@ final class HubAggregateStoreTests: XCTestCase {
         aggregate.synchronize([work])
         defer { aggregate.synchronize([]) }
         aggregate.setAgentsVisible(false)
-        try await Task.sleep(for: .milliseconds(100))
+        // Wait for the observed grace transition, not a fixed wall-clock delay:
+        // Catalyst/WebKit startup can delay the child task under test-runner load.
+        for _ in 0..<200 {
+            if aggregate.isPollingSuspended { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(aggregate.isPollingSuspended, "leaving Agents must expire its polling grace")
         aggregate.setPollingSuspended(true)
         aggregate.setPollingSuspended(false)
         XCTAssertTrue(aggregate.isPollingSuspended, "returning to the app on another tab doesn't poll")

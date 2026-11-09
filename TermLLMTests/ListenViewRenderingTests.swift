@@ -5,6 +5,7 @@ import XCTest
 
 /// Renders the Listen screens with sample data in a real window, like
 /// `MusicViewRenderingTests`; screenshots are attached to the test result.
+#if os(iOS)
 @MainActor
 final class ListenViewRenderingTests: XCTestCase {
     private func sampleListen() async throws -> Listen {
@@ -465,6 +466,8 @@ private struct MediaShelfRenderingHarness: View {
                            onOpenPodcastPlayer: {}, onOpenMusic: {})
     }
 }
+
+#endif
 
 /// Verify the actual view-body dependencies, not just the player model: a tick
 /// should refresh the small labels/scrubber without rebuilding artwork/menus.

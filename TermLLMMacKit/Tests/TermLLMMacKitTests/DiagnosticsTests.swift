@@ -22,7 +22,7 @@ final class DiagnosticsTests: XCTestCase {
 
     func testBuilderPrioritisesBrokenState() {
         let selection = CLISelection(source: .bundled,
-                                     binaryPath: "/Users/tester/Library/Application Support/TermLLM/bin/term-llm",
+                                     binaryPath: "/Users/tester/.config/term-llm/app/bin/term-llm",
                                      version: "dev", sha256: "abc",
                                      provenance: "Bundled")
         let status = ServiceStatus(kind: "web", installed: true, managed: true, registered: true,
@@ -31,7 +31,6 @@ final class DiagnosticsTests: XCTestCase {
                                    basePath: "/", auth: "bearer", enrollment: .notRequired,
                                    healthy: false, healthError: "connection refused")
         let report = CompanionDiagnostics.build(appVersion: "1.0",
-                                                payloadPresent: true,
                                                 selection: selection,
                                                 selectionError: nil,
                                                 problems: [],
@@ -40,8 +39,7 @@ final class DiagnosticsTests: XCTestCase {
                                                 endpoint: nil,
                                                 tokenAvailable: false,
                                                 loginItemEnabled: false,
-                                                managedMarkerPresent: true,
-                                                payloadChecksumPresent: true)
+                                                managedMarkerPresent: true)
         XCTAssertTrue(report.hasFailure)
         let service = report.checks.first { $0.id == "service" }
         XCTAssertEqual(service?.level, .failed)

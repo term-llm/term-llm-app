@@ -923,6 +923,7 @@ final class WebKitHealthViewRenderingTests: XCTestCase {
         return monitor
     }
 
+    #if os(iOS)
     private func render<Content: View>(_ view: Content, named name: String, scheme: ColorScheme) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
@@ -951,6 +952,8 @@ final class WebKitHealthViewRenderingTests: XCTestCase {
         add(attachment)
     }
 
+    #endif
+
     func testHistoryEntriesLeadWithASummary() {
         func entry(_ kind: String, _ message: String) -> (title: String, body: String) {
             let entry = WebKitHealthView.historyEntry(WebKitHealthEvent(date: Date(), kind: kind, message: message))
@@ -966,6 +969,7 @@ final class WebKitHealthViewRenderingTests: XCTestCase {
         XCTAssertEqual(entry("native-cpu", "run 1; app 53%").body, "run 1; app 53%")
     }
 
+    #if os(iOS)
     func testDiagnosticsScreen() async throws {
         let web = WKWebView(frame: .zero)
         let monitor = sampleMonitor(web)
@@ -976,4 +980,5 @@ final class WebKitHealthViewRenderingTests: XCTestCase {
         }
         withExtendedLifetime(web) {}
     }
+    #endif
 }

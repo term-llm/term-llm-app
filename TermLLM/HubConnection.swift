@@ -4,7 +4,8 @@ import WebKit
 /// Simulator-only protocol fixture. Never borrows production cookies or settings.
 enum HubFixture {
     static var server: URL? {
-        #if DEBUG && targetEnvironment(simulator)
+        // Debug builds on the Simulator or a Mac only; never shipped.
+        #if DEBUG && (targetEnvironment(simulator) || os(macOS))
         guard ProcessInfo.processInfo.environment["TERMLLM_NATIVE_HUB_FIXTURE_URL"] == "http://localhost:8766/" else { return nil }
         return URL(string: "http://localhost:8766/")
         #else

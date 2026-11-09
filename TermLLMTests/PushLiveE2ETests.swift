@@ -17,6 +17,7 @@ import XCTest
 /// TERMLLM_PUSH_E2E_URL (web UI, e.g. http://127.0.0.1:18090/ui/),
 /// TERMLLM_PUSH_E2E_RELAY (e.g. http://localhost:18080),
 /// TERMLLM_PUSH_E2E_APNS (fake APNs with GET /last) and TERMLLM_PUSH_E2E_BODY.
+#if os(iOS)
 @MainActor
 final class PushLiveE2ETests: XCTestCase {
     func testWebUIEnrollsAndExtensionDecryptsRelayedPush() async throws {
@@ -89,3 +90,4 @@ final class PushLiveE2ETests: XCTestCase {
         return try? PushMessage.content(for: request) // exactly what the extension delivers
     }
 }
+#endif

@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import UIKit
 
 /// Scene identity and short-lived attendance evidence are separate from a URL.
 /// The page supplies attendance only after applying the shared presence policy.
@@ -25,20 +24,20 @@ final class PushWindowRegistry {
     var sceneIsActive: (String) -> Bool = { _ in false }
 
     private final class WeakScene {
-        weak var value: UIWindowScene?
-        init(_ value: UIWindowScene) { self.value = value }
+        weak var value: NativeWindowScene?
+        init(_ value: NativeWindowScene) { self.value = value }
     }
 
-    func register(windowID: String, scene: UIWindowScene) {
+    func register(windowID: String, scene: NativeWindowScene) {
         scenes[windowID] = WeakScene(scene)
     }
 
-    func scene(windowID: String) -> UIWindowScene? { scenes[windowID]?.value }
+    func scene(windowID: String) -> NativeWindowScene? { scenes[windowID]?.value }
 
     func keyWindowID() -> String? {
         if let keyWindowOverride { return keyWindowOverride() }
-        let keys = scenes.filter { $0.value.value?.activationState == .foregroundActive &&
-            $0.value.value?.windows.contains(where: \.isKeyWindow) == true }.map { $0.key }
+        let keys = scenes.filter { $0.value.value?.isForegroundActive == true &&
+            $0.value.value?.hasKeyWindow == true }.map { $0.key }
         return keys.count == 1 ? keys.first : nil // ambiguous is not arbitrary
     }
 
@@ -52,7 +51,7 @@ final class PushWindowRegistry {
     /// key scene counts); nil when there is none yet or more than one.
     func soleWindowID() -> String? {
         var ids = Set(scenes.compactMap { id, scene in
-            scene.value.flatMap { $0.activationState == .unattached ? nil : id }
+            scene.value.flatMap { $0.isAttachedToApp ? id : nil }
         })
         if let key = keyWindowID() { ids.insert(key) }
         return ids.count == 1 ? ids.first : nil
@@ -84,6 +83,6 @@ final class PushWindowRegistry {
         guard let binding = bindings[windowID], binding.origin == origin, binding.active,
               binding.expires > now, binding.uptimeExpiry > uptime else { return false }
         // A recent page heartbeat does not keep a backgrounded scene attended.
-        return scenes[windowID]?.value?.activationState == .foregroundActive || sceneIsActive(windowID)
+        return scenes[windowID]?.value?.isForegroundActive == true || sceneIsActive(windowID)
     }
 }

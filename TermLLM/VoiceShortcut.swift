@@ -49,11 +49,11 @@ final class VoiceLaunchCenter: ObservableObject {
 
 struct StartLiveConversationIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Live Conversation"
-    static let description = IntentDescription("Open Term LLM and start a live voice conversation with your selected agent.")
+    static let description = IntentDescription("Open term-llm and start a live voice conversation with your selected agent.")
     static let openAppWhenRun: Bool = true
 
     #if compiler(>=6.2)
-    @available(iOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, *)
     static var supportedModes: IntentModes { .foreground }
     #endif
 

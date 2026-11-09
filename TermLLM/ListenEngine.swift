@@ -2,7 +2,9 @@ import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
+#if os(iOS)
 import UIKit
+#endif
 import WebKit
 
 // The boundary between Listen and AVFoundation, MediaPlayer, and WebKit.
@@ -106,6 +108,7 @@ struct WebKitCookieJar: ListenCookieJar {
 
 // MARK: - AVFoundation
 
+#if os(iOS)
 /// Injectable so session activation failures can be tested without real audio.
 /// Called only from `ListenAudioSessionQueue`'s background queue.
 protocol ListenAudioSession: AnyObject {
@@ -164,6 +167,13 @@ final class ListenAudioSessionQueue: @unchecked Sendable {
         }
     }
 }
+#else
+/// Mac apps have no audio session to configure or activate before playing.
+final class ListenAudioSessionQueue: Sendable {
+    func activate(spoken: Bool) async throws {}
+    func deactivate() {}
+}
+#endif
 
 /// Coalesces arbitrary-thread KVO bursts *before* dispatching to the main queue.
 /// One instance belongs to one loaded item; invalidation is permanent, so even
@@ -242,14 +252,27 @@ final class AVListenEngine: ListenEngine {
     /// How long to wait for a stream to become playable.
     static let loadTimeout: Duration = .seconds(30)
 
+    #if os(iOS)
     init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance(), player: AVPlayer = AVPlayer()) {
         self.player = player
         self.audioSession = ListenAudioSessionQueue(session: audioSession)
+        startObserving()
+    }
+    #else
+    init(player: AVPlayer = AVPlayer()) {
+        self.player = player
+        self.audioSession = ListenAudioSessionQueue()
+        startObserving()
+    }
+    #endif
+
+    private func startObserving() {
         player.automaticallyWaitsToMinimizeStalling = true
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
                                                       queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent?(.tick) }
         }
+        #if os(iOS)
         let center = NotificationCenter.default
         sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                                    queue: .main) { [weak self] note in
@@ -274,6 +297,7 @@ final class AVListenEngine: ListenEngine {
                 self.onEvent?(.outputLost)
             }
         })
+        #endif
     }
 
     isolated deinit {
@@ -529,7 +553,7 @@ final class SystemNowPlaying: ListenNowPlaying {
 
     /// MediaPlayer asks for the image on its own queue. A closure formed in
     /// this main-actor class would be main-actor isolated and trap there.
-    nonisolated static func artwork(_ image: UIImage) -> MPMediaItemArtwork {
+    nonisolated static func artwork(_ image: PlatformImage) -> MPMediaItemArtwork {
         MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 

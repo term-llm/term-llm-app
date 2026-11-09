@@ -4,7 +4,7 @@ import WebKit
 import XCTest
 @testable import TermLLM
 
-private final class LockedFlag: @unchecked Sendable {
+private final class RuntimeLockedFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
     var value: Bool { lock.withLock { flag } }
@@ -225,7 +225,7 @@ private final class FailingRuntimeTestConnector: LinkedDevicesSessionConnecting,
 }
 
 private final class RuntimeTestConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
-    let closed = LockedFlag()
+    let closed = RuntimeLockedFlag()
     func reconnect(credential: LinkedDevicesCredential,
                    closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
         let authorization = PeerAuthorizationState(PeerAuthorization(
@@ -1299,7 +1299,7 @@ final class PeerTransportTests: XCTestCase {
         let transport = WebRTCHubTransport(forwarder: forwarder, authorization: authorization,
                                             hubBaseURL: URL(string: "http://localhost:43215/")!)
         let request = URLRequest(url: URL(string: "http://localhost:43215/v1/linked-devices")!)
-        let callback = LockedFlag()
+        let callback = RuntimeLockedFlag()
         await XCTAssertThrowsErrorAsync(try await transport.execute(request, onUnauthorized: { callback.set() }))
         XCTAssertFalse(callback.value)
         XCTAssertTrue(authorization.check())
@@ -1403,7 +1403,7 @@ final class PeerTransportTests: XCTestCase {
                                                                          expiresAt: .distantFuture))
         source.install(WebRTCHubTransport(forwarder: forwarder, authorization: oldAuthorization,
                                           hubBaseURL: URL(string: "http://localhost:43217/")!))
-        let callback = LockedFlag()
+        let callback = RuntimeLockedFlag()
         let task = Task {
             try await source.execute(URLRequest(url: url), onUnauthorized: { callback.set() })
         }
