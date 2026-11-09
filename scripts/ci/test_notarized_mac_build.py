@@ -93,7 +93,7 @@ class FakeTools:
         self.spctl = (0, b"", b"app: accepted\nsource=Notarized Developer ID\n")
         self.codesign_details = {}
         self.codesign_entitlements = {}
-        self.release_url = b"https://github.com/owner/repo/releases/tag/mac-v1.0-7\n"
+        self.release_url = b"https://github.com/owner/repo/releases/tag/mac-v1.0.1\n"
 
     def __call__(self, args, capture_output=True, check=False, input=None, env=None):
         self.calls.append(list(args))
@@ -555,7 +555,7 @@ class AppFixture(TemporaryJob):
         self.extension = self.app / build.EXTENSION_PATH
         (self.extension / "Contents").mkdir(parents=True)
         with open(self.app / "Contents/Info.plist", "wb") as handle:
-            plistlib.dump({"CFBundleShortVersionString": "1.0", "CFBundleVersion": "7",
+            plistlib.dump({"CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "7",
                            "LSMinimumSystemVersion": "14.0"}, handle)
         self.reset_signatures()
 
@@ -686,22 +686,62 @@ class NotarizeTests(AppFixture):
                          "nothing is read from 1Password before the RAM disk is confirmed")
 
 
+class VersionTests(TemporaryJob):
+    def test_patch_sequence_and_manual_minor_bump(self):
+        releases = [{"tag_name": "mac-v1.0-2"}]
+        self.assertEqual(build.next_mac_version("1.0", releases), "1.0.1")
+        releases += [{"tag_name": "mac-v1.0.1"}, {"tag_name": "mac-v1.0.9"}]
+        self.assertEqual(build.next_mac_version("1.0", releases), "1.0.10")
+        self.assertEqual(build.next_mac_version("1.1", releases), "1.1.1")
+        self.assertEqual(build.next_mac_version("2.0", releases), "2.0.1")
+        self.assertEqual(build.next_mac_version("1.0.12", releases), "1.0.13")
+
+    def test_ignores_unpublished_unrelated_and_legacy_tags(self):
+        releases = [{"tag_name": "mac-v1.0.99", "draft": True},
+                    {"tag_name": "mac-v1.0.50", "prerelease": True},
+                    {"tag_name": "v1.0.30"}, {"tag_name": "mac-v1.0-200"},
+                    {"tag_name": "mac-v1.1.20"}]
+        self.assertEqual(build.next_mac_version("1.0", releases), "1.0.1")
+        for invalid in ("1", "1.0-beta", "1.0.1.2", "01.0"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                build.next_mac_version(invalid, releases)
+
+    def test_selection_reads_all_release_pages_and_writes_no_git_files(self):
+        def run(args, **kwargs):
+            if args[0] == "xcodebuild":
+                return completed(args, stdout=json.dumps([{"target": "TermLLMMac",
+                    "buildSettings": {"MARKETING_VERSION": "1.0"}}]).encode())
+            self.assertEqual(args, ["gh", "api", "--paginate", "--slurp",
+                                   "repos/owner/repo/releases?per_page=100"])
+            return completed(args, stdout=json.dumps([[{"tag_name": "mac-v1.0.1"}],
+                                                     [{"tag_name": "mac-v1.0.4"}]]).encode())
+        self.assertEqual(build.select_version(self.work, "owner/repo", run), "1.0.5")
+        self.assertEqual((self.work / "version.txt").read_text(), "1.0.5\n")
+
+    def test_selected_version_overrides_both_bundles(self):
+        (self.work / "version.txt").write_text("1.0.5\n")
+        self.prepare()
+        settings = (self.work / build.SETTINGS_FILE).read_text()
+        self.assertIn("MARKETING_VERSION = 1.0.5\n", settings)
+        self.assertIn("CURRENT_PROJECT_VERSION = 7\n", settings)
+
+
 class PublishTests(AppFixture):
     def test_creates_a_latest_release_for_the_commit(self):
         summary = self.work / "summary.md"
         tag = build.publish(self.app, self.work, "owner/repo", SHA, self.tools,
                             environ={"GITHUB_STEP_SUMMARY": str(summary)}, echo=lambda _: None)
-        self.assertEqual(tag, "mac-v1.0-7")
-        archive = self.work / "term-llm-macos-1.0-7.zip"
+        self.assertEqual(tag, "mac-v1.0.1")
+        archive = self.work / "term-llm-macos-1.0.1.zip"
         create = self.tools.commands("gh", "release", "create")[0]
-        self.assertEqual(create[3:5], ["mac-v1.0-7", str(archive)])
-        for flag, value in (("--repo", "owner/repo"), ("--target", SHA), ("--title", "term-llm for Mac 1.0 (7)")):
+        self.assertEqual(create[3:5], ["mac-v1.0.1", str(archive)])
+        for flag, value in (("--repo", "owner/repo"), ("--target", SHA), ("--title", "term-llm for Mac 1.0.1")):
             self.assertEqual(create[create.index(flag) + 1], value)
         self.assertIn("--latest", create)
         notes = Path(create[create.index("--notes-file") + 1]).read_text()
         self.assertIn(hashlib.sha256(archive.read_bytes()).hexdigest(), notes)
         self.assertIn("macOS 14.0 or later", notes)
-        self.assertIn("releases/tag/mac-v1.0-7", summary.read_text())
+        self.assertIn("releases/tag/mac-v1.0.1", summary.read_text())
 
     def test_rejects_untrusted_arguments(self):
         for repository, commit in (("owner/repo", "main"), ("owner/repo;x", SHA), ("", SHA)):

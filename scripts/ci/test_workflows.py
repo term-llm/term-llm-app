@@ -100,8 +100,10 @@ class WorkflowBudgetTests(unittest.TestCase):
             self.assertRegex(reference, r"^op://[A-Za-z0-9 ._-]+(?:/[A-Za-z0-9 ._-]+){2,3}$",
                              "1Password references only allow alphanumerics, space, '.', '_' and '-'")
 
+        self.assertIn("select-version", steps["Select the next Mac patch version"])
+        self.assertNotIn("OP_SERVICE_ACCOUNT_TOKEN", steps["Select the next Mac patch version"])
         self.assertEqual(text.count("contents: write"), 1)
-        self.assertEqual(text.count("github.token"), 1)
+        self.assertEqual(text.count("github.token"), 2)
         self.assertIn("GH_TOKEN: ${{ github.token }}", steps["Publish the notarized app as a GitHub release"])
 
         self.assertIn('WORK_PREFIX = "term-llm-mac-release."', helper)

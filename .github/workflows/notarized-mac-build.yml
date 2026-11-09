@@ -54,6 +54,12 @@ jobs:
           printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
           printf 'MAC_RELEASE_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-mac-release.XXXXXX")" >> "$GITHUB_ENV"
           xcodebuild -version
+      - name: Select the next Mac patch version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" \
+            select-version --repository "$GITHUB_REPOSITORY"
       # The only GitHub secret is the 1Password service account token. This
       # step only receives whether it is set.
       - name: Require the 1Password service account token and CLI
