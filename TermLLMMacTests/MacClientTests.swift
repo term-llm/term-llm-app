@@ -144,6 +144,55 @@ final class MacClientTests: XCTestCase {
                                                     frameURL: url, isMainFrame: true, type: .microphone), .grant)
     }
 
+    /// macOS 27 floats "Write with Siri" beside a focused text area whenever the
+    /// web view allows it. A plain web view proves the page reaches that state.
+    func testChatDeclinesTheWriteWithSiriButtonForItsComposer() async throws {
+        let server = try LoopbackHTTPServer { _, _, _ in
+            .init(body: Data("<!doctype html><title>Chat</title><textarea placeholder=\"Steer conversation...\"></textarea>".utf8))
+        }
+        let port = try await server.start()
+        defer { server.stop() }
+        let url = try XCTUnwrap(URL(string: "http://localhost:\(port)/ui/"))
+        let browser = BrowserView(url: url, loading: .constant(false), canGoBack: .constant(false),
+                                  loadError: .constant(nil), loginRequired: .constant(false),
+                                  reloadCount: 0, backCount: 0, authenticatedCount: 0,
+                                  onLoginRequired: {}, onRevealControls: {},
+                                  websiteDataStore: .nonPersistent(), connectionMount: url)
+        let coordinator = browser.makeCoordinator()
+        let chat = browser.makeWebView(coordinator: coordinator)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let plain = WKWebView(frame: .zero, configuration: configuration)
+        plain.load(URLRequest(url: url))
+        var windows: [NSWindow] = []
+        defer {
+            BrowserView.dismantleWebView(chat, coordinator: coordinator)
+            windows.forEach { $0.contentView = nil; $0.orderOut(nil) }
+        }
+        for view in [chat, plain] {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = view
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(view)
+            windows.append(window)
+            try await waitUntil { view.url != nil && !view.isLoading }
+            let focused = try await view.evaluateJavaScript(
+                "document.querySelector('textarea').focus(); document.activeElement.tagName") as? String
+            XCTAssertEqual(focused, "TEXTAREA")
+        }
+
+        let key = "allowsWritingToolsAffordance"
+        if plain.responds(to: NSSelectorFromString(key)) {
+            try await waitUntil("WebKit to allow the button for a focused text area") {
+                plain.value(forKey: key) as? Bool == true
+            }
+        }
+        XCTAssertTrue(chat is ChatWebView)
+        XCTAssertEqual(chat.value(forKey: key) as? Bool, false)
+    }
+
     func testChatZoomIsWholePageZoomWithinItsRange() {
         let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         BrowserView.applyChatZoom(1.5, to: view)
@@ -205,6 +254,38 @@ final class MacClientTests: XCTestCase {
         XCTAssertNotEqual(client.phase, .background)
         XCTAssertEqual(content.string, "unsent draft")
         window.orderOut(nil)
+    }
+
+    /// SwiftUI adds the scene reader to the window while it renders. Attaching
+    /// publishes the window's visibility and phase, so doing it there logs
+    /// "Publishing changes from within view updates is not allowed".
+    func testSceneReaderAttachesTheWindowAfterSwiftUIRendersIt() throws {
+        let suite = "TermLLMMacTests.sceneReader.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = MacClientWindow(defaults: defaults)
+        var ready: [NativeWindowScene] = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let host = NSHostingView(rootView: Color.clear.background(NativeSceneReader(client: client) { ready.append($0) }))
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+
+        func reader(in view: NSView) -> NativeSceneReader.Reader? {
+            (view as? NativeSceneReader.Reader) ?? view.subviews.lazy.compactMap(reader).first
+        }
+        XCTAssertTrue(reader(in: host)?.window === window, "SwiftUI has rendered the reader into the window")
+        XCTAssertFalse(client.isAttachedToApp, "Attaching must wait until SwiftUI finishes rendering")
+        XCTAssertTrue(ready.isEmpty)
+
+        let nextTurn = expectation(description: "next main-queue turn")
+        DispatchQueue.main.async { nextTurn.fulfill() }
+        wait(for: [nextTurn], timeout: 1)
+        XCTAssertTrue(client.scene(for: window) === client)
+        XCTAssertEqual(ready.count, 1)
+        XCTAssertTrue(ready.first === client)
     }
 
     func testMenuCommandsNeedTheClientWindowToOwnTheKeyboard() {

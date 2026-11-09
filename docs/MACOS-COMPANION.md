@@ -4,7 +4,7 @@ Local CLI/service management is an **optional part of the native term-llm Mac ap
 
 The client has the same Agents, Chat, Music, Podcasts and remote connections as the iPhone app. **Local Service…** opens an AppKit settings window in the same process; its controller and `CompanionModel` (in `TermLLMMac/`) use `TermLLMMacKit` for provisioning and service management. It is not another app, service daemon, or app users must configure separately. Remote connections work without using it.
 
-> **Delivery status: development/manual only.** No app Developer ID signing, notarization, stapling, Sparkle feed, automatic app update or production release pipeline is implemented. Do not describe these builds as notarized or auto-updating.
+> **Delivery status:** once its signing secrets and profiles are configured, CI Developer ID signs, notarizes, staples and publishes every app change pushed to `main` as a GitHub release ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)). There is no Sparkle feed or automatic app update. Builds run from Xcode stay development-signed; only CI release builds are notarized.
 
 ## What exists
 
@@ -16,7 +16,8 @@ The client has the same Agents, Chat, Music, Podcasts and remote connections as 
 | CLI installation | Official signed GitHub release → stable per-user runtime, signature/checksum verification, transactional replacement and backups |
 | Authenticated local chat | Verified managed loopback service handed to the full client's isolated Direct Node source |
 | Computer use / macOS Harness integration | **Deferred.** No bundled Python/PyObjC runtime or permission host |
-| Production signing/notarization/auto-update | **Not implemented** |
+| Developer ID signing and notarization | CI on push to `main`, published as GitHub releases ([setup](SELF-HOSTED-CI.md#notarized-mac-builds)) |
+| Automatic app updates | **Not implemented** |
 
 ## The Local Service window
 
@@ -52,8 +53,8 @@ unit tests for each state.
 **One source:** the official `samsaffron/term-llm` GitHub release, the same files
 used by Homebrew, install.sh and `term-llm upgrade`. The CLI has been Developer ID
 signed and notarized since **0.9.94**, the minimum supported version. The app
-never builds or bundles a CLI. This does **not** mean the Mac app itself is
-signed/notarized: app distribution, Sparkle and app auto-update remain unimplemented.
+never builds or bundles a CLI. The app itself is notarized separately, by CI
+([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); Sparkle and app auto-update remain unimplemented.
 
 Choose **Set Up term-llm** in **Local Service…**. The app resolves
 `https://github.com/samsaffron/term-llm/releases/latest`, selects native hardware
@@ -294,7 +295,7 @@ SIGUSR2 delivery, graceful replacement after active work, or production health p
 
 ## Known limits and non-claims
 
-- **App** Developer ID signing, notarization, Gatekeeper distribution acceptance, Sparkle and automatic app updates are not implemented or verified. The official CLI release has a separate signed/notarized distribution.
+- Sparkle and automatic app updates are not implemented. Gatekeeper acceptance of a CI release on another Mac, and production APNs delivery to it, are not yet verified. The official CLI release has its own signed/notarized distribution.
 - Native setup and the shared client must be exercised together on Mac; kit fixtures alone do not prove the UI handoff or a live service.
 - Login-item firing after reboot/login is not established by registering it, and Open at Login registration from an unsigned development build is not verified.
 - Non-GUI SSH sessions may not be able to read the core's login-Keychain token. A logged-in GUI session is required when Keychain interaction is needed.

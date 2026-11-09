@@ -226,9 +226,11 @@ struct BrowserView {
         configuration.userContentController.addUserScript(WKUserScript(source: LiveHangUp.userScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
         coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
-        let view = WKWebView(frame: .zero, configuration: configuration)
         #if os(macOS)
+        let view: WKWebView = ChatWebView(frame: .zero, configuration: configuration)
         Self.applyChatZoom(textScale, to: view)
+        #else
+        let view = WKWebView(frame: .zero, configuration: configuration)
         #endif
         coordinator.webView = view
         coordinator.syncHealth(view)
@@ -1098,5 +1100,15 @@ extension BrowserView: NSViewRepresentable {
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
         dismantleWebView(view, coordinator: coordinator)
     }
+}
+
+/// macOS 27 floats a "Write with Siri" button beside the focused composer (any
+/// multi-line field) whenever the text input client allows it; Chat never does.
+/// Siri's writing help stays in the right-click menu. `writingToolsBehavior = .none`
+/// does not hide the button on macOS 27.0 (https://bugs.webkit.org/show_bug.cgi?id=327446).
+final class ChatWebView: WKWebView {
+    /// Overrides WebKit's NSTextInputClient answer; the selector is also
+    /// NSTextField's public `allowsWritingToolsAffordance`.
+    @objc var allowsWritingToolsAffordance: Bool { false }
 }
 #endif

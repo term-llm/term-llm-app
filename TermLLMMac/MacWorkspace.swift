@@ -186,10 +186,13 @@ final class RetainedWindowDelegate: NSObject, NSWindowDelegate {
 /// Resolves the actual hosting window, even on the setup screen, and makes it
 /// the retained client window.
 struct NativeSceneReader: NSViewRepresentable {
+    /// The app's one client window; tests supply their own.
+    var client = MacClientWindow.shared
     let ready: (NativeWindowScene) -> Void
 
     func makeNSView(context: Context) -> Reader {
         let view = Reader()
+        view.client = client
         view.ready = ready
         return view
     }
@@ -200,6 +203,7 @@ struct NativeSceneReader: NSViewRepresentable {
     }
 
     final class Reader: NSView {
+        var client = MacClientWindow.shared
         var ready: ((NativeWindowScene) -> Void)?
         private weak var resolved: NSWindow?
 
@@ -210,12 +214,18 @@ struct NativeSceneReader: NSViewRepresentable {
             resolveScene()
         }
 
+        /// Called while SwiftUI renders (AppKit sends viewDidMoveToWindow when
+        /// SwiftUI adds this view) and from updateNSView. Attaching publishes the
+        /// window's visibility and phase, which SwiftUI does not allow during a
+        /// view update, so it happens on the next main-queue turn.
         func resolveScene() {
             guard let window, window !== resolved, !window.isSheet else { return }
             resolved = window
-            MacClientWindow.shared.attach(window)
-            let callback = ready
-            DispatchQueue.main.async { callback?(MacClientWindow.shared) }
+            let client = client, callback = ready
+            DispatchQueue.main.async {
+                client.attach(window)
+                callback?(client)
+            }
         }
     }
 }

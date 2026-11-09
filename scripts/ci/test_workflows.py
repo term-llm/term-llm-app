@@ -63,6 +63,54 @@ class WorkflowBudgetTests(unittest.TestCase):
         self.assertNotRegex(combined, r"simctl\s+(?:shutdown|delete|erase)\s+(?:all|unavailable)\b")
         self.assertNotIn("--delete-unavailable", combined)
 
+    def test_notarized_mac_build_keeps_signing_secrets_in_trusted_main_steps(self):
+        text = (ROOT / ".github/workflows/notarized-mac-build.yml").read_text()
+        triggers = text.split("\npermissions:", 1)[0]
+        self.assertNotIn("pull_request", triggers, "Signing secrets must never run for pull requests")
+        self.assertIn("branches: [main]", triggers)
+        for path in ("'TermLLMMac/**'", "'scripts/ci/notarized-mac-build.py'"):
+            self.assertIn(path, triggers)
+        self.assertIn("if: github.ref == 'refs/heads/main'", text)
+        self.assertIn("persist-credentials: false", text)
+
+        steps = {block.split("\n", 1)[0].strip(): block for block in text.split("\n      - name: ")[1:]}
+        used = {name: set(re.findall(r"secrets\.([A-Z0-9_]+)", block)) for name, block in steps.items()}
+        token = {"OP_SERVICE_ACCOUNT_TOKEN"}
+        self.assertEqual({name: secrets for name, secrets in used.items() if secrets}, {
+            "Require the 1Password service account token and CLI": token,
+            "Install Developer ID profiles and import the identity into a RAM-disk keychain": token,
+            "Stage the notary key on the RAM disk": token,
+        }, "Signing material comes from 1Password; GitHub only holds the service account token")
+        presence = steps["Require the 1Password service account token and CLI"]
+        self.assertEqual(re.findall(r"secrets\.[A-Z0-9_]+ != ''", presence), ["secrets.OP_SERVICE_ACCOUNT_TOKEN != ''"],
+                         "The presence check must only receive a boolean")
+        # The runner writes run scripts to disk, so the token may only arrive as a step env value.
+        for line in text.splitlines():
+            if "secrets." in line:
+                self.assertRegex(line, r"^\s+(OP_SERVICE_ACCOUNT_TOKEN): \$\{\{ secrets\.\1(?: != '')? \}\}$")
+        self.assertIn("stage-notary-key", steps["Stage the notary key on the RAM disk"])
+        self.assertNotIn("env:", steps["Notarize and staple"], "The long notary wait must not hold secrets")
+
+        helper = (ROOT / "scripts/ci/notarized-mac-build.py").read_text()
+        names = re.search(r"SECRET_NAMES = \((.*?)\)", helper, re.S).group(1)
+        references = dict(re.findall(r"^      ([A-Z0-9_]+)_REF: '(op://[^']+)'$", text, re.M))
+        self.assertEqual(set(references), set(re.findall(r'"([A-Z0-9_]+)"', names)))
+        for reference in references.values():
+            self.assertTrue(reference.startswith("op://term-llm CI/"), reference)
+            self.assertRegex(reference, r"^op://[A-Za-z0-9 ._-]+(?:/[A-Za-z0-9 ._-]+){2,3}$",
+                             "1Password references only allow alphanumerics, space, '.', '_' and '-'")
+
+        self.assertEqual(text.count("contents: write"), 1)
+        self.assertEqual(text.count("github.token"), 1)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", steps["Publish the notarized app as a GitHub release"])
+
+        self.assertIn('WORK_PREFIX = "term-llm-mac-release."', helper)
+        self.assertIn('"$RUNNER_TEMP/term-llm-mac-release.XXXXXX"', text)
+        cleanup = steps["Remove the job keychain, RAM disk, profiles and build files"]
+        self.assertIn("if: always()", cleanup)
+        self.assertIn('notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" cleanup', cleanup)
+        self.assertEqual(list(steps)[-1], "Remove the job keychain, RAM disk, profiles and build files")
+
     def test_native_test_suite_selections_include_required_regressions(self):
         for filename, expected in self.NATIVE_WORKFLOWS.items():
             text = (ROOT / ".github/workflows" / filename).read_text()
