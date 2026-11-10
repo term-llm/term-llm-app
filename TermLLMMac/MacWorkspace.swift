@@ -465,7 +465,7 @@ struct MacDestinationPicker: View {
     let onSelect: @MainActor @Sendable (AppTab) -> Void
 
     var body: some View {
-        Picker("Destination", selection: Binding(get: { selection }, set: onSelect)) {
+        Picker("Destination", selection: Binding(get: { selection }, set: { onSelect($0) })) {
             ForEach(AppTab.allCases, id: \.self) { tab in
                 Text(tab.title)
                     .tag(tab)

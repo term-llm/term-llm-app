@@ -168,7 +168,7 @@ struct ContentView: View {
         return { macServices.showLocalService() }
     }
 
-    private var shellContent: some View {
+    private var shellLayout: some View {
         VStack(spacing: 0) {
             Group {
                 if HubFixture.isEnabled {
@@ -199,6 +199,11 @@ struct ContentView: View {
                     .accessibilityIdentifier(PhoneHubFixture.isEnabled ? "phoneHub.fixtureBanner" : "hub.fixtureBanner")
             }
         }
+    }
+
+    // Split the modifier chain to keep Swift 6's type checker bounded.
+    private var synchronizedShell: some View {
+        shellLayout
         .onChange(of: connections.connections, initial: true) { _, sources in
             guard !HubFixture.isEnabled else { return }
             aggregate.synchronize(sources.filter { $0.needsKindReview != true })
@@ -270,6 +275,10 @@ struct ContentView: View {
                 if let request = voiceRequest { finishVoiceLaunch(request.id, "Connection authorization changed. Sign in again before starting voice.") }
             }
         }
+    }
+
+    private var shellContent: some View {
+        synchronizedShell
         .task(id: address) {
             guard HubFixture.isEnabled, let server = address else { return }
             let role = await HubServerRole.discover(server: server)
