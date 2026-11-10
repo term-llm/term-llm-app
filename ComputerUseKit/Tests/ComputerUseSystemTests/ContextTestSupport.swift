@@ -23,6 +23,10 @@ final class ContextAX: AXBackend {
     var failGet: Set<String> = [], failSet = false, failObserve = false, failPerform = false
     var onSet: ((UIElementRef, String, Any) -> Void)?
     var hit: UIElementRef?
+    var offered: [String] = []
+    var unsettable: Set<String> = []
+    var onPerform: ((UIElementRef, String) throws -> Void)?
+    var onParam: ((UIElementRef, String, Any) -> Any?)?
     func el(_ e: UIElementRef) -> ContextElement { e.object as! ContextElement }
     func app(pid: pid_t) -> UIElementRef {
         if let e = apps[pid] { return e.ref }
@@ -36,11 +40,11 @@ final class ContextAX: AXBackend {
     func set(_ element: UIElementRef, _ name: String, _ value: Any) throws {
         if failSet { throw Errors.make("no_windows") }; sets.append((element, name, value)); el(element).attrs[name] = value; onSet?(element, name, value)
     }
-    func settable(_ element: UIElementRef, _ name: String) -> Bool { true }
-    func actionNames(_ element: UIElementRef) -> [String] { [] }
+    func settable(_ element: UIElementRef, _ name: String) -> Bool { !unsettable.contains(name) }
+    func actionNames(_ element: UIElementRef) -> [String] { offered }
     func actionDescription(_ element: UIElementRef, _ action: String) -> String { "" }
-    func perform(_ element: UIElementRef, _ action: String) throws { if failPerform { throw Errors.make("no_windows") }; performed.append((element, action)) }
-    func param(_ element: UIElementRef, _ name: String, _ argument: Any) -> Any? { nil }
+    func perform(_ element: UIElementRef, _ action: String) throws { if failPerform { throw Errors.make("no_windows") }; performed.append((element, action)); try onPerform?(element, action) }
+    func param(_ element: UIElementRef, _ name: String, _ argument: Any) -> Any? { onParam?(element, name, argument) }
     func pid(_ element: UIElementRef) throws -> pid_t { el(element).pid }
     func windowID(_ element: UIElementRef) -> UInt32 { el(element).id }
     func frame(_ element: UIElementRef) -> CGRect? { el(element).rect }

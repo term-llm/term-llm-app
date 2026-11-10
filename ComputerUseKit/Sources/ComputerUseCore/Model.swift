@@ -212,26 +212,72 @@ public struct PolicyDecision: Equatable, Sendable {
 }
 
 /// One calling agent (a term-llm session). Lives in the helper between calls.
-/// Mutated only under the helper's session lock or by the call that owns it.
+/// Mutable state is synchronized across calls, turn hooks and approval callbacks.
 public final class AgentSession: @unchecked Sendable {
     public let key: String
+    /// Shared by lifecycle workers, approval callbacks and calls on different app
+    /// FIFOs. Collection mutation uses _modify so insert/remove is atomic too.
+    private let stateLock = NSRecursiveLock()
+    public func withState<T>(_ work: () throws -> T) rethrows -> T {
+        stateLock.lock(); defer { stateLock.unlock() }; return try work()
+    }
     /// A turn-ended signal arrived and no turn-started since.
-    public var ended = false
+    public var ended: Bool {
+        get { withState { _ended } }
+        set { withState { _ended = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_ended }
+    }
+    private var _ended: Bool = false
     /// This host has sent turn-started at least once.
-    public var signalsTurns = false
+    public var signalsTurns: Bool {
+        get { withState { _signalsTurns } }
+        set { withState { _signalsTurns = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_signalsTurns }
+    }
+    private var _signalsTurns: Bool = false
     /// Turn ends that also stop the action it still runs.
-    public var cancels = 0
+    public var cancels: Int {
+        get { withState { _cancels } }
+        set { withState { _cancels = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_cancels }
+    }
+    private var _cancels: Int = 0
     /// Its host died and left this command's shell running.
-    public var exited = false
+    public var exited: Bool {
+        get { withState { _exited } }
+        set { withState { _exited = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_exited }
+    }
+    private var _exited: Bool = false
     /// Bundle ids whose instruction note was printed.
-    public var instructed: Set<String> = []
+    public var instructed: Set<String> {
+        get { withState { _instructed } }
+        set { withState { _instructed = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_instructed }
+    }
+    private var _instructed: Set<String> = []
     /// App paths the person refused in this turn.
-    public var denied: Set<String> = []
+    public var denied: Set<String> {
+        get { withState { _denied } }
+        set { withState { _denied = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_denied }
+    }
+    private var _denied: Set<String> = []
     /// Every .app bundle on the caller's parent chain. The policy forbids these:
     /// an agent may not drive its host.
-    public var hosts: Set<String>
+    public var hosts: Set<String> {
+        get { withState { _hosts } }
+        set { withState { _hosts = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_hosts }
+    }
+    private var _hosts: Set<String> = []
     /// The TERM_LLM_* variables of the call that runs now; replaced on every call.
-    public var env: [String: String] = [:]
+    public var env: [String: String] {
+        get { withState { _env } }
+        set { withState { _env = newValue } }
+        _modify { stateLock.lock(); defer { stateLock.unlock() }; yield &_env }
+    }
+    private var _env: [String: String] = [:]
 
     public init(key: String, hosts: Set<String> = [], exited: Bool = false) {
         self.key = key

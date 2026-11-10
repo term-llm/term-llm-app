@@ -11,6 +11,12 @@ public enum ComputerUseHelperInfo { public static let version = ComputerUseVersi
 public struct HelperConfiguration {
     public var environment: [String: String]
     public var grants: () -> [String: Bool]
+    public var onStarted: () -> Void = {}
+    public var onMaintenance: () -> Void = {}
+    /// Running count is aggregated here; ActivityBanner owns the same 3 s grace.
+    /// Called under the state lock: enqueue UI work, never wait or reenter server.
+    public var onWorking: (Bool) -> Void = { _ in }
+    public var installStop: (@escaping () -> Void) -> Void = { _ in }
     public var allow: (String) throws -> Void
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -280,14 +286,7 @@ public final class HelperServer {
                 return Wire.reply(id: id, exit: 1, stdout: "", stderr: "Could not save Computer Use pause state.\n")
             }
         case "stop":
-            // Hold the state lock through marking sessions, so a concurrently
-            // starting action cannot fall between the snapshot and the Stop mark.
-            condition.lock()
-            recentAgents = recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
-            // Stop remains useful during the menu's three-second Working grace
-            // period between an agent's commands, not just during a socket call.
-            sessions.stop(Set(active.keys).union(recentAgents.keys))
-            condition.unlock()
+            stopCurrentTurn()
             return Wire.result(id: id, status)
         case "allow":
             guard let grant = params["grant"] as? String, !grant.isEmpty else {
@@ -344,6 +343,7 @@ public final class HelperServer {
             running += 1
             active[agent.key, default: 0] += 1
             lastCall = Date()
+            configuration.onWorking(true)
             condition.unlock()
             awake.begin()
             defer {
@@ -357,6 +357,7 @@ public final class HelperServer {
                     recentAgents[agent.key] = Date()
                 }
                 lastCall = Date()
+                configuration.onWorking(running > 0)
                 condition.broadcast()
                 condition.unlock()
             }
@@ -377,7 +378,6 @@ public final class HelperServer {
                 return nil
             }
             if !lifecycle, let error = cancellation() { throw error }
-            if isTool, sessions.hasEnded(agent) { throw Errors.make("turn_ended") }
             var arguments = parsed.arguments
             let stdin = params["stdin"] as? String
             if let param = parsed.tool.stdin, arguments[param] == nil || arguments[param] as? String == "-" {
@@ -390,6 +390,7 @@ public final class HelperServer {
                 name: parsed.name, arguments: arguments, stdin: stdin, environment: env, agent: agent,
                 sessions: sessions,
                 cwd: params["cwd"] as? String ?? "/", deadline: deadline, abandoned: { cancellation() != nil },
+                withCleanupQueue: { path, work in try self.appQueue(path).run(work) },
                 withAppQueue: { path, work in
                     self.condition.lock()
                     let queue = self.queues[path] ?? AppFIFO()
@@ -411,6 +412,28 @@ public final class HelperServer {
         } catch { return failed(Errors.serverError("Tool execution failed.")) }
     }
 
+    private func appQueue(_ path: String) -> AppFIFO {
+        condition.lock(); defer { condition.unlock() }
+        let queue = queues[path] ?? AppFIFO(); queues[path] = queue; return queue
+    }
+    /// Esc and the same-uid stop control deliberately use exactly one code path.
+    public func stopCurrentTurn() {
+        condition.lock(); defer { condition.unlock() }
+        recentAgents = recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
+        sessions.stop(Set(active.keys).union(recentAgents.keys))
+    }
+    public func reapSessions() {
+        // Reaping also uses AX/menu resources. Drain it with socket workers before
+        // executor.shutdown, and never start new cleanup after stopping begins.
+        condition.lock()
+        guard !stopping else { condition.unlock(); return }
+        workers.enter()
+        condition.unlock()
+        defer { workers.leave() }
+        for agent in sessions.reap() {
+            executor.agentExited(agent, withAppQueue: { path, work in try self.appQueue(path).run(work) })
+        }
+    }
     private func setPaused(_ value: Bool) throws {
         condition.lock()
         defer { condition.unlock() }
@@ -434,6 +457,7 @@ public enum HelperMain {
     public static func run(executor: ToolExecutor, configuration: HelperConfiguration) -> Never {
         let server = HelperServer(executor: executor, configuration: configuration)
         server.onShutdown = { MainThread.stop() }
+        configuration.installStop { server.stopCurrentTurn() }
         var signals: [DispatchSourceSignal] = []
         for number in [SIGTERM, SIGINT] {
             signal(number, SIG_IGN)
@@ -444,6 +468,7 @@ public enum HelperMain {
         }
         var hostTimer: DispatchSourceTimer?
         MainThread.run {
+            configuration.onStarted()
             do { try server.start() } catch {
                 MainThread.stop()
                 return
@@ -453,7 +478,8 @@ public enum HelperMain {
             let timer = DispatchSource.makeTimerSource(queue: .global())
             timer.schedule(deadline: .now() + 2, repeating: 2)
             timer.setEventHandler {
-                _ = server.sessions.reap()
+                server.reapSessions()
+                configuration.onMaintenance()
                 if let pid {
                     if host == nil || ProcessIdentity.lookup(pid)?.started != host?.started { server.requestShutdown() }
                 } else if server.isIdle {

@@ -39,8 +39,8 @@ public enum Settle {
         }
     }
 
-    // TODO(integration): AppSession supplies read and owns needsSettle; the helper
-    // must reuse the returned capture instead of walking the window again.
+    // HarnessExecutor supplies the reader, clears AppSession.needsSettle before
+    // waiting, and reuses the returned capture instead of walking twice.
     public static func wait(target: AppTarget, kind: AppKind, read: (WindowRef) throws -> Capture,
                             poll: TimeInterval? = nil, quiet: TimeInterval = quiet, limit: TimeInterval = limit,
                             now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },

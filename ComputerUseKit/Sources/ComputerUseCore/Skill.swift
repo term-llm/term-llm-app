@@ -93,7 +93,7 @@ public enum ComputerUseSkill {
         - Work until the whole request is done. Trying an action is not done: the state you read must show the result.
         - If an action changed nothing, gave no result or stopped at an in-between page, try another way. Answer only when the requested page, information or state is visible, or name the concrete blocker.
         - Prefer a result already on screen to wider views like "Show All". Once it is visible, stop exploring and answer.
-        - Never run `term-llm-computer approve` or operate the permission/settings controls: they are the person's.
+        - Never operate the permission or settings controls of term-llm Computer Use: they are the person's.
 
         ## Ask the person first
 

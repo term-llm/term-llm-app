@@ -136,6 +136,6 @@ public final class ActivityBanner {
             self.hide()
         }
     }
-    // TODO(integration): helper aggregates concurrent calls into working and wires
-    // onStop to cancel the active action and refuse calls for the rest of its turn.
+    // HelperServer aggregates concurrent calls; ComputerUseRuntime wires onStop
+    // to the same stopCurrentTurn path as the human stop control.
 }

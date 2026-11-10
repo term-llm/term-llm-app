@@ -86,11 +86,13 @@ public final class Permissions {
     /// deadline is wall-clock seconds since 1970, matching the client's deadline.
     /// Return once grants exist. Closing Settings after seeing it means refused;
     /// a pane that never launched is not a refusal. Abandoned clients stop waiting.
-    public func gate(deadline: TimeInterval, abandoned: () -> Bool = { false }) throws {
+    public func gate(deadline: TimeInterval, abandoned: () -> Bool = { false }, requestUI: Bool = true) throws {
         var shown: Kind?, settingsSeen = false
         while true {
             let missing = missing()
             guard let first = missing.first else { return }
+            // Agent calls never request grants or open Settings. Only human controls do.
+            if !requestUI { throw Errors.make("permissions_not_granted", ["grants": Self.names(missing), "app": product]) }
             if first != shown { shown = first; settingsSeen = false; openSettings(first) }
             else if calls.settingsOpen() { settingsSeen = true }
             else if settingsSeen { throw Errors.make("permissions_not_granted", ["grants": Self.names(missing), "app": product]) }

@@ -9,7 +9,7 @@ public final class Person {
     public static let clicks: [UInt32] = [1, 3, 25], dock = "com.apple.dock"
     public static let debounceS = 5.0, waitCapS = 100.0, pollS = 0.25
     public struct Hooks {
-        // TODO(integration): presence installs pointerActivity (paused/loading).
+        // ComputerUseRuntime installs Presence.pointerActivity (paused/loading).
         public var pointerActivity: (String) -> Void = { _ in }
         public var shownMenu: (AppTarget) throws -> UIElementRef? = { try Windows.shared.shownMenu($0) }
         public var post: (pid_t, CGEvent) -> Void = { Events.post($0, event: $1) }

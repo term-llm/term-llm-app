@@ -15,7 +15,7 @@ public enum LockScreen {
     }
     /// Fail before anything touches an app. The caller supplies whether this is a
     /// state read so the refusal tells the model exactly why there is no AX text.
-    // TODO(integration): orchestration calls this first on every read and action.
+    // HarnessExecutor calls this after permissions, before the person gate/app FIFO.
     public static func gate(stateRead: Bool, isLocked: () -> Bool = { locked() }) throws {
         if isLocked() { throw Errors.locked(stateRead: stateRead) }
     }
