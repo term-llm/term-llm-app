@@ -348,7 +348,10 @@ class PublishingTests(AppFixture):
             else:
                 self.assertTrue(call[-1].startswith(sparkle.DESTINATION + "term-llm-macos-1.0.1-7-"))
                 self.assertIn("--ignore-existing", call)
-            self.assertIn("--chmod=F644", call)
+            # openrsync rejects F644 and sends -r as --dirs, which rrsync refuses.
+            self.assertIn("--chmod=Fu=rw,Fgo=r", call)
+            self.assertNotIn("-r", call)
+            self.assertNotIn("-rt", call)
             self.assertIn("--perms", call)
             self.assertNotIn("--inplace", call)
             self.assertNotIn("--delete", call)
