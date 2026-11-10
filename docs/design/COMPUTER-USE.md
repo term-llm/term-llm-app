@@ -1,6 +1,8 @@
 # Computer use in term-llm.app
 
-Status: **in progress.** A Swift port of `browser-use/macos-harness` at
+Status: **in progress.** The app-shell wave is implemented; see
+[Computer Use shell integration](COMPUTER-USE-SHELL.md) for its public APIs,
+controls, tests, and deliberately stubbed execution/permission seams. A Swift port of `browser-use/macos-harness` at
 `43d9edf` (v0.2.1, MIT; its licence notice ships with the ported code in
 `ComputerUseKit/LICENSE-macos-harness`). This replaces the "Computer use /
 macOS Harness integration: Deferred" row in
@@ -128,7 +130,7 @@ term-llm.app (main) ── launches (LaunchServices) ──▶ term-llm Computer
 - Harness framing and envelope unchanged, apart from the API string
   `TermLLMComputerUse-1`. Control methods: `ping`, `shutdown`, `status`.
 - The client never starts a helper. If nothing listens and Computer Use is
-  enabled, it opens term-llm in the background and waits up to 5 s. Otherwise
+  enabled, it opens term-llm in the background and waits up to 8 s. Otherwise
   it prints *"Computer use is off. Turn it on from the term-llm menu."*
 
 ### Sessions, turns and cancellation
