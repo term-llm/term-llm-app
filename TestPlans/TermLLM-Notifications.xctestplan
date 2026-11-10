@@ -1,0 +1,48 @@
+{
+  "configurations" : [
+    {
+      "id" : "6F1C2A40-7A51-4F7B-9C2E-3D0B8E1A5C02",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:TermLLM.xcodeproj",
+      "identifier" : "000000000000000000000010",
+      "name" : "TermLLM"
+    }
+  },
+  "testTargets" : [
+    {
+      "selectedTests" : [
+        "ActualProducerFixtureTests",
+        "BrowserLifecycleTests",
+        "LinkedDevicesDiagnosticsTests",
+        "LinkedDevicesIdentityTests",
+        "LinkedDevicesLiveWebKitTests",
+        "LinkedDevicesProtocolTests",
+        "LinkedDevicesRuntimeTests",
+        "NativeNotificationLifecycleTests",
+        "NotificationMetadataTests",
+        "NotificationReviewRegressionTests",
+        "PeerNWLoopbackListenerTests",
+        "PeerTransportTests",
+        "PushCenterTests",
+        "PushDeliveryStoreTests",
+        "PushMessageTests",
+        "ServerAddressTests",
+        "VoiceShortcutTests",
+        "WebPushCryptoTests"
+      ],
+      "target" : {
+        "containerPath" : "container:TermLLM.xcodeproj",
+        "identifier" : "000000000000000000000011",
+        "name" : "TermLLMTests"
+      }
+    }
+  ],
+  "version" : 1
+}
