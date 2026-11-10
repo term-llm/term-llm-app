@@ -1,0 +1,96 @@
+#!/usr/bin/python3 -I
+"""Prune superseded term-llm for Mac update zips on term-llm.com.
+
+Keeps every zip referenced by the KEEP newest appcast items, plus any zip
+uploaded within GRACE_HOURS. Deletes nothing (exit 1) if the appcast is
+missing or malformed, or if the newest referenced zip is not on disk.
+Only top-level regular files matching the CI content-addressed name are
+candidates; appcast.xml, rsync temp files and anything else are untouched.
+"""
+import argparse
+import os
+import re
+import stat
+import sys
+import time
+import xml.etree.ElementTree as ET
+
+DIR = "/var/www/term-llm-downloads/mac"
+BASE = "https://term-llm.com/mac/"
+NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+NAME = re.compile(r"term-llm-macos-[0-9]+(?:\.[0-9]+)*-[1-9][0-9]*-[0-9a-f]{64}\.zip")
+MAX_FEED = 1024 * 1024
+
+
+def fail(message):
+    print(f"term-llm-mac-prune: {message}; nothing deleted", file=sys.stderr)
+    sys.exit(1)
+
+
+def referenced(directory, keep):
+    path = os.path.join(directory, "appcast.xml")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_FEED + 1)
+    except OSError as error:
+        fail(f"cannot read appcast ({error.strerror})")
+    if len(data) > MAX_FEED or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+        fail("appcast is oversized or contains a DTD")
+    try:
+        channel = ET.fromstring(data).find("channel")
+    except ET.ParseError:
+        fail("appcast is malformed")
+    if channel is None:
+        fail("appcast has no channel")
+    items = []
+    for item in channel.findall("item"):
+        enclosure = item.find("enclosure")
+        build = item.findtext(f"{{{NS}}}version") or ""
+        url = enclosure.get("url", "") if enclosure is not None else ""
+        name = url[len(BASE):] if url.startswith(BASE) else ""
+        if not re.fullmatch(r"[1-9][0-9]*", build) or not NAME.fullmatch(name):
+            fail("appcast has an unexpected item")
+        items.append((int(build), name))
+    if not items:
+        fail("appcast lists no releases")
+    items.sort(reverse=True)
+    newest = items[0][1]
+    if not os.path.isfile(os.path.join(directory, newest)):
+        fail(f"newest release {newest} is missing on disk")
+    return {name for _, name in items[:keep]}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", default=DIR)
+    parser.add_argument("--keep", type=int, default=2)
+    parser.add_argument("--grace-hours", type=float, default=48)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    if args.keep < 1 or args.grace_hours < 1:
+        fail("--keep and --grace-hours must be at least 1")
+
+    keep = referenced(args.dir, args.keep)
+    cutoff = time.time() - args.grace_hours * 3600
+    freed = 0
+    for entry in os.scandir(args.dir):
+        if not NAME.fullmatch(entry.name) or entry.name in keep:
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if max(info.st_mtime, info.st_ctime) > cutoff:
+            print(f"keep (within grace) {entry.name}")
+            continue
+        action = "would delete" if args.dry_run else "deleted"
+        if not args.dry_run:
+            os.unlink(entry.path)
+        freed += info.st_size
+        print(f"{action} {entry.name} ({info.st_size} bytes)")
+    for name in sorted(keep):
+        print(f"keep (current) {name}")
+    print(f"{'would free' if args.dry_run else 'freed'} {freed} bytes")
+
+
+if __name__ == "__main__":
+    main()

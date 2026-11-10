@@ -1,0 +1,23 @@
+[Unit]
+Description=Prune superseded term-llm for Mac update zips
+ConditionPathIsDirectory=/var/www/term-llm-downloads/mac
+
+[Service]
+Type=oneshot
+User=term-llm-updates
+Group=term-llm-updates
+ExecStart=/usr/local/sbin/term-llm-mac-prune
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/www/term-llm-downloads/mac
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

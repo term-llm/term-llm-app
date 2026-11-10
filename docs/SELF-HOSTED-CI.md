@@ -203,6 +203,33 @@ remove it administratively after the test. The root-owned home/authorized_keys
 must remain outside the writeable upload root. Keep the account out of sudo.
 
 Install the nginx snippet; run `nginx -t` before manually reloading nginx.
+
+**Pruning old builds.** The upload account is write-only (`rrsync -wo -no-del`),
+so CI can never delete anything and every published zip (~23 MB) would otherwise
+stay on the server forever. A daily root-installed timer on the server removes
+superseded ones instead:
+
+- [`deployment/term-llm-mac-prune`](deployment/term-llm-mac-prune) keeps every
+  zip referenced by the **two newest** appcast items, plus any zip uploaded in
+  the last **48 hours** (so a download that started from a just-replaced feed
+  still finishes). Older entries further down the appcast may then 404; Sparkle
+  only offers the newest compatible item, and every item requires macOS 14.
+- It deletes nothing and exits 1 if `appcast.xml` is missing, malformed,
+  contains a DTD, lists an unexpected URL, or its newest zip is not on disk.
+  Only top-level regular files matching CI's content-addressed name are
+  candidates; `appcast.xml` and rsync temporary files are never touched.
+- [`deployment/term-llm-mac-prune.service`](deployment/term-llm-mac-prune.service)
+  runs it as `term-llm-updates` with no network and only the downloads directory
+  writable; [`deployment/term-llm-mac-prune.timer`](deployment/term-llm-mac-prune.timer)
+  runs it daily at 04:20 UTC.
+- Install or update with `sudo sh docs/deployment/install-mac-download-prune.sh`
+  (dry run first, then enables the timer). Check with
+  `journalctl -u term-llm-mac-prune.service`. Steady state is about 2 zips plus
+  whatever shipped in the last 48 hours.
+
+`scripts/ci/test_mac_download_prune.py` feeds CI-generated appcasts and archive
+names through the prune script, so a change to either side's naming or feed
+format fails the lightweight checks.
 Check HTTPS certificates and a fixture's Content-Type/cache headers. Only
 `appcast.xml` and versioned ZIP names are served; directory listings, temporary
 files and dotfiles return 404. The downloads tree must **not** be under
