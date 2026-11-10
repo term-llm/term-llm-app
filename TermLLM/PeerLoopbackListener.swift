@@ -7,6 +7,10 @@ import Network
 /// compete for iOS NECP's port reservation. Simulator lacks NECP local-only
 /// acceptance, so it uses explicit loopback-address binds for both families.
 /// Remote-endpoint checks provide defense in depth on both platforms.
+// Sendability: lock protects the listener reservation array. Network.framework
+// owns listener callbacks on queue and supports cross-thread start/cancel. The
+// bridge serializes start attempts; stop may race a pending start and is repeated
+// by the bridge if that reservation is no longer wanted.
 final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.termllm.peer.loopback")
     private let lock = NSLock()
@@ -142,6 +146,7 @@ final class PeerNWLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     }
 }
 
+// Sendability: lock claims done once; only the winner invokes its local body.
 final class PeerOnce: @unchecked Sendable {
     private let lock = NSLock()
     private var done = false
@@ -151,7 +156,7 @@ final class PeerOnce: @unchecked Sendable {
     }
 }
 
-final class PeerNWByteStream: PeerByteStream, @unchecked Sendable {
+final class PeerNWByteStream: PeerByteStream, Sendable {
     private let connection: NWConnection
 
     init(connection: NWConnection) { self.connection = connection }

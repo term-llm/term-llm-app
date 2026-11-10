@@ -280,6 +280,9 @@ enum PeerHeaderFilter {
 
 /// Single reader per connection: buffers bytes for the parser and reports
 /// EOF promptly (so an SSE stream is cancelled when WebKit disconnects).
+// Sendability: lock protects pending/eof/failure/waiter/EOF handlers and pump.
+// Exactly one parser calls take(); one pump reads the Sendable stream. Handlers
+// are invoked outside lock and must support invocation from the pump or caller.
 final class PeerConnectionInput: @unchecked Sendable {
     private let stream: PeerByteStream
     private let lock = NSLock()
@@ -297,13 +300,17 @@ final class PeerConnectionInput: @unchecked Sendable {
     }
 
     func start() {
-        pump = Task { [weak self] in await self?.run() }
+        lock.withLock {
+            guard pump == nil, !eof else { return }
+            pump = Task { [weak self] in await self?.run() }
+        }
     }
 
     /// Stops reading and releases any `take()` waiter (treated as EOF).
     func stop() {
-        pump?.cancel()
         finish(nil)
+        let task = lock.withLock { let task = pump; pump = nil; return task }
+        task?.cancel()
     }
 
     private func run() async {
@@ -314,7 +321,7 @@ final class PeerConnectionInput: @unchecked Sendable {
             }
             do {
                 guard let chunk = try await stream.read(maxLength: 16 * 1024) else { finish(nil); return }
-                lock.withLock { pending.append(chunk) }
+                lock.withLock { if !eof { pending.append(chunk) } }
                 wake()
             } catch {
                 finish(error)
@@ -378,6 +385,9 @@ final class PeerConnectionInput: @unchecked Sendable {
 
 /// Serves one loopback HTTP/1.1 connection: parse -> gate -> forward over the
 /// peer channel -> stream the response (chunked) back to WebKit.
+// Sendability: one serve() task owns parser/response writes; lock protects
+// closed/activeCancel against concurrent close(). Stream/forwarder are Sendable,
+// input has its own lock, and immutable configuration is shared by value.
 final class PeerLoopbackConnection: @unchecked Sendable {
     struct Configuration: Sendable {
         var gate: PeerLoopbackGate
@@ -491,7 +501,12 @@ final class PeerLoopbackConnection: @unchecked Sendable {
             try? await writeSimple(status: status, message: "Peer unavailable", keepAlive: keepAlive, head: isHead)
             return keepAlive && status != 401
         }
-        lock.withLock { activeCancel = response.cancel }
+        let accepted = lock.withLock {
+            guard !closed else { return false }
+            activeCancel = response.cancel
+            return true
+        }
+        guard accepted else { response.cancel(); return false }
         input.onEOF { response.cancel() }
         defer {
             input.clearEOFHandlers()

@@ -24,7 +24,7 @@ struct PeerAuthorizationLoss: Sendable {
 /// Carries native API requests over an authenticated `term-llm-http-v1`
 /// DataChannel. Only the configured stable loopback origin is accepted; the
 /// wire sees an origin-relative path, never a URL, cookie or owner token.
-final class WebRTCHubTransport: HubTransport, @unchecked Sendable {
+final class WebRTCHubTransport: HubTransport, Sendable {
     private let forwarder: PeerHTTPForwarding
     private let authorization: PeerAuthorizationState
     private let hubBaseURL: URL
@@ -115,11 +115,9 @@ final class WebRTCHubTransport: HubTransport, @unchecked Sendable {
         return http
     }
 
-    private struct Unchecked<T>: @unchecked Sendable { let value: T }
-
-    static func withTimeout<T>(_ seconds: TimeInterval, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
-        let boxed = try await withThrowingTaskGroup(of: Unchecked<T>.self) { group -> Unchecked<T> in
-            group.addTask { Unchecked(value: try await body()) }
+    static func withTimeout<T: Sendable>(_ seconds: TimeInterval, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await body() }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
                 throw PeerWireError.timedOut
@@ -128,6 +126,5 @@ final class WebRTCHubTransport: HubTransport, @unchecked Sendable {
             guard let first = try await group.next() else { throw PeerWireError.timedOut }
             return first
         }
-        return boxed.value
     }
 }

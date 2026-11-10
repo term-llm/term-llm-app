@@ -122,6 +122,8 @@ extension AVAudioSession: ListenAudioSession {}
 /// Configures and (de)activates the audio session off the main thread: these
 /// calls block on the system audio server and can stall the UI. One serial
 /// queue keeps a stop followed quickly by a play in order.
+// Sendability: the non-Sendable audio session is used only on queue after init.
+// Injected sessions must not be accessed independently while owned by this queue.
 final class ListenAudioSessionQueue: @unchecked Sendable {
     // Only touched on `queue`.
     private let session: any ListenAudioSession
@@ -179,6 +181,8 @@ final class ListenAudioSessionQueue: Sendable {
 /// One instance belongs to one loaded item; invalidation is permanent, so even
 /// an observer already in flight cannot enqueue work for a replacement item.
 /// Delivery reads the latest engine state rather than retaining KVO snapshots.
+// Sendability: lock protects pending/invalidated. Immutable schedule enqueues
+// asynchronously on main; only MainActor deliver() invokes onUpdate.
 final class ListenBufferCallbackCoalescer: @unchecked Sendable {
     /// The scheduler must enqueue (not synchronously execute) on the main queue.
     typealias Scheduler = @Sendable (TimeInterval, DispatchWorkItem) -> Void

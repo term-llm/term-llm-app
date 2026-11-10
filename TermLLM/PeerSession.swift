@@ -38,6 +38,9 @@ protocol PeerAuthorizing: AnyObject {
 }
 
 /// Shared, revocable authorization state.  Thread-safe.
+// Sendability: lock protects authorization/handler registry. Handlers are
+// @Sendable snapshots removed under lock and invoked outside it; clock must
+// be thread-safe and non-reentrant because check() calls it under lock.
 final class PeerAuthorizationState: @unchecked Sendable {
     private let lock = NSLock()
     private var authorization: PeerAuthorization?

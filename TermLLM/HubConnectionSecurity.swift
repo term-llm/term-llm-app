@@ -12,7 +12,9 @@ enum PhoneHubFixture {
         false
         #endif
     }
-    // UserDefaults is documented thread-safe.
+    // Sendability: UserDefaults documents concurrent access as thread-safe.
+    // Static initialization publishes this one immutable reference only after
+    // fixture reset/seeding; no subsequent mutation of the reference occurs.
     nonisolated(unsafe) static let defaults: UserDefaults = {
         guard isEnabled else { return .standard }
         let name = "com.termllm.app.phone-hub-fixture"
@@ -283,6 +285,8 @@ final class HubConnectionSecurity {
     /// parameters or a global WK cookie jar. Native POST uses the bearer header.
     static func directBearerScript(token: String, server: URL) -> String {
         func json(_ value: String) -> String {
+            // A String with the default JSONEncoder has no fallible custom
+            // encoding or non-finite numbers; JSON escaping is infallible.
             let data = try! JSONEncoder().encode(value)
             return String(decoding: data, as: UTF8.self)
         }

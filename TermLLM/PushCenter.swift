@@ -884,7 +884,9 @@ extension PushCenter: UNUserNotificationCenterDelegate {
     /// worker thread after our actor hop and crash UIKit's state restoration.
     nonisolated func handleNotificationTap(urlString: String?, scope: String? = nil, windowID: String? = nil,
                                            isCompletion: Bool = false, completionHandler: @escaping () -> Void) {
-        // UIKit's completion handler is safe to call on the main thread.
+        // One-way handoff of UIKit's callback to MainActor, where it is called
+        // exactly once after open(). It is never invoked/accessed concurrently
+        // here; the SDK requires main-thread completion for state restoration.
         nonisolated(unsafe) let completionHandler = completionHandler
         Task { @MainActor in
             let saved = try? HubConnectionStore.validatedDocument(defaults.object(forKey: HubConnectionStore.storageKey))
@@ -897,4 +899,7 @@ extension PushCenter: UNUserNotificationCenterDelegate {
 }
 
 /// Notification userInfo is an immutable property-list snapshot.
+// Sendability relies on UNNotificationContent.userInfo being an immutable
+// property-list snapshot, not an arbitrary dictionary with mutable object values.
+// Only that SDK snapshot is wrapped, then read on MainActor; never mutated.
 private struct UncheckedUserInfo: @unchecked Sendable { let value: [AnyHashable: Any] }

@@ -60,6 +60,8 @@ final class PushDeliveryStore {
 
     static func key(_ parts: String...) -> String {
         // JSON framing prevents ambiguous origin/scope/session separators.
+        // [String] with the default JSONEncoder has no throwing custom encode
+        // or non-finite numbers; encoding this value is infallible.
         (try! JSONEncoder().encode(parts)).base64EncodedString()
     }
 

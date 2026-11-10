@@ -51,6 +51,9 @@ enum PeerLoopbackBridgeError: Error, Equatable {
 /// own capability, own path scope).  `revoke()` — or authorization
 /// expiry/revocation, or channel loss — stops the listener, closes every
 /// connection and cancels in-flight remote streams.
+// Sendability: lock protects lifecycle, endpoint, connections, revoke token and
+// teardown callback. Listener implementations must support concurrent stop/start
+// completion; callbacks and connection teardown run outside the state lock.
 final class PeerLoopbackBridge: @unchecked Sendable {
     private let forwarder: PeerHTTPForwarding
     private let authorization: PeerAuthorizationState
@@ -70,7 +73,11 @@ final class PeerLoopbackBridge: @unchecked Sendable {
     private enum State { case idle, starting, running, revoked }
 
     /// Fired once after teardown (e.g. remove cookie, show reconnect UI).
-    var onTeardown: (@Sendable () -> Void)?
+    private var teardownCallback: (@Sendable () -> Void)?
+    var onTeardown: (@Sendable () -> Void)? {
+        get { lock.withLock { teardownCallback } }
+        set { lock.withLock { teardownCallback = newValue } }
+    }
 
     init(forwarder: PeerHTTPForwarding,
          authorization: PeerAuthorizationState,
@@ -121,7 +128,7 @@ final class PeerLoopbackBridge: @unchecked Sendable {
             try Task.checkCancellation()
         } catch {
             listener.stop()
-            lock.withLock { state = .idle }
+            lock.withLock { if state == .starting { state = .idle } }
             throw error
         }
         let ep = PeerLoopbackEndpoint(port: port, cookieName: "\(PeerLoopbackGate.cookiePrefix)\(port)",
@@ -133,7 +140,13 @@ final class PeerLoopbackBridge: @unchecked Sendable {
             return true
         }
         guard stillWanted else { listener.stop(); throw PeerLoopbackBridgeError.revoked }
-        revokeToken = authorization.onRevoke { [weak self] in self?.revoke() }
+        let token = authorization.onRevoke { [weak self] in self?.revoke() }
+        let keep = lock.withLock {
+            guard state != .revoked else { return false }
+            revokeToken = token
+            return true
+        }
+        if !keep { authorization.removeHandler(token) }
         return ep
     }
 
@@ -148,19 +161,20 @@ final class PeerLoopbackBridge: @unchecked Sendable {
     }
 
     func revoke() {
-        let victims: [PeerLoopbackConnection]? = lock.withLock {
+        let teardown: ([PeerLoopbackConnection], UUID?, (@Sendable () -> Void)?)? = lock.withLock {
             if state == .revoked { return nil }
             state = .revoked
             endpoint = nil
-            let v = Array(connections.values)
+            let result = (Array(connections.values), revokeToken, teardownCallback)
             connections.removeAll()
-            return v
+            revokeToken = nil
+            return result
         }
-        guard let victims else { return }
+        guard let (victims, token, callback) = teardown else { return }
         listener.stop()
         victims.forEach { $0.close() }
-        if let token = revokeToken { authorization.removeHandler(token) }
-        onTeardown?()
+        if let token { authorization.removeHandler(token) }
+        callback?()
     }
 
     private func accept(_ stream: PeerByteStream) {
