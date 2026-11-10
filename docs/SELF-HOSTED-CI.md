@@ -8,6 +8,8 @@ Every job in `.github/workflows/` uses exactly:
 runs-on: [self-hosted, macOS, ARM64, term-llm-local]
 ```
 
+The only exception is a job that calls this repository's own reusable workflow (`uses: ./.github/workflows/…`); the called workflow's job declares that runner.
+
 There is no hosted fallback, setup-go Actions cache, or artifact upload. The notarized Mac build's only upload is its GitHub release asset, which is not Actions artifact storage. Offline runners leave jobs queued. This prevents these workflows from consuming GitHub-hosted runner minutes; it does not clear existing billable storage or change account billing settings. Set a GitHub Actions budget with usage blocked at the limit as an independent safety net where supported by your account.
 
 Repository changes must be pushed to take effect. Check other branches and GitHub's Actions workflow list too: older workflows can remain runnable on refs that still contain hosted-runner configurations. Do not rerun historical hosted jobs to test the migration. Retired native-Hub, phone-Hub, and peer-connect capture workflows should stay unused/disabled; do not restore user journeys.
@@ -74,10 +76,39 @@ Offline tests: `python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v`.
 1. Keep the Mac awake, online, and logged in with the runner active. For a foreground session, `caffeinate -i ./run.sh` can prevent idle system sleep while the agent runs (it does not make closed-lid operation reliable).
 2. Push a trusted branch/open or update a PR. Relevant changes trigger `Lightweight checks / checks` here.
 3. Inspect the PR's check logs. Fix failures and push again normally.
-4. For app/extension build and focused unit coverage, use **Actions → Native notification checks (manual local Mac) → Run workflow** after the workflow is registered on the default branch. No UI journeys run.
+4. For app/extension build and simulator unit coverage, use **Actions → Native notification checks (manual local Mac)** (focused) or **Native unit tests (manual local Mac)** (every `TermLLMTests` suite) **→ Run workflow** after the workflow is registered on the default branch. No UI journeys run. See [Test plans and manual workflows](#test-plans-and-manual-workflows).
 5. Stop/start the service with `./svc.sh stop` / `./svc.sh start` from the runner directory as needed. Offline means queued, not paid fallback.
 
 Before calling migration complete, push the new workflows, verify no active workflow still targets `ubuntu-*`, `macos-*`, or `windows-*` hosted labels, and get a fresh PR run showing `term-llm-macbook` as its runner. If old required checks block merging, adjust branch rules to the intended current checks. Path-filtered checks need special handling if required on docs-only PRs.
+
+## Test plans and manual workflows
+
+`Lightweight checks / checks` runs the portable Python checks, the notification contract, the push relay, and `swift test` for `TermLLMMacKit` (temporary homes, fake command runners and stubbed HTTP; about 12 seconds from a cold build). It never builds the iOS app or boots a simulator, and keeps its 10-minute limit. Everything else is manual (**Actions → workflow → Run workflow**, from a trusted ref):
+
+| Workflow | Runs |
+| --- | --- |
+| **Native notification checks (manual local Mac)** | test plan `TermLLM-Notifications` on a job-owned simulator |
+| **Linked devices native validation** | test plan `TermLLM-LinkedDevices` on a job-owned simulator |
+| **Native unit tests (manual local Mac)** | test plan `TermLLM-UnitTests` (every `TermLLMTests` suite, no UI tests) on a job-owned simulator |
+| **ComputerUseKit tests (manual local Mac)** | `swift build` and `swift test` in `ComputerUseKit` |
+| **Mac app tests (manual local Mac)** | `TermLLMMacTests` through the `TermLLMMac` scheme; the unsigned app opens its windows on the runner's desktop |
+
+The three native workflows only name a test plan and call `native-simulator-tests.yml`, which creates, boots and deletes one job-owned simulator with `scripts/ci/owned-ios-simulator.py` and runs `xcodebuild test -testPlan <plan>` once. ComputerUseKit stays out of the automatic job: its tests exercise the accessibility, input-event, screen-capture, pasteboard and permission code through injected fakes whose defaults are the live system calls.
+
+Suite selections live in `TestPlans/*.xctestplan`, referenced from the shared `TermLLM` scheme, not in workflow YAML:
+
+- `TermLLM` (default): `TermLLMTests` and `TermLLMUITests`, as before. `xcodebuild test -scheme TermLLM` and `-only-testing:TermLLMTests/<Suite>` work unchanged.
+- `TermLLM-Notifications` and `TermLLM-LinkedDevices`: the suites these workflows used to list with `-only-testing`.
+- `TermLLM-UnitTests`: all of `TermLLMTests`, including the live suites. `PushLiveE2ETests` and `WebMCPLiveServerTests` skip themselves unless their `TERMLLM_*` variables reach the test runner (pass them to xcodebuild as `TEST_RUNNER_TERMLLM_*`; CI sets none). `WebKitHealthLiveTests`, `LiveHangUpTests` and `LinkedDevicesLiveWebKitTests` use only local HTML strings and loopback servers and always run.
+
+Run a plan locally with, for example:
+
+```sh
+xcodebuild test -project TermLLM.xcodeproj -scheme TermLLM -testPlan TermLLM-Notifications \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO
+```
+
+Edit selections in Xcode's test plan editor or in the JSON. `scripts/ci/test_workflows.py` checks the plans against the scheme, the project's targets and the suites in `TermLLMTests/`, and keeps the simulator and Mac test workflows manual.
 
 ## Notarized Mac builds
 
