@@ -1,0 +1,45 @@
+name: ComputerUseKit tests (manual local Mac)
+
+# Opt-in only and self-hosted: never consume GitHub-hosted runner minutes.
+# The tests exercise the accessibility, input-event, screen-capture, pasteboard
+# and permission code through injected fakes whose defaults are the live system
+# calls, so they stay out of the automatic pull-request job.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: computer-use-kit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: [self-hosted, macOS, ARM64, term-llm-local]
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Use installed MacBook tools and selected Xcode
+        run: |
+          source scripts/ci/bootstrap-macos.sh
+          printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
+          printf 'PACKAGE_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-computer-use.XXXXXX")" >> "$GITHUB_ENV"
+      - name: Build and test ComputerUseKit
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --package-path ComputerUseKit --scratch-path "$PACKAGE_TEST_DIR/build"
+          swift test --package-path ComputerUseKit --scratch-path "$PACKAGE_TEST_DIR/build"
+      - name: Clean temporary package build results
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${PACKAGE_TEST_DIR:-}" && "$PACKAGE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-computer-use.* ]]; then
+            rm -rf -- "$PACKAGE_TEST_DIR"
+          fi

@@ -8,7 +8,14 @@ on:
       - 'TermLLMNotificationService/**'
       - 'TermLLMTests/**'
       - 'TermLLMUITests/**'
+      - 'TermLLMMac/**'
+      - 'TermLLMMacKit/**'
+      - 'TermLLMMacTests/**'
+      - 'ComputerUseKit/**'
+      - 'TermLLMComputerUse/**'
+      - 'TermLLMComputerCLI/**'
       - 'TermLLM.xcodeproj/**'
+      - 'TestPlans/**'
       - 'push-relay/**'
       - 'scripts/**'
       - '.github/workflows/**'
@@ -55,3 +62,12 @@ jobs:
         run: |
           go build ./...
           go test ./...
+      # Temporary homes, fake runners and stubbed HTTP only; no GUI, login item,
+      # keychain or simulator. ComputerUseKit is manual: computer-use-kit-tests.yml.
+      - name: Test TermLLMMacKit Swift package
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d "$RUNNER_TEMP/term-llm-swiftpm.XXXXXX")"
+          trap 'rm -rf -- "$scratch"' EXIT
+          swift test --package-path TermLLMMacKit --scratch-path "$scratch"

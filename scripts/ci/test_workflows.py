@@ -62,6 +62,13 @@ class WorkflowBudgetTests(unittest.TestCase):
             "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "PeerNWLoopbackListenerTests", "LinkedDevicesLiveWebKitTests", "ServerAddressTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
         },
     }
+    LIGHTWEIGHT_PATHS = {
+        "Shared/**", "TermLLM/**", "TermLLMNotificationService/**", "TermLLMTests/**", "TermLLMUITests/**",
+        "TermLLMMac/**", "TermLLMMacKit/**", "TermLLMMacTests/**", "ComputerUseKit/**", "TermLLMComputerUse/**",
+        "TermLLMComputerCLI/**", "TermLLM.xcodeproj/**", "TestPlans/**", "push-relay/**", "scripts/**",
+        ".github/workflows/**",
+    }
+
     def test_all_runner_declarations_are_explicitly_local(self):
         self.assertTrue(workflows())
         for filename, text in workflows().items():
@@ -95,6 +102,21 @@ class WorkflowBudgetTests(unittest.TestCase):
         callers = {name for name, text in workflows().items()
                    if f"uses: ./.github/workflows/{self.SIMULATOR_WORKFLOW}" in text}
         self.assertEqual(callers, set(self.NATIVE_ENTRY_POINTS))
+
+    def test_lightweight_checks_stay_small_and_simulator_free(self):
+        text = (WORKFLOWS / "checks.yml").read_text()
+        self.assertEqual(list(jobs(text)), ["checks"])
+        self.assertEqual(re.findall(r"^\s*timeout-minutes:\s*(.+)$", text, re.MULTILINE), ["10"])
+        self.assertIn("cancel-in-progress: true", text)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", text)
+        for simulator in ("xcodebuild", "simctl", "owned-ios-simulator", "iphonesimulator", "-destination"):
+            self.assertNotIn(simulator, text)
+        self.assertLessEqual(self.LIGHTWEIGHT_PATHS,
+                             set(re.findall(r"^      - '([^']+)'$", section(text, "on"), re.MULTILINE)))
+        swift = re.findall(r"^\s*swift (?:build|test)\b.*$", text, re.MULTILINE)
+        self.assertEqual([line.strip() for line in swift],
+                         ['swift test --package-path TermLLMMacKit --scratch-path "$scratch"'],
+                         "ComputerUseKit tests stay manual (computer-use-kit-tests.yml)")
 
     def test_native_workflows_create_boot_and_clean_only_their_owned_simulator(self):
         creators = [name for name, text in workflows().items() if "owned-ios-simulator.py create" in text]
