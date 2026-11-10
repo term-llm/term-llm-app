@@ -74,7 +74,7 @@ public enum Pointer {
             let (corner, radius) = corners[i]
             let a = toward(corners[i].0, corners[(i + 3) % 4].0)
             let b = toward(corners[i].0, corners[(i + 1) % 4].0)
-            let half = acos(a.x * b.x + a.y * b.y) / 2
+            let half = Double(acos(a.x * b.x + a.y * b.y)) / 2
             let inward = toward(.zero, add(a, b))
             let centre = add(corner, inward, radius / sin(half))
             let spokes = [a, b].map { add(add(.zero, $0, cos(half)), inward, -1) }

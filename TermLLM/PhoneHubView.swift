@@ -1071,7 +1071,7 @@ struct PhoneHubPanelControls<Controls: View>: View {
 
     var body: some View {
         #if os(macOS)
-        Picker("Agents view", selection: Binding(get: { selection }, set: onSelect)) {
+        Picker("Agents view", selection: Binding(get: { selection }, set: { onSelect($0) })) {
             ForEach(PhoneHubView.Panel.allCases, id: \.self) { candidate in
                 Text(candidate == .attention ? attention.map { "Attention · \($0)" } ?? "Attention" : candidate.rawValue)
                     .tag(candidate)

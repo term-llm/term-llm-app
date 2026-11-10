@@ -203,7 +203,8 @@ final class ListenBufferCallbackCoalescer: @unchecked Sendable {
         lock.withLock {
             guard !invalidated, pending == nil else { return }
             let work = DispatchWorkItem { [weak self] in
-                MainActor.assumeIsolated { self?.deliver() }
+                guard let self else { return }
+                MainActor.assumeIsolated { self.deliver() }
             }
             pending = work
             schedule(Self.updateInterval, work)

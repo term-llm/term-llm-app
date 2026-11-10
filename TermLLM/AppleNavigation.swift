@@ -164,13 +164,21 @@ final class MapKitRoutePlanner: RoutePlanner {
     }
 
     func describe(_ coordinate: Coordinate) async throws -> NavigationPlace? {
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         if #available(iOS 26.0, macOS 26.0, *) {
-            guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
-            return try await request.mapItems.first.map(Self.place)
+            return try await Self.reverseGeocodedPlace(coordinate)
         }
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         guard let placemark = try await CLGeocoder().reverseGeocodeLocation(location).first else { return nil }
         return Self.place(placemark, at: coordinate)
+    }
+
+    /// Keep MapKit's non-Sendable request/response on the generic executor;
+    /// only the Sendable navigation value crosses back to the main actor.
+    @available(iOS 26.0, macOS 26.0, *)
+    nonisolated private static func reverseGeocodedPlace(_ coordinate: Coordinate) async throws -> NavigationPlace? {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
+        return try await request.mapItems.first.map(Self.place)
     }
 
     /// Pre-iOS 26 reverse geocoding result as a place.
@@ -185,7 +193,7 @@ final class MapKitRoutePlanner: RoutePlanner {
         return NavigationPlace(name: placemark.name ?? address ?? "Current location", address: address, coordinate: coordinate)
     }
 
-    private static func place(_ item: MKMapItem) -> NavigationPlace {
+    nonisolated private static func place(_ item: MKMapItem) -> NavigationPlace {
         let coordinate: CLLocationCoordinate2D
         let address: String?
         if #available(iOS 26.0, macOS 26.0, *) {
