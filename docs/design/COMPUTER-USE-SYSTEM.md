@@ -185,3 +185,311 @@ Not ported from the listed Python test files:
   ancestry tests, replaced by Swift compile/API tests and fixed helper identity.
 - Lock-screen's 11 parameterizations of nonexistent unlock features are one
   source-safety regression, not 11 duplicate tests.
+
+## Presence, policy and approvals (cu-presence)
+
+The following is additive to the primitives above. No shared base files or
+`Package.swift` were changed. These ports use the same Python reference commit,
+`43d9edf`; library targets still have no bundled resources or third-party deps.
+
+### Core API
+
+```swift
+// Pointer.swift: global screen points, origin top-left; degrees clockwise.
+Pointer.Shape.init(a: Double = 0, sx: Double = 1, sy: Double = 1, b: Double = 0)
+Pointer.Move // mode, start/end, path, response, damping, duration, arrive
+Pointer.plan(_ start: CGPoint, _ end: CGPoint, bounds: CGRect) -> Pointer.Move
+Pointer.position(_ move: Pointer.Move, _ t: Double) -> (point: CGPoint, heading: CGPoint)
+Pointer.pose(_ move: Pointer.Move, _ t: Double) -> (point: CGPoint, shape: Pointer.Shape)
+Pointer.outlinePoints(chords: Int = 6) -> [CGPoint]
+Pointer.pressScale(_ t: Double) -> Double
+Pointer.clamp(_ v: Double, _ lo: Double = 0, _ hi: Double = 1) -> Double
+Pointer.add(_ p: CGPoint, _ v: CGPoint, _ k: Double = 1) -> CGPoint
+Pointer.distance(_ p: CGPoint, _ q: CGPoint) -> Double
+Pointer.toward(_ p: CGPoint, _ q: CGPoint) -> CGPoint
+Pointer.interpolate(_ rows: [(Double, Double)], _ key: Double) -> Double
+Pointer.spring(_ t: Double, response: Double, damping: Double) -> Double
+Pointer.cubic(_ curve: [CGPoint], _ t: Double) -> CGPoint
+Pointer.tangent(_ curve: [CGPoint], _ t: Double) -> CGPoint
+Pointer.reach(_ bounds: CGRect, _ p: CGPoint, _ v: CGPoint, _ length: Double) -> CGPoint
+Pointer.candidates(_ start: CGPoint, _ end: CGPoint, bounds: CGRect) -> [[[CGPoint]]]
+Pointer.measure(_ path: [[CGPoint]], bounds: CGRect)
+    -> (length: Double, energy: Double, sharpest: Double, turn: Double, inside: Bool)
+Pointer.glide(_ start: CGPoint, _ end: CGPoint, bounds: CGRect)
+    -> (path: [[CGPoint]], response: Double)
+// Look/motion constants are public on Pointer.
+
+// Pure overlay geometry/state. Rectangles are CGRect (not LTRB tuples).
+OverlayGeometry.ease(_ u: Double) -> Double
+OverlayGeometry.grow(_ box: CGRect, by: Double) -> CGRect
+OverlayGeometry.holds(_ box: CGRect, _ point: CGPoint) -> Bool
+OverlayGeometry.flashBox(_ frame: CGRect, within: CGRect?) -> CGRect?
+OverlayGeometry.flipScreens(_ frames: [CGRect]) -> [CGRect]
+OverlayGeometry.bounds(of screens: [CGRect], points: [CGPoint]) -> CGRect
+OverlayGeometry.windowFrame(_ box: CGRect, primaryHeight: Double) -> CGRect
+OverlayGeometry.windowOrigin(_ point: CGPoint, primaryHeight: Double) -> CGPoint
+OverlayGeometry.targetWindow(_ point: CGPoint, pid: Int32?,
+    windows: [OverlayGeometry.Window], window: Int = 0) -> OverlayGeometry.Window?
+OverlayGeometry.stacking(_ point: CGPoint, pid: Int32?, frontmost: Int32?,
+    windows: [OverlayGeometry.Window], window: Int = 0) -> OverlayGeometry.Place?
+// Window = id/pid/level/bounds; Place = level/window; public initializers.
+OverlayCommand // .move(point,pid:window:animate:), .press(count),
+               // .activity("idle"|"loading"|"paused"),
+               // .flash(rect,within:pid:window:), .halo(rect,pid:window:), .done
+OverlayCommand.valid: Bool
+PointerTrack.init(now: Double, idle: Double = OverlayGeometry.idle)
+PointerTrack.go(_ target: CGPoint, now: Double, screens: [CGRect], animate: Bool = true)
+PointerTrack.lands(_ now: Double) -> Double
+PointerTrack.press(_ count: Int, now: Double)
+PointerTrack.act(_ state: String, now: Double)
+PointerTrack.frame(_ now: Double) -> PointerTrack.Frame?
+// Frame = point/shape/press/opacity/blur/wake/fill; public initializer.
+OverlayMark.init()
+OverlayMark.show(_ box: CGRect?, now: Double, until: Double,
+                 appear: Double = OverlayGeometry.fade)
+OverlayMark.alive(_ now: Double) -> Bool
+OverlayMark.alpha(_ now: Double) -> Double
+OverlayMark.follow(_ windows: [OverlayGeometry.Window], now: Double) -> OverlayGeometry.Place?
+OverlayMark.wake(_ now: Double) -> Double
+OverlayScene.init(now: Double, idle: Double = OverlayGeometry.idle)
+OverlayScene.command(_ command: OverlayCommand, now: Double, screens: [CGRect], calm: Bool = false)
+OverlayScene.wake(_ now: Double, frame: PointerTrack.Frame) -> Double
+// Scene exposes track, flash, halo, pid, window; caller serializes mutable state.
+
+Ask.init(title: String, subtitle: String? = nil, choices: [String],
+         onAnswer: @escaping (String) -> Void)
+AskQueue.init()
+AskQueue.asks: [Ask] // read-only, FIFO
+AskQueue.append(_ ask: Ask)
+AskQueue.answer(_ ask: Ask, choice: String) // removes before callback, once by identity
+AskQueue.withdraw(title: String) // never answers
+PanelGeometry.origin(size: CGSize, visible: CGRect) -> CGPoint // AppKit y-up
+PanelGeometry.width: Double // 340
+PanelGeometry.margin: Double // 16
+ActivityWindow.init()
+ActivityWindow.update(working: Bool, now: TimeInterval) // mutating
+ActivityWindow.visible(now: TimeInterval) -> Bool
+ActivityWindow.remaining(now: TimeInterval) -> TimeInterval
+ActivityWindow.linger: TimeInterval // static, 3 seconds
+
+PolicyTOML.parse(_ text: String) throws -> PolicyTOML.Document
+// Document.values: [String: Value], bundleIDs: [String: String]
+// Value = .bool(Bool), .string(String), .strings([String]); ParseError.description.
+Policy.init(managedFile: URL = Policy.managedFile,
+            userFile: URL = Paths.stateDirectory().appendingPathComponent("policy.toml"),
+            appKind: @escaping (AppTarget) -> AppKind = { _ in AppKind() })
+Policy.load() throws -> Policy.Configuration
+Policy.evaluate(agent: AgentSession, target: AppTarget) throws -> PolicyDecision
+Policy.evaluate(agent: AgentSession, target: AppTarget,
+                config: Policy.Configuration) throws -> PolicyDecision
+Policy.decide(agent: AgentSession, target: AppTarget) throws -> PolicyDecision
+Policy.checkRecipient(_ bundleID: String) throws
+Policy.watchesURLs() throws -> Bool
+Policy.checkURL(_ url: String?) throws
+Policy.displayName(_ target: AppTarget) -> String // static
+Policy.shellMatch(_ text: String, pattern: String) -> Bool // static
+// Configuration(layers: [Policy.Layer]); Layer() / Layer(document:).
+// Public sets: terminals, passwordManagers, elevated, security, ownBundles.
+// Public managedFile and warning constants.
+
+ApprovalStore.init(directory: URL = Paths.stateDirectory())
+ApprovalStore.file: URL // approvals.json
+ApprovalStore.sessionsFile: URL // sessions.json
+ApprovalStore.always() -> [String: String]
+ApprovalStore.save(bundleID: String, now: Date = Date()) throws
+ApprovalStore.sessions(alive: (String) -> Bool) -> Set<ApprovalStore.SessionGrant>
+ApprovalStore.saveSession(agent: String, bundleID: String, alive: (String) -> Bool) throws
+ApprovalStore.write(_ object: Any, to file: URL) throws // static, atomic 0600
+// SessionGrant.init(agent: String, bundleID: String), Hashable.
+```
+
+`approvals.json` is documented in the source for the main app to list/remove
+persistent entries. Example:
+
+```json
+{
+  "always": {"com.apple.TextEdit": "2026-11-10T08:00:00Z"},
+  "modified": "2026-11-10T08:00:00Z"
+}
+```
+
+`always` maps **bundle ID → UTC ISO-8601 approval date**. Removing a key revokes
+that persistent grant for future sessions; already granted session approvals
+continue for that session/helper's life, as upstream. Both files are reread when
+checking approvals. `sessions.json` is an array of `[agentKey, bundleID]` pairs;
+numeric process keys require a matching pid **and start time** to survive helper
+restart. PID-only targets never get an `always` entry. Missing/malformed approval
+files grant nothing. Scratch files use exclusive creation, no symlink following,
+0600 from creation, fsync and atomic rename, rather than a shared `.tmp` path.
+
+### System API
+
+```swift
+Overlay.shared: Overlay
+Overlay.init()
+Overlay.enabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool // static
+Overlay.send(_ command: OverlayCommand) // fire-and-forget, invalid commands dropped
+Overlay.transform(shape: Pointer.Shape, press: Double) -> CATransform3D // static
+Overlay.pointerImage(coverOnly: Bool = false, fill: Double = Pointer.fill) -> NSImage // static
+Overlay.accent: NSColor // static, upstream orange (255,127,39)
+
+Panel.shared: Panel
+Panel.questions: AskQueue
+Panel.append(_ ask: Ask) // main thread only
+Panel.withdraw(title: String) // main thread only
+Panel.draw() // main thread only
+Panel.makePanel(_ ask: Ask, target: AnyObject) -> NSPanel // static, main, starts offscreen
+
+Presence.shared: Presence
+Presence.init(enabled: @escaping () -> Bool = /* pointer switch */,
+              now: @escaping () -> Double = /* uptime */,
+              send: @escaping (OverlayCommand) -> Void = /* Overlay.shared.send */,
+              schedule: @escaping (@escaping () -> Void) -> Void = MainThread.onMain,
+              ask: @escaping (Ask) -> Void = /* Panel.shared.append */,
+              withdraw: @escaping (String) -> Void = /* Panel.shared.withdraw */)
+Presence.pointerMove(_ point: CGPoint, window: WindowRef? = nil) -> Bool
+Presence.pointerPress(count: Int = 1) -> Bool
+Presence.pointerActivity(_ state: String) -> Bool
+Presence.flash(_ rect: CGRect, window: WindowRef? = nil) -> Bool
+Presence.halo(_ window: WindowRef?) -> Bool
+Presence.liveView(_ window: WindowRef?) -> Bool // intentional no-op
+Presence.turnDone() -> Bool
+Presence.ask(_ question: Ask) -> Bool
+Presence.ask(title: String, subtitle: String? = nil, choices: [String],
+             onAnswer: @escaping (String) -> Void) -> Bool
+Presence.withdraw(title: String) -> Bool
+Presence.pause: Double // static, 4.75 s; turnDone clears pause, keeps questions
+// All return at once, never throw. Bool = handed over, NOT proof of visible UI.
+// shared also refuses questions before the helper's AppKit run loop starts.
+
+Approvals.init(store: ApprovalStore = ApprovalStore(),
+               ask: @escaping (Ask) -> Bool = /* Presence.shared.ask */,
+               withdraw: @escaping (String) -> Void = /* Presence.shared.withdraw */,
+               now: @escaping () -> TimeInterval = /* wall-clock seconds */,
+               sleep: @escaping (TimeInterval) -> Void = /* Thread.sleep */,
+               alive: @escaping (String) -> Bool = Approvals.namedSessionAlive)
+Approvals.stored() -> (always: [String: String], session: [String])
+Approvals.approve(bundleID: String, always: Bool) throws // CONTROL SOCKET ONLY
+Approvals.approved(agent: AgentSession, bundleID: String, policy: PolicyDecision) -> Bool
+Approvals.ensure(agent: AgentSession, target: AppTarget, policy: PolicyDecision,
+                 deadline: TimeInterval, abandoned: () -> Bool = { false }) throws
+Approvals.clearDenials(agent: AgentSession)
+Approvals.namedSessionAlive(_ key: String) -> Bool // static, numeric keys fail closed
+// Public constants: deny, session, always (button texts), poll=0.25, giveUp=10.
+
+ActivityBanner.shared: ActivityBanner
+ActivityBanner.init()
+ActivityBanner.onStop: (() -> Void)? // thread-safe property, callback on main
+ActivityBanner.update(working: Bool) // enqueues on main, no focus
+ActivityBanner.stop() // hides and removes monitors; helper teardown
+ActivityBanner.isStopKey(code: UInt16, tag: Int64) -> Bool // static, pure gate
+ActivityBanner.text: String // static, "term-llm is using your computer · Esc to stop"
+```
+
+`Approvals.approve` is **not an agent tool**. No `approve` command parser,
+self-approval fallback, or agent-key parameter is exposed. Only the authenticated
+helper **control socket**, on behalf of the main app's human-facing window,
+may route to it. Panel yeses use a private session-scoped recording method.
+`ensure` refuses a denied/forbidden decision even with `ask == false`; the caller
+must still use `Policy.decide` first (disabled/security-process gates).
+
+### Integration responsibilities / TODO(integration)
+
+- Start `MainThread.run` in the **LSUIElement helper**, then use `Presence.shared`.
+  No standalone overlay process, socket, process restart logic or resources.
+- Inject `Policy(appKind: Apps.kind)` when that port lands. Default low-risk app
+  classification is only a seam; built-in lists still enforce refusals.
+- Resolve apps in orchestration, then call `Policy.decide` → `Approvals.ensure`
+  before any app read/action. Call `checkRecipient` before cross-process events,
+  `checkURL` after browser reads, and handle `blocked_url` by ending the session.
+- Keep one long-lived `Approvals` per helper. Inject `alive` using helper process
+  lookup for `pid:startTime` keys; the default refuses numeric grants after a
+  restart rather than accidentally blessing a reused pid. Named session IDs
+  persist as upstream. No dependency on unmerged AppSession/process/apps APIs.
+- Clear denials via `clearDenials` under the helper's session lock at turn boundaries;
+  don't concurrently mutate `AgentSession.denied` elsewhere. No-turn-signal denial
+  is consumed by one call. `ensure` waits only on worker threads with a wall-clock
+  deadline, stops 10 s early, and keeps the panel after timeout/disconnection.
+- Wire control-socket approval only to the main app's human UI, never to agent argv.
+- Aggregate concurrent call counts into `ActivityBanner.update(working:)` on
+  begin/end (not one false per finished call if another still runs). Wire `onStop`
+  to active-action cancellation plus refusal for the rest of the current turn.
+  Injected stop is intentionally not implemented by sending synthetic input.
+- Call `Presence.turnDone` on turn end; `ActivityBanner.stop` on helper teardown.
+
+### Intentional changes and verification limits
+
+- Default `ask_before_first_use` and `strict` are **true**. Terminals are therefore
+  forbidden; password managers/Keychain, both term-llm bundle IDs and the Privacy
+  & Security extension join the forbidden list. ScreenContinuity stays elevated.
+  As upstream, denies win, false wins for enabled/persistent, true wins for
+  ask/strict/forbidden override. With the new true defaults, disabling ask/strict
+  requires **both layers** explicitly false; a missing layer contributes defaults.
+  The explicit `allow_forbidden_targets` override remains; system security
+  recipients are never driven even with it.
+- TOML is a closed subset, not a general TOML library: comments, whitespace,
+  single/double quoted strings (basic escapes/Unicode), bools, multiline string
+  arrays/trailing comma, and one `[bundle_ids]` string table. Duplicate/unknown
+  keys, unsupported tables, numbers, inline tables and bad types fail closed as
+  `policy_unreadable`. Unknown access strings deny rather than accidentally allow.
+  Files are reread, not mtime-cached, so revocation cannot be hidden by timestamps.
+  URL patterns match the whole lowercased URL or host with shell semantics,
+  including literal backslashes (not regexes or filesystem slash/dot rules).
+- Overlay windows are click-through borderless nonactivating panels that can
+  never become key/main, join all Spaces, and initially use level 102. Background
+  target stacking preserves upstream occlusion and the halo follows its window.
+  Pointer uses a transparent screen-union window with a small animated glass/image
+  layer (rather than moving a 112-point NSWindow each frame). Spring, press, fade,
+  blur and loading-rock poses are sampled into Core Animation keyframes at 60 Hz;
+  the render server advances them without worker/main per-frame drawing. A 0.1 s
+  main-thread poll follows/re-stacks windows; it is not the pointer frame clock.
+  Reduced motion jumps and reduced transparency hides the glass. Display hot-plug
+  is picked up on the next command, as upstream refreshes its screen list there.
+- Banner is click-through (optional Stop button omitted); it observes local/global
+  keyDown, ignores `Events.ownTag`, returns local events unchanged, and only invokes
+  injected `onStop`. It never consumes Esc or activates the helper.
+- Live-view is an explicitly commented no-op. No caller process/argv, private app
+  session code, or main-app UI is invented here.
+
+Tests use fake clocks, queued UI closures, temporary stores and pure scene state;
+**none of the new tests puts windows on screen or installs input monitors**.
+The pointer JSON fixture is loaded from the existing test-only `Bundle.module`
+resource. At rest, floating-point endpoint differences may choose `R(0)` or
+`R(-134) * identity * R(134)`; the fixture test compares their identical net
+rotation when scale is exactly identity, not arbitrary decomposed angles.
+
+Not ported / intentionally skipped upstream tests (no runtime XCTest skips):
+
+- Overlay datagram encoding, socket path/fallback, detached process startup,
+  queue saturation/retry/crash and malformed datagram decoding: no datagrams or
+  child drawing process exist. Typed commands have finite-number/activity tests.
+- Pixel golden/rendering, glass/mask/Retina raster and live-window overlay tests:
+  this task ports geometry/state tests, not Python/PyObjC rasterization guarantees.
+- Panel fake-AppKit constructor/selector introspection and live question clicking:
+  pure FIFO, answer-once, withdrawal, reentrancy and screen geometry are tested;
+  actual window focus/style/click behavior awaits the integrated helper.
+- Approvals/policy action decorators, listing-app wrappers, orchestration timeout
+  suspension and process ancestry lookup: those modules are unmerged. Public
+  seams are tested with fake answers, clocks, cancellation and alive predicates.
+- Python import/monkeypatch/introspection checks and command-path self-approval:
+  replaced with Swift API tests or deliberately absent command functionality.
+
+The full package verification and exact test counts for this addition are recorded
+below after the final build. Live UI validation was attempted with
+`macos-harness get_app_state --app Simulator`; it returned "No app called Simulator",
+and `list_apps` confirmed no Simulator. No integrated helper app is built in this
+worktree yet. Thus live appearance, nonactivation/focus preservation, multi-display
+CA composition, real Esc delivery/TCC and stop orchestration are **unverified**;
+there is no UI Screenshot proof path to report.
+
+### Verified package checks for cu-presence
+
+`cd ComputerUseKit && swift build && swift test` passes: **171 tests**, zero
+failures and zero runtime skips (**52 Core, 118 System, 1 Helper**). This addition
+contributes **76 tests**: 4 pointer (the shared multi-case JSON fixture is a loop),
+20 overlay state/geometry, 14 policy/TOML, 5 approval store, 6 question/banner
+logic, 17 approval waiting and 10 presence/event-gate/transform tests. No app build,
+TCC prompt, real input posting or live-device verification is claimed.
+
+Shared base-file edits: **none**. The only existing file changed is this document,
+by appending this section. All Swift source and test changes are new owned files.
