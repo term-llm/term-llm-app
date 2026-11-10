@@ -1,0 +1,89 @@
+name: Native simulator tests (reusable)
+
+# Shared job of the manual native workflows (native-notification-tests.yml,
+# linked-devices-native.yml, native-unit-tests.yml). Each caller only names a
+# test plan of the TermLLM scheme (TestPlans/<plan>.xctestplan). Self-hosted
+# only: no hosted fallback, Actions cache or artifact storage.
+on:
+  workflow_call:
+    inputs:
+      test-plan:
+        description: Test plan of the TermLLM scheme to run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: [self-hosted, macOS, ARM64, term-llm-local]
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      # Inputs reach run scripts only through the environment.
+      TEST_PLAN: ${{ inputs.test-plan }}
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Use installed MacBook tools and selected Xcode
+        run: |
+          source scripts/ci/bootstrap-macos.sh
+          printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
+          printf 'NATIVE_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-native.XXXXXX")" >> "$GITHUB_ENV"
+      - name: Create and boot a job-owned disposable iPhone simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/test_owned_ios_simulator.py
+          simulator_name="term-llm-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          udid="$(python3 scripts/ci/owned-ios-simulator.py create \
+            --name "$simulator_name" \
+            --state-file "$NATIVE_TEST_DIR/owned-simulator.json")"
+          printf 'SIMULATOR_UDID=%s\n' "$udid" >> "$GITHUB_ENV"
+          xcodebuild -version
+      - name: Resolve pinned Swift packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project TermLLM.xcodeproj \
+            -scheme TermLLM \
+            -clonedSourcePackagesDirPath "$NATIVE_TEST_DIR/SourcePackages"
+      - name: Build and run the test plan without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project TermLLM.xcodeproj \
+            -scheme TermLLM \
+            -testPlan "$TEST_PLAN" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$NATIVE_TEST_DIR/DerivedData" \
+            -clonedSourcePackagesDirPath "$NATIVE_TEST_DIR/SourcePackages" \
+            -resultBundlePath "$NATIVE_TEST_DIR/Tests.xcresult" \
+            -parallel-testing-enabled NO \
+            -maximum-concurrent-test-simulator-destinations 1 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
+            2>&1 | tee "$NATIVE_TEST_DIR/xcodebuild.log"
+      - name: Delete only the job-owned simulator
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-native.* ]]; then
+            python3 scripts/ci/owned-ios-simulator.py cleanup \
+              --state-file "$NATIVE_TEST_DIR/owned-simulator.json"
+          fi
+      # Keep logs in the job output; do not incur GitHub artifact storage charges.
+      - name: Clean temporary native build results
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-native.* ]]; then
+            rm -rf -- "$NATIVE_TEST_DIR"
+          fi
