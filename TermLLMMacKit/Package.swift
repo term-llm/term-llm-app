@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // Platform-neutral companion logic for the native macOS target. Keeping this
@@ -6,7 +6,7 @@ import PackageDescription
 // login-item behaviour run under `swift test` on a real Mac without a GUI.
 let package = Package(
     name: "TermLLMMacKit",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "TermLLMMacKit", targets: ["TermLLMMacKit"]),
     ],

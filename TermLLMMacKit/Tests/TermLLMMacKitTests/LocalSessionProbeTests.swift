@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import TermLLMMacKit
 
@@ -133,25 +134,33 @@ final class LocalSessionProbeTests: XCTestCase {
 }
 
 final class ProbeURLProtocol: URLProtocol {
-    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
-    static var requests: [URLRequest] = []
-    private static let lock = NSLock()
+    typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
+    private struct State {
+        var handler: Handler?
+        var requests: [URLRequest] = []
+    }
+    // URLSession loads on its own threads while the test sets and reads this.
+    private static let state = OSAllocatedUnfairLock(initialState: State())
+
+    static var handler: Handler? {
+        get { state.withLock { $0.handler } }
+        set { state.withLock { $0.handler = newValue } }
+    }
+    static var requests: [URLRequest] { state.withLock { $0.requests } }
 
     static func reset() {
-        lock.lock()
-        handler = nil
-        requests = []
-        lock.unlock()
+        state.withLock { $0 = State() }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.lock.lock()
-        Self.requests.append(request)
-        let handler = Self.handler
-        Self.lock.unlock()
+        let request = request
+        let handler = Self.state.withLock { state in
+            state.requests.append(request)
+            return state.handler
+        }
         guard let handler else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return

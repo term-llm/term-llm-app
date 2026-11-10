@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 
 /// Release manifest. Legacy sources are decoded for migration only.
 public struct CLISelection: Codable, Equatable, Sendable {
@@ -591,31 +592,25 @@ public struct CLIProvisioner {
     /// Digest cache for status polling. Keyed by path, size and modification
     /// time; installs always hash the fresh candidate directly. This keeps a
     /// 4-second UI refresh from re-reading a multi-megabyte binary forever.
-    private final class ChecksumCache: @unchecked Sendable {
-        struct Entry {
+    private final class ChecksumCache: Sendable {
+        struct Entry: Sendable {
             let size: Int
             let modified: TimeInterval
             let digest: String
         }
         static let shared = ChecksumCache()
-        private let lock = NSLock()
-        private var entries: [String: Entry] = [:]
+        private let entries = OSAllocatedUnfairLock<[String: Entry]>(initialState: [:])
 
         func digest(for url: URL, compute: () throws -> String) rethrows -> String {
             let path = url.standardizedFileURL.path
             let attributes = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
             let size = (attributes[.size] as? NSNumber)?.intValue ?? -1
             let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
-            lock.lock()
-            if let entry = entries[path], entry.size == size, entry.modified == modified {
-                lock.unlock()
+            if let entry = entries.withLock({ $0[path] }), entry.size == size, entry.modified == modified {
                 return entry.digest
             }
-            lock.unlock()
             let digest = try compute()
-            lock.lock()
-            entries[path] = Entry(size: size, modified: modified, digest: digest)
-            lock.unlock()
+            entries.withLock { $0[path] = Entry(size: size, modified: modified, digest: digest) }
             return digest
         }
     }
@@ -649,11 +644,13 @@ public struct CLIProvisioner {
         return formatter.string(from: Date()) + "-" + UUID().uuidString.prefix(8)
     }
 
-    static let isoFormatter: ISO8601DateFormatter = {
+    /// A new formatter per use: ISO8601DateFormatter is not Sendable, and the
+    /// manifest is only encoded or decoded on install and status reads.
+    static var isoFormatter: ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
-    }()
+    }
 
     private static var decoder: JSONDecoder {
         let decoder = JSONDecoder()

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct CLIUpdateState: Codable, Equatable, Sendable {
     public var lastCheckedAt: Date?
@@ -30,7 +31,7 @@ public struct HTTPServiceVersionChecker: ServiceVersionChecking {
     public init(configuration: URLSessionConfiguration = .ephemeral) { self.configuration = configuration }
     public func matches(status: ServiceStatus, token: String, version: String) -> Bool {
         guard case .success(let endpoint) = ManagedLoopbackEndpoint.make(from: status) else { return false }
-        let result = HealthBox(); let done = DispatchSemaphore(value: 0)
+        let matches = OSAllocatedUnfairLock(initialState: false); let done = DispatchSemaphore(value: 0)
         let config = configuration.copy() as! URLSessionConfiguration
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
         let session = URLSession(configuration: config, delegate: HealthRedirects(), delegateQueue: nil)
@@ -39,18 +40,18 @@ public struct HTTPServiceVersionChecker: ServiceVersionChecking {
         request.timeoutInterval = 6; request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        session.dataTask(with: request) { data, response, _ in
+        session.dataTask(with: request) { [request] data, response, _ in
             if let http = response as? HTTPURLResponse, http.statusCode == 200, http.url == request.url,
                let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                result.matches = json["version"] as? String == version
+                let same = json["version"] as? String == version
+                matches.withLock { $0 = same }
             }
             done.signal()
         }.resume()
         guard done.wait(timeout: .now() + 8) == .success else { return false }
-        return result.matches
+        return matches.withLock { $0 }
     }
 }
-private final class HealthBox: @unchecked Sendable { var matches = false }
 private final class HealthRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }

@@ -2,6 +2,7 @@ import XCTest
 @testable import TermLLMMacKit
 import Foundation
 
+// Unchecked: every stored var is read and written only under `lock`; the handler closures capture test fixtures.
 final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
     struct Call: Equatable {
         let executable: String
@@ -11,8 +12,16 @@ final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [Call] = []
     private var _results: [CommandResult] = []
-    var handler: ((URL, [String], [String: String]?) throws -> CommandResult)?
-    var fallback = CommandResult(status: 0, stdout: "", stderr: "")
+    private var _handler: ((URL, [String], [String: String]?) throws -> CommandResult)?
+    private var _fallback = CommandResult(status: 0, stdout: "", stderr: "")
+    var handler: ((URL, [String], [String: String]?) throws -> CommandResult)? {
+        get { lock.lock(); defer { lock.unlock() }; return _handler }
+        set { lock.lock(); defer { lock.unlock() }; _handler = newValue }
+    }
+    var fallback: CommandResult {
+        get { lock.lock(); defer { lock.unlock() }; return _fallback }
+        set { lock.lock(); defer { lock.unlock() }; _fallback = newValue }
+    }
 
     var calls: [Call] {
         lock.lock(); defer { lock.unlock() }
@@ -30,7 +39,8 @@ final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
              timeout: TimeInterval) throws -> CommandResult {
         lock.lock()
         _calls.append(Call(executable: executable.path, arguments: arguments))
-        let result = _results.isEmpty ? fallback : _results.removeFirst()
+        let result = _results.isEmpty ? _fallback : _results.removeFirst()
+        let handler = _handler
         lock.unlock()
         if let handler { return try handler(executable, arguments, environment) }
         return result
