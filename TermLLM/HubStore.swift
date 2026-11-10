@@ -114,7 +114,7 @@ final class HubStore: ObservableObject {
 
     var activeSessionCount: Int {
         guard nodesVerified else { return 0 }
-        return nodes.reduce(0) { $0 + ($1.sessions?.active_count ?? 0) }
+        return nodes.reduce(0) { $0 + ($1.sessions?.activeCount ?? 0) }
     }
 
     var activeDelegationCount: Int {
@@ -171,7 +171,7 @@ final class HubStore: ObservableObject {
 
     /// After init the caller **must** wire the client's header-time callback:
     /// ```swift
-    /// client.on_unauthorized = { [weak store] in
+    /// client.onUnauthorized = { [weak store] in
     ///     await MainActor.run { store?.purgeOnUnauthorized() }
     /// }
     /// ```
@@ -234,7 +234,7 @@ final class HubStore: ObservableObject {
                     do {
                         let previous = since
                         let began = ContinuousClock.now
-                        since = try await client.wait_for_changes(
+                        since = try await client.waitForChanges(
                             since: previous, timeout: max(1, Int(interval.rounded()))).version
                         if Task.isCancelled { break }
                         // First call only records the baseline version.
@@ -336,7 +336,7 @@ final class HubStore: ObservableObject {
         attentionClearStatus = nil
         defer { if e == epoch { clearingAttention = false } }
         do {
-            let result = try await client.clear_attention()
+            let result = try await client.clearAttention()
             guard epochCurrent(e) else { return }
             if result.failed > 0 {
                 attentionClearStatus = "Cleared \(result.cleared); \(result.failed) could not be cleared. Try Clear all again."
@@ -358,23 +358,23 @@ final class HubStore: ObservableObject {
         let key = Self.inboxItemKey(item)
         let e = epoch
         guard !disposed, !unauthorized,
-              let storeID = item.store_instance_id,
+              let storeID = item.storeInstanceID,
               !markingSeen.contains(key),
               attentionVerified else { return }
         markingSeen.insert(key)
         attentionClearStatus = nil
         defer { if e == epoch { markingSeen.remove(key) } }
         do {
-            _ = try await client.mark_attention_seen(AttentionSeenRequest(
-                store_instance_id: storeID,
-                session_id: item.session_id,
-                attention_seq: item.attention_seq
+            _ = try await client.markAttentionSeen(AttentionSeenRequest(
+                storeInstanceID: storeID,
+                sessionID: item.sessionID,
+                attentionSeq: item.attentionSeq
             ))
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
             if !(error is CancellationError) {
-                attentionClearStatus = "Could not mark \"\(item.title.isEmpty ? item.session_id : item.title)\" seen: \(errorMessage(error))."
+                attentionClearStatus = "Could not mark \"\(item.title.isEmpty ? item.sessionID : item.title)\" seen: \(errorMessage(error))."
             }
         }
         if epochCurrent(e) {
@@ -390,7 +390,7 @@ final class HubStore: ObservableObject {
         let e = epoch
         guard !disposed, !unauthorized else { throw CancellationError() }
         do {
-            _ = try await client.mark_attention_seen(request)
+            _ = try await client.markAttentionSeen(request)
         } catch {
             if epochCurrent(e) { authPurgeIfNeeded(error) }
             throw error
@@ -419,11 +419,11 @@ final class HubStore: ObservableObject {
         nodeOperationResult = "Testing…"
         defer { if e == epoch { nodeOperation = .idle } }
         do {
-            let response = try await client.test_node(form)
+            let response = try await client.testNode(form)
             guard epochCurrent(e) else { return }
             let s = response.status
             if s.reachable {
-                var parts = "✓ Reachable in \(s.latency_ms) ms"
+                var parts = "✓ Reachable in \(s.latencyMs) ms"
                 if let agent = s.agent, !agent.isEmpty { parts += " · agent: \(agent)" }
                 if let version = s.version, !version.isEmpty { parts += " · \(version)" }
                 nodeOperationResult = parts
@@ -446,7 +446,7 @@ final class HubStore: ObservableObject {
         defer { if e == epoch { nodeOperation = .idle } }
         let warning: String?
         do {
-            let response = try await client.add_node(form)
+            let response = try await client.addNode(form)
             guard epochCurrent(e) else { return response.warning == nil }
             warning = response.warning
         } catch {
@@ -474,7 +474,7 @@ final class HubStore: ObservableObject {
         nodeOperation = .removing
         defer { if e == epoch { nodeOperation = .idle } }
         do {
-            _ = try await client.remove_node(id: id)
+            _ = try await client.removeNode(id: id)
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
@@ -523,7 +523,7 @@ final class HubStore: ObservableObject {
         let moved = Array(orderedIDs[first...lastNew])
 
         do {
-            _ = try await client.reorder_nodes(node_ids: moved)
+            _ = try await client.reorderNodes(nodeIDs: moved)
             // Success: the next routine poll (orderSaves == 0) will accept
             // server order as authoritative.
             if e == epoch { orderSaves = max(orderSaves - 1, 0) }
@@ -558,7 +558,7 @@ final class HubStore: ObservableObject {
         registrationError = nil
         defer { if e == epoch, tok == registrationToken { registrationLoading = false } }
         do {
-            let info = try await client.registration_info()
+            let info = try await client.registrationInfo()
             guard epochCurrent(e), tok == registrationToken else { return }
             registrationInfo = info
         } catch {
@@ -589,7 +589,7 @@ final class HubStore: ObservableObject {
             let sessResponse: HubSessionResponse
             let credResponse: CredentialsResponse
             if authMode == .passkey {
-                async let creds = client.list_credentials()
+                async let creds = client.listCredentials()
                 async let sess = client.session()
                 (credResponse, sessResponse) = try await (creds, sess)
             } else {
@@ -598,7 +598,7 @@ final class HubStore: ObservableObject {
             }
             guard epochCurrent(e) else { return }
             credentials = credResponse.credentials
-            activeSessions = sessResponse.active_sessions
+            activeSessions = sessResponse.activeSessions
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
@@ -615,7 +615,7 @@ final class HubStore: ObservableObject {
         securityStatus = nil
         defer { if e == epoch { securityOperation = nil } }
         do {
-            _ = try await client.rename_credential(record_id: recordID, display_name: displayName)
+            _ = try await client.renameCredential(recordID: recordID, displayName: displayName)
             guard epochCurrent(e) else { return }
             securityStatus = "Passkey renamed."
             await loadSecurity(preservingStatus: true)
@@ -627,7 +627,7 @@ final class HubStore: ObservableObject {
     }
 
     /// Credential removal requires recent WebAuthn authentication (403).
-    /// The 403 is caught at header-time by `on_unauthorized`, triggering a
+    /// The 403 is caught at header-time by `onUnauthorized`, triggering a
     /// full auth purge. Native UI should **disable** this button proactively
     /// and show a browser fallback instead of attempting the operation.
     func removeCredential(recordID: String) async {
@@ -637,7 +637,7 @@ final class HubStore: ObservableObject {
         securityStatus = nil
         defer { if e == epoch { securityOperation = nil } }
         do {
-            _ = try await client.remove_credential(record_id: recordID)
+            _ = try await client.removeCredential(recordID: recordID)
             guard epochCurrent(e) else { return }
             securityStatus = "Passkey removed."
             await loadSecurity(preservingStatus: true)
@@ -663,7 +663,7 @@ final class HubStore: ObservableObject {
         securityStatus = nil
         defer { if e == epoch { securityOperation = nil } }
         do {
-            let result = try await client.revoke_other_sessions()
+            let result = try await client.revokeOtherSessions()
             guard epochCurrent(e) else { return }
             securityStatus = "Revoked \(result.revoked) other session\(result.revoked == 1 ? "" : "s")."
             await loadSecurity(preservingStatus: true)
@@ -694,7 +694,7 @@ final class HubStore: ObservableObject {
     // MARK: - Identity key
 
     static func inboxItemKey(_ item: HubAttentionInboxItem) -> String {
-        [item.store_instance_id ?? item.node_id, item.session_id, "\(item.attention_seq)"]
+        [item.storeInstanceID ?? item.nodeID, item.sessionID, "\(item.attentionSeq)"]
             .joined(separator: "\0")
     }
 
@@ -706,7 +706,7 @@ final class HubStore: ObservableObject {
 
     // MARK: - Auth purge (public)
 
-    /// Wire to `client.on_unauthorized`. Idempotent.
+    /// Wire to `client.onUnauthorized`. Idempotent.
     func purgeOnUnauthorized() {
         guard !unauthorized else { return }
         performUnauthorizedPurge()
@@ -871,9 +871,9 @@ final class HubStore: ObservableObject {
 
     private func fetchNodes(epoch e: Int, seq: UInt64, orderVersion orderVer: Int) async {
         do {
-            let response = try await client.list_nodes()
+            let response = try await client.listNodes()
             guard epochCurrent(e), nodesSeq == seq else { return }
-            acceptNodes(response.nodes, resolverError: response.resolver_error, orderVersion: orderVer)
+            acceptNodes(response.nodes, resolverError: response.resolverError, orderVersion: orderVer)
         } catch {
             guard epochCurrent(e), nodesSeq == seq else { return }
             if authPurgeIfNeeded(error) { return }
@@ -885,14 +885,14 @@ final class HubStore: ObservableObject {
 
     private func fetchAttention(epoch e: Int, seq: UInt64, limit: Int) async {
         do {
-            let data = try await client.list_attention(limit: limit)
+            let data = try await client.listAttention(limit: limit)
             guard epochCurrent(e), attentionSeq == seq else { return }
             if attentionNodes != data.nodes { attentionNodes = data.nodes }
-            if inputRequired != data.input_required { inputRequired = data.input_required }
+            if inputRequired != data.inputRequired { inputRequired = data.inputRequired }
             if inbox != data.inbox { inbox = data.inbox }
-            if totalInputRequired != data.total_input_required { totalInputRequired = data.total_input_required }
-            if totalUnseen != data.total_unseen { totalUnseen = data.total_unseen }
-            if attentionHasMore != data.has_more { attentionHasMore = data.has_more }
+            if totalInputRequired != data.totalInputRequired { totalInputRequired = data.totalInputRequired }
+            if totalUnseen != data.totalUnseen { totalUnseen = data.totalUnseen }
+            if attentionHasMore != data.hasMore { attentionHasMore = data.hasMore }
             if !attentionVerified { attentionVerified = true }
             if attentionError != nil { attentionError = nil }
             lastAttentionRefresh = clock()
@@ -906,7 +906,7 @@ final class HubStore: ObservableObject {
 
     private func fetchDelegations(epoch e: Int, seq: UInt64) async {
         do {
-            let data = try await client.list_delegations()
+            let data = try await client.listDelegations()
             guard epochCurrent(e), delegationsSeq == seq else { return }
             if delegations != data.delegations { delegations = data.delegations }
             if !delegationsVerified { delegationsVerified = true }
@@ -931,16 +931,16 @@ final class HubStore: ObservableObject {
 
         let ids = Set(incoming.map(\.id))
         if !attentionVerified {
-            let filteredAttentionNodes = attentionNodes.filter { ids.contains($0.node_id) }
+            let filteredAttentionNodes = attentionNodes.filter { ids.contains($0.nodeID) }
             if attentionNodes != filteredAttentionNodes { attentionNodes = filteredAttentionNodes }
-            let filteredInputRequired = inputRequired.filter { ids.contains($0.node_id) }
+            let filteredInputRequired = inputRequired.filter { ids.contains($0.nodeID) }
             if inputRequired != filteredInputRequired { inputRequired = filteredInputRequired }
-            let filteredInbox = inbox.filter { ids.contains($0.node_id) }
+            let filteredInbox = inbox.filter { ids.contains($0.nodeID) }
             if inbox != filteredInbox { inbox = filteredInbox }
         }
         if !delegationsVerified {
             let filtered = delegations.filter {
-                ids.contains($0.origin_node) && ids.contains($0.target_node)
+                ids.contains($0.originNode) && ids.contains($0.targetNode)
             }
             if delegations != filtered { delegations = filtered }
         }

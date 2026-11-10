@@ -70,11 +70,11 @@ private func makeClient(
 ) -> (DirectNodeClient, DirectMockTransport) {
     let t = DirectMockTransport(handler: handler)
     let c = DirectNodeClient(
-        base_url: URL(string: base)!,
-        cookie_source: { cookies },
-        bearer_source: { bearer },
+        baseURL: URL(string: base)!,
+        cookieSource: { cookies },
+        bearerSource: { bearer },
         transport: t,
-        display_name_source: displayNameSource
+        displayNameSource: displayNameSource
     )
     return (c, t)
 }
@@ -140,8 +140,8 @@ final class DirectNodeClientModelTests: XCTestCase {
     func testDirectAttentionPageDecodes() throws {
         let json = attentionPageJSON(storeID: "store_xyz", hasMore: true)
         let p = try JSONDecoder().decode(DirectAttentionPage.self, from: Data(json.utf8))
-        XCTAssertEqual(p.store_instance_id, "store_xyz")
-        XCTAssertTrue(p.has_more)
+        XCTAssertEqual(p.storeInstanceID, "store_xyz")
+        XCTAssertTrue(p.hasMore)
         XCTAssertTrue(p.items.isEmpty)
     }
 
@@ -151,10 +151,10 @@ final class DirectNodeClientModelTests: XCTestCase {
          "attention_seq":42,"outcome":"completed","terminal_at":"2025-10-24T12:00:00Z"}
         """
         let item = try JSONDecoder().decode(DirectAttentionItem.self, from: Data(json.utf8))
-        XCTAssertEqual(item.session_id, "s1")
-        XCTAssertEqual(item.session_number, 7)
-        XCTAssertEqual(item.attention_seq, 42)
-        XCTAssertEqual(item.terminal_at, "2025-10-24T12:00:00Z")
+        XCTAssertEqual(item.sessionID, "s1")
+        XCTAssertEqual(item.sessionNumber, 7)
+        XCTAssertEqual(item.attentionSeq, 42)
+        XCTAssertEqual(item.terminalAt, "2025-10-24T12:00:00Z")
     }
 
     func testDirectNodeSessionsStatusDecodes() throws {
@@ -165,13 +165,13 @@ final class DirectNodeClientModelTests: XCTestCase {
         let s = try JSONDecoder().decode(DirectNodeSessionsStatus.self, from: Data(json.utf8))
         XCTAssertEqual(s.sessions.count, 1)
         XCTAssertEqual(s.sessions[0].number, 1)
-        XCTAssertEqual(s.sessions[0].active_run, true)
+        XCTAssertEqual(s.sessions[0].activeRun, true)
     }
 
     func testDirectAttentionKindRawValues() {
         XCTAssertEqual(DirectAttentionKind.unseen.rawValue, "unseen")
         XCTAssertEqual(DirectAttentionKind.running.rawValue, "running")
-        XCTAssertEqual(DirectAttentionKind.input_required.rawValue, "input_required")
+        XCTAssertEqual(DirectAttentionKind.inputRequired.rawValue, "input_required")
     }
 
     func testDirectNodeModelsKeepEveryWireKey() throws {
@@ -204,67 +204,67 @@ final class DirectNodeClientMountTests: XCTestCase {
 
     func testMountPathRoot() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.mount_path, "")
-        XCTAssertEqual(c.expected_host, "localhost")
+        XCTAssertEqual(c.mountPath, "")
+        XCTAssertEqual(c.expectedHost, "localhost")
     }
 
     func testMountPathSubpath() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/direct/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/direct/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.mount_path, "/direct")
+        XCTAssertEqual(c.mountPath, "/direct")
     }
 
     func testOriginOmitsDefaultHTTPPort() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:80/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:80/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
         XCTAssertEqual(c.origin, "http://localhost")
     }
 
     func testOriginIncludesNonDefaultPort() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/direct/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/direct/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
         XCTAssertEqual(c.origin, "http://localhost:8767")
     }
 
     func testResumePathWithNumber() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/direct/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/direct/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.resume_path(session_id: "uuid-abc", session_number: 42), "/direct/chat/42")
+        XCTAssertEqual(c.resumePath(sessionID: "uuid-abc", sessionNumber: 42), "/direct/chat/42")
     }
 
     func testResumePathWithoutNumber() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/direct/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/direct/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.resume_path(session_id: "uuid-abc", session_number: nil), "/direct/chat/uuid-abc")
+        XCTAssertEqual(c.resumePath(sessionID: "uuid-abc", sessionNumber: nil), "/direct/chat/uuid-abc")
     }
 
     func testResumePathRootMount() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.resume_path(session_id: "uuid-abc", session_number: 5), "/chat/5")
+        XCTAssertEqual(c.resumePath(sessionID: "uuid-abc", sessionNumber: 5), "/chat/5")
     }
 
     func testResumePathZeroNumberFallsToID() {
         let c = DirectNodeClient(
-            base_url: URL(string: "http://localhost:8767/direct/")!,
-            cookie_source: { [] }, bearer_source: { nil }
+            baseURL: URL(string: "http://localhost:8767/direct/")!,
+            cookieSource: { [] }, bearerSource: { nil }
         )
-        XCTAssertEqual(c.resume_path(session_id: "uuid-abc", session_number: 0), "/direct/chat/uuid-abc")
+        XCTAssertEqual(c.resumePath(sessionID: "uuid-abc", sessionNumber: 0), "/direct/chat/uuid-abc")
     }
 }
 
@@ -273,7 +273,7 @@ final class DirectNodeClientMountTests: XCTestCase {
 final class DirectNodeClientCookieFilterTests: XCTestCase {
 
     private func client(base: String = "http://localhost:8767/direct/") -> DirectNodeClient {
-        DirectNodeClient(base_url: URL(string: base)!, cookie_source: { [] }, bearer_source: { nil })
+        DirectNodeClient(baseURL: URL(string: base)!, cookieSource: { [] }, bearerSource: { nil })
     }
 
     private func cookie(
@@ -389,8 +389,8 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(bearer: "tok-secret") { _ in
             jsonHTTP(#"{"cleared":1}"#)
         }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "sid", session_id: "abc", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "sid", sessionID: "abc", attentionSeq: 1)
         )
         let req = transport.requests[0]
         XCTAssertEqual(req.method, "POST")
@@ -401,7 +401,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(bearer: "tok-secret") { _ in
             jsonHTTP("{\"sessions\":[{\"id\":\"s1\",\"short_title\":\"Hit\",\"snippet\":\"**x**\"}]}")
         }
-        let response = try await client.search_sessions(node_id: "ignored", query: "fix ci", limit: 20)
+        let response = try await client.searchSessions(nodeID: "ignored", query: "fix ci", limit: 20)
         let req = transport.requests[0]
         XCTAssertEqual(req.url.path, "/direct/v1/sessions/search")
         XCTAssertEqual(URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "q=fix%20ci&limit=20")
@@ -411,7 +411,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testSessionStatusForIDsHitsNode() async throws {
         let (client, transport) = makeClient(bearer: "tok-secret") { _ in jsonHTTP(emptyStatusJSON) }
-        _ = try await client.sessions_status(node_id: "ignored", ids: ["s1", "s2"])
+        _ = try await client.sessionsStatus(nodeID: "ignored", ids: ["s1", "s2"])
         let req = transport.requests[0]
         XCTAssertEqual(req.url.path, "/direct/v1/sessions/status")
         XCTAssertEqual(URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "ids=s1,s2")
@@ -422,7 +422,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(bearer: "tok-secret") { _ in
             jsonHTTP(emptyStatusJSON)
         }
-        _ = try await client.sessions_status()
+        _ = try await client.sessionsStatus()
         XCTAssertEqual(transport.requests[0].headers["authorization"], "Bearer tok-secret",
                        "GET /v1/sessions/status must include Authorization: Bearer")
     }
@@ -451,7 +451,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(cookies: [cookie]) { _ in
             jsonHTTP(emptyStatusJSON)
         }
-        _ = try await client.sessions_status()
+        _ = try await client.sessionsStatus()
         XCTAssertTrue(
             transport.requests[0].headers["cookie"]?.contains("term_llm_web_session") == true,
             "term_llm_web_session must be forwarded"
@@ -466,7 +466,7 @@ final class DirectNodeClientTests: XCTestCase {
         props[.expires] = Date(timeIntervalSinceNow: 3600)
         let hubCookie = HTTPCookie(properties: props)!
         let (client, transport) = makeClient(cookies: [hubCookie]) { _ in jsonHTTP(emptyStatusJSON) }
-        _ = try await client.sessions_status()
+        _ = try await client.sessionsStatus()
         XCTAssertFalse(transport.requests[0].headers["cookie"]?.contains("term_llm_hub_token") == true)
     }
 
@@ -474,15 +474,15 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testOriginSetOnPost() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "id", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "id", attentionSeq: 1)
         )
         XCTAssertEqual(transport.requests[0].headers["origin"], "http://localhost:8767")
     }
 
     func testOriginNotSetOnGet() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(emptyStatusJSON) }
-        _ = try await client.sessions_status()
+        _ = try await client.sessionsStatus()
         XCTAssertNil(transport.requests[0].headers["origin"])
     }
 
@@ -490,16 +490,16 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testMarkSeenSendsAttentionSourceHeader() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "store_x", session_id: "sess-1", attention_seq: 99)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "store_x", sessionID: "sess-1", attentionSeq: 99)
         )
         XCTAssertEqual(transport.requests[0].headers["x-term-llm-attention-source"], "phone")
     }
 
     func testMarkSeenPostsToCorrectPath() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "sess-abc", attention_seq: 5)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "sess-abc", attentionSeq: 5)
         )
         XCTAssertEqual(transport.requests[0].url.path, "/direct/v1/sessions/sess-abc/attention/seen")
         XCTAssertEqual(transport.requests[0].method, "POST")
@@ -507,8 +507,8 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testMarkSeenBodyEncodesCorrectFields() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "store_xyz", session_id: "s1", attention_seq: 77)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "store_xyz", sessionID: "s1", attentionSeq: 77)
         )
         let body = try JSONDecoder().decode(
             [String: JSONValue].self,
@@ -523,8 +523,8 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"store_instance_id":"s","session_id":"s1","latest_attention_seq":5}"#)
         }
-        let result = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "s1", attention_seq: 5)
+        let result = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "s1", attentionSeq: 5)
         )
         XCTAssertEqual(result.cleared, 1)
     }
@@ -533,8 +533,8 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testMarkSeenPathEncodesSessionID() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "sess/with/slashes", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "sess/with/slashes", attentionSeq: 1)
         )
         // url.path percent-decodes %2F back to '/', so we must check the raw absoluteString
         // to confirm that slashes were encoded as a single path segment.
@@ -553,8 +553,8 @@ final class DirectNodeClientTests: XCTestCase {
     func testMarkSeenPathDoesNotDoubleEncodePercent() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
         // Session ID contains a literal '%' (unusual but possible in opaque IDs)
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "id%20weird", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "id%20weird", attentionSeq: 1)
         )
         let raw = transport.requests[0].url.absoluteString
         // The % must appear as %25 (encoded once), not %2525 (double-encoded).
@@ -568,8 +568,8 @@ final class DirectNodeClientTests: XCTestCase {
     /// cannot escape the path segment into the query string.
     func testMarkSeenPathEncodesQuerySpecialChars() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "id?foo=bar&baz", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "id?foo=bar&baz", attentionSeq: 1)
         )
         let raw = transport.requests[0].url.absoluteString
         // The '?', '=' and '&' must be percent-encoded so they stay inside the path segment.
@@ -580,9 +580,9 @@ final class DirectNodeClientTests: XCTestCase {
     // MARK: Attention limit clamping
 
     func testListAttentionLimitClampedHigh() async throws {
-        // list_attention makes 3 concurrent attention calls; serve all with empty pages
+        // listAttention makes 3 concurrent attention calls; serve all with empty pages
         let (client, transport) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        _ = try await client.list_attention(limit: 9999)
+        _ = try await client.listAttention(limit: 9999)
         // Both attention calls should have limit=500
         let attentionReqs = transport.requests.filter { $0.url.path.contains("/v1/attention") }
         for req in attentionReqs {
@@ -593,7 +593,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListAttentionLimitClampedLow() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        _ = try await client.list_attention(limit: 0)
+        _ = try await client.listAttention(limit: 0)
         let attentionReqs = transport.requests.filter { $0.url.path.contains("/v1/attention") }
         for req in attentionReqs {
             let query = req.url.query ?? ""
@@ -603,7 +603,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListAttentionNoLimitOmitsLimitParam() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        _ = try await client.list_attention(limit: nil)
+        _ = try await client.listAttention(limit: nil)
         let attentionReqs = transport.requests.filter { $0.url.path.contains("/v1/attention") }
         for req in attentionReqs {
             XCTAssertFalse(req.url.query?.contains("limit=") == true,
@@ -615,7 +615,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListAttentionQueriesUnseenAndInputRequired() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        _ = try await client.list_attention(limit: 50)
+        _ = try await client.listAttention(limit: 50)
         let attentionPaths = transport.requests
             .filter { $0.url.path.contains("/v1/attention") }
             .map { $0.url.query ?? "" }
@@ -627,7 +627,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func testListNodeAttentionUsesGivenKind() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        _ = try await client.list_node_attention(kind: .running, limit: 25)
+        _ = try await client.listNodeAttention(kind: .running, limit: 25)
         let req = transport.requests[0]
         XCTAssertTrue(req.url.query?.contains("kind=running") == true)
         XCTAssertTrue(req.url.query?.contains("limit=25") == true)
@@ -636,7 +636,7 @@ final class DirectNodeClientTests: XCTestCase {
     // MARK: 409 bounded retry
 
     func testListNodeAttentionRetries409UntilSuccess() async throws {
-        // Test 409 retry via single-kind list_node_attention (no concurrency complications)
+        // Test 409 retry via single-kind listNodeAttention (no concurrency complications)
         let callCount = HubTestBox(0)
         let (client, transport) = makeClient { _ in
             callCount.update { $0 += 1 }
@@ -645,7 +645,7 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(attentionPageJSON())
         }
-        _ = try await client.list_node_attention(kind: .unseen, limit: nil)
+        _ = try await client.listNodeAttention(kind: .unseen, limit: nil)
         XCTAssertGreaterThan(transport.requests.count, 2, "should have retried on 409")
     }
 
@@ -654,15 +654,15 @@ final class DirectNodeClientTests: XCTestCase {
             jsonHTTP(#"{"error":{"message":"conflict","type":"conflict_error"}}"#, status: 409)
         }
         do {
-            _ = try await client.list_attention()
+            _ = try await client.listAttention()
             XCTFail("Expected 409 error after retries exhausted")
         } catch let err as HubAPIError {
             XCTAssertEqual(err.status, 409)
         }
     }
 
-    /// list_node_attention must also exhaust its bounded 409 retry and surface the error,
-    /// consistently with list_attention (both use fetchAttentionWithRetry).
+    /// listNodeAttention must also exhaust its bounded 409 retry and surface the error,
+    /// consistently with listAttention (both use fetchAttentionWithRetry).
     func testListNodeAttentionThrowsAfterMaxRetries() async throws {
         let callCount = HubTestBox(0)
         let (client, transport) = makeClient { _ in
@@ -670,7 +670,7 @@ final class DirectNodeClientTests: XCTestCase {
             return jsonHTTP(#"{"error":{"message":"conflict","type":"conflict_error"}}"#, status: 409)
         }
         do {
-            _ = try await client.list_node_attention(kind: .unseen, limit: nil)
+            _ = try await client.listNodeAttention(kind: .unseen, limit: nil)
             XCTFail("Expected 409 error after retries exhausted")
         } catch let err as HubAPIError {
             XCTAssertEqual(err.status, 409)
@@ -687,8 +687,8 @@ final class DirectNodeClientTests: XCTestCase {
             )
         }
         do {
-            _ = try await client.mark_attention_seen(
-                AttentionSeenRequest(store_instance_id: "s", session_id: "id", attention_seq: 1)
+            _ = try await client.markAttentionSeen(
+                AttentionSeenRequest(storeInstanceID: "s", sessionID: "id", attentionSeq: 1)
             )
             XCTFail("Expected 409")
         } catch let err as HubAPIError {
@@ -701,32 +701,32 @@ final class DirectNodeClientTests: XCTestCase {
 
     func test501ForTestNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.test_node(NodeFormData(name: "", url: "", token: "")) }
+        await assertThrows501 { _ = try await client.testNode(NodeFormData(name: "", url: "", token: "")) }
     }
 
     func test501ForAddNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.add_node(NodeFormData(name: "", url: "", token: "")) }
+        await assertThrows501 { _ = try await client.addNode(NodeFormData(name: "", url: "", token: "")) }
     }
 
     func test501ForRemoveNode() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.remove_node(id: "n1") }
+        await assertThrows501 { _ = try await client.removeNode(id: "n1") }
     }
 
     func test501ForReorderNodes() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.reorder_nodes(node_ids: []) }
+        await assertThrows501 { _ = try await client.reorderNodes(nodeIDs: []) }
     }
 
     func test501ForClearAttention() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.clear_attention() }
+        await assertThrows501 { _ = try await client.clearAttention() }
     }
 
     func test501ForRegistrationInfo() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.registration_info() }
+        await assertThrows501 { _ = try await client.registrationInfo() }
     }
 
     func test501ForSession() async throws {
@@ -736,7 +736,7 @@ final class DirectNodeClientTests: XCTestCase {
 
     func test501ForListCredentials() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.list_credentials() }
+        await assertThrows501 { _ = try await client.listCredentials() }
     }
 
     func test501ForLogout() async throws {
@@ -746,42 +746,42 @@ final class DirectNodeClientTests: XCTestCase {
 
     func test501ForBeginLogin() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.begin_login(return_path: "/") }
+        await assertThrows501 { _ = try await client.beginLogin(returnPath: "/") }
     }
 
     func test501ForFinishLogin() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.finish_login(credential: Data()) }
+        await assertThrows501 { _ = try await client.finishLogin(credential: Data()) }
     }
 
     func test501ForVerifyGrant() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.verify_grant(prefix: .bootstrap, code: "123") }
+        await assertThrows501 { _ = try await client.verifyGrant(prefix: .bootstrap, code: "123") }
     }
 
     func test501ForAuthorizeNative() async throws {
         let (client, _) = makeClient { _ in jsonHTTP("{}") }
-        await assertThrows501 { _ = try await client.authorize_native(challenge: "c") }
+        await assertThrows501 { _ = try await client.authorizeNative(challenge: "c") }
     }
 
-    // MARK: list_delegations returns empty
+    // MARK: listDelegations returns empty
 
     func testListDelegationsEmpty() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP("{}") }
-        let result = try await client.list_delegations()
+        let result = try await client.listDelegations()
         XCTAssertTrue(result.delegations.isEmpty)
         XCTAssertTrue(transport.requests.isEmpty, "list_delegations must not make any network request")
     }
 
-    // MARK: on_unauthorized
+    // MARK: onUnauthorized
 
     func testOnUnauthorizedFiresOn401() async {
         let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Unauthorized"}}"#, status: 401)
         }
-        client.on_unauthorized = { fired.set(true) }
-        do { _ = try await client.sessions_status() } catch {}
+        client.onUnauthorized = { fired.set(true) }
+        do { _ = try await client.sessionsStatus() } catch {}
         XCTAssertTrue(fired.value)
     }
 
@@ -790,16 +790,16 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Forbidden"}}"#, status: 403)
         }
-        client.on_unauthorized = { fired.set(true) }
-        do { _ = try await client.sessions_status() } catch {}
+        client.onUnauthorized = { fired.set(true) }
+        do { _ = try await client.sessionsStatus() } catch {}
         XCTAssertTrue(fired.value)
     }
 
     func testOnUnauthorizedNotFiredOnSuccess() async throws {
         let fired = HubTestBox(false)
         let (client, _) = makeClient { _ in jsonHTTP(emptyStatusJSON) }
-        client.on_unauthorized = { fired.set(true) }
-        _ = try await client.sessions_status()
+        client.onUnauthorized = { fired.set(true) }
+        _ = try await client.sessionsStatus()
         XCTAssertFalse(fired.value)
     }
 
@@ -814,14 +814,14 @@ final class DirectNodeClientTests: XCTestCase {
             return jsonHTTP(#"{"error":{"message":"Unauth"}}"#, status: 401)
         }
 
-        client.on_unauthorized = { firstCallbackFired.set(true) }
+        client.onUnauthorized = { firstCallbackFired.set(true) }
 
         let task = Task {
-            do { _ = try await client.sessions_status() } catch {}
+            do { _ = try await client.sessionsStatus() } catch {}
         }
 
         // Replace callback before the transport fires 401
-        client.on_unauthorized = { secondCallbackFired.set(true) }
+        client.onUnauthorized = { secondCallbackFired.set(true) }
         await gate.release()
         await task.value
 
@@ -829,13 +829,13 @@ final class DirectNodeClientTests: XCTestCase {
         XCTAssertTrue(secondCallbackFired.value, "Current epoch callback must fire")
     }
 
-    // MARK: validate_bearer
+    // MARK: validateBearer
 
     func testValidateBearerRejectsNoIdentityMarkers() async throws {
         // Server is open (no auth required) — returns 200 but no identity
         let (client, _) = makeClient { _ in jsonHTTP(#"{"status":"ok"}"#) }
         do {
-            _ = try await client.validate_bearer(token: "bad-token")
+            _ = try await client.validateBearer(token: "bad-token")
             XCTFail("Expected rejection of bare 200 without identity markers")
         } catch let err as HubAPIError {
             XCTAssertEqual(err.status, 401)
@@ -846,7 +846,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"status":"ok","agent":"direct-node","version":"1.2","capabilities":["api"]}"#)
         }
-        let health = try await client.validate_bearer(token: "good-token")
+        let health = try await client.validateBearer(token: "good-token")
         XCTAssertEqual(health.agent, "direct-node")
     }
 
@@ -855,7 +855,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(cookies: [cookie]) { _ in
             jsonHTTP(#"{"status":"ok","version":"1.0","capabilities":["api"]}"#)
         }
-        _ = try await client.validate_bearer(token: "tok")
+        _ = try await client.validateBearer(token: "tok")
         XCTAssertNil(transport.requests[0].headers["cookie"],
                      "validate_bearer must not inject ambient cookies")
     }
@@ -865,8 +865,8 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"error":{"message":"Unauthorized"}}"#, status: 401)
         }
-        client.on_unauthorized = { fired.set(true) }
-        do { _ = try await client.validate_bearer(token: "bad") } catch {}
+        client.onUnauthorized = { fired.set(true) }
+        do { _ = try await client.validateBearer(token: "bad") } catch {}
         XCTAssertFalse(fired.value, "validate_bearer must not fire on_unauthorized on failure")
     }
 
@@ -874,7 +874,7 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"status":"ok","version":"2.0"}"#)
         }
-        let health = try await client.validate_bearer(token: "tok")
+        let health = try await client.validateBearer(token: "tok")
         XCTAssertEqual(health.version, "2.0")
     }
 
@@ -882,21 +882,21 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"status":"ok","capabilities":["api"]}"#)
         }
-        let health = try await client.validate_bearer(token: "tok")
+        let health = try await client.validateBearer(token: "tok")
         XCTAssertEqual(health.capabilities, ["api"])
     }
 
-    // MARK: list_nodes adapts sessions_status
+    // MARK: listNodes adapts sessionsStatus
 
     func testListNodesReturnsOneDirectNode() async throws {
-        // list_nodes fetches sessions/status (required) + /healthz (best-effort) concurrently
+        // listNodes fetches sessions/status (required) + /healthz (best-effort) concurrently
         let (client, _) = makeClient { req in
             if req.url?.path.hasSuffix("/healthz") == true {
                 return jsonHTTP(#"{"status":"ok","version":"1.0","agent":"my-agent"}"#)
             }
             return jsonHTTP(emptyStatusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         XCTAssertEqual(result.nodes.count, 1)
         XCTAssertEqual(result.nodes[0].id, "direct-node")
         XCTAssertEqual(result.nodes[0].status.reachable, true)
@@ -915,9 +915,9 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(statusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         let sessions = result.nodes[0].sessions
-        XCTAssertEqual(sessions?.active_count, 1)
+        XCTAssertEqual(sessions?.activeCount, 1)
         XCTAssertEqual(sessions?.active?.count, 1)
         XCTAssertEqual(sessions?.active?[0].id, "s1")
         XCTAssertEqual(sessions?.recent?.count, 1)
@@ -934,22 +934,22 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(statusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         let session = result.nodes[0].sessions?.recent?[0]
-        XCTAssertEqual(session?.resume_path, "/direct/chat/42")
+        XCTAssertEqual(session?.resumePath, "/direct/chat/42")
     }
 
     func testListNodesNewSessionPath() async throws {
-        // list_nodes makes 2 concurrent requests: sessions/status + /healthz
-        // health can fail (returns 401) without failing list_nodes
+        // listNodes makes 2 concurrent requests: sessions/status + /healthz
+        // health can fail (returns 401) without failing listNodes
         let (client, _) = makeClient { req in
             if req.url?.path.hasSuffix("/healthz") == true {
                 return jsonHTTP(#"{"status":"ok"}"#, status: 401)
             }
             return jsonHTTP(emptyStatusJSON)
         }
-        let result = try await client.list_nodes()
-        XCTAssertEqual(result.nodes[0].new_session_path, "/direct/?new=1")
+        let result = try await client.listNodes()
+        XCTAssertEqual(result.nodes[0].newSessionPath, "/direct/?new=1")
     }
 
     func testListNodesUnseenCount() async throws {
@@ -965,8 +965,8 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(statusJSON)
         }
-        let result = try await client.list_nodes()
-        XCTAssertEqual(result.nodes[0].sessions?.unseen_count, 1)
+        let result = try await client.listNodes()
+        XCTAssertEqual(result.nodes[0].sessions?.unseenCount, 1)
     }
 
     func testListNodesHealthIdentityUsedAsName() async throws {
@@ -977,7 +977,7 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(emptyStatusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         XCTAssertEqual(result.nodes[0].name, "my-server")
         XCTAssertEqual(result.nodes[0].status.agent, "my-server")
         XCTAssertEqual(result.nodes[0].status.version, "2.1")
@@ -985,14 +985,14 @@ final class DirectNodeClientTests: XCTestCase {
     }
 
     func testListNodesHealthFailureFallbackToSentinel() async throws {
-        // A health failure must not fail list_nodes; sentinel "direct-node" is used
+        // A health failure must not fail listNodes; sentinel "direct-node" is used
         let (client, _) = makeClient { req in
             if req.url?.path.hasSuffix("/healthz") == true {
                 return jsonHTTP(#"{"status":"ok"}"#, status: 401)
             }
             return jsonHTTP(emptyStatusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         XCTAssertEqual(result.nodes[0].name, "direct-node")
         XCTAssertEqual(result.nodes[0].status.agent, "direct-node")
     }
@@ -1012,7 +1012,7 @@ final class DirectNodeClientTests: XCTestCase {
                 }
                 return jsonHTTP(emptyStatusJSON)
             }
-            let result = try await client.list_nodes()
+            let result = try await client.listNodes()
             XCTAssertEqual(result.nodes[0].name, "Saved laptop", healthJSON)
             XCTAssertEqual(result.nodes[0].status.agent, "Saved laptop", healthJSON)
             XCTAssertEqual(result.nodes[0].id, "direct-node")
@@ -1026,7 +1026,7 @@ final class DirectNodeClientTests: XCTestCase {
             }
             return jsonHTTP(emptyStatusJSON)
         }
-        let result = try await client.list_nodes()
+        let result = try await client.listNodes()
         XCTAssertEqual(result.nodes[0].name, "Saved laptop")
         XCTAssertEqual(result.nodes[0].status.agent, "Saved laptop")
     }
@@ -1040,7 +1040,7 @@ final class DirectNodeClientTests: XCTestCase {
                 }
                 return jsonHTTP(emptyStatusJSON)
             }
-            let result = try await client.list_nodes()
+            let result = try await client.listNodes()
             XCTAssertEqual(result.nodes[0].name, "direct-node")
             XCTAssertEqual(result.nodes[0].status.agent, "direct-node")
         }
@@ -1058,7 +1058,7 @@ final class DirectNodeClientTests: XCTestCase {
                 }
                 return jsonHTTP(emptyStatusJSON)
             }
-            let result = try await client.list_nodes()
+            let result = try await client.listNodes()
             let expected = agent.trimmingCharacters(in: .whitespacesAndNewlines)
             XCTAssertEqual(result.nodes[0].name, expected)
             XCTAssertEqual(result.nodes[0].status.agent, expected)
@@ -1079,12 +1079,12 @@ final class DirectNodeClientTests: XCTestCase {
                                         dataStore: .nonPersistent(), transport: transport)
         defer { source.dispose(removeCredentials: true) }
         let client = try XCTUnwrap(source.directClient)
-        let initial = try await client.list_nodes()
+        let initial = try await client.listNodes()
         XCTAssertEqual(initial.nodes[0].name, "Original laptop")
 
         connection.name = "Renamed laptop"
         source.updateMetadata(connection)
-        let renamed = try await client.list_nodes()
+        let renamed = try await client.listNodes()
         XCTAssertEqual(renamed.nodes[0].name, "Renamed laptop")
         XCTAssertEqual(renamed.nodes[0].status.agent, "Renamed laptop")
     }
@@ -1099,13 +1099,13 @@ final class DirectNodeClientTests: XCTestCase {
                 }
                 return jsonHTTP(statusJSON)
             }
-            let result = try await client.list_nodes()
+            let result = try await client.listNodes()
             let expected = count == 1 ? "1 conversation" : "\(count) conversations"
-            XCTAssertEqual(result.nodes[0].sessions?.count_label, expected)
+            XCTAssertEqual(result.nodes[0].sessions?.countLabel, expected)
         }
     }
 
-    // MARK: list_attention aggregates
+    // MARK: listAttention aggregates
 
     func testListAttentionBuildsInboxFromUnseen() async throws {
         let itemJSON = """
@@ -1119,15 +1119,15 @@ final class DirectNodeClientTests: XCTestCase {
             if query.contains("kind=unseen") { return jsonHTTP(unseenPage) }
             return jsonHTTP(inputPage) // input_required and running both return empty
         }
-        let result = try await client.list_attention()
+        let result = try await client.listAttention()
         XCTAssertEqual(result.inbox.count, 1)
         let item = result.inbox[0]
-        XCTAssertEqual(item.node_id, "direct-node")
-        XCTAssertEqual(item.session_id, "sess-1")
-        XCTAssertEqual(item.session_number, 3)
-        XCTAssertEqual(item.attention_seq, 77)
-        XCTAssertEqual(item.resume_path, "/direct/chat/3")
-        XCTAssertEqual(item.store_instance_id, "store_u")
+        XCTAssertEqual(item.nodeID, "direct-node")
+        XCTAssertEqual(item.sessionID, "sess-1")
+        XCTAssertEqual(item.sessionNumber, 3)
+        XCTAssertEqual(item.attentionSeq, 77)
+        XCTAssertEqual(item.resumePath, "/direct/chat/3")
+        XCTAssertEqual(item.storeInstanceID, "store_u")
     }
 
     func testListAttentionBuildsInputRequired() async throws {
@@ -1143,13 +1143,13 @@ final class DirectNodeClientTests: XCTestCase {
             if query.contains("kind=input_required") { return jsonHTTP(inputPage) }
             return jsonHTTP(unseenPage) // unseen and running both return empty
         }
-        let result = try await client.list_attention()
-        XCTAssertEqual(result.input_required.count, 1)
-        let ir = result.input_required[0]
-        XCTAssertEqual(ir.session_id, "sess-2")
-        XCTAssertEqual(ir.pending_interaction_count, 2)
-        XCTAssertEqual(ir.pending_interaction_kinds, ["ask_user", "approval"])
-        XCTAssertEqual(ir.resume_path, "/direct/chat/sess-2")
+        let result = try await client.listAttention()
+        XCTAssertEqual(result.inputRequired.count, 1)
+        let ir = result.inputRequired[0]
+        XCTAssertEqual(ir.sessionID, "sess-2")
+        XCTAssertEqual(ir.pendingInteractionCount, 2)
+        XCTAssertEqual(ir.pendingInteractionKinds, ["ask_user", "approval"])
+        XCTAssertEqual(ir.resumePath, "/direct/chat/sess-2")
     }
 
     func testListAttentionRunningCountFromRunningKind() async throws {
@@ -1163,8 +1163,8 @@ final class DirectNodeClientTests: XCTestCase {
             if query.contains("kind=running") { return jsonHTTP(runningPage) }
             return jsonHTTP(attentionPageJSON()) // unseen + input_required empty
         }
-        let result = try await client.list_attention()
-        XCTAssertEqual(result.total_running, 1)
+        let result = try await client.listAttention()
+        XCTAssertEqual(result.totalRunning, 1)
     }
 
     func testListAttentionHasMorePropagated() async throws {
@@ -1175,33 +1175,33 @@ final class DirectNodeClientTests: XCTestCase {
             if query.contains("kind=unseen") { return jsonHTTP(unseenPage) }
             return jsonHTTP(inputPage) // input_required and running
         }
-        let result = try await client.list_attention()
-        XCTAssertTrue(result.has_more)
+        let result = try await client.listAttention()
+        XCTAssertTrue(result.hasMore)
     }
 
     func testListAttentionSyntheticNodePresent() async throws {
         let (client, _) = makeClient { _ in jsonHTTP(attentionPageJSON()) }
-        let result = try await client.list_attention()
+        let result = try await client.listAttention()
         XCTAssertEqual(result.nodes.count, 1)
-        XCTAssertEqual(result.nodes[0].node_id, "direct-node")
+        XCTAssertEqual(result.nodes[0].nodeID, "direct-node")
     }
 
-    // MARK: sessions_status path
+    // MARK: sessionsStatus path
 
     func testSessionsStatusPath() async throws {
         let (client, transport) = makeClient { _ in jsonHTTP(emptyStatusJSON) }
-        _ = try await client.sessions_status()
+        _ = try await client.sessionsStatus()
         XCTAssertEqual(transport.requests[0].url.path, "/direct/v1/sessions/status")
         XCTAssertEqual(transport.requests[0].method, "GET")
     }
 
-    // MARK: node_health
+    // MARK: nodeHealth
 
     func testNodeHealthReturnsFullPayload() async throws {
         let (client, _) = makeClient { _ in
             jsonHTTP(#"{"status":"ok","agent":"direct-node","version":"2.1","capabilities":["api","web"]}"#)
         }
-        let h = try await client.node_health()
+        let h = try await client.nodeHealth()
         XCTAssertEqual(h.agent, "direct-node")
         XCTAssertEqual(h.version, "2.1")
     }
@@ -1209,11 +1209,11 @@ final class DirectNodeClientTests: XCTestCase {
     // MARK: Mounted path routing
 
     func testMountedAttentionPath() async throws {
-        // list_attention makes 3 concurrent attention calls; serve all with empty pages
+        // listAttention makes 3 concurrent attention calls; serve all with empty pages
         let (client, transport) = makeClient(base: "http://localhost:8767/work/") { _ in
             jsonHTTP(attentionPageJSON())
         }
-        _ = try await client.list_attention()
+        _ = try await client.listAttention()
         let paths = transport.requests.map(\.url.path)
         XCTAssertTrue(paths.contains { $0.hasPrefix("/work/v1/attention") })
     }
@@ -1222,8 +1222,8 @@ final class DirectNodeClientTests: XCTestCase {
         let (client, transport) = makeClient(base: "http://localhost:8767/home/") { _ in
             jsonHTTP(#"{"cleared":1}"#)
         }
-        _ = try await client.mark_attention_seen(
-            AttentionSeenRequest(store_instance_id: "s", session_id: "abc", attention_seq: 1)
+        _ = try await client.markAttentionSeen(
+            AttentionSeenRequest(storeInstanceID: "s", sessionID: "abc", attentionSeq: 1)
         )
         XCTAssertEqual(
             transport.requests[0].url.path,
@@ -1238,7 +1238,7 @@ final class DirectNodeClientTests: XCTestCase {
             jsonHTTP(#"{"error":{"message":"Not found","type":"not_found"}}"#, status: 404)
         }
         do {
-            _ = try await client.sessions_status()
+            _ = try await client.sessionsStatus()
             XCTFail("Expected error")
         } catch let err as HubAPIError {
             XCTAssertEqual(err.status, 404)
@@ -1253,7 +1253,7 @@ final class DirectNodeClientTests: XCTestCase {
             return (Data(), http)
         }
         do {
-            _ = try await client.sessions_status()
+            _ = try await client.sessionsStatus()
             XCTFail("Expected empty-response error")
         } catch let err as HubAPIError {
             XCTAssertTrue(err.message.contains("empty"))
@@ -1301,7 +1301,7 @@ extension DirectNodeClientTests {
         let (client, transport) = makeClient { _ in jsonHTTP(#"{"cleared":1}"#) }
         for id in ["", ".", ".."] {
             do {
-                _ = try await client.mark_attention_seen(AttentionSeenRequest(store_instance_id: "s", session_id: id, attention_seq: 1))
+                _ = try await client.markAttentionSeen(AttentionSeenRequest(storeInstanceID: "s", sessionID: id, attentionSeq: 1))
                 XCTFail("Ambiguous session segment accepted")
             } catch let error as HubAPIError { XCTAssertEqual(error.status, 0) }
         }
@@ -1313,17 +1313,17 @@ extension DirectNodeClientTests {
             let gate = DirectCredentialGate()
             let reading = expectation(description: "direct credential read suspended")
             let transport = DirectMockTransport { request in jsonHTTP(emptyStatusJSON, url: request.url!) }
-            let client = DirectNodeClient(base_url: URL(string: "https://node.example/direct/")!, cookie_source: {
+            let client = DirectNodeClient(baseURL: URL(string: "https://node.example/direct/")!, cookieSource: {
                 reading.fulfill()
                 await gate.wait()
                 return []
-            }, bearer_source: { "fixture-token" }, transport: transport)
+            }, bearerSource: { "fixture-token" }, transport: transport)
             let request = Task {
-                if health { _ = try await client.node_health() }
-                else { _ = try await client.sessions_status() }
+                if health { _ = try await client.nodeHealth() }
+                else { _ = try await client.sessionsStatus() }
             }
             await fulfillment(of: [reading], timeout: 2)
-            client.on_unauthorized = {}
+            client.onUnauthorized = {}
             await gate.release()
             do { try await request.value; XCTFail("Old direct request must not dispatch") }
             catch { XCTAssertTrue(error is CancellationError) }

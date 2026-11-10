@@ -220,7 +220,7 @@ final class HubConnectionSecurityTests: XCTestCase {
     func testDirectAlreadyAdmittedCallbackCannotRevokeNewSourceEpoch() async throws {
         let source = HubSourceWorkspace(connection: connection("/direct/"), bearerStorage: HubMemoryBearerStorage(), dataStore: .nonPersistent())
         defer { source.dispose(removeCredentials: true) }
-        let admitted = source.directClient?.on_unauthorized
+        let admitted = source.directClient?.onUnauthorized
         let old = source.authEpoch
         let prepared = await source.prepareAuthentication()
         let current = try XCTUnwrap(prepared)

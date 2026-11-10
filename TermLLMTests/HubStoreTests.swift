@@ -33,11 +33,11 @@ final class MockHubClient: HubServing, @unchecked Sendable {
 
     // ── Stubs (async throws closures called from @MainActor) ────
     var nodesResponse: @MainActor () async throws -> NodesResponse = {
-        NodesResponse(nodes: [], resolver_error: nil)
+        NodesResponse(nodes: [], resolverError: nil)
     }
     var attentionResponse: @MainActor () async throws -> AttentionResponse = {
-        AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                          nodes: [], input_required: [], inbox: [], has_more: false)
+        AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                          nodes: [], inputRequired: [], inbox: [], hasMore: false)
     }
     var delegationsResponse: @MainActor () async throws -> DelegationsResponse = {
         DelegationsResponse(delegations: [])
@@ -50,7 +50,7 @@ final class MockHubClient: HubServing, @unchecked Sendable {
     }
     var testNodeResponse: @MainActor () async throws -> TestNodeResponse = {
         TestNodeResponse(status: HubNodeStatus(
-            reachable: true, state: "ok", latency_ms: 42, version: "1.0",
+            reachable: true, state: "ok", latencyMs: 42, version: "1.0",
             agent: "test", capabilities: nil, details: nil, error: nil))
     }
     var addNodeResponse: @MainActor () async throws -> AddNodeResponse = {
@@ -60,22 +60,22 @@ final class MockHubClient: HubServing, @unchecked Sendable {
         RemovedNodeResponse(removed: "node-1")
     }
     var reorderNodesResponse: @MainActor () async throws -> NodeOrderResponse = {
-        NodeOrderResponse(node_ids: [])
+        NodeOrderResponse(nodeIDs: [])
     }
     var registrationInfoResponse: @MainActor () async throws -> RegistrationInfoResponse = {
-        RegistrationInfoResponse(enabled: true, token_configured: true,
-                                 can_persist_nodes: true, registration_token: "tok-123")
+        RegistrationInfoResponse(enabled: true, tokenConfigured: true,
+                                 canPersistNodes: true, registrationToken: "tok-123")
     }
     var listCredentialsResponse: @MainActor () async throws -> CredentialsResponse = {
         CredentialsResponse(credentials: [])
     }
     var sessionResponse: @MainActor () async throws -> HubSessionResponse = {
         HubSessionResponse(administrator: "admin", session: [:],
-                           recently_authenticated: true, active_sessions: 2)
+                           recentlyAuthenticated: true, activeSessions: 2)
     }
     var renameCredentialResponse: @MainActor () async throws -> HubCredential = {
-        HubCredential(record_id: "r1", display_name: "Renamed",
-                      transports: nil, created_at: "2024-01-01", last_used_at: "2024-01-01")
+        HubCredential(recordID: "r1", displayName: "Renamed",
+                      transports: nil, createdAt: "2024-01-01", lastUsedAt: "2024-01-01")
     }
     var removeCredentialResponse: @MainActor () async throws -> OkResponse = { OkResponse(ok: true) }
     var revokeSessionsResponse: @MainActor () async throws -> RevokeSessionsResponse = {
@@ -87,54 +87,54 @@ final class MockHubClient: HubServing, @unchecked Sendable {
 
     // ── Protocol conformance ────────────────────────────────────
 
-    func list_nodes() async throws -> NodesResponse {
+    func listNodes() async throws -> NodesResponse {
         listNodesCalls += 1
         return try await nodesResponse()
     }
-    func list_attention(limit: Int?) async throws -> AttentionResponse {
+    func listAttention(limit: Int?) async throws -> AttentionResponse {
         listAttentionCalls += 1
         listAttentionLimits.append(limit)
         return try await attentionResponse()
     }
-    func list_delegations() async throws -> DelegationsResponse {
+    func listDelegations() async throws -> DelegationsResponse {
         listDelegationsCalls += 1
         return try await delegationsResponse()
     }
     /// nil = Hub without /api/changes (store falls back to plain polling).
     var changesResponse: (@MainActor (UInt64?) async throws -> HubChangesResponse)?
-    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+    func waitForChanges(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
         guard let changesResponse else { throw HubChangesUnsupported() }
         return try await changesResponse(since)
     }
-    func clear_attention() async throws -> ClearAttentionResponse {
+    func clearAttention() async throws -> ClearAttentionResponse {
         clearAttentionCalls += 1
         return try await clearAttentionResponse()
     }
-    func mark_attention_seen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
+    func markAttentionSeen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
         markSeenCalls.append(item)
         return try await markSeenResponse()
     }
-    func test_node(_ form: NodeFormData) async throws -> TestNodeResponse {
+    func testNode(_ form: NodeFormData) async throws -> TestNodeResponse {
         testNodeCalls.append(form)
         return try await testNodeResponse()
     }
-    func add_node(_ form: NodeFormData) async throws -> AddNodeResponse {
+    func addNode(_ form: NodeFormData) async throws -> AddNodeResponse {
         addNodeCalls.append(form)
         return try await addNodeResponse()
     }
-    func remove_node(id: String) async throws -> RemovedNodeResponse {
+    func removeNode(id: String) async throws -> RemovedNodeResponse {
         removeNodeCalls.append(id)
         return try await removeNodeResponse()
     }
-    func reorder_nodes(node_ids: [String]) async throws -> NodeOrderResponse {
-        reorderNodesCalls.append(node_ids)
+    func reorderNodes(nodeIDs: [String]) async throws -> NodeOrderResponse {
+        reorderNodesCalls.append(nodeIDs)
         return try await reorderNodesResponse()
     }
-    func registration_info() async throws -> RegistrationInfoResponse {
+    func registrationInfo() async throws -> RegistrationInfoResponse {
         registrationInfoCalls += 1
         return try await registrationInfoResponse()
     }
-    func list_credentials() async throws -> CredentialsResponse {
+    func listCredentials() async throws -> CredentialsResponse {
         listCredentialsCalls += 1
         return try await listCredentialsResponse()
     }
@@ -142,15 +142,15 @@ final class MockHubClient: HubServing, @unchecked Sendable {
         sessionCalls += 1
         return try await sessionResponse()
     }
-    func rename_credential(record_id: String, display_name: String) async throws -> HubCredential {
-        renameCredentialCalls.append((record_id, display_name))
+    func renameCredential(recordID: String, displayName: String) async throws -> HubCredential {
+        renameCredentialCalls.append((recordID, displayName))
         return try await renameCredentialResponse()
     }
-    func remove_credential(record_id: String) async throws -> OkResponse {
-        removeCredentialCalls.append(record_id)
+    func removeCredential(recordID: String) async throws -> OkResponse {
+        removeCredentialCalls.append(recordID)
         return try await removeCredentialResponse()
     }
-    func revoke_other_sessions() async throws -> RevokeSessionsResponse {
+    func revokeOtherSessions() async throws -> RevokeSessionsResponse {
         revokeSessionsCalls += 1
         return try await revokeSessionsResponse()
     }
@@ -161,21 +161,21 @@ final class MockHubClient: HubServing, @unchecked Sendable {
 
     // ── Ceremony / grant stubs (not exercised by HubStore) ──────
 
-    func begin_login(return_path: String) async throws -> Data { Data() }
-    func finish_login(credential: Data) async throws -> RedirectResponse { RedirectResponse(ok: true, redirect: "/") }
-    func begin_reauthentication() async throws -> Data { Data() }
-    func finish_reauthentication(credential: Data) async throws -> OkResponse { OkResponse(ok: true) }
-    func begin_additional_registration(display_name: String) async throws -> Data { Data() }
-    func finish_additional_registration(credential: Data) async throws -> HubCredential {
-        HubCredential(record_id: "new", display_name: "New Key",
-                      transports: nil, created_at: "2024-01-01", last_used_at: "2024-01-01")
+    func beginLogin(returnPath: String) async throws -> Data { Data() }
+    func finishLogin(credential: Data) async throws -> RedirectResponse { RedirectResponse(ok: true, redirect: "/") }
+    func beginReauthentication() async throws -> Data { Data() }
+    func finishReauthentication(credential: Data) async throws -> OkResponse { OkResponse(ok: true) }
+    func beginAdditionalRegistration(displayName: String) async throws -> Data { Data() }
+    func finishAdditionalRegistration(credential: Data) async throws -> HubCredential {
+        HubCredential(recordID: "new", displayName: "New Key",
+                      transports: nil, createdAt: "2024-01-01", lastUsedAt: "2024-01-01")
     }
-    func verify_grant(prefix: GrantPrefix, code: String) async throws -> OkResponse { OkResponse(ok: true) }
-    func begin_grant_registration(prefix: GrantPrefix, display_name: String) async throws -> Data { Data() }
-    func finish_grant_registration(prefix: GrantPrefix, credential: Data, return_path: String) async throws -> RedirectResponse {
+    func verifyGrant(prefix: GrantPrefix, code: String) async throws -> OkResponse { OkResponse(ok: true) }
+    func beginGrantRegistration(prefix: GrantPrefix, displayName: String) async throws -> Data { Data() }
+    func finishGrantRegistration(prefix: GrantPrefix, credential: Data, returnPath: String) async throws -> RedirectResponse {
         RedirectResponse(ok: true, redirect: "/")
     }
-    func authorize_native(challenge: String) async throws -> RedirectResponse { RedirectResponse(ok: true, redirect: "/") }
+    func authorizeNative(challenge: String) async throws -> RedirectResponse { RedirectResponse(ok: true, redirect: "/") }
     func healthz() async throws -> HealthResponse { HealthResponse(status: "ok") }
 }
 
@@ -184,47 +184,47 @@ final class MockHubClient: HubServing, @unchecked Sendable {
 private func makeNode(id: String = "node-1", name: String = "Test Node", activeSessions: Int = 1) -> HubNode {
     HubNode(
         id: id, name: name, source: "manual", connection: "direct",
-        url: "https://example.com", base_path: "/", proxy_path: "/proxy/\(id)",
-        new_session_path: "/new", has_token: true,
-        status: HubNodeStatus(reachable: true, state: "ok", latency_ms: 10, version: "1.0",
+        url: "https://example.com", basePath: "/", proxyPath: "/proxy/\(id)",
+        newSessionPath: "/new", hasToken: true,
+        status: HubNodeStatus(reachable: true, state: "ok", latencyMs: 10, version: "1.0",
                                agent: "test", capabilities: nil, details: nil, error: nil),
         sessions: HubNodeSessions(
-            count_label: "\(activeSessions)", has_more: false, active_count: activeSessions,
-            input_required_count: 0, unseen_count: 0, attention_capability: nil,
-            attention_last_success_at: nil, active: [], recent: [], resume_path: nil),
+            countLabel: "\(activeSessions)", hasMore: false, activeCount: activeSessions,
+            inputRequiredCount: 0, unseenCount: 0, attentionCapability: nil,
+            attentionLastSuccessAt: nil, active: [], recent: [], resumePath: nil),
         diagnostics: nil)
 }
 
 private func makeAttentionNode(nodeID: String = "node-1") -> HubAttentionNode {
-    HubAttentionNode(node_id: nodeID, node_name: "Test Node", capability_state: "ok",
-                     stale: false, last_success_at: "2024-01-01", last_error: nil,
-                     running_count: 1, input_required_count: 0, unseen_count: 0,
-                     has_green_indicator: true)
+    HubAttentionNode(nodeID: nodeID, nodeName: "Test Node", capabilityState: "ok",
+                     stale: false, lastSuccessAt: "2024-01-01", lastError: nil,
+                     runningCount: 1, inputRequiredCount: 0, unseenCount: 0,
+                     hasGreenIndicator: true)
 }
 
 private func makeInboxItem(nodeID: String = "node-1", sessionID: String = "sess-1",
                            storeInstanceID: String? = "store-1", seq: Int = 1,
                            title: String = "Done") -> HubAttentionInboxItem {
-    HubAttentionInboxItem(node_id: nodeID, node_name: "Test Node", session_id: sessionID,
-                          store_instance_id: storeInstanceID, session_number: 1, title: title,
-                          outcome: "completed", terminal_at: "2024-01-01T00:00:00Z",
-                          attention_seq: seq, resume_path: "/resume")
+    HubAttentionInboxItem(nodeID: nodeID, nodeName: "Test Node", sessionID: sessionID,
+                          storeInstanceID: storeInstanceID, sessionNumber: 1, title: title,
+                          outcome: "completed", terminalAt: "2024-01-01T00:00:00Z",
+                          attentionSeq: seq, resumePath: "/resume")
 }
 
 private func makeInputRequired(nodeID: String = "node-1", sessionID: String = "sess-1") -> HubInputRequiredItem {
-    HubInputRequiredItem(node_id: nodeID, node_name: "Test Node", session_id: sessionID,
-                         session_number: 1, title: "Waiting", pending_interaction_count: 1,
-                         pending_interaction_kinds: ["approval"],
-                         required_since: "2024-01-01T00:00:00Z", resume_path: "/resume", stale: nil)
+    HubInputRequiredItem(nodeID: nodeID, nodeName: "Test Node", sessionID: sessionID,
+                         sessionNumber: 1, title: "Waiting", pendingInteractionCount: 1,
+                         pendingInteractionKinds: ["approval"],
+                         requiredSince: "2024-01-01T00:00:00Z", resumePath: "/resume", stale: nil)
 }
 
 private func makeDelegation(id: String = "del-1", origin: String = "node-1",
                             target: String = "node-2", status: String = "running") -> HubDelegation {
-    HubDelegation(id: id, origin_node: origin, target_node: target,
-                  agent_name: "agent", prompt: "do stuff", model: nil, cwd: nil,
-                  job_id: nil, run_id: nil, status: status, depth: 0, chain: nil,
-                  parent_delegation_id: nil, response: nil, error: nil,
-                  created_at: "2024-01-01", updated_at: "2024-01-01")
+    HubDelegation(id: id, originNode: origin, targetNode: target,
+                  agentName: "agent", prompt: "do stuff", model: nil, cwd: nil,
+                  jobID: nil, runID: nil, status: status, depth: 0, chain: nil,
+                  parentDelegationID: nil, response: nil, error: nil,
+                  createdAt: "2024-01-01", updatedAt: "2024-01-01")
 }
 
 private func authError(_ status: Int = 401) -> HubAPIError {
@@ -273,11 +273,11 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testIdenticalRefreshDoesNotRepublishCollections() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         client.attentionResponse = {
-            AttentionResponse(total_running: 1, total_input_required: 1, total_unseen: 1,
-                              nodes: [makeAttentionNode()], input_required: [makeInputRequired()],
-                              inbox: [makeInboxItem()], has_more: false)
+            AttentionResponse(totalRunning: 1, totalInputRequired: 1, totalUnseen: 1,
+                              nodes: [makeAttentionNode()], inputRequired: [makeInputRequired()],
+                              inbox: [makeInboxItem()], hasMore: false)
         }
         client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
         await store.refresh()
@@ -296,18 +296,18 @@ final class HubStoreTests: XCTestCase {
 
     func testNodeDeltasPreserveIDsAndAcceptEditsAddsRemovalsAndServerOrder() async {
         let a = makeNode(id: "a"), b = makeNode(id: "b")
-        client.nodesResponse = { NodesResponse(nodes: [a, b], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [a, b], resolverError: nil) }
         await store.refresh()
         var publications = 0
         let observation = store.$nodes.dropFirst().sink { _ in publications += 1 }
         let renamed = makeNode(id: "a", name: "Updated")
-        client.nodesResponse = { NodesResponse(nodes: [renamed, b], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [renamed, b], resolverError: nil) }
         await store.refresh()
         XCTAssertEqual(store.nodes.map(\.id), ["a", "b"])
         XCTAssertEqual(store.nodes.first?.name, "Updated")
         XCTAssertEqual(publications, 1)
         let c = makeNode(id: "c")
-        client.nodesResponse = { NodesResponse(nodes: [c, renamed], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [c, renamed], resolverError: nil) }
         await store.refresh()
         XCTAssertEqual(store.nodes.map(\.id), ["c", "a"])
         XCTAssertEqual(publications, 2)
@@ -319,12 +319,12 @@ final class HubStoreTests: XCTestCase {
     // MARK: - Refresh populates all sections
 
     func testRefreshPopulatesAllSections() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         client.attentionResponse = {
-            AttentionResponse(total_running: 1, total_input_required: 2, total_unseen: 3,
+            AttentionResponse(totalRunning: 1, totalInputRequired: 2, totalUnseen: 3,
                               nodes: [makeAttentionNode()],
-                              input_required: [makeInputRequired()],
-                              inbox: [makeInboxItem()], has_more: true)
+                              inputRequired: [makeInputRequired()],
+                              inbox: [makeInboxItem()], hasMore: true)
         }
         client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
 
@@ -348,8 +348,8 @@ final class HubStoreTests: XCTestCase {
     func testNodeErrorDoesNotBlockAttention() async {
         client.nodesResponse = { throw serverError("nodes down") }
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                              nodes: [], input_required: [], inbox: [makeInboxItem()], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [makeInboxItem()], hasMore: false)
         }
         client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
         await store.refresh()
@@ -360,7 +360,7 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testAttentionErrorDoesNotBlockNodes() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         client.attentionResponse = { throw serverError("attention down") }
         await store.refresh()
         XCTAssertTrue(store.nodesVerified)
@@ -371,12 +371,12 @@ final class HubStoreTests: XCTestCase {
     // MARK: - Auth purge
 
     func testAuthPurgeClearsAllPrivateState() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         client.attentionResponse = {
-            AttentionResponse(total_running: 1, total_input_required: 1, total_unseen: 1,
+            AttentionResponse(totalRunning: 1, totalInputRequired: 1, totalUnseen: 1,
                               nodes: [makeAttentionNode()],
-                              input_required: [makeInputRequired()],
-                              inbox: [makeInboxItem()], has_more: false)
+                              inputRequired: [makeInputRequired()],
+                              inbox: [makeInboxItem()], hasMore: false)
         }
         client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
         await store.refresh()
@@ -394,7 +394,7 @@ final class HubStoreTests: XCTestCase {
     }
 
     func test403AlsoPurges() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         await store.refresh()
         client.attentionResponse = { throw authError(403) }
         await store.refresh()
@@ -423,7 +423,7 @@ final class HubStoreTests: XCTestCase {
         await store.refresh()
         XCTAssertTrue(store.unauthorized)
 
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         await store.resumeAfterAuthentication()
         XCTAssertFalse(store.unauthorized)
         // start() fires panel tasks; let them settle.
@@ -435,7 +435,7 @@ final class HubStoreTests: XCTestCase {
         client.removeCredentialResponse = { throw authError(403) }
         await store.removeCredential(recordID: "r1")
         XCTAssertTrue(store.recentAuthRequired)
-        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [], resolverError: nil) }
         await store.resumeAfterAuthentication()
         XCTAssertFalse(store.recentAuthRequired)
     }
@@ -444,7 +444,7 @@ final class HubStoreTests: XCTestCase {
 
     func testMutationSurvivesPollCycle() async {
         // A poll launching new panel tasks must not invalidate an in-flight mutation.
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         await store.refresh()
 
         // Simulate a slow clear that outlasts a poll.
@@ -455,8 +455,8 @@ final class HubStoreTests: XCTestCase {
             return ClearAttentionResponse(cleared: 1, failed: 0)
         }
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                              nodes: [], input_required: [], inbox: [], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: false)
         }
 
         await store.clearAttention()
@@ -480,7 +480,7 @@ final class HubStoreTests: XCTestCase {
     func testDelayedLogoutAfterReauthDoesNotPurgeNewSession() async {
         // Scenario: signOut starts (slow logout), user reauths quickly on
         // another path, old logout response arrives — must NOT purge new session.
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         await store.refresh()
 
         // Slow logout that completes after reauth.
@@ -494,7 +494,7 @@ final class HubStoreTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         // User reauths — this advances epoch.
-        client.nodesResponse = { NodesResponse(nodes: [makeNode(id: "fresh")], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode(id: "fresh")], resolverError: nil) }
         await store.resumeAfterAuthentication()
         // Let the new session populate.
         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -513,7 +513,7 @@ final class HubStoreTests: XCTestCase {
         // (via gate) so it's still .testing when OLD completes. Old defer
         // must NOT reset .idle — it's a different epoch.
         let okStatus = HubNodeStatus(
-            reachable: true, state: "ok", latency_ms: 1, version: "1",
+            reachable: true, state: "ok", latencyMs: 1, version: "1",
             agent: "a", capabilities: nil, details: nil, error: nil)
 
         // Gate: new testNode blocks here until we release it.
@@ -532,7 +532,7 @@ final class HubStoreTests: XCTestCase {
 
         // Purge + reauth (advances epoch, resets nodeOperation).
         store.purgeOnUnauthorized()
-        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [], resolverError: nil) }
         await store.resumeAfterAuthentication()
         try? await Task.sleep(nanoseconds: 50_000_000)
 
@@ -566,7 +566,7 @@ final class HubStoreTests: XCTestCase {
         client.testNodeResponse = {
             try? await Task.sleep(nanoseconds: 300_000_000)
             return TestNodeResponse(status: HubNodeStatus(
-                reachable: true, state: "ok", latency_ms: 1, version: "1",
+                reachable: true, state: "ok", latencyMs: 1, version: "1",
                 agent: "a", capabilities: nil, details: nil, error: nil))
         }
 
@@ -577,7 +577,7 @@ final class HubStoreTests: XCTestCase {
         XCTAssertEqual(store.nodeOperation, .testing)
 
         // Resume (no prior purge) — resets all busy flags.
-        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [], resolverError: nil) }
         await store.resumeAfterAuthentication()
         XCTAssertEqual(store.nodeOperation, .idle,
                        "resume must reset nodeOperation so new ops can start")
@@ -588,7 +588,7 @@ final class HubStoreTests: XCTestCase {
         // New operation must be able to start.
         client.testNodeResponse = {
             TestNodeResponse(status: HubNodeStatus(
-                reachable: true, state: "ok", latency_ms: 1, version: "1",
+                reachable: true, state: "ok", latencyMs: 1, version: "1",
                 agent: "a", capabilities: nil, details: nil, error: nil))
         }
         await store.testNode(NodeFormData(name: "New", url: "https://new.test", token: "t"))
@@ -610,7 +610,7 @@ final class HubStoreTests: XCTestCase {
     func testAuthEpochAdvancesOnResume() async {
         store.purgeOnUnauthorized()
         let afterPurge = store.authEpoch
-        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [], resolverError: nil) }
         await store.resumeAfterAuthentication()
         XCTAssertGreaterThan(store.authEpoch, afterPurge)
     }
@@ -624,8 +624,8 @@ final class HubStoreTests: XCTestCase {
 
     func testLoadMoreDoublesLimitAndSendsIt() async {
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 50,
-                              nodes: [], input_required: [], inbox: [], has_more: true)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 50,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: true)
         }
         await store.refresh()
         XCTAssertEqual(client.listAttentionLimits.last, 20)
@@ -637,8 +637,8 @@ final class HubStoreTests: XCTestCase {
 
     func testLoadMoreClampsAtMax() async {
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                              nodes: [], input_required: [], inbox: [], has_more: true)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: true)
         }
         for _ in 0..<20 {
             await store.refresh()
@@ -654,11 +654,11 @@ final class HubStoreTests: XCTestCase {
         // All three should complete; nodes being slow doesn't block the others.
         client.nodesResponse = {
             try? await Task.sleep(nanoseconds: 200_000_000)
-            return NodesResponse(nodes: [makeNode()], resolver_error: nil)
+            return NodesResponse(nodes: [makeNode()], resolverError: nil)
         }
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 1,
-                              nodes: [], input_required: [], inbox: [makeInboxItem()], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 1,
+                              nodes: [], inputRequired: [], inbox: [makeInboxItem()], hasMore: false)
         }
         client.delegationsResponse = { DelegationsResponse(delegations: [makeDelegation()]) }
 
@@ -684,8 +684,8 @@ final class HubStoreTests: XCTestCase {
         }
         client.attentionResponse = {
             if self.client.listAttentionCalls == 2, !released { released = true; refreshed.fulfill() }
-            return AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                                     nodes: [], input_required: [], inbox: [], has_more: false)
+            return AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                                     nodes: [], inputRequired: [], inbox: [], hasMore: false)
         }
         store.start()
         defer { store.dispose() }
@@ -756,7 +756,7 @@ final class HubStoreTests: XCTestCase {
             // Hold every request until cleanup: elapsed wall time must never
             // accidentally finish the initial request and permit a valid poll.
             await withCheckedContinuation { releases.append($0) }
-            return NodesResponse(nodes: [makeNode()], resolver_error: nil)
+            return NodesResponse(nodes: [makeNode()], resolverError: nil)
         }
         store = HubStore(client: client, pollInterval: 0.05)
         defer {
@@ -782,10 +782,10 @@ final class HubStoreTests: XCTestCase {
             if callCount == 1 {
                 // Slow first call — delays, then returns stale data.
                 try? await Task.sleep(nanoseconds: 300_000_000)
-                return NodesResponse(nodes: [makeNode(id: "stale")], resolver_error: nil)
+                return NodesResponse(nodes: [makeNode(id: "stale")], resolverError: nil)
             } else {
                 // Fast second call — returns fresh data immediately.
-                return NodesResponse(nodes: [makeNode(id: "fresh")], resolver_error: nil)
+                return NodesResponse(nodes: [makeNode(id: "fresh")], resolverError: nil)
             }
         }
 
@@ -809,11 +809,11 @@ final class HubStoreTests: XCTestCase {
             callCount += 1
             if callCount == 1 {
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                return NodesResponse(nodes: [makeNode(id: "old")], resolver_error: nil)
+                return NodesResponse(nodes: [makeNode(id: "old")], resolverError: nil)
             } else {
                 // Second call also takes time — we check state while it's running.
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                return NodesResponse(nodes: [makeNode(id: "new")], resolver_error: nil)
+                return NodesResponse(nodes: [makeNode(id: "new")], resolverError: nil)
             }
         }
 
@@ -837,15 +837,15 @@ final class HubStoreTests: XCTestCase {
 
     func testClearAttentionSuccess() async {
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 1,
-                              nodes: [], input_required: [], inbox: [makeInboxItem()], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 1,
+                              nodes: [], inputRequired: [], inbox: [makeInboxItem()], hasMore: false)
         }
         await store.refresh()
 
         client.clearAttentionResponse = { ClearAttentionResponse(cleared: 1, failed: 0) }
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                              nodes: [], input_required: [], inbox: [], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: false)
         }
         await store.clearAttention()
         XCTAssertFalse(store.clearingAttention)
@@ -854,10 +854,10 @@ final class HubStoreTests: XCTestCase {
 
     func testClearAttentionPartialFailure() async {
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 2,
-                              nodes: [], input_required: [],
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 2,
+                              nodes: [], inputRequired: [],
                               inbox: [makeInboxItem(), makeInboxItem(sessionID: "s2", seq: 2)],
-                              has_more: false)
+                              hasMore: false)
         }
         await store.refresh()
         client.clearAttentionResponse = { ClearAttentionResponse(cleared: 1, failed: 1) }
@@ -875,13 +875,13 @@ final class HubStoreTests: XCTestCase {
     func testMarkSeenSuccess() async {
         let item = makeInboxItem()
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 1,
-                              nodes: [], input_required: [], inbox: [item], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 1,
+                              nodes: [], inputRequired: [], inbox: [item], hasMore: false)
         }
         await store.refresh()
         client.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 0,
-                              nodes: [], input_required: [], inbox: [], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: false)
         }
         await store.markInboxItemSeen(item)
         XCTAssertEqual(client.markSeenCalls.count, 1)
@@ -914,7 +914,7 @@ final class HubStoreTests: XCTestCase {
     func testTestNodeUnreachable() async {
         client.testNodeResponse = {
             TestNodeResponse(status: HubNodeStatus(
-                reachable: false, state: "unreachable", latency_ms: 0, version: nil,
+                reachable: false, state: "unreachable", latencyMs: 0, version: nil,
                 agent: nil, capabilities: nil, details: nil, error: "connection refused"))
         }
         await store.testNode(NodeFormData(name: "Bad", url: "https://bad.test", token: "t"))
@@ -922,7 +922,7 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testAddNodeClean() async {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         let clean = await store.addNode(NodeFormData(name: "New", url: "https://new.test", token: "t"))
         XCTAssertTrue(clean)
         XCTAssertEqual(store.nodeOperation, .idle)
@@ -930,14 +930,14 @@ final class HubStoreTests: XCTestCase {
 
     func testAddNodeWithWarning() async {
         client.addNodeResponse = { AddNodeResponse(id: "new-1", warning: "duplicate") }
-        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
         let clean = await store.addNode(NodeFormData(name: "D", url: "https://d.test", token: "t"))
         XCTAssertFalse(clean)
         XCTAssertTrue(store.nodeOperationResult!.contains("warning"))
     }
 
     func testRemoveNodeSuccess() async {
-        client.nodesResponse = { NodesResponse(nodes: [], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [], resolverError: nil) }
         await store.removeNode(id: "node-1")
         XCTAssertEqual(client.removeNodeCalls, ["node-1"])
         XCTAssertEqual(store.nodeOperation, .idle)
@@ -955,7 +955,7 @@ final class HubStoreTests: XCTestCase {
     func testReorderAppliesOptimisticallyAndSaves() async throws {
         client.nodesResponse = {
             NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b"), makeNode(id: "c")],
-                          resolver_error: nil)
+                          resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["c", "a", "b"])
@@ -964,7 +964,7 @@ final class HubStoreTests: XCTestCase {
     }
 
     func testReorderEmptyNoop() async throws {
-        client.nodesResponse = { NodesResponse(nodes: [makeNode(id: "a")], resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: [makeNode(id: "a")], resolverError: nil) }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: [])
         XCTAssertEqual(client.reorderNodesCalls.count, 0)
@@ -972,7 +972,7 @@ final class HubStoreTests: XCTestCase {
 
     func testReorderUnchangedNoop() async throws {
         client.nodesResponse = {
-            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolver_error: nil)
+            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["a", "b"])
@@ -981,7 +981,7 @@ final class HubStoreTests: XCTestCase {
 
     func testReorderDuplicateIDsRejected() async throws {
         client.nodesResponse = {
-            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolver_error: nil)
+            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["a", "a"])
@@ -990,7 +990,7 @@ final class HubStoreTests: XCTestCase {
 
     func testReorderMismatchedSetRejected() async throws {
         client.nodesResponse = {
-            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolver_error: nil)
+            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["a", "c"])
@@ -999,7 +999,7 @@ final class HubStoreTests: XCTestCase {
 
     func testReorderSendsMinimalDiff() async throws {
         client.nodesResponse = {
-            NodesResponse(nodes: ["a", "b", "c", "d"].map { makeNode(id: $0) }, resolver_error: nil)
+            NodesResponse(nodes: ["a", "b", "c", "d"].map { makeNode(id: $0) }, resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["a", "c", "b", "d"])
@@ -1008,7 +1008,7 @@ final class HubStoreTests: XCTestCase {
 
     func testReorder404ThrowsChangedElsewhere() async throws {
         client.nodesResponse = {
-            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolver_error: nil)
+            NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b")], resolverError: nil)
         }
         await store.refresh()
         client.reorderNodesResponse = { throw HubAPIError(status: 404, message: "not found", type: "") }
@@ -1023,7 +1023,7 @@ final class HubStoreTests: XCTestCase {
     func testReorderSerialized() async throws {
         client.nodesResponse = {
             NodesResponse(nodes: [makeNode(id: "a"), makeNode(id: "b"), makeNode(id: "c")],
-                          resolver_error: nil)
+                          resolverError: nil)
         }
         await store.refresh()
         try await store.reorderNodes(orderedIDs: ["c", "b", "a"])
@@ -1036,7 +1036,7 @@ final class HubStoreTests: XCTestCase {
         // NOT preserve the failed optimistic [c, b, a].
         let serverOrder = ["a", "b", "c"]
         client.nodesResponse = {
-            NodesResponse(nodes: serverOrder.map { makeNode(id: $0) }, resolver_error: nil)
+            NodesResponse(nodes: serverOrder.map { makeNode(id: $0) }, resolverError: nil)
         }
         await store.refresh()
         XCTAssertEqual(store.nodes.map(\.id), ["a", "b", "c"])
@@ -1062,8 +1062,8 @@ final class HubStoreTests: XCTestCase {
     func testLoadRegistrationInfo() async {
         await store.loadRegistrationInfo()
         XCTAssertEqual(store.registrationInfo?.enabled, true)
-        XCTAssertEqual(store.registrationInfo?.token_configured, true)
-        XCTAssertEqual(store.registrationInfo?.can_persist_nodes, true)
+        XCTAssertEqual(store.registrationInfo?.tokenConfigured, true)
+        XCTAssertEqual(store.registrationInfo?.canPersistNodes, true)
         XCTAssertFalse(store.registrationLoading)
     }
 
@@ -1082,12 +1082,12 @@ final class HubStoreTests: XCTestCase {
             if callCount == 1 {
                 // Old load — slow, returns stale info.
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                return RegistrationInfoResponse(enabled: false, token_configured: nil,
-                                                can_persist_nodes: nil, registration_token: nil)
+                return RegistrationInfoResponse(enabled: false, tokenConfigured: nil,
+                                                canPersistNodes: nil, registrationToken: nil)
             } else {
                 // New load — fast, returns fresh info.
-                return RegistrationInfoResponse(enabled: true, token_configured: true,
-                                                can_persist_nodes: true, registration_token: "fresh")
+                return RegistrationInfoResponse(enabled: true, tokenConfigured: true,
+                                                canPersistNodes: true, registrationToken: "fresh")
             }
         }
 
@@ -1100,12 +1100,12 @@ final class HubStoreTests: XCTestCase {
         await store.loadRegistrationInfo()
 
         // New load completed with fresh data.
-        XCTAssertEqual(store.registrationInfo?.registration_token, "fresh")
+        XCTAssertEqual(store.registrationInfo?.registrationToken, "fresh")
         XCTAssertFalse(store.registrationLoading)
 
         // Old load finishes — must not overwrite.
         await oldLoad.value
-        XCTAssertEqual(store.registrationInfo?.registration_token, "fresh",
+        XCTAssertEqual(store.registrationInfo?.registrationToken, "fresh",
                        "Old load must not overwrite new registration info")
         XCTAssertFalse(store.registrationLoading,
                        "Old defer must not stomp new registrationLoading")
@@ -1114,7 +1114,7 @@ final class HubStoreTests: XCTestCase {
     // MARK: - Security / session
 
     func testAttentionLoadMoreStopsAtMaximumWithExplicitState() async {
-        client.attentionResponse = { AttentionResponse(total_running: 0, total_input_required: 0, total_unseen: 600, nodes: [], input_required: [], inbox: [], has_more: true) }
+        client.attentionResponse = { AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 600, nodes: [], inputRequired: [], inbox: [], hasMore: true) }
         await store.refresh()
         for _ in 0..<6 { await store.loadMoreAttention() }
         XCTAssertEqual(store.attentionLimit, 500)
@@ -1128,13 +1128,13 @@ final class HubStoreTests: XCTestCase {
     func testLoadSecurity() async {
         client.listCredentialsResponse = {
             CredentialsResponse(credentials: [
-                HubCredential(record_id: "r1", display_name: "Key 1", transports: ["usb"],
-                              created_at: "2024-01-01", last_used_at: "2024-06-01")
+                HubCredential(recordID: "r1", displayName: "Key 1", transports: ["usb"],
+                              createdAt: "2024-01-01", lastUsedAt: "2024-06-01")
             ])
         }
         client.sessionResponse = {
             HubSessionResponse(administrator: "admin", session: [:],
-                                recently_authenticated: true, active_sessions: 3)
+                                recentlyAuthenticated: true, activeSessions: 3)
         }
         await store.loadSecurity()
         XCTAssertEqual(store.credentials.count, 1)
@@ -1153,7 +1153,7 @@ final class HubStoreTests: XCTestCase {
         store.setAuthMode(.none)
         client.sessionResponse = {
             HubSessionResponse(administrator: "admin", session: [:],
-                                recently_authenticated: false, active_sessions: 0)
+                                recentlyAuthenticated: false, activeSessions: 0)
         }
         await store.loadSecurity()
         XCTAssertEqual(client.listCredentialsCalls, 0)
@@ -1234,7 +1234,7 @@ final class HubStoreTests: XCTestCase {
     func testActiveSessionCount() async {
         client.nodesResponse = {
             NodesResponse(nodes: [makeNode(id: "a", activeSessions: 3),
-                                  makeNode(id: "b", activeSessions: 2)], resolver_error: nil)
+                                  makeNode(id: "b", activeSessions: 2)], resolverError: nil)
         }
         await store.refresh()
         XCTAssertEqual(store.activeSessionCount, 5)

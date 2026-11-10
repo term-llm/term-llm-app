@@ -25,7 +25,7 @@ final class HubWorkspace: ObservableObject {
 
     private func installAuthorizationCallback() {
         let epoch = authorizationEpoch
-        client.on_unauthorized = { [weak self] in await self?.revokeAuthorization(epoch: epoch) }
+        client.onUnauthorized = { [weak self] in await self?.revokeAuthorization(epoch: epoch) }
     }
 
     /// Called only after a successful native session/token import. Old request
@@ -47,7 +47,7 @@ final class HubWorkspace: ObservableObject {
     func dispose() {
         isActive = false
         authorizationEpoch &+= 1
-        client.on_unauthorized = nil
+        client.onUnauthorized = nil
         store.dispose()
     }
 }
@@ -106,9 +106,9 @@ struct HubView: View {
         self.onSettings = onSettings
         self.onAuthorizationRevoked = onAuthorizationRevoked
         self.onAuthenticated = onAuthenticated
-        let client = HubClient(base_url: server, cookie_source: {
+        let client = HubClient(baseURL: server, cookieSource: {
             await Self.cookies()
-        }, cookie_sink: { cookies in
+        }, cookieSink: { cookies in
             await Self.saveCookies(cookies)
         })
         _workspace = StateObject(wrappedValue: HubWorkspace(client: client, requiresAuthentication: requiresAuthentication, onAuthorizationRevoked: onAuthorizationRevoked))
@@ -210,7 +210,7 @@ struct HubView: View {
                 TextField("Passkey name", text: $credentialName)
                 Button("Save") {
                     if let credential = renaming {
-                        Task { await store.renameCredential(recordID: credential.record_id, displayName: credentialName) }
+                        Task { await store.renameCredential(recordID: credential.recordID, displayName: credentialName) }
                     }
                     renaming = nil
                 }
@@ -280,14 +280,14 @@ struct HubView: View {
                             Spacer()
                             Text(node.status.state).font(.caption)
                         }
-                        Text("\(node.source) · \(node.connection) · \(node.status.latency_ms) ms")
+                        Text("\(node.source) · \(node.connection) · \(node.status.latencyMs) ms")
                             .font(.caption).foregroundStyle(.secondary)
-                        if let sessions = node.sessions { Text(sessions.count_label).font(.subheadline) }
+                        if let sessions = node.sessions { Text(sessions.countLabel).font(.subheadline) }
                         if let error = node.status.error, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }
                     }
                 }
                 .accessibilityIdentifier("hub.node.\(node.id)")
-                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path, nodeID: node.id) }
+                Button("New conversation", systemImage: "plus.bubble") { open(node.newSessionPath, nodeID: node.id) }
                     .disabled(!node.status.reachable || !store.nodesVerified)
                 ForEach(HubNavigation.nodeSessions(node).prefix(4), id: \.id) { session in
                     sessionButton(session, node: node)
@@ -308,7 +308,7 @@ struct HubView: View {
                 LabeledContent("Status", value: node.status.state)
                 LabeledContent("Source", value: node.source)
                 LabeledContent("Connection", value: node.connection)
-                LabeledContent("Latency", value: "\(node.status.latency_ms) ms")
+                LabeledContent("Latency", value: "\(node.status.latencyMs) ms")
                 if let version = node.status.version { LabeledContent("Version", value: version) }
                 if let agent = node.status.agent { LabeledContent("Agent", value: agent) }
                 Text(node.url).font(.caption).textSelection(.enabled)
@@ -318,10 +318,10 @@ struct HubView: View {
                 }
             }
             Section("Sessions") {
-                Button("New conversation", systemImage: "plus.bubble") { open(node.new_session_path, nodeID: node.id) }
+                Button("New conversation", systemImage: "plus.bubble") { open(node.newSessionPath, nodeID: node.id) }
                     .disabled(!node.status.reachable)
                 ForEach(HubNavigation.nodeSessions(node), id: \.id) { session in sessionButton(session, node: node) }
-                if node.sessions?.has_more == true, let path = node.sessions?.resume_path {
+                if node.sessions?.hasMore == true, let path = node.sessions?.resumePath {
                     Button("All sessions in chat") { open(path, nodeID: node.id) }
                 }
                 if HubNavigation.nodeSessions(node).isEmpty { Text("No recent sessions") }
@@ -332,14 +332,14 @@ struct HubView: View {
     }
 
     private func sessionButton(_ session: HubNodeSession, node: HubNode) -> some View {
-        Button { open(session.resume_path, nodeID: node.id) } label: {
+        Button { open(session.resumePath, nodeID: node.id) } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.short_title.isEmpty ? (session.number.map { "Session \($0)" } ?? session.id) : session.short_title)
+                Text(session.shortTitle.isEmpty ? (session.number.map { "Session \($0)" } ?? session.id) : session.shortTitle)
                 HStack {
                     if session.pinned == true { Image(systemName: "pin.fill") }
-                    if session.interaction_required == true { Text("Needs input") }
-                    else if session.active_run == true { Text("Running") }
-                    if let count = session.message_count { Text("\(count) messages") }
+                    if session.interactionRequired == true { Text("Needs input") }
+                    else if session.activeRun == true { Text("Running") }
+                    if let count = session.messageCount { Text("\(count) messages") }
                 }.font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -363,10 +363,10 @@ struct HubView: View {
         }
         Section("Needs input") {
             ForEach(store.inputRequired, id: \.hubIdentity) { item in
-                Button { open(item.resume_path, nodeID: item.node_id) } label: {
+                Button { open(item.resumePath, nodeID: item.nodeID) } label: {
                     VStack(alignment: .leading) {
-                        Text(item.title.isEmpty ? item.session_id : item.title)
-                        Text("\(item.node_name) · \(item.pending_interaction_count) pending" + (item.stale == true ? " · stale" : ""))
+                        Text(item.title.isEmpty ? item.sessionID : item.title)
+                        Text("\(item.nodeName) · \(item.pendingInteractionCount) pending" + (item.stale == true ? " · stale" : ""))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -376,15 +376,15 @@ struct HubView: View {
         Section("Results to review") {
             ForEach(store.inbox, id: \.hubIdentity) { item in
                 VStack(alignment: .leading, spacing: 8) {
-                    Button { open(item.resume_path, nodeID: item.node_id) } label: {
+                    Button { open(item.resumePath, nodeID: item.nodeID) } label: {
                         VStack(alignment: .leading) {
-                            Text(item.title.isEmpty ? item.session_id : item.title)
-                            Text("\(item.node_name) · \(item.outcome)").font(.caption).foregroundStyle(.secondary)
+                            Text(item.title.isEmpty ? item.sessionID : item.title)
+                            Text("\(item.nodeName) · \(item.outcome)").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     Button("Mark seen") { Task { await store.markInboxItemSeen(item) } }
                         .font(.caption)
-                        .disabled(item.store_instance_id == nil || !store.attentionVerified || store.markingSeen.contains(HubStore.inboxItemKey(item)))
+                        .disabled(item.storeInstanceID == nil || !store.attentionVerified || store.markingSeen.contains(HubStore.inboxItemKey(item)))
                 }
             }
             if store.inbox.isEmpty { Text("No unseen results").foregroundStyle(.secondary) }
@@ -408,19 +408,19 @@ struct HubView: View {
             NavigationLink {
                 List {
                     Section("Route") {
-                        LabeledContent("From", value: work.origin_node)
-                        LabeledContent("To", value: work.target_node)
+                        LabeledContent("From", value: work.originNode)
+                        LabeledContent("To", value: work.targetNode)
                         LabeledContent("Status", value: work.status)
                         LabeledContent("Depth", value: "\(work.depth)")
-                        if let name = work.agent_name { LabeledContent("Agent", value: name) }
+                        if let name = work.agentName { LabeledContent("Agent", value: name) }
                         if let model = work.model { LabeledContent("Model", value: model) }
                         if let cwd = work.cwd { LabeledContent("Directory", value: cwd) }
-                        if let job = work.job_id { LabeledContent("Job", value: job) }
-                        if let run = work.run_id { LabeledContent("Run", value: run) }
-                        if let parent = work.parent_delegation_id { LabeledContent("Parent", value: parent) }
+                        if let job = work.jobID { LabeledContent("Job", value: job) }
+                        if let run = work.runID { LabeledContent("Run", value: run) }
+                        if let parent = work.parentDelegationID { LabeledContent("Parent", value: parent) }
                         if let chain = work.chain { Text(chain.joined(separator: " → ")) }
-                        LabeledContent("Created", value: work.created_at)
-                        LabeledContent("Updated", value: work.updated_at)
+                        LabeledContent("Created", value: work.createdAt)
+                        LabeledContent("Updated", value: work.updatedAt)
                     }
                     if let prompt = work.prompt { Section("Prompt") { Text(prompt).textSelection(.enabled) } }
                     if let response = work.response { Section("Response") { Text(verbatim: response).textSelection(.enabled) } }
@@ -428,10 +428,10 @@ struct HubView: View {
                 }.navigationTitle("Delegation")
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(work.origin_node) → \(work.target_node)").font(.headline)
+                    Text("\(work.originNode) → \(work.targetNode)").font(.headline)
                     Text(work.status).font(.caption).foregroundStyle(.secondary)
                     if let prompt = work.prompt { Text(prompt).lineLimit(3) }
-                    if let job = work.job_id { Text("Job \(job)").font(.caption) }
+                    if let job = work.jobID { Text("Job \(job)").font(.caption) }
                 }
             }
         }
@@ -458,7 +458,7 @@ struct HubView: View {
             if let error = orderError { status(error, error: true) }
         }
         Section("Add a server") {
-            if configuration?.canAddNodes == false || store.registrationInfo?.can_persist_nodes == false {
+            if configuration?.canAddNodes == false || store.registrationInfo?.canPersistNodes == false {
                 Text("This Hub does not support saving nodes. Configure its node store on the host.")
             } else {
                 TextField("Name", text: $nodeName).accessibilityIdentifier("hub.nodeName")
@@ -482,7 +482,7 @@ struct HubView: View {
             if let info = store.registrationInfo {
                 Text(info.enabled ? "Node registration is enabled." : "Node registration is disabled.")
                 Text("Run term-llm with the Hub URL and registration token on the node host. The app does not run or tunnel nodes.").font(.caption).foregroundStyle(.secondary)
-                if let secret = info.registration_token {
+                if let secret = info.registrationToken {
                     Toggle("Reveal registration token", isOn: $revealRegistration)
                     if revealRegistration { Text(secret).font(.system(.caption, design: .monospaced)).textSelection(.enabled).privacySensitive() }
                 }
@@ -496,7 +496,7 @@ struct HubView: View {
                 Text(configuration?.authMode == "bearer" ? "This Hub uses a token, not passkeys." : "This Hub does not require sign-in.")
                 if configuration?.authMode == "bearer" {
                     Button("Sign out", role: .destructive) {
-                        Task { await client.clear_local_auth(); store.purgeOnUnauthorized() }
+                        Task { await client.clearLocalAuth(); store.purgeOnUnauthorized() }
                     }.accessibilityIdentifier("hub.signOut")
                 }
             }
@@ -505,13 +505,13 @@ struct HubView: View {
             LabeledContent("Active sessions", value: "\(store.activeSessions)")
             if store.securityLoading { ProgressView("Loading security…") }
             if let message = store.securityStatus { status(message) }
-            ForEach(store.credentials, id: \.record_id) { credential in
+            ForEach(store.credentials, id: \.recordID) { credential in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(credential.display_name).font(.headline)
-                    Text("Created \(credential.created_at)\nLast used \(credential.last_used_at)").font(.caption).foregroundStyle(.secondary)
+                    Text(credential.displayName).font(.headline)
+                    Text("Created \(credential.createdAt)\nLast used \(credential.lastUsedAt)").font(.caption).foregroundStyle(.secondary)
                     Text(credential.transports?.joined(separator: ", ") ?? "Transport not reported").font(.caption)
                     HStack {
-                        Button("Rename") { credentialName = credential.display_name; renaming = credential }
+                        Button("Rename") { credentialName = credential.displayName; renaming = credential }
                         Spacer()
                         Button("Remove in browser", role: .destructive) { openSecurityInBrowser() }
                             .disabled(store.credentials.count <= 1 || HubFixture.isEnabled)
@@ -523,7 +523,7 @@ struct HubView: View {
             Button("Sign out", role: .destructive) {
                 Task {
                     if configuration?.authMode == "bearer" {
-                        await client.clear_local_auth()
+                        await client.clearLocalAuth()
                         await store.refresh()
                     } else { _ = await store.signOut() }
                 }
@@ -561,7 +561,7 @@ struct HubView: View {
                             do {
                                 let epoch = await source?.prepareAuthentication()
                                 if source != nil, epoch == nil { throw CancellationError() }
-                                try await client.login_bearer(token: token)
+                                try await client.loginBearer(token: token)
                                 token = ""
                                 _ = await completeAuthentication(epoch: epoch)
                             } catch { configurationError = error.localizedDescription }
@@ -589,7 +589,7 @@ struct HubView: View {
 
     private func discover() async {
         do {
-            let config = try await client.page_configuration()
+            let config = try await client.pageConfiguration()
             configuration = config
             store.setAuthMode(HubAuthMode(rawValue: config.authMode) ?? .passkey)
             configurationError = nil

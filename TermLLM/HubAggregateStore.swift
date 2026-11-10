@@ -23,7 +23,7 @@ struct PhoneHubSession: Identifiable {
     var unseen: Bool = false
     var id: PhoneHubIdentity { PhoneHubIdentity(sourceID: source.id, nodeID: node.id, sessionID: session.id, key: "session") }
     var displayTitle: String {
-        session.short_title.isEmpty ? "Session \(session.number.map(String.init) ?? session.id)" : session.short_title
+        session.shortTitle.isEmpty ? "Session \(session.number.map(String.init) ?? session.id)" : session.shortTitle
     }
 }
 
@@ -53,7 +53,7 @@ enum PhoneHubSessionSort: String, CaseIterable, Identifiable {
             switch flag(row) {
             case .inputRequired: 0
             case .unseen: 1
-            case nil: row.session.active_run == true ? 2 : 3
+            case nil: row.session.activeRun == true ? 2 : 3
             }
         }
         let indexed = rows.enumerated().map { (offset: $0.offset, row: $0.element, priority: self == .attention ? priority($0.element) : 0) }
@@ -63,7 +63,7 @@ enum PhoneHubSessionSort: String, CaseIterable, Identifiable {
                 let order = a.row.displayTitle.localizedStandardCompare(b.row.displayTitle)
                 if order != .orderedSame { return order == .orderedAscending }
             }
-            let at = a.row.session.last_message_at ?? Int.min, bt = b.row.session.last_message_at ?? Int.min
+            let at = a.row.session.lastMessageAt ?? Int.min, bt = b.row.session.lastMessageAt ?? Int.min
             if at != bt { return at > bt }
             return a.offset < b.offset
         }.map(\.row)
@@ -134,7 +134,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         let relay = SourceRevocationRelay()
         self.relay = relay
         if connection.kind == .hub {
-            let client = HubClient(base_url: connection.url, cookie_source: { await security.cookies() }, cookie_sink: { _ in }, transport: transport)
+            let client = HubClient(baseURL: connection.url, cookieSource: { await security.cookies() }, cookieSink: { _ in }, transport: transport)
             let workspace = HubWorkspace(client: client, requiresAuthentication: false, onAuthorizationRevoked: { relay.revoke() })
             hubWorkspace = workspace
             store = workspace.store
@@ -142,8 +142,8 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             searcher = client
             sessions = client
         } else {
-            let client = DirectNodeClient(base_url: connection.url, cookie_source: { await security.cookies() }, bearer_source: { await security.bearer }, transport: transport,
-                                          display_name_source: { await relay.displayName() })
+            let client = DirectNodeClient(baseURL: connection.url, cookieSource: { await security.cookies() }, bearerSource: { await security.bearer }, transport: transport,
+                                          displayNameSource: { await relay.displayName() })
             directClient = client
             hubWorkspace = nil
             store = HubStore(client: client)
@@ -212,14 +212,14 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         if let client = hubWorkspace?.client, let security {
             hubWorkspace?.authenticationSucceeded()
             let securityEpoch = security.epoch
-            client.scoped_cookie_importer = { [weak self] cookies, isCurrent in
+            client.scopedCookieImporter = { [weak self] cookies, isCurrent in
                 guard let self else { throw CancellationError() }
                 try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
             }
         }
         let linkedDevicesSource = connection.isLinkedDevices
         let sourceID = id
-        directClient?.on_unauthorized = { [weak self] in
+        directClient?.onUnauthorized = { [weak self] in
             if linkedDevicesSource {
                 await MainActor.run { LinkedDevicesRuntime.shared.markRevoked(sourceID) }
             }
@@ -350,7 +350,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     func signInWithBearer(_ token: String) async {
         guard let epoch = await prepareAuthentication(), let directClient, let security else { return }
         do {
-            _ = try await directClient.validate_bearer(token: token)
+            _ = try await directClient.validateBearer(token: token)
             guard active, epoch == authenticationEpoch else { return }
             try security.setBearer(token)
             await prepareBrowserAuthentication()
@@ -378,9 +378,9 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         resetTask?.cancel()
         observation = nil
         authObservation = nil
-        hubWorkspace?.client.scoped_cookie_importer = nil
+        hubWorkspace?.client.scopedCookieImporter = nil
         hubWorkspace?.dispose()
-        directClient?.on_unauthorized = nil
+        directClient?.onUnauthorized = nil
         store.purgeOnUnauthorized()
         store.dispose()
         if let security { HubCookieScopeRegistry.shared.unregister(security) }
@@ -599,15 +599,15 @@ final class HubAggregateStore: ObservableObject {
             guard source.store.attentionVerified, !source.store.unauthorized else { return [PhoneHubAttention]() }
             let connection = source.connection
             let required = source.store.inputRequired.map { item in
-                PhoneHubAttention(source: connection, nodeID: item.node_id, sessionID: item.session_id,
-                                  itemKey: "input", title: item.title, path: item.resume_path, inputRequired: true, seenRequest: nil,
-                                  kinds: item.pending_interaction_kinds ?? [])
+                PhoneHubAttention(source: connection, nodeID: item.nodeID, sessionID: item.sessionID,
+                                  itemKey: "input", title: item.title, path: item.resumePath, inputRequired: true, seenRequest: nil,
+                                  kinds: item.pendingInteractionKinds ?? [])
             }
             let unseen = source.store.inbox.map { item in
-                PhoneHubAttention(source: connection, nodeID: item.node_id, sessionID: item.session_id,
-                                  itemKey: "unseen.\(item.store_instance_id ?? "").\(item.attention_seq)", title: item.title,
-                                  path: item.resume_path, inputRequired: false,
-                                  seenRequest: item.store_instance_id.map { AttentionSeenRequest(store_instance_id: $0, session_id: item.session_id, attention_seq: item.attention_seq) },
+                PhoneHubAttention(source: connection, nodeID: item.nodeID, sessionID: item.sessionID,
+                                  itemKey: "unseen.\(item.storeInstanceID ?? "").\(item.attentionSeq)", title: item.title,
+                                  path: item.resumePath, inputRequired: false,
+                                  seenRequest: item.storeInstanceID.map { AttentionSeenRequest(storeInstanceID: $0, sessionID: item.sessionID, attentionSeq: item.attentionSeq) },
                                   outcome: item.outcome)
             }
             return required + unseen
@@ -689,10 +689,10 @@ final class HubAggregateStore: ObservableObject {
                 for (index, request) in requests.enumerated() {
                     group.addTask {
                         do {
-                            let found = try await request.searcher.search_sessions(node_id: request.nodeID, query: query, limit: limit)
+                            let found = try await request.searcher.searchSessions(nodeID: request.nodeID, query: query, limit: limit)
                             guard !found.sessions.isEmpty else { return (index, .success((found, nil))) }
                             // State is best effort: matches still help without it.
-                            let status = try? await request.searcher.sessions_status(node_id: request.nodeID, ids: found.sessions.map(\.id))
+                            let status = try? await request.searcher.sessionsStatus(nodeID: request.nodeID, ids: found.sessions.map(\.id))
                             return (index, .success((found, status)))
                         } catch {
                             return (index, .failure(error))
@@ -734,15 +734,15 @@ final class HubAggregateStore: ObservableObject {
                 return PhoneHubSession(source: connection, node: leg.node,
                                 session: HubNodeSession(
                                     id: entry.id, number: entry.number.map(Int.init),
-                                    short_title: entry.short_title ?? entry.long_title ?? "",
-                                    long_title: entry.long_title, pinned: entry.pinned,
-                                    active_run: state?.active_run, interaction_required: state?.interaction_required,
-                                    pending_interaction_count: state?.pending_interaction_count,
-                                    pending_interaction_kinds: state?.pending_interaction_kinds,
-                                    last_message_at: entry.last_message_at.map(Int.init),
-                                    message_count: entry.message_count,
-                                    resume_path: Self.searchResumePath(connection: connection, nodeID: leg.node.id, entry: entry)),
-                                snippet: entry.snippet, unseen: (state?.attention_unseen ?? entry.attention_unseen) == true)
+                                    shortTitle: entry.shortTitle ?? entry.longTitle ?? "",
+                                    longTitle: entry.longTitle, pinned: entry.pinned,
+                                    activeRun: state?.activeRun, interactionRequired: state?.interactionRequired,
+                                    pendingInteractionCount: state?.pendingInteractionCount,
+                                    pendingInteractionKinds: state?.pendingInteractionKinds,
+                                    lastMessageAt: entry.lastMessageAt.map(Int.init),
+                                    messageCount: entry.messageCount,
+                                    resumePath: Self.searchResumePath(connection: connection, nodeID: leg.node.id, entry: entry)),
+                                snippet: entry.snippet, unseen: (state?.attentionUnseen ?? entry.attentionUnseen) == true)
             }
             searchHitsByLeg[index] = hits
             searchAgents[index].state = .done(hits.count)
@@ -800,7 +800,7 @@ final class HubAggregateStore: ObservableObject {
         var out = searchHitsByLeg.keys.sorted().flatMap { searchHitsByLeg[$0] ?? [] }
             .filter { live.contains($0.source.id) && seen.insert($0.id).inserted }
         for row in loaded where row.displayTitle.localizedCaseInsensitiveContains(searchQuery)
-            || (row.session.long_title?.localizedCaseInsensitiveContains(searchQuery) ?? false) {
+            || (row.session.longTitle?.localizedCaseInsensitiveContains(searchQuery) ?? false) {
             if seen.insert(row.id).inserted { out.append(row) }
         }
         return out

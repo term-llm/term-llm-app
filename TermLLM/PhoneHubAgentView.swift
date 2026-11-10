@@ -44,7 +44,7 @@ struct PhoneHubAgentView: View {
     private var subtitle: String {
         let sourceName = source?.connection.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let place = sourceName.flatMap { $0.caseInsensitiveCompare(agentName) == .orderedSame ? nil : $0 }
-        return [place, node?.sessions?.count_label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        return [place, node?.sessions?.countLabel].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     var body: some View {
@@ -486,7 +486,7 @@ struct PhoneHubAgentView: View {
     }
 
     private func newConversation() {
-        guard let node, let url = aggregate.destination(path: node.new_session_path, sourceID: route.sourceID, nodeID: route.nodeID) else {
+        guard let node, let url = aggregate.destination(path: node.newSessionPath, sourceID: route.sourceID, nodeID: route.nodeID) else {
             navigationError = "This agent didn’t supply a safe new-conversation route."
             return
         }

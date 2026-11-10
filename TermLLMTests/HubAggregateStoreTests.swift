@@ -9,28 +9,28 @@ final class HubAggregateStoreTests: XCTestCase {
     }
     private func nodes(_ connection: HubConnection) -> NodesResponse {
         let root = connection.mountPath + (connection.kind == .hub ? "node/shared/" : "")
-        let session = HubNodeSession(id: "session-shared", number: 7, short_title: "Shared session", long_title: nil,
-                                     pinned: false, active_run: true, interaction_required: false,
-                                     pending_interaction_count: nil, pending_interaction_kinds: nil,
-                                     last_message_at: nil, message_count: nil, resume_path: root + "chat/7")
-        let sessions = HubNodeSessions(count_label: "1 active", has_more: false, active_count: 1,
-                                       input_required_count: 0, unseen_count: 1, attention_capability: nil,
-                                       attention_last_success_at: nil, active: [session], recent: [session], resume_path: root)
+        let session = HubNodeSession(id: "session-shared", number: 7, shortTitle: "Shared session", longTitle: nil,
+                                     pinned: false, activeRun: true, interactionRequired: false,
+                                     pendingInteractionCount: nil, pendingInteractionKinds: nil,
+                                     lastMessageAt: nil, messageCount: nil, resumePath: root + "chat/7")
+        let sessions = HubNodeSessions(countLabel: "1 active", hasMore: false, activeCount: 1,
+                                       inputRequiredCount: 0, unseenCount: 1, attentionCapability: nil,
+                                       attentionLastSuccessAt: nil, active: [session], recent: [session], resumePath: root)
         let node = HubNode(id: "shared", name: "Shared", source: "fixture", connection: "http", url: "http://10.99.0.1/private/",
-                           base_path: "", proxy_path: root, new_session_path: root + "?new=1", has_token: false,
-                           status: HubNodeStatus(reachable: true, state: "ok", latency_ms: 1, version: nil, agent: nil,
+                           basePath: "", proxyPath: root, newSessionPath: root + "?new=1", hasToken: false,
+                           status: HubNodeStatus(reachable: true, state: "ok", latencyMs: 1, version: nil, agent: nil,
                                                  capabilities: nil, details: nil, error: nil), sessions: sessions, diagnostics: nil)
-        return NodesResponse(nodes: [node], resolver_error: nil)
+        return NodesResponse(nodes: [node], resolverError: nil)
     }
     private func attention(_ connection: HubConnection) -> AttentionResponse {
         let root = connection.mountPath + (connection.kind == .hub ? "node/shared/" : "")
-        return AttentionResponse(total_running: 1, total_input_required: 1, total_unseen: 1, nodes: [],
-                                 input_required: [HubInputRequiredItem(node_id: "shared", node_name: "Shared", session_id: "session-shared", session_number: 7,
-                                                                       title: "Input", pending_interaction_count: 1, pending_interaction_kinds: ["question"],
-                                                                       required_since: nil, resume_path: root + "chat/7", stale: false)],
-                                 inbox: [HubAttentionInboxItem(node_id: "shared", node_name: "Shared", session_id: "session-shared", store_instance_id: "store-shared",
-                                                               session_number: 7, title: "Unseen", outcome: "completed", terminal_at: nil, attention_seq: 1,
-                                                               resume_path: root + "chat/7")], has_more: false)
+        return AttentionResponse(totalRunning: 1, totalInputRequired: 1, totalUnseen: 1, nodes: [],
+                                 inputRequired: [HubInputRequiredItem(nodeID: "shared", nodeName: "Shared", sessionID: "session-shared", sessionNumber: 7,
+                                                                       title: "Input", pendingInteractionCount: 1, pendingInteractionKinds: ["question"],
+                                                                       requiredSince: nil, resumePath: root + "chat/7", stale: false)],
+                                 inbox: [HubAttentionInboxItem(nodeID: "shared", nodeName: "Shared", sessionID: "session-shared", storeInstanceID: "store-shared",
+                                                               sessionNumber: 7, title: "Unseen", outcome: "completed", terminalAt: nil, attentionSeq: 1,
+                                                               resumePath: root + "chat/7")], hasMore: false)
     }
     private func drain() async {
         for _ in 0..<30 { await Task.yield() }
@@ -123,8 +123,8 @@ final class HubAggregateStoreTests: XCTestCase {
         let connection = connection("work")
         let client = MockHubClient()
         client.attentionResponse = {
-            AttentionResponse(total_running: 12, total_input_required: 3, total_unseen: 50,
-                              nodes: [], input_required: [], inbox: [], has_more: true)
+            AttentionResponse(totalRunning: 12, totalInputRequired: 3, totalUnseen: 50,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: true)
         }
         let aggregate = HubAggregateStore { connection in
             HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999))
@@ -158,8 +158,8 @@ final class HubAggregateStoreTests: XCTestCase {
         aggregate.synchronize([])
         let large = MockHubClient()
         large.attentionResponse = {
-            AttentionResponse(total_running: 0, total_input_required: Int.max, total_unseen: Int.max,
-                              nodes: [], input_required: [], inbox: [], has_more: false)
+            AttentionResponse(totalRunning: 0, totalInputRequired: Int.max, totalUnseen: Int.max,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: false)
         }
         let bounded = HubAggregateStore { connection in
             HubSourceWorkspace(connection: connection, store: HubStore(client: large, pollInterval: 999))
@@ -249,7 +249,7 @@ final class HubAggregateStoreTests: XCTestCase {
         XCTAssertEqual(aggregate.attention.count, 6)
         XCTAssertEqual(Set(aggregate.attention.map(\.id)).count, 6)
         for session in aggregate.sessions {
-            let destination = try XCTUnwrap(aggregate.destination(path: session.session.resume_path, sourceID: session.source.id, nodeID: session.node.id))
+            let destination = try XCTUnwrap(aggregate.destination(path: session.session.resumePath, sourceID: session.source.id, nodeID: session.node.id))
             XCTAssertTrue(destination.path.hasPrefix(session.source.url.path))
             XCTAssertEqual(destination.host, "example.com")
             XCTAssertFalse(destination.absoluteString.contains("10.99"))
@@ -361,8 +361,8 @@ final class HubAggregateStoreTests: XCTestCase {
     // MARK: Session search
 
     nonisolated private static func searchEntry(_ id: String, number: Int64?, at: Int64, snippet: String = "a **hit**") -> SessionSearchEntry {
-        SessionSearchEntry(id: id, number: number, short_title: "Title \(id)", long_title: nil, pinned: false,
-                           last_message_at: at, message_count: 2, snippet: snippet, attention_unseen: false)
+        SessionSearchEntry(id: id, number: number, shortTitle: "Title \(id)", longTitle: nil, pinned: false,
+                           lastMessageAt: at, messageCount: 2, snippet: snippet, attentionUnseen: false)
     }
 
     private func searchAggregate(_ searchers: [UUID: MockSessionSearcher]) -> HubAggregateStore {
@@ -425,12 +425,12 @@ final class HubAggregateStoreTests: XCTestCase {
         let results = aggregate.searchResults
         XCTAssertEqual(results.count, 2, "Identical remote IDs from different sources stay distinct")
         XCTAssertEqual(results.map(\.source.id), [work.id, direct.id])
-        XCTAssertEqual(results[0].session.active_run, true, "Run state comes from the status lookup")
-        XCTAssertNil(results[1].session.active_run, "A failed status lookup still keeps the match")
-        XCTAssertEqual(results[0].session.resume_path, "/work/node/shared/chat/9")
-        XCTAssertEqual(results[1].session.resume_path, "/direct/chat/s1", "Falls back to the session ID without a number")
-        XCTAssertNotNil(aggregate.destination(path: results[0].session.resume_path, sourceID: work.id, nodeID: "shared"))
-        XCTAssertNotNil(aggregate.destination(path: results[1].session.resume_path, sourceID: direct.id, nodeID: "shared"))
+        XCTAssertEqual(results[0].session.activeRun, true, "Run state comes from the status lookup")
+        XCTAssertNil(results[1].session.activeRun, "A failed status lookup still keeps the match")
+        XCTAssertEqual(results[0].session.resumePath, "/work/node/shared/chat/9")
+        XCTAssertEqual(results[1].session.resumePath, "/direct/chat/s1", "Falls back to the session ID without a number")
+        XCTAssertNotNil(aggregate.destination(path: results[0].session.resumePath, sourceID: work.id, nodeID: "shared"))
+        XCTAssertNotNil(aggregate.destination(path: results[1].session.resumePath, sourceID: direct.id, nodeID: "shared"))
         XCTAssertEqual(results[0].snippet, "a **hit**")
 
         aggregate.source(work.id)?.store.purgeOnUnauthorized()
@@ -467,13 +467,13 @@ final class HubAggregateStoreTests: XCTestCase {
     }
 
     nonisolated private static func statusEntry(_ id: String, running: Bool) -> DirectNodeSessionEntry {
-        DirectNodeSessionEntry(id: id, number: nil, project_id: nil, project_name: nil, short_title: "Title", long_title: nil,
-                               pinned: nil, active_run: running, active_response_id: nil, run_epoch: nil, started_rev: nil,
-                               started_at: nil, transcript_rev: nil, message_count: nil, last_message_at: nil,
-                               attention_store_instance_id: nil, attention_seq: nil, attention_response_id: nil,
-                               seen_through_seq: nil, seen_rev: nil, seen_source: nil, attention_unseen: nil,
-                               attention_outcome: nil, attention_terminal_at: nil, interaction_required: false,
-                               pending_interaction_count: nil, pending_interaction_kinds: nil)
+        DirectNodeSessionEntry(id: id, number: nil, projectID: nil, projectName: nil, shortTitle: "Title", longTitle: nil,
+                               pinned: nil, activeRun: running, activeResponseID: nil, runEpoch: nil, startedRev: nil,
+                               startedAt: nil, transcriptRev: nil, messageCount: nil, lastMessageAt: nil,
+                               attentionStoreInstanceID: nil, attentionSeq: nil, attentionResponseID: nil,
+                               seenThroughSeq: nil, seenRev: nil, seenSource: nil, attentionUnseen: nil,
+                               attentionOutcome: nil, attentionTerminalAt: nil, interactionRequired: false,
+                               pendingInteractionCount: nil, pendingInteractionKinds: nil)
     }
 
     func testSessionSortOrders() {
@@ -481,15 +481,15 @@ final class HubAggregateStoreTests: XCTestCase {
         let node = nodes(work).nodes[0]
         func row(_ id: String, title: String, at: Int?, running: Bool = false, input: Bool = false) -> PhoneHubSession {
             PhoneHubSession(source: work, node: node, session: HubNodeSession(
-                id: id, number: nil, short_title: title, long_title: nil, pinned: false, active_run: running,
-                interaction_required: input, pending_interaction_count: nil, pending_interaction_kinds: nil,
-                last_message_at: at, message_count: nil, resume_path: "/work/node/shared/chat/\(id)"))
+                id: id, number: nil, shortTitle: title, longTitle: nil, pinned: false, activeRun: running,
+                interactionRequired: input, pendingInteractionCount: nil, pendingInteractionKinds: nil,
+                lastMessageAt: at, messageCount: nil, resumePath: "/work/node/shared/chat/\(id)"))
         }
         let rows = [row("a", title: "beta", at: 10), row("b", title: "Alpha", at: 30, running: true),
                     row("c", title: "gamma", at: nil, input: true), row("d", title: "delta", at: 20)]
         let unseen: Set<String> = ["d"]
         let flag: (PhoneHubSession) -> PhoneHubSessionAttention? = {
-            $0.session.interaction_required == true ? .inputRequired : (unseen.contains($0.session.id) ? .unseen : nil)
+            $0.session.interactionRequired == true ? .inputRequired : (unseen.contains($0.session.id) ? .unseen : nil)
         }
         XCTAssertEqual(PhoneHubSessionSort.recent.sorted(rows, flag: flag).map(\.session.id), ["b", "d", "a", "c"])
         XCTAssertEqual(PhoneHubSessionSort.attention.sorted(rows, flag: flag).map(\.session.id), ["c", "d", "b", "a"])
@@ -511,12 +511,12 @@ final class MockSessionSearcher: HubSessionSearching, @unchecked Sendable {
         self.status = status
     }
     var searchCount: Int { lock.lock(); defer { lock.unlock() }; return _searchCount }
-    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+    func searchSessions(nodeID: String, query: String, limit: Int) async throws -> SessionSearchResponse {
         lock.withLock { _searchCount += 1 }
-        return try await search(node_id, query)
+        return try await search(nodeID, query)
     }
-    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
-        try await status(node_id, ids)
+    func sessionsStatus(nodeID: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+        try await status(nodeID, ids)
     }
 }
 

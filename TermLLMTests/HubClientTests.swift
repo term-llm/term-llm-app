@@ -194,14 +194,14 @@ final class HubClientModelTests: XCTestCase {
         {"nodes":[],"resolver_error":"timeout"}
         """
         let resp = try JSONDecoder().decode(NodesResponse.self, from: Data(json.utf8))
-        XCTAssertEqual(resp.resolver_error, "timeout")
+        XCTAssertEqual(resp.resolverError, "timeout")
     }
 
     func testNodesResponseNilResolverError() throws {
         let json = """
         {"nodes":[]}
         """
-        XCTAssertNil(try JSONDecoder().decode(NodesResponse.self, from: Data(json.utf8)).resolver_error)
+        XCTAssertNil(try JSONDecoder().decode(NodesResponse.self, from: Data(json.utf8)).resolverError)
     }
 
     func testAttentionResponseDecodes() throws {
@@ -210,8 +210,8 @@ final class HubClientModelTests: XCTestCase {
          "nodes":[],"input_required":[],"inbox":[],"has_more":false}
         """
         let resp = try JSONDecoder().decode(AttentionResponse.self, from: Data(json.utf8))
-        XCTAssertEqual(resp.total_running, 3)
-        XCTAssertFalse(resp.has_more)
+        XCTAssertEqual(resp.totalRunning, 3)
+        XCTAssertFalse(resp.hasMore)
     }
 
     func testHubDelegationDecodes() throws {
@@ -221,7 +221,7 @@ final class HubClientModelTests: XCTestCase {
         """
         let d = try JSONDecoder().decode(HubDelegation.self, from: Data(json.utf8))
         XCTAssertEqual(d.id, "d1")
-        XCTAssertNil(d.agent_name)
+        XCTAssertNil(d.agentName)
     }
 
     func testRegistrationInfoResponseDecodes() throws {
@@ -230,13 +230,13 @@ final class HubClientModelTests: XCTestCase {
         """
         let resp = try JSONDecoder().decode(RegistrationInfoResponse.self, from: Data(json.utf8))
         XCTAssertTrue(resp.enabled)
-        XCTAssertEqual(resp.registration_token, "abc")
+        XCTAssertEqual(resp.registrationToken, "abc")
     }
 
     func testRegistrationInfoMinimalDecodes() throws {
         let resp = try JSONDecoder().decode(RegistrationInfoResponse.self, from: Data("{\"enabled\":false}".utf8))
         XCTAssertFalse(resp.enabled)
-        XCTAssertNil(resp.token_configured)
+        XCTAssertNil(resp.tokenConfigured)
     }
 
     func testHubSessionResponseDecodes() throws {
@@ -280,7 +280,7 @@ final class HubClientModelTests: XCTestCase {
         """
         let node = try JSONDecoder().decode(HubNode.self, from: Data(json.utf8))
         XCTAssertTrue(node.status.reachable)
-        XCTAssertEqual(node.status.latency_ms, 12)
+        XCTAssertEqual(node.status.latencyMs, 12)
         XCTAssertNil(node.sessions)
     }
 
@@ -434,7 +434,7 @@ final class HubClientHTMLParsingTests: XCTestCase {
 final class HubClientCookieFilterTests: XCTestCase {
 
     private func client(base: String = "https://hub.example.com/") -> HubClient {
-        HubClient(base_url: URL(string: base)!, cookie_source: { [] })
+        HubClient(baseURL: URL(string: base)!, cookieSource: { [] })
     }
 
     private func cookie(
@@ -624,9 +624,9 @@ final class HubClientTests: XCTestCase {
     ) -> (HubClient, MockTransport) {
         let transport = MockTransport(handler: handler)
         let client = HubClient(
-            base_url: URL(string: base)!,
-            cookie_source: { cookies },
-            cookie_sink: { cookies in recorder?.append(cookies) },
+            baseURL: URL(string: base)!,
+            cookieSource: { cookies },
+            cookieSink: { cookies in recorder?.append(cookies) },
             transport: transport
         )
         return (client, transport)
@@ -641,7 +641,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse(nodesJSON)
         }
-        _ = try await client.list_nodes()
+        _ = try await client.listNodes()
         XCTAssertEqual(transport.requests.count, 1)
         let req = transport.requests[0]
         XCTAssertEqual(req.method, "GET")
@@ -654,7 +654,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"cleared\":5,\"failed\":0}")
         }
-        _ = try await client.clear_attention()
+        _ = try await client.clearAttention()
         XCTAssertEqual(transport.requests[0].method, "POST")
         XCTAssertEqual(transport.requests[0].headers["Origin"], "https://hub.example.com")
     }
@@ -663,7 +663,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"removed\":\"n1\"}")
         }
-        _ = try await client.remove_node(id: "n1")
+        _ = try await client.removeNode(id: "n1")
         XCTAssertEqual(transport.requests[0].method, "DELETE")
         XCTAssertNotNil(transport.requests[0].headers["Origin"])
     }
@@ -672,7 +672,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"node_ids\":[\"a\",\"b\"]}")
         }
-        _ = try await client.reorder_nodes(node_ids: ["a", "b"])
+        _ = try await client.reorderNodes(nodeIDs: ["a", "b"])
         XCTAssertEqual(transport.requests[0].method, "PATCH")
         XCTAssertNotNil(transport.requests[0].headers["Origin"])
     }
@@ -681,7 +681,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient(base: "https://hub.example.com/ui/") { _ in
             jsonResponse("{\"nodes\":[]}")
         }
-        _ = try await client.list_nodes()
+        _ = try await client.listNodes()
         XCTAssertEqual(transport.requests[0].url.path, "/ui/api/nodes")
     }
 
@@ -691,7 +691,7 @@ final class HubClientTests: XCTestCase {
          "nodes":[],"input_required":[],"inbox":[],"has_more":false}
         """
         let (client, transport) = makeClient { _ in jsonResponse(json) }
-        _ = try await client.list_attention(limit: 50)
+        _ = try await client.listAttention(limit: 50)
         XCTAssertEqual(transport.requests[0].url.query, "limit=50")
     }
 
@@ -701,7 +701,7 @@ final class HubClientTests: XCTestCase {
          "nodes":[],"input_required":[],"inbox":[],"has_more":false}
         """
         let (client, transport) = makeClient { _ in jsonResponse(json) }
-        _ = try await client.list_attention(limit: 9999)
+        _ = try await client.listAttention(limit: 9999)
         XCTAssertEqual(transport.requests[0].url.query, "limit=500")
     }
 
@@ -711,7 +711,7 @@ final class HubClientTests: XCTestCase {
          "nodes":[],"input_required":[],"inbox":[],"has_more":false}
         """
         let (client, transport) = makeClient { _ in jsonResponse(json) }
-        _ = try await client.list_attention(limit: nil)
+        _ = try await client.listAttention(limit: nil)
         XCTAssertNil(transport.requests[0].url.query)
     }
 
@@ -722,7 +722,7 @@ final class HubClientTests: XCTestCase {
             jsonResponse("{\"error\":{\"message\":\"Forbidden\",\"type\":\"auth\"}}", status: 403)
         }
         do {
-            _ = try await client.list_nodes()
+            _ = try await client.listNodes()
             XCTFail("Expected error")
         } catch let error as HubAPIError {
             XCTAssertEqual(error.status, 403)
@@ -738,7 +738,7 @@ final class HubClientTests: XCTestCase {
             return (Data("Internal Server Error".utf8), http)
         }
         do {
-            _ = try await client.list_nodes()
+            _ = try await client.listNodes()
             XCTFail("Expected error")
         } catch let error as HubAPIError {
             XCTAssertEqual(error.status, 500)
@@ -753,7 +753,7 @@ final class HubClientTests: XCTestCase {
             return (Data(), http)
         }
         do {
-            _ = try await client.list_nodes()
+            _ = try await client.listNodes()
             XCTFail("Expected error")
         } catch let error as HubAPIError {
             XCTAssertTrue(error.message.contains("empty"))
@@ -767,9 +767,9 @@ final class HubClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Unauthorized\"}}", status: 401)
         }
-        client.on_unauthorized = { callbackFired.set(true) }
+        client.onUnauthorized = { callbackFired.set(true) }
         do {
-            _ = try await client.list_nodes()
+            _ = try await client.listNodes()
             XCTFail("Expected error")
         } catch {}
         XCTAssertTrue(callbackFired.value)
@@ -780,9 +780,9 @@ final class HubClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Forbidden\"}}", status: 403)
         }
-        client.on_unauthorized = { callbackFired.set(true) }
+        client.onUnauthorized = { callbackFired.set(true) }
         do {
-            _ = try await client.list_nodes()
+            _ = try await client.listNodes()
             XCTFail("Expected error")
         } catch {}
         XCTAssertTrue(callbackFired.value)
@@ -797,7 +797,7 @@ final class HubClientTests: XCTestCase {
               "last_message_at":1700000000000,"message_count":3}]}
             """)
         }
-        let response = try await client.search_sessions(node_id: "laptop-1", query: "a+b & c=d%", limit: 500)
+        let response = try await client.searchSessions(nodeID: "laptop-1", query: "a+b & c=d%", limit: 500)
         let url = transport.requests[0].url
         XCTAssertEqual(url.path, "/hub/node/laptop-1/v1/sessions/search")
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery,
@@ -810,14 +810,14 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient(base: "https://hub.example.com/hub/") { _ in
             jsonResponse("{\"sessions\":[{\"id\":\"s1\",\"short_title\":\"Fix\",\"active_run\":true,\"interaction_required\":false}]}")
         }
-        client.on_unauthorized = { callbackFired.set(true) }
-        let status = try await client.sessions_status(node_id: "laptop-1", ids: ["s1", "a,b", "s 2"])
+        client.onUnauthorized = { callbackFired.set(true) }
+        let status = try await client.sessionsStatus(nodeID: "laptop-1", ids: ["s1", "a,b", "s 2"])
         let url = transport.requests[0].url
         XCTAssertEqual(url.path, "/hub/node/laptop-1/v1/sessions/status")
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "ids=s1,s%202",
                        "IDs containing the separator are not requested")
-        XCTAssertEqual(status.sessions.first?.active_run, true)
-        let empty = try await client.sessions_status(node_id: "laptop-1", ids: [])
+        XCTAssertEqual(status.sessions.first?.activeRun, true)
+        let empty = try await client.sessionsStatus(nodeID: "laptop-1", ids: [])
         XCTAssertTrue(empty.sessions.isEmpty)
         XCTAssertEqual(transport.requests.count, 1, "No IDs, no request")
         XCTAssertFalse(callbackFired.value)
@@ -826,7 +826,7 @@ final class HubClientTests: XCTestCase {
     func testSessionSearchRejectsUnsafeNodeID() async {
         let (client, transport) = makeClient { _ in jsonResponse("{\"sessions\":[]}") }
         do {
-            _ = try await client.search_sessions(node_id: "../api", query: "x", limit: 5)
+            _ = try await client.searchSessions(nodeID: "../api", query: "x", limit: 5)
             XCTFail("Expected rejection")
         } catch {}
         XCTAssertTrue(transport.requests.isEmpty)
@@ -839,9 +839,9 @@ final class HubClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"error\":{\"message\":\"Unauthorized\"}}", status: 401)
         }
-        client.on_unauthorized = { callbackFired.set(true) }
+        client.onUnauthorized = { callbackFired.set(true) }
         do {
-            _ = try await client.search_sessions(node_id: "laptop", query: "x", limit: 5)
+            _ = try await client.searchSessions(nodeID: "laptop", query: "x", limit: 5)
             XCTFail("Expected error")
         } catch {
             XCTAssertEqual((error as? HubAPIError)?.status, 401)
@@ -854,8 +854,8 @@ final class HubClientTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"nodes\":[]}")
         }
-        client.on_unauthorized = { callbackFired.set(true) }
-        _ = try await client.list_nodes()
+        client.onUnauthorized = { callbackFired.set(true) }
+        _ = try await client.listNodes()
         XCTAssertFalse(callbackFired.value)
     }
 
@@ -868,7 +868,7 @@ final class HubClientTests: XCTestCase {
                 "Set-Cookie": "term_llm_hub_session=abc123; Path=/; HttpOnly"
             ])
         }
-        _ = try await client.list_nodes()
+        _ = try await client.listNodes()
         XCTAssertEqual(rec.count, 1)
         XCTAssertEqual(rec.batches[0].first?.name, "term_llm_hub_session")
     }
@@ -880,7 +880,7 @@ final class HubClientTests: XCTestCase {
                 "Set-Cookie": "tracking=xyz; Path=/"
             ])
         }
-        _ = try await client.list_nodes()
+        _ = try await client.listNodes()
         XCTAssertEqual(rec.count, 0, "Non-auth cookies must not be sunk")
     }
 
@@ -892,12 +892,12 @@ final class HubClientTests: XCTestCase {
             ])
         }
         let client = HubClient(
-            base_url: URL(string: "https://hub.example.com/hub/")!,
-            cookie_source: { [] },
-            cookie_sink: { cookies in rec.append(cookies) },
+            baseURL: URL(string: "https://hub.example.com/hub/")!,
+            cookieSource: { [] },
+            cookieSink: { cookies in rec.append(cookies) },
             transport: transport
         )
-        _ = try await client.list_nodes()
+        _ = try await client.listNodes()
         XCTAssertEqual(rec.count, 0, "Auth cookie at wrong path must not be sunk")
     }
 
@@ -922,7 +922,7 @@ final class HubClientTests: XCTestCase {
         """
         let authPurged = HubTestBox(false)
         let (client, _) = makeClient { _ in htmlResponse(html, status: 401) }
-        client.on_unauthorized = { authPurged.set(true) }
+        client.onUnauthorized = { authPurged.set(true) }
         let result = try await client.discover()
         if case .page(let config) = result {
             XCTAssertEqual(config.page, "bearer-login")
@@ -942,11 +942,11 @@ final class HubClientTests: XCTestCase {
             )!
             return (Data(), http)
         }
-        client.on_unauthorized = {}
+        client.onUnauthorized = {}
         let result = try await client.discover()
         if case .redirect(let r) = result {
             XCTAssertEqual(r.status, 401)
-            XCTAssertEqual(r.login_url, "/auth/login")
+            XCTAssertEqual(r.loginURL, "/auth/login")
         } else {
             XCTFail("Expected .redirect")
         }
@@ -986,7 +986,7 @@ final class HubClientTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"nodes\":[]}")
         }
-        try await client.login_bearer(token: "my-secret-token")
+        try await client.loginBearer(token: "my-secret-token")
         XCTAssertEqual(transport.requests[0].headers["Authorization"], "Bearer my-secret-token")
         XCTAssertEqual(transport.requests[0].method, "GET")
     }
@@ -996,7 +996,7 @@ final class HubClientTests: XCTestCase {
             jsonResponse("{\"error\":{\"message\":\"bad token\"}}", status: 401)
         }
         do {
-            try await client.login_bearer(token: "wrong")
+            try await client.loginBearer(token: "wrong")
             XCTFail("Expected error")
         } catch let error as HubAPIError {
             XCTAssertEqual(error.status, 401)
@@ -1007,12 +1007,12 @@ final class HubClientTests: XCTestCase {
         let rec = CookieRecorder()
         let transport = MockTransport { _ in jsonResponse("{\"nodes\":[]}") }
         let client = HubClient(
-            base_url: URL(string: "https://hub.example.com/hub/")!,
-            cookie_source: { [] },
-            cookie_sink: { cookies in rec.append(cookies) },
+            baseURL: URL(string: "https://hub.example.com/hub/")!,
+            cookieSource: { [] },
+            cookieSink: { cookies in rec.append(cookies) },
             transport: transport
         )
-        try await client.login_bearer(token: "tok123")
+        try await client.loginBearer(token: "tok123")
         XCTAssertEqual(rec.count, 1)
         let cookie = rec.batches[0].first
         XCTAssertEqual(cookie?.name, "term_llm_hub_token")
@@ -1032,8 +1032,8 @@ final class HubPasskeyTests: XCTestCase {
     ) -> (HubClient, MockTransport) {
         let transport = MockTransport(handler: handler)
         let client = HubClient(
-            base_url: URL(string: "https://hub.example.com/")!,
-            cookie_source: { [] },
+            baseURL: URL(string: "https://hub.example.com/")!,
+            cookieSource: { [] },
             transport: transport
         )
         return (client, transport)
@@ -1043,7 +1043,7 @@ final class HubPasskeyTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"publicKey\":{\"challenge\":\"abc\"}}")
         }
-        let data = try await client.begin_login(return_path: "/dashboard")
+        let data = try await client.beginLogin(returnPath: "/dashboard")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/login/begin")
         XCTAssertEqual(transport.requests[0].method, "POST")
         // Verify body contains return_path
@@ -1058,7 +1058,7 @@ final class HubPasskeyTests: XCTestCase {
             jsonResponse("{\"ok\":true,\"redirect\":\"/hub/\"}")
         }
         let credentialJSON = Data("{\"id\":\"cred1\",\"rawId\":\"abc\"}".utf8)
-        let response = try await client.finish_login(credential: credentialJSON)
+        let response = try await client.finishLogin(credential: credentialJSON)
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/login/finish")
         XCTAssertEqual(transport.requests[0].method, "POST")
         XCTAssertEqual(transport.requests[0].body, credentialJSON)
@@ -1069,7 +1069,7 @@ final class HubPasskeyTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"publicKey\":{\"challenge\":\"xyz\"}}")
         }
-        _ = try await client.begin_reauthentication()
+        _ = try await client.beginReauthentication()
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/reauth/begin")
         XCTAssertEqual(transport.requests[0].method, "POST")
     }
@@ -1078,7 +1078,7 @@ final class HubPasskeyTests: XCTestCase {
         let (client, _) = makeClient { _ in
             jsonResponse("{\"ok\":true}")
         }
-        let result = try await client.finish_reauthentication(credential: Data("{}".utf8))
+        let result = try await client.finishReauthentication(credential: Data("{}".utf8))
         XCTAssertTrue(result.ok)
     }
 
@@ -1086,7 +1086,7 @@ final class HubPasskeyTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"publicKey\":{\"challenge\":\"def\"}}")
         }
-        _ = try await client.begin_additional_registration(display_name: "My Passkey")
+        _ = try await client.beginAdditionalRegistration(displayName: "My Passkey")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/credentials/register/begin")
         let body = try JSONDecoder().decode([String: String].self, from: transport.requests[0].body!)
         XCTAssertEqual(body["display_name"], "My Passkey")
@@ -1101,10 +1101,10 @@ final class HubPasskeyTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse(credJSON, status: 201)
         }
-        let cred = try await client.finish_additional_registration(credential: Data("{}".utf8))
+        let cred = try await client.finishAdditionalRegistration(credential: Data("{}".utf8))
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/credentials/register/finish")
-        XCTAssertEqual(cred.record_id, "new-cred")
-        XCTAssertEqual(cred.display_name, "My Passkey")
+        XCTAssertEqual(cred.recordID, "new-cred")
+        XCTAssertEqual(cred.displayName, "My Passkey")
         XCTAssertEqual(cred.transports, ["internal"])
     }
 
@@ -1112,26 +1112,26 @@ final class HubPasskeyTests: XCTestCase {
 
     func testVerifyGrantBootstrapPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"ok\":true}") }
-        _ = try await client.verify_grant(prefix: .bootstrap, code: "123456")
+        _ = try await client.verifyGrant(prefix: .bootstrap, code: "123456")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/bootstrap/verify")
     }
 
     func testVerifyGrantRecoveryPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"ok\":true}") }
-        _ = try await client.verify_grant(prefix: .recovery, code: "654321")
+        _ = try await client.verifyGrant(prefix: .recovery, code: "654321")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/recovery/verify")
     }
 
     func testBeginGrantRegistrationPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"publicKey\":{}}") }
-        _ = try await client.begin_grant_registration(prefix: .bootstrap, display_name: "Key")
+        _ = try await client.beginGrantRegistration(prefix: .bootstrap, displayName: "Key")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/bootstrap/register/begin")
     }
 
     func testFinishGrantRegistrationWithReturnPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"redirect\":\"/hub/\"}") }
-        _ = try await client.finish_grant_registration(
-            prefix: .recovery, credential: Data("{}".utf8), return_path: "/dashboard"
+        _ = try await client.finishGrantRegistration(
+            prefix: .recovery, credential: Data("{}".utf8), returnPath: "/dashboard"
         )
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/recovery/register/finish")
         XCTAssertTrue(transport.requests[0].url.query?.contains("return=") == true)
@@ -1139,8 +1139,8 @@ final class HubPasskeyTests: XCTestCase {
 
     func testFinishGrantRegistrationEmptyReturnPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"redirect\":\"/hub/\"}") }
-        _ = try await client.finish_grant_registration(
-            prefix: .bootstrap, credential: Data("{}".utf8), return_path: ""
+        _ = try await client.finishGrantRegistration(
+            prefix: .bootstrap, credential: Data("{}".utf8), returnPath: ""
         )
         XCTAssertNil(transport.requests[0].url.query)
     }
@@ -1151,7 +1151,7 @@ final class HubPasskeyTests: XCTestCase {
         let (client, transport) = makeClient { _ in
             jsonResponse("{\"redirect\":\"/hub/\"}")
         }
-        _ = try await client.authorize_native(challenge: "challenge123")
+        _ = try await client.authorizeNative(challenge: "challenge123")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/native/authorize")
         XCTAssertEqual(transport.requests[0].method, "POST")
     }
@@ -1162,22 +1162,22 @@ final class HubPasskeyTests: XCTestCase {
          "created_at":"2025-01-01","last_used_at":"2025-06-01"}
         """
         let (client, transport) = makeClient { _ in jsonResponse(credJSON) }
-        let cred = try await client.rename_credential(record_id: "r1", display_name: "Renamed")
+        let cred = try await client.renameCredential(recordID: "r1", displayName: "Renamed")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/credentials/r1")
         XCTAssertEqual(transport.requests[0].method, "PATCH")
-        XCTAssertEqual(cred.display_name, "Renamed")
+        XCTAssertEqual(cred.displayName, "Renamed")
     }
 
     func testRemoveCredentialPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"ok\":true}") }
-        _ = try await client.remove_credential(record_id: "r1")
+        _ = try await client.removeCredential(recordID: "r1")
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/credentials/r1")
         XCTAssertEqual(transport.requests[0].method, "DELETE")
     }
 
     func testRevokeOtherSessionsPath() async throws {
         let (client, transport) = makeClient { _ in jsonResponse("{\"revoked\":3}") }
-        let result = try await client.revoke_other_sessions()
+        let result = try await client.revokeOtherSessions()
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/sessions/revoke-others")
         XCTAssertEqual(result.revoked, 3)
     }
@@ -1200,7 +1200,7 @@ final class HubPasskeyTests: XCTestCase {
         let result = try await client.session()
         XCTAssertEqual(transport.requests[0].url.path, "/api/auth/session")
         XCTAssertEqual(transport.requests[0].method, "GET")
-        XCTAssertFalse(result.recently_authenticated)
+        XCTAssertFalse(result.recentlyAuthenticated)
     }
 
     func testHealthzPath() async throws {
@@ -1216,35 +1216,35 @@ final class HubPasskeyTests: XCTestCase {
 final class HubClientMountedPathTests: XCTestCase {
 
     func testMountPathRoot() {
-        let c = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] })
-        XCTAssertEqual(c.mount_path, "")
-        XCTAssertEqual(c.expected_host, "hub.example.com")
+        let c = HubClient(baseURL: URL(string: "https://hub.example.com/")!, cookieSource: { [] })
+        XCTAssertEqual(c.mountPath, "")
+        XCTAssertEqual(c.expectedHost, "hub.example.com")
     }
 
     func testMountPathSubpath() {
-        let c = HubClient(base_url: URL(string: "https://hub.example.com/ui/")!, cookie_source: { [] })
-        XCTAssertEqual(c.mount_path, "/ui")
+        let c = HubClient(baseURL: URL(string: "https://hub.example.com/ui/")!, cookieSource: { [] })
+        XCTAssertEqual(c.mountPath, "/ui")
     }
 
     func testMountPathNoTrailingSlash() {
-        let c = HubClient(base_url: URL(string: "https://hub.example.com/hub")!, cookie_source: { [] })
-        XCTAssertEqual(c.mount_path, "/hub")
+        let c = HubClient(baseURL: URL(string: "https://hub.example.com/hub")!, cookieSource: { [] })
+        XCTAssertEqual(c.mountPath, "/hub")
     }
 
     func testOriginExcludesDefaultPort() {
-        let c = HubClient(base_url: URL(string: "https://hub.example.com:443/")!, cookie_source: { [] })
+        let c = HubClient(baseURL: URL(string: "https://hub.example.com:443/")!, cookieSource: { [] })
         XCTAssertEqual(c.origin, "https://hub.example.com")
     }
 
     func testOriginIncludesNonDefaultPort() {
-        let c = HubClient(base_url: URL(string: "https://hub.example.com:8443/")!, cookie_source: { [] })
+        let c = HubClient(baseURL: URL(string: "https://hub.example.com:8443/")!, cookieSource: { [] })
         XCTAssertEqual(c.origin, "https://hub.example.com:8443")
     }
 
     func testHTTPOrigin() {
-        let c = HubClient(base_url: URL(string: "http://localhost:8080/")!, cookie_source: { [] })
+        let c = HubClient(baseURL: URL(string: "http://localhost:8080/")!, cookieSource: { [] })
         XCTAssertEqual(c.origin, "http://localhost:8080")
-        XCTAssertFalse(c.is_https)
+        XCTAssertFalse(c.isHTTPS)
     }
 }
 
@@ -1374,11 +1374,11 @@ extension HubClientTests {
             print("Hub stalled-response callback: \(description)")
         })
         let client = HubClient(
-            base_url: base,
-            cookie_source: { [] },
+            baseURL: base,
+            cookieSource: { [] },
             transport: transport
         )
-        client.on_unauthorized = {
+        client.onUnauthorized = {
             callbackCount.update { $0 += 1 }
             callbackFired.fulfill()
         }
@@ -1388,7 +1388,7 @@ extension HubClientTests {
         let requestTask = Task {
             do {
                 if discovery { _ = try await client.discover() }
-                else { _ = try await client.list_nodes() }
+                else { _ = try await client.listNodes() }
             } catch { /* cancellation during cleanup */ }
             requestFinished.set(true)
         }
@@ -1420,11 +1420,11 @@ extension HubClientTests {
             await gate.wait()
             return jsonResponse("{\"nodes\":[]}", url: request.url!)
         }
-        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] },
-                               cookie_sink: { cookies.append($0) }, transport: transport)
+        let client = HubClient(baseURL: URL(string: "https://hub.example.com/")!, cookieSource: { [] },
+                               cookieSink: { cookies.append($0) }, transport: transport)
         let workspace = HubWorkspace(client: client, requiresAuthentication: false) {}
         defer { workspace.dispose() }
-        let login = Task { try await client.login_bearer(token: "candidate") }
+        let login = Task { try await client.loginBearer(token: "candidate") }
         await fulfillment(of: [started], timeout: 2)
         workspace.authenticationSucceeded()
         await gate.release()
@@ -1444,15 +1444,15 @@ extension HubClientTests {
             return jsonResponse("{\"error\":{\"message\":\"old session expired\"}}", url: request.url!, status: 401,
                                 headers: ["Set-Cookie": "term_llm_hub_session=old; Path=/; Secure; HttpOnly"])
         }
-        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] },
-                               cookie_sink: { cookies.append($0) }, transport: transport)
+        let client = HubClient(baseURL: URL(string: "https://hub.example.com/")!, cookieSource: { [] },
+                               cookieSink: { cookies.append($0) }, transport: transport)
         var revocations = 0
         let workspace = HubWorkspace(client: client, requiresAuthentication: false) { revocations += 1 }
         defer { workspace.dispose() }
         // Also retain the raw callback: it may already be queued on MainActor
         // when a new sign-in succeeds, past the client's first admission check.
-        let previouslyAdmitted = client.on_unauthorized
-        let request = Task { try? await client.list_nodes() }
+        let previouslyAdmitted = client.onUnauthorized
+        let request = Task { try? await client.listNodes() }
         await fulfillment(of: [started], timeout: 2)
         workspace.authenticationSucceeded()
         await gate.release()
@@ -1462,17 +1462,17 @@ extension HubClientTests {
         XCTAssertEqual(revocations, 0)
         XCTAssertEqual(cookies.count, 0, "An old response must not replace a newer session cookie")
         // Current-session revocation must still work.
-        await client.on_unauthorized?()
+        await client.onUnauthorized?()
         XCTAssertTrue(workspace.store.unauthorized)
         XCTAssertEqual(revocations, 1)
     }
 
     @MainActor
     func testDisposedWorkspaceIgnoresAlreadyQueuedRevocation() async {
-        let client = HubClient(base_url: URL(string: "https://hub.example.com/")!, cookie_source: { [] })
+        let client = HubClient(baseURL: URL(string: "https://hub.example.com/")!, cookieSource: { [] })
         var revocations = 0
         let workspace = HubWorkspace(client: client, requiresAuthentication: false) { revocations += 1 }
-        let callback = client.on_unauthorized
+        let callback = client.onUnauthorized
         workspace.dispose()
         await callback?()
         XCTAssertEqual(revocations, 0)
@@ -1660,8 +1660,8 @@ extension HubClientTests {
             let transport = MockTransport { request in
                 jsonResponse("{\"nodes\":[]}", url: request.url!, headers: ["Set-Cookie": "term_llm_hub_session=" + value])
             }
-            let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: { [] }, transport: transport)
-            client.scoped_cookie_importer = { cookies, isCurrent in
+            let client = HubClient(baseURL: URL(string: "https://hub.example/")!, cookieSource: { [] }, transport: transport)
+            client.scopedCookieImporter = { cookies, isCurrent in
                 admitted.fulfill()
                 await gate.wait() // admitted on transport executor, then delayed before MainActor
                 try await MainActor.run {
@@ -1669,9 +1669,9 @@ extension HubClientTests {
                     recorder.append(cookies)
                 }
             }
-            let request = Task { try await client.list_nodes() }
+            let request = Task { try await client.listNodes() }
             await fulfillment(of: [admitted], timeout: 2)
-            client.on_unauthorized = {} // another auth identity wins while actor admission waits
+            client.onUnauthorized = {} // another auth identity wins while actor admission waits
             await gate.release()
             do { _ = try await request.value; XCTFail("Stale import must fail") }
             catch { XCTAssertTrue(error is CancellationError) }
@@ -1683,16 +1683,16 @@ extension HubClientTests {
     func testBearerLoginChecksEpochAgainAfterSuspendedImporterReturns() async throws {
         let gate = HubRequestGate()
         let admitted = expectation(description: "bearer cookie import suspended")
-        let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: { [] }, transport: MockTransport { request in
+        let client = HubClient(baseURL: URL(string: "https://hub.example/")!, cookieSource: { [] }, transport: MockTransport { request in
             jsonResponse("{\"nodes\":[]}", url: request.url!)
         })
-        client.scoped_cookie_importer = { _, _ in
+        client.scopedCookieImporter = { _, _ in
             admitted.fulfill()
             await gate.wait() // deliberately returns without checking: client must also reject completion
         }
-        let login = Task { try await client.login_bearer(token: "fixture-only") }
+        let login = Task { try await client.loginBearer(token: "fixture-only") }
         await fulfillment(of: [admitted], timeout: 2)
-        client.on_unauthorized = {}
+        client.onUnauthorized = {}
         await gate.release()
         do { try await login.value; XCTFail("A stale login must not report success") }
         catch { XCTAssertTrue(error is CancellationError) }
@@ -1710,13 +1710,13 @@ extension HubClientTests {
         })
         defer { source.dispose(removeCredentials: true) }
         let client = try XCTUnwrap(source.hubWorkspace?.client)
-        let original = try XCTUnwrap(client.scoped_cookie_importer)
-        client.scoped_cookie_importer = { cookies, isCurrent in
+        let original = try XCTUnwrap(client.scopedCookieImporter)
+        client.scopedCookieImporter = { cookies, isCurrent in
             admitted.fulfill()
             await gate.wait()
             try await original(cookies, isCurrent)
         }
-        let request = Task { try await client.list_nodes() }
+        let request = Task { try await client.listNodes() }
         await fulfillment(of: [admitted], timeout: 2)
         let oldEpoch = source.authEpoch
         _ = await source.prepareAuthentication()
@@ -1737,14 +1737,14 @@ extension HubClientTests {
         let gate = HubRequestGate()
         let reading = expectation(description: "credential read suspended")
         let transport = MockTransport { request in jsonResponse("{\"nodes\":[]}", url: request.url!) }
-        let client = HubClient(base_url: URL(string: "https://hub.example/")!, cookie_source: {
+        let client = HubClient(baseURL: URL(string: "https://hub.example/")!, cookieSource: {
             reading.fulfill()
             await gate.wait()
             return []
         }, transport: transport)
-        let request = Task { try await client.list_nodes() }
+        let request = Task { try await client.listNodes() }
         await fulfillment(of: [reading], timeout: 2)
-        client.on_unauthorized = {}
+        client.onUnauthorized = {}
         await gate.release()
         do { _ = try await request.value; XCTFail("Stale request must not dispatch") }
         catch { XCTAssertTrue(error is CancellationError) }

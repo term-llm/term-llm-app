@@ -62,9 +62,9 @@ enum HubNavigation {
 }
 
 extension HubInputRequiredItem {
-    var hubIdentity: [String] { [node_id, session_id] }
+    var hubIdentity: [String] { [nodeID, sessionID] }
 }
 
 extension HubAttentionInboxItem {
-    var hubIdentity: [String] { [node_id, store_instance_id ?? "", session_id, String(attention_seq)] }
+    var hubIdentity: [String] { [nodeID, storeInstanceID ?? "", sessionID, String(attentionSeq)] }
 }
