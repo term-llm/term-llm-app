@@ -174,7 +174,10 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertIn("verifier.isValidSignature(generated, for: transcript)", protocol_tests)
         self.assertIn("verifier.isValidSignature(try data(frozen), for: transcript)", protocol_tests)
         self.assertNotIn("LinkedDevicesBase64URL.encode(attempt.request.sig.data)", protocol_tests)
-        runtime_tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
+        runtime_tests = "\n".join((ROOT / "TermLLMTests" / name).read_text() for name in (
+            "LinkedDevicesRuntimeTests.swift", "LinkedDevicesTestSupport.swift", "LinkedDevicesDiagnosticsTests.swift",
+            "PeerTransportTests.swift", "PeerNWLoopbackListenerTests.swift", "LinkedDevicesLiveWebKitTests.swift",
+        ))
         self.assertNotRegex(
             runtime_tests,
             r"\bXCTAssert(?:Equal|NotEqual|True|False|Nil|NotNil|NoThrow|GreaterThan|LessThan)\(\s*(?:try[!?]?\s+)?await\b",
@@ -232,7 +235,9 @@ class LinkedDevicesContractTests(unittest.TestCase):
         for hook in (".requestStarted(", ".responseHeaders(", ".requestTerminal("):
             self.assertIn(hook, multiplexer)
 
-        tests = (ROOT / "TermLLMTests/LinkedDevicesRuntimeTests.swift").read_text()
+        tests = "\n".join((ROOT / "TermLLMTests" / name).read_text() for name in (
+            "LinkedDevicesDiagnosticsTests.swift", "PeerTransportTests.swift",
+        ))
         for regression in (
             "testDefaultOffCreatesNoRecorderOrEmissionPath",
             "testClosedRecordsClampValuesAndEmitTerminalExactlyOnce",
