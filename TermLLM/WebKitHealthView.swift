@@ -65,8 +65,7 @@ struct WebKitHealthView: View {
                 historySection
             }
         }
-        .navigationTitle("Web page health")
-        .inlineNavigationTitle()
+        .settingsPageTitle("Web page health")
         .onAppear { monitor.detailed = true }
         .onDisappear { monitor.detailed = false }
         .task {

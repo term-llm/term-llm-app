@@ -99,6 +99,196 @@ func waitUntil(_ description: @autoclosure () -> String = "condition", timeout: 
 /// media capture at all; this target exists so Chat can use the microphone.
 @MainActor
 final class MacClientTests: XCTestCase {
+    func testDestinationToolbarUsesAContentSizedNativePicker() async throws {
+        func segmentedControl(in view: NSView) -> NSSegmentedControl? {
+            if let control = view as? NSSegmentedControl { return control }
+            return view.subviews.lazy.compactMap(segmentedControl).first
+        }
+        let host = NSHostingController(rootView: Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar { MacWorkspaceToolbar(selection: .agents, onSelect: { _ in }) })
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 120),
+                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.titleVisibility = .hidden
+        window.toolbarStyle = .unifiedCompact
+        window.contentViewController = host
+        window.setContentSize(NSSize(width: 820, height: 120))
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentViewController = nil }
+        try await waitUntil("the native destination toolbar") {
+            host.view.layoutSubtreeIfNeeded()
+            return window.contentView?.superview.flatMap(segmentedControl) != nil
+        }
+        let chrome = try XCTUnwrap(window.contentView?.superview)
+        let control = try XCTUnwrap(segmentedControl(in: chrome))
+        XCTAssertEqual(control.segmentCount, 4)
+        XCTAssertLessThan(control.frame.width, 360, "Do not stretch the picker to an arbitrary toolbar width")
+        XCTAssertEqual(control.frame.width, control.intrinsicContentSize.width, accuracy: 1)
+    }
+
+    func testConversationListAndSearchShareTheSameColumn() async throws {
+        for width: CGFloat in [820, 1180, 1440] {
+            let measurements = ConversationLayoutMeasurements()
+            let host = NSHostingController(rootView: NavigationStack {
+                ConversationListLayoutFixture(measurements: measurements)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity))
+            host.sizingOptions = []
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 500),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = host
+            window.setContentSize(NSSize(width: width, height: 500))
+            window.orderFront(nil)
+            defer { window.orderOut(nil); window.contentViewController = nil }
+            try await waitUntil("search and list row geometry at \(width): \(measurements.frames)") {
+                host.view.layoutSubtreeIfNeeded()
+                return (measurements.frames["search"]?.width ?? 0) > 0 && (measurements.frames["row"]?.width ?? 0) > 0
+            }
+            let search = try XCTUnwrap(measurements.frames["search"])
+            let row = try XCTUnwrap(measurements.frames["row"])
+            XCTAssertEqual(search.minX, row.minX, accuracy: 1,
+                           "Search and the session row must share a column edge")
+            XCTAssertEqual(row.minX, max(20, (width - 900) / 2), accuracy: 1)
+            XCTAssertEqual(row.width, min(900, width - 40), accuracy: 1)
+            if width == 1180 {
+                let image = try XCTUnwrap(host.view.bitmapImageRepForCachingDisplay(in: host.view.bounds))
+                host.view.cacheDisplay(in: host.view.bounds, to: image)
+                let attachment = XCTAttachment(data: try XCTUnwrap(image.representation(using: .png, properties: [:])),
+                                               uniformTypeIdentifier: "public.png")
+                attachment.name = "chat-style-native-sessions"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+    }
+
+    func testAgentsPanelPickerStaysCenteredWithAndWithoutSearch() async throws {
+        func segmentedControl(in view: NSView) -> NSSegmentedControl? {
+            if let control = view as? NSSegmentedControl { return control }
+            return view.subviews.lazy.compactMap(segmentedControl).first
+        }
+
+        for width: CGFloat in [820, 1180, 1440] {
+            for panel in PhoneHubView.Panel.allCases {
+                let host = NSHostingView(rootView: PhoneHubPanelControls(
+                    selection: panel, attention: "3", usesWorkspaceChrome: true, onSelect: { _ in }) {
+                        TextField("Search sessions", text: .constant(""))
+                            .frame(maxWidth: .infinity)
+                    })
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = host
+                defer { window.orderOut(nil); window.contentView = nil }
+                try await waitUntil("native panel picker at \(width) / \(panel)") {
+                    host.layoutSubtreeIfNeeded()
+                    return segmentedControl(in: host) != nil
+                }
+                let control = try XCTUnwrap(segmentedControl(in: host))
+                let frame = host.convert(control.bounds, from: control)
+                XCTAssertEqual(frame.midX, width / 2, accuracy: 1,
+                               "Adding Sessions search must not move the picker off centre")
+                XCTAssertEqual(control.segmentCount, 3)
+                XCTAssertTrue(control.label(forSegment: 1)?.contains("3") == true,
+                              "The native Attention segment must keep its count")
+            }
+        }
+    }
+
+    func testWindowCallbacksPublishAfterTheCurrentUpdateReturns() async throws {
+        let suite = "TermLLMMacTests.deferredWindow.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = MacClientWindow(defaults: defaults)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        client.attach(window)
+        defer { window.orderOut(nil) }
+        // Drain attachment/activation before testing the close callback.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        var publications = 0
+        let observation = client.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+
+        window.performClose(nil)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(client.isForegroundActive, "Attendance must use live AppKit state, even before UI publication")
+        XCTAssertEqual(publications, 0,
+                       "AppKit callbacks may run during SwiftUI layout; observable state must not publish synchronously")
+        try await waitUntil("deferred hidden-window publication") { !client.isVisible && client.phase == .background }
+        XCTAssertGreaterThan(publications, 0)
+    }
+
+    func testSettingsPresentationFitsTheParentInsteadOfItsHistory() {
+        XCTAssertEqual(MacSettingsLayout.size(available: CGSize(width: 1180, height: 800)),
+                       CGSize(width: 680, height: 600))
+        XCTAssertEqual(MacSettingsLayout.size(available: CGSize(width: 820, height: 560)),
+                       CGSize(width: 680, height: 512))
+        XCTAssertEqual(MacSettingsLayout.size(available: CGSize(width: 640, height: 400)),
+                       CGSize(width: 592, height: 352))
+        for available in [CGSize.zero, CGSize(width: 32, height: 32), CGSize(width: 420, height: 280)] {
+            let size = MacSettingsLayout.size(available: available)
+            XCTAssertGreaterThanOrEqual(size.width, 0)
+            XCTAssertGreaterThanOrEqual(size.height, 0)
+            XCTAssertLessThanOrEqual(size.width, available.width)
+            XCTAssertLessThanOrEqual(size.height, available.height)
+        }
+    }
+
+    func testSettingsLongFormKeepsAFinitePresentation() {
+        let available = CGSize(width: 820, height: 560)
+        let expected = MacSettingsLayout.size(available: available)
+        let host = NSHostingView(rootView: MacSettingsPresentation(onClose: {}, availableSize: available) {
+            NavigationStack {
+                Form {
+                    Section("History") {
+                        ForEach(0..<120) { index in
+                            Text("Event \(index): a long diagnostic entry that must scroll inside the sheet.")
+                        }
+                    }
+                }
+                .settingsPageTitle("Diagnostics")
+            }
+        })
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: expected),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.fittingSize.width, expected.width, accuracy: 1)
+        XCTAssertEqual(host.fittingSize.height, expected.height, accuracy: 1)
+    }
+
+    func testSettingsOwnsCommandWWithoutClosingTheClient() async throws {
+        var dismissed = false
+        let host = NSHostingView(rootView: MacSettingsPresentation(onClose: { dismissed = true }) {
+            Text("Nested settings page")
+        })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 600),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        await Task.yield()
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                                                  modifierFlags: .command, timestamp: 0,
+                                                  windowNumber: window.windowNumber, context: nil,
+                                                  characters: "w", charactersIgnoringModifiers: "w",
+                                                  isARepeat: false, keyCode: 13))
+        XCTAssertTrue(window.performKeyEquivalent(with: event))
+        try await waitUntil("Settings to consume Command-W", timeout: 1) { dismissed }
+        XCTAssertTrue(window.isVisible, "The sheet shortcut must not close the underlying client")
+    }
+
     func testChatWebViewExposesMicrophoneCaptureAPIs() async throws {
         let server = try LoopbackHTTPServer { _, _, _ in
             .init(body: Data("<!doctype html><title>Chat</title><p>ready</p>".utf8))
@@ -219,7 +409,7 @@ final class MacClientTests: XCTestCase {
         XCTAssertFalse(NativeApp.supportsMultipleScenes, "Multiple client windows stay disabled")
     }
 
-    func testClientWindowHidesOnCloseAndKeepsItsSceneIdentity() throws {
+    func testClientWindowHidesOnCloseAndKeepsItsSceneIdentity() async throws {
         let suite = "TermLLMMacTests.clientWindow.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -243,6 +433,8 @@ final class MacClientTests: XCTestCase {
 
         window.performClose(nil)
         XCTAssertFalse(window.isVisible, "Close hides the client window")
+        XCTAssertFalse(client.isForegroundActive, "Attendance follows live visibility without waiting for UI state")
+        try await waitUntil("hidden client UI snapshot") { !client.isVisible && client.phase == .background }
         XCTAssertFalse(client.isVisible)
         XCTAssertEqual(client.phase, .background, "A hidden window must not count as attended")
         XCTAssertFalse(client.isForegroundActive)
@@ -250,6 +442,7 @@ final class MacClientTests: XCTestCase {
 
         client.show()
         XCTAssertTrue(window.isVisible)
+        try await waitUntil("reopened client UI snapshot") { client.isVisible && client.phase != .background }
         XCTAssertTrue(client.isVisible)
         XCTAssertNotEqual(client.phase, .background)
         XCTAssertEqual(content.string, "unsent draft")
@@ -436,6 +629,93 @@ private struct MacWorkspaceIdentityFixture: View {
     private func nativeDestination(_ tab: AppTab, toggle: (() -> Void)?) -> some View {
         MacWorkspaceNativeProbe(model: model, tab: tab, width: model.width, hasToggle: toggle != nil)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@MainActor
+private final class ConversationLayoutMeasurements {
+    var frames: [String: CGRect] = [:]
+}
+
+private struct ConversationLayoutMarker: NSViewRepresentable {
+    let name: String
+    let measurements: ConversationLayoutMeasurements
+
+    func makeNSView(context: Context) -> Marker {
+        Marker(name: name, measurements: measurements)
+    }
+
+    func updateNSView(_ view: Marker, context: Context) {
+        view.needsLayout = true
+        DispatchQueue.main.async { [weak view] in view?.captureFrame() }
+    }
+
+    final class Marker: NSView {
+        let name: String
+        let measurements: ConversationLayoutMeasurements
+
+        init(name: String, measurements: ConversationLayoutMeasurements) {
+            self.name = name
+            self.measurements = measurements
+            super.init(frame: .zero)
+        }
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func layout() {
+            super.layout()
+            captureFrame()
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            captureFrame()
+        }
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            captureFrame()
+        }
+        func captureFrame() {
+            guard window != nil else { return }
+            measurements.frames[name] = convert(bounds, to: nil)
+        }
+    }
+}
+
+private struct ConversationListLayoutFixture: View {
+    let measurements: ConversationLayoutMeasurements
+
+    var body: some View {
+        WorkspaceSessionList(wide: true) {
+            Section {
+                ForEach(0..<4) { index in
+                    Button {} label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(["Mac UI Audit Findings", "Redesign Agent Selection Menu",
+                                  "Eliminate Flaky Slow Tests", "Mac App Sidebar Cleanup"][index])
+                                .font(.system(size: 15))
+                            Text("This Mac · 5 minutes ago")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                        .modifier(WorkspaceConversationLabel())
+                    }
+                    .buttonStyle(.plain)
+                    .modifier(WorkspaceConversationRow(isSelected: index == 0))
+                    .background(ConversationLayoutMarker(name: index == 0 ? "row" : "row-\(index)", measurements: measurements))
+                }
+            }
+            .listSectionSeparator(.hidden)
+        }
+        .contentMargins(.top, 8, for: .scrollContent)
+        .workspaceTopBar {
+            PhoneHubPanelControls(selection: .sessions, attention: nil, usesWorkspaceChrome: true, onSelect: { _ in }) {
+                HStack(spacing: 8) {
+                    PhoneHubSessionSearchField(text: .constant(""), onSubmit: {})
+                        .background(ConversationLayoutMarker(name: "search", measurements: measurements))
+                    Image(systemName: "arrow.up.arrow.down").frame(width: 32, height: 32)
+                }
+            }
+        }
+        .background(Color.platformBackground)
     }
 }
 

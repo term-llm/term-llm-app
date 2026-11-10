@@ -23,7 +23,7 @@ struct PhoneHubView: View {
     @AppStorage("phoneHub.sessionSort", store: PhoneHubFixture.defaults) private var sessionSort: PhoneHubSessionSort = .recent
     /// Search keeps its own order: relevance by default, per query session.
     @State private var searchSort: PhoneHubSessionSort = .relevance
-    @FocusState private var sessionSearchFocused: Bool
+    @State private var selectedSession: PhoneHubSessionKey?
 
     enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
     struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
@@ -58,7 +58,7 @@ struct PhoneHubView: View {
 
     var body: some View {
         NavigationStack(path: $agentPath) {
-            List {
+            WorkspaceSessionList(wide: usesWorkspaceChrome) {
                 if connections.connections.isEmpty {
                     Section {
                         VStack(spacing: 16) {
@@ -99,6 +99,9 @@ struct PhoneHubView: View {
                         case .sessions: sessions
                         }
                     }
+                    #if os(macOS)
+                    .listSectionSeparator(.hidden)
+                    #endif
                 }
             }
             // Polling must not animate or rebuild the surrounding list layout.
@@ -106,7 +109,7 @@ struct PhoneHubView: View {
             // The grouped list's default top margin leaves a gap far larger
             // than the 8 pt rhythm of the pinned controls above it.
             .contentMargins(.top, 8, for: .scrollContent)
-            // Pinned outside the List: a list row clips the control with its
+            // Pinned outside the scrolling rows: a list row clips the control with its
             // own rounded shape, and a pinned switcher stays reachable.
             .workspaceTopBar {
                 VStack(spacing: 0) {
@@ -125,21 +128,14 @@ struct PhoneHubView: View {
                         }
                     }
                     if !connections.connections.isEmpty {
-                        VStack(alignment: usesWorkspaceChrome ? .leading : .center, spacing: 8) {
-                            PhoneHubPanelSelector(selection: panel, attention: attentionBadge, onSelect: { panel = $0 })
-                                .equatable()
-                                .frame(maxWidth: usesWorkspaceChrome ? 480 : .infinity)
-                            if panel == .sessions { sessionControls }
+                        PhoneHubPanelControls(selection: panel, attention: attentionBadge,
+                                              usesWorkspaceChrome: usesWorkspaceChrome,
+                                              onSelect: { panel = $0 }) {
+                            sessionControls
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, usesWorkspaceChrome ? 12 : 6)
-                        .frame(maxWidth: usesWorkspaceChrome ? 900 : .infinity)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.platformGroupedBackground)
                     }
                 }
             }
-            .modifier(WorkspaceListWidth(enabled: usesWorkspaceChrome))
             .navigationTitle("Agents")
             .inlineNavigationTitle()
             .navigationBarVisibility(isVisible && !usesWorkspaceChrome ? .visible : .hidden)
@@ -271,37 +267,21 @@ struct PhoneHubView: View {
         let options = searching ? PhoneHubSessionSort.searchOptions : PhoneHubSessionSort.browseOptions
         let current = searching ? searchSort : sessionSort
         return HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
-                TextField("Search sessions", text: $sessionSearch)
-                    .noAutocapitalization().autocorrectionDisabled()
-                    .submitLabel(.search)
-                    .onSubmit { aggregate.searchAllAgents() }
-                    .focused($sessionSearchFocused)
-                    .accessibilityIdentifier("phoneHub.sessionSearch")
-                if !sessionSearch.isEmpty {
-                    Button {
-                        sessionSearch = ""
-                        sessionSearchFocused = false
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear search")
-                    .accessibilityIdentifier("phoneHub.sessionSearch.clear")
-                }
-            }
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(Color.platformSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 10))
+            PhoneHubSessionSearchField(text: $sessionSearch) { aggregate.searchAllAgents() }
             Menu {
                 Picker("Sort by", selection: Binding(get: { current }, set: { if searching { searchSort = $0 } else { sessionSort = $0 } })) {
                     ForEach(options) { Text($0.label).tag($0) }
                 }
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
-                    .frame(width: 36, height: 36)
-                    .background(Color.platformSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 10))
+                    .frame(width: AppPlatform.isMac ? 32 : 36, height: AppPlatform.isMac ? 32 : 36)
+                    .background(Color.platformSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 8))
             }
+            #if os(macOS)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            #endif
             .accessibilityLabel("Sort sessions")
             .accessibilityValue(current.label)
             .accessibilityIdentifier("phoneHub.sessionSort")
@@ -416,22 +396,42 @@ struct PhoneHubView: View {
     }
 
     private func sessionRow(_ row: PhoneHubSession, flag: PhoneHubSessionAttention?) -> some View {
-        Button { open(row.session.resume_path, source: row.source, nodeID: row.node.id) } label: {
+        let key = PhoneHubSessionKey(sourceID: row.source.id, nodeID: row.node.id, sessionID: row.session.id)
+        return Button {
+            selectedSession = key
+            open(row.session.resume_path, source: row.source, nodeID: row.node.id)
+        } label: {
             HStack(spacing: 10) {
-                Circle()
-                    .fill(flag == .inputRequired ? Color.orange : Color.accentColor)
-                    .frame(width: 9, height: 9)
-                    .opacity(flag == nil ? 0 : 1)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
+                if !AppPlatform.isMac {
+                    Circle()
+                        .fill(flag == .inputRequired ? Color.orange : Color.accentColor)
+                        .frame(width: 9, height: 9)
+                        .opacity(flag == nil ? 0 : 1)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: AppPlatform.isMac ? 3 : 2) {
                     Text(row.displayTitle)
                         .foregroundStyle(.primary)
+                        .font(AppPlatform.isMac ? .system(size: 15) : .body)
                         .fontWeight(flag == nil ? .regular : .semibold)
+                        .lineLimit(AppPlatform.isMac ? 2 : nil)
+                        .multilineTextAlignment(.leading)
                     if let snippet = row.snippet, !snippet.isEmpty {
                         Text(Self.highlighted(snippet))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    Text(sessionCaption(row)).font(.caption).foregroundStyle(.secondary)
+                    Text(sessionCaption(row))
+                        .font(AppPlatform.isMac ? .system(size: 12) : .caption)
+                        .foregroundStyle(.secondary)
+                }
+                .overlay(alignment: .topLeading) {
+                    if AppPlatform.isMac, flag != nil {
+                        Circle()
+                            .fill(flag == .inputRequired ? Color.orange : Color.accentColor)
+                            .frame(width: 6, height: 6)
+                            .offset(x: -9, y: 7)
+                            .accessibilityHidden(true)
+                    }
                 }
                 Spacer(minLength: 0)
                 if flag == .inputRequired {
@@ -442,10 +442,12 @@ struct PhoneHubView: View {
                     ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 }
             }
-            .contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .accessibilityValue(flag == .inputRequired ? "Input required" : (flag == .unseen ? "Unseen" : ""))
-            .accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
+            .modifier(WorkspaceConversationLabel())
+        }
+        .buttonStyle(.plain)
+        .modifier(WorkspaceConversationRow(isSelected: selectedSession == key))
+        .accessibilityValue(flag == .inputRequired ? "Input required" : (flag == .unseen ? "Unseen" : ""))
+        .accessibilityIdentifier("phoneHub.session.\(row.source.id.uuidString).\(row.node.id).\(row.session.id)")
     }
 
     private func sessionCaption(_ row: PhoneHubSession) -> String {
@@ -620,6 +622,7 @@ struct PhoneHubConnectionsView: View {
                 }
                 if AppPlatform.isMac {
                     Text("To link a device on Mac, open the one-use pairing link from the host’s Settings → Linked devices. You don’t need to scan a QR code.")
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Section {
@@ -632,6 +635,15 @@ struct PhoneHubConnectionsView: View {
             }
         }
         .transaction { $0.animation = nil }
+        #if os(macOS)
+        .navigationBarBackButtonHidden(true)
+        .workspaceTopBar {
+            PushedPageHeader(title: "Connections") {
+                Button("Add Connection…", systemImage: "plus") { editor = PhoneHubView.Editor() }
+                    .accessibilityIdentifier("phoneHub.connections.add")
+            }
+        }
+        #else
         .navigationTitle("Connections")
         .inlineNavigationTitle()
         .toolbar {
@@ -640,6 +652,7 @@ struct PhoneHubConnectionsView: View {
                     .accessibilityIdentifier("phoneHub.connections.add")
             }
         }
+        #endif
         .sheet(item: $editor) { editor in
             PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
                 .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
@@ -820,8 +833,7 @@ private struct PhoneHubConnectionDetailView: View {
             }
         }
         .accessibilityIdentifier("phoneHub.connectionDetail")
-        .navigationTitle(source.connection.name)
-        .inlineNavigationTitle()
+        .settingsPageTitle(source.connection.name)
         .confirmationDialog(isLinked ? "Forget \(source.connection.name)?" : "Remove \(source.connection.name)?",
                             isPresented: $confirmingRemove, titleVisibility: .visible) {
             Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) {
@@ -991,8 +1003,46 @@ private struct PhoneHubConnectionDetailView: View {
     }
 }
 
-/// Segmented view switcher with an Attention badge. A native segmented picker
-/// cannot render the badge, so this draws the segments itself.
+/// The selector has its own full-width centred row. Adding Sessions search
+/// below it must never change its horizontal anchor.
+struct PhoneHubPanelControls<Controls: View>: View {
+    let selection: PhoneHubView.Panel
+    let attention: String?
+    let usesWorkspaceChrome: Bool
+    let onSelect: @MainActor @Sendable (PhoneHubView.Panel) -> Void
+    @ViewBuilder var sessionControls: () -> Controls
+
+    private var controls: some View {
+        VStack(alignment: AppPlatform.isMac ? .center : (usesWorkspaceChrome ? .leading : .center),
+               spacing: AppPlatform.isMac ? 12 : 8) {
+            PhoneHubPanelSelector(selection: selection, attention: attention, onSelect: onSelect)
+                .equatable()
+                .frame(maxWidth: usesWorkspaceChrome ? (AppPlatform.isMac ? 320 : 480) : .infinity)
+                .frame(maxWidth: AppPlatform.isMac ? .infinity : nil)
+            if selection == .sessions { sessionControls() }
+        }
+    }
+
+    var body: some View {
+        #if os(macOS)
+        controls
+            .frame(maxWidth: 900)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+        #else
+        controls
+            .padding(.horizontal, 16)
+            .padding(.vertical, usesWorkspaceChrome ? 12 : 6)
+            .frame(maxWidth: usesWorkspaceChrome ? 900 : .infinity)
+            .frame(maxWidth: .infinity)
+            .background(Color.platformGroupedBackground)
+        #endif
+    }
+}
+
+/// Mac uses the system segmented picker: native keyboard behaviour and Liquid
+/// Glass on current macOS. Phones keep the custom control with its count badge.
 /// Polling invalidates the aggregate view frequently; equatable on the
 /// selection and badge keeps unrelated updates from re-rendering it. The
 /// callback only writes the owning view's panel state.
@@ -1000,11 +1050,26 @@ private struct PhoneHubConnectionDetailView: View {
     let selection: PhoneHubView.Panel
     /// Attention badge text; nil hides the badge.
     let attention: String?
-    let onSelect: (PhoneHubView.Panel) -> Void
+    let onSelect: @MainActor @Sendable (PhoneHubView.Panel) -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.selection == rhs.selection && lhs.attention == rhs.attention }
 
     var body: some View {
+        #if os(macOS)
+        Picker("Agents view", selection: Binding(get: { selection }, set: onSelect)) {
+            ForEach(PhoneHubView.Panel.allCases, id: \.self) { candidate in
+                Text(candidate == .attention ? attention.map { "Attention · \($0)" } ?? "Attention" : candidate.rawValue)
+                    .tag(candidate)
+                    .accessibilityLabel(candidate.rawValue)
+                    .accessibilityValue(candidate == .attention ? (attention.map { "\($0) need attention" } ?? "None") : "")
+                    .accessibilityIdentifier("phoneHub." + (candidate == .nodes ? "nodes" : candidate.rawValue.lowercased()))
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.regular)
+        .accessibilityIdentifier("phoneHub.panels")
+        #else
         HStack(spacing: 2) {
             ForEach(PhoneHubView.Panel.allCases, id: \.self) { candidate in
                 segment(candidate)
@@ -1015,6 +1080,7 @@ private struct PhoneHubConnectionDetailView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("phoneHub.panels")
+        #endif
     }
 
     private func segment(_ candidate: PhoneHubView.Panel) -> some View {
@@ -1036,7 +1102,7 @@ private struct PhoneHubConnectionDetailView: View {
             .font(.subheadline)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
-            .frame(maxWidth: .infinity, minHeight: 36)
+            .frame(maxWidth: .infinity, minHeight: AppPlatform.isMac ? 24 : 36)
             .padding(.horizontal, 4)
             .background {
                 if selected {
@@ -1280,6 +1346,23 @@ struct PhoneHubFixtureBanner: View {
 /// Quiet, native root chrome for the larger-screen workspace. Live Chat never
 /// uses this: its existing web header remains the sole conversation header.
 extension View {
+    /// Settings subpages keep their navigation inside the bounded sheet. Mac
+    /// retained destinations deliberately do not bridge window toolbars.
+    @ViewBuilder func settingsPageTitle(_ title: String, isRoot: Bool = false) -> some View {
+        #if os(macOS)
+        navigationBarBackButtonHidden(true)
+            .workspaceTopBar {
+                if isRoot {
+                    WorkspaceHeader(title: title) { EmptyView() }
+                } else {
+                    PushedPageHeader(title: title) { EmptyView() }
+                }
+            }
+        #else
+        navigationTitle(title).inlineNavigationTitle()
+        #endif
+    }
+
     /// Pins workspace chrome above scrolling content. iPhone/iPad scroll the
     /// content under it as a safe-area inset; Mac lists apply that inset
     /// twice, so the Mac stacks the bar above the list instead.
@@ -1339,6 +1422,121 @@ struct WorkspaceHeader<Actions: View>: View {
     }
 }
 
+/// The root browser has no List editing/reordering semantics. A native SwiftUI
+/// scroll stack avoids AppKit's implicit table gutters and separator drawing;
+/// the editable agent history below continues to use List.
+struct WorkspaceSessionList<Content: View>: View {
+    var wide: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        #if os(macOS)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 4, content: content)
+                .buttonStyle(.plain)
+                .frame(maxWidth: wide ? 900 : .infinity)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity)
+        }
+        #else
+        List(content: content)
+            .modifier(WorkspaceListWidth(enabled: wide))
+        #endif
+    }
+}
+
+/// Shared with conversation rows: one column edge and a 12 pt text inset.
+struct PhoneHubSessionSearchField: View {
+    @Binding var text: String
+    let onSubmit: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if !AppPlatform.isMac {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary).accessibilityHidden(true)
+            }
+            TextField("Search sessions", text: $text)
+                #if os(macOS)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                #endif
+                .noAutocapitalization().autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit(onSubmit)
+                .focused($focused)
+                .accessibilityIdentifier("phoneHub.sessionSearch")
+            if !text.isEmpty {
+                Button { text = ""; focused = false } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+                .accessibilityIdentifier("phoneHub.sessionSearch.clear")
+            }
+        }
+        .padding(.horizontal, AppPlatform.isMac ? 12 : 10)
+        .padding(.vertical, 8)
+        .frame(height: AppPlatform.isMac ? 38 : nil)
+        .background(AppPlatform.isMac ? Color.primary.opacity(0.06) : Color.platformSecondaryGroupedBackground,
+                    in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Padding belongs inside the button label, so the entire row is clickable.
+struct WorkspaceConversationLabel: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .contentShape(Rectangle())
+        #else
+        content
+        #endif
+    }
+}
+
+/// Match Chat's quiet rounded hover/selection instead of ruled table rows.
+struct WorkspaceConversationRow: ViewModifier {
+    var isSelected = false
+    @State private var hovered = false
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(isSelected ? 0.07 : (hovered ? 0.04 : 0))))
+            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .onHover { hovered = $0 }
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+        #else
+        content
+        #endif
+    }
+}
+
+struct WorkspaceConversationList: ViewModifier {
+    var wide: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .listStyle(.plain)
+            .contentMargins(.horizontal, 0, for: .scrollContent)
+            .scrollContentBackground(.hidden)
+            .modifier(WorkspaceListWidth(enabled: wide))
+        #else
+        content.modifier(WorkspaceListWidth(enabled: wide))
+        #endif
+    }
+}
+
 /// Wide lists keep a comfortable reading measure without constraining their
 /// navigation stacks or changing the phone's standard grouped-list margins.
 struct WorkspaceListWidth: ViewModifier {
@@ -1347,6 +1545,14 @@ struct WorkspaceListWidth: ViewModifier {
 
     func body(content: Content) -> some View {
         if enabled {
+            #if os(macOS)
+            // Constrain the List itself, before adding a pinned header. Scroll
+            // margins on the surrounding VStack do not reach an AppKit List.
+            content
+                .frame(maxWidth: 900)
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity)
+            #else
             content
                 .contentMargins(.horizontal, max(20, (width - 900) / 2), for: .scrollContent)
                 .background {
@@ -1356,6 +1562,7 @@ struct WorkspaceListWidth: ViewModifier {
                             .onChange(of: geometry.size.width) { _, value in width = value }
                     }
                 }
+            #endif
         } else {
             content
         }

@@ -29,6 +29,7 @@ final class MacClientWindow: NSObject, ObservableObject {
     @Published private(set) var phase: ScenePhase = .active
     private var observers: [NSObjectProtocol] = []
     private var memoryPressure: DispatchSourceMemoryPressure?
+    private var updateScheduled = false
 
     init(defaults: UserDefaults) {
         if let saved = defaults.string(forKey: Self.identifierKey), !saved.isEmpty {
@@ -73,7 +74,9 @@ final class MacClientWindow: NSObject, ObservableObject {
     }
 
     var sceneSession: MacClientWindow { self }
-    var isForegroundActive: Bool { phase == .active }
+    // Attendance/security decisions use live AppKit state; published values
+    // below are UI snapshots and intentionally arrive after the render pass.
+    var isForegroundActive: Bool { livePhase == .active }
     var isAttachedToApp: Bool { window != nil }
     /// Key, or presenting the key sheet (SwiftUI sheets are attached windows).
     var hasKeyWindow: Bool {
@@ -87,7 +90,7 @@ final class MacClientWindow: NSObject, ObservableObject {
     }
 
     var appState: NativeAppState {
-        switch phase {
+        switch livePhase {
         case .active: .active
         case .background: .background
         default: .inactive
@@ -102,11 +105,32 @@ final class MacClientWindow: NSObject, ObservableObject {
         update()
     }
 
+    private var liveVisibility: Bool {
+        (window.map { $0.isVisible && !$0.isMiniaturized } ?? true) && !NSApp.isHidden
+    }
+
+    private var livePhase: ScenePhase {
+        MacLocalServiceBridge.effectiveScenePhase(NSApp.isActive ? .active : .inactive,
+                                                  isMainWindowVisible: liveVisibility)
+    }
+
     private func update() {
-        let shown = window.map { $0.isVisible && !$0.isMiniaturized } ?? true
-        let visible = shown && !NSApp.isHidden
-        let next = MacLocalServiceBridge.effectiveScenePhase(NSApp.isActive ? .active : .inactive,
-                                                             isMainWindowVisible: visible)
+        // AppKit can send window/activation notifications while SwiftUI is
+        // attaching or laying out a retained destination. Never publish back
+        // into that render pass. Coalesce and read the latest state, not an
+        // obsolete show/hide event captured before the next main-queue turn.
+        guard !updateScheduled else { return }
+        updateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.updateScheduled = false
+            self.publishWindowState()
+        }
+    }
+
+    private func publishWindowState() {
+        let visible = liveVisibility
+        let next = livePhase
         let previous = phase
         if isVisible != visible { isVisible = visible }
         if phase != next { phase = next }
@@ -243,6 +267,7 @@ final class DesktopCommandCenter: ObservableObject {
     @Published private(set) var clientOwnsKeyboard = false
     private var handler: ((DesktopCommand) -> Void)?
     private var observers: [NSObjectProtocol] = []
+    private var keyboardRefreshScheduled = false
 
     init() {
         let center = NotificationCenter.default
@@ -250,7 +275,7 @@ final class DesktopCommandCenter: ObservableObject {
                      NSWindow.willBeginSheetNotification, NSWindow.didEndSheetNotification,
                      NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshKeyboardOwner() }
+                MainActor.assumeIsolated { self?.scheduleKeyboardRefresh() }
             })
         }
     }
@@ -262,7 +287,7 @@ final class DesktopCommandCenter: ObservableObject {
     }
 
     func allows(_ command: DesktopCommand) -> Bool {
-        clientOwnsKeyboard && MacClientWindow.shared.ownsKeyboard && policy?.allows(command) == true
+        MacClientWindow.shared.ownsKeyboard && policy?.allows(command) == true
     }
 
     func perform(_ command: DesktopCommand) {
@@ -281,6 +306,16 @@ final class DesktopCommandCenter: ObservableObject {
         }
     }
 
+    private func scheduleKeyboardRefresh() {
+        guard !keyboardRefreshScheduled else { return }
+        keyboardRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.keyboardRefreshScheduled = false
+            self.refreshKeyboardOwner()
+        }
+    }
+
     private func refreshKeyboardOwner() {
         let owns = MacClientWindow.shared.ownsKeyboard
         if owns != clientOwnsKeyboard { clientOwnsKeyboard = owns }
@@ -296,8 +331,9 @@ struct DesktopCommandHost<Content: View>: View {
 
     var body: some View {
         content()
-            .onAppear { DesktopCommandCenter.shared.install(policy: policy, handler: onCommand) }
-            .onChange(of: policy) { _, policy in
+            .task(id: policy) {
+                // Installing publishes menu state. A task runs after SwiftUI's
+                // update, unlike appearance/change callbacks in a nested host.
                 DesktopCommandCenter.shared.install(policy: policy, handler: onCommand)
             }
     }
@@ -349,6 +385,56 @@ extension DesktopCommand {
     var keyEquivalent: KeyEquivalent { KeyEquivalent(Character(input)) }
 }
 
+// MARK: - Settings presentation
+
+/// Content may be arbitrarily long (Diagnostics includes the event history).
+/// The presentation, not a destination's intrinsic size, owns its envelope.
+enum MacSettingsLayout {
+    static func size(available: CGSize) -> CGSize {
+        CGSize(width: min(680, max(0, available.width - 48)),
+               height: min(600, max(0, available.height - 48)))
+    }
+}
+
+struct MacSettingsPresentation<Content: View>: View {
+    let onClose: () -> Void
+    var availableSize: CGSize = MacClientWindow.shared.window?.contentLayoutRect.size
+        ?? CGSize(width: 1180, height: 800)
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        let size = MacSettingsLayout.size(available: availableSize)
+        VStack(spacing: 0) {
+            content()
+                .formStyle(.grouped)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("settings.done")
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+            .background(.bar)
+        }
+        .frame(width: size.width, height: size.height)
+        .onExitCommand(perform: onClose)
+        .background {
+            // The retained main window rejects close while a sheet is attached.
+            // Own Cmd-W here instead; never close a hidden Chat document.
+            Button("Close Settings", action: onClose)
+                .keyboardShortcut("w", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.presentation")
+    }
+}
+
 // MARK: - Workspace views
 
 /// App navigation belongs to the window, not to a destination's navigation
@@ -356,23 +442,42 @@ extension DesktopCommand {
 /// sidebar; a horizontal selector avoids placing an app sidebar beside it.
 struct MacWorkspaceToolbar: ToolbarContent {
     let selection: AppTab
-    let onSelect: (AppTab) -> Void
+    let onSelect: @MainActor @Sendable (AppTab) -> Void
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("Destination", selection: Binding(get: { selection }, set: onSelect)) {
-                ForEach(AppTab.allCases, id: \.self) { tab in
-                    Text(tab.title)
-                        .tag(tab)
-                        .accessibilityIdentifier("appTab." + tab.rawValue)
-                }
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) {
+                MacDestinationPicker(selection: selection, onSelect: onSelect)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 360)
-            .help("Switch destination (⌘1–4)")
-            .accessibilityIdentifier("workspace.destinations")
+            // A segmented control already draws its own track. The toolbar's
+            // shared glass capsule around it creates a redundant second pill.
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) {
+                MacDestinationPicker(selection: selection, onSelect: onSelect)
+            }
         }
+    }
+}
+
+struct MacDestinationPicker: View {
+    let selection: AppTab
+    let onSelect: @MainActor @Sendable (AppTab) -> Void
+
+    var body: some View {
+        Picker("Destination", selection: Binding(get: { selection }, set: onSelect)) {
+            ForEach(AppTab.allCases, id: \.self) { tab in
+                Text(tab.title)
+                    .tag(tab)
+                    .accessibilityIdentifier("appTab." + tab.rawValue)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.regular)
+        .fixedSize()
+        .help("Switch destination (⌘1–4)")
+        .accessibilityIdentifier("workspace.destinations")
     }
 }
 
@@ -399,6 +504,7 @@ struct WorkspaceRetainedDestination<Content: View>: NSViewControllerRepresentabl
 final class WorkspaceDestinationController<Content: View>: NSViewController {
     let host: NSHostingController<Content>
     var detachesWhenHidden = true
+    private var layoutScheduled = false
 
     init(rootView: Content) {
         host = NSHostingController(rootView: rootView)
@@ -436,8 +542,10 @@ final class WorkspaceDestinationController<Content: View>: NSViewController {
         host.rootView = rootView
         // Apply root updates even off screen: authorization revocation/source
         // replacement must dismantle a protected document without revisiting Chat.
+        // Invalidate only. Forcing layout here re-enters the hosted SwiftUI
+        // graph while its parent is still in updateNSViewController.
         host.view.needsLayout = true
-        host.view.layoutSubtreeIfNeeded()
+        scheduleHostedLayout()
         if !detachesWhenHidden {
             if host.view.superview == nil {
                 host.view.frame = view.bounds
@@ -453,6 +561,18 @@ final class WorkspaceDestinationController<Content: View>: NSViewController {
         } else if host.view.superview != nil {
             resignFocus()
             host.view.removeFromSuperview()
+        }
+    }
+
+    private func scheduleHostedLayout() {
+        guard !layoutScheduled else { return }
+        layoutScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layoutScheduled = false
+            // Reconcile even when detached: revoking authorization must retire
+            // a hidden document without requiring another visit to Chat.
+            self.host.view.layoutSubtreeIfNeeded()
         }
     }
 

@@ -21,6 +21,7 @@ struct PhoneHubAgentView: View {
     @State private var renaming: PhoneHubAgentConversation?
     @State private var renameText = ""
     @State private var searchText = ""
+    @State private var selectedConversation: String?
     @State private var navigationError: String?
     @State private var now = Date()
 
@@ -64,9 +65,10 @@ struct PhoneHubAgentView: View {
         }
         .platformInsetGroupedListStyle()
         .platformEditMode($editMode)
-        // Once New conversation scrolls away, it moves into the toolbar.
+        .modifier(WorkspaceConversationList(wide: AppPlatform.isMac))
+        // Phone controls follow scrolling; desktop actions have a fixed slot.
         .modifier(ScrolledPast(distance: 90) { past in
-            guard past != composeInToolbar else { return }
+            guard !AppPlatform.isMac, past != composeInToolbar else { return }
             withAnimation(.snappy) { composeInToolbar = past }
         })
         .accessibilityIdentifier("phoneHub.agent")
@@ -75,7 +77,7 @@ struct PhoneHubAgentView: View {
         .navigationBarBackButtonHidden(true)
         .workspaceTopBar {
             PushedPageHeader(title: agentName, subtitle: subtitle) {
-                if composeInToolbar && !model.signedOut && query.isEmpty { toolbarCompose }
+                if !model.signedOut { toolbarCompose }
                 PushedPageSearchField(text: $searchText, prompt: "Search \(agentName)")
             }
         }
@@ -150,17 +152,19 @@ struct PhoneHubAgentView: View {
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
                     .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 4, trailing: 4))
             }
-            Button(action: newConversation) {
-                Label("New conversation", systemImage: "square.and.pencil")
-                    .labelStyle(.titleAndIcon)
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 30)
+            if !AppPlatform.isMac {
+                Button(action: newConversation) {
+                    Label("New conversation", systemImage: "square.and.pencil")
+                        .labelStyle(.titleAndIcon)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .accessibilityIdentifier("phoneHub.agent.new")
+                .modifier(LegacyVisibility { visible in composeInToolbar = !visible })
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
-            .accessibilityIdentifier("phoneHub.agent.new")
-            .modifier(LegacyVisibility { visible in composeInToolbar = !visible })
             if model.hasLoadedFirstPage && model.conversations.isEmpty {
                 ContentUnavailableView("No conversations yet", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Start one with \(agentName) and it will appear here."))
@@ -365,9 +369,17 @@ struct PhoneHubAgentView: View {
     // MARK: Rows
 
     private func conversationRow(_ row: PhoneHubAgentConversation, inPinned: Bool) -> some View {
-        Button { open(row) } label: {
+        Button {
+            selectedConversation = row.id
+            open(row)
+        } label: {
             PhoneHubAgentConversationRow(conversation: row, now: now, showsPin: !inPinned && row.pinned)
+                .modifier(WorkspaceConversationLabel())
         }
+        #if os(macOS)
+        .buttonStyle(.plain)
+        #endif
+        .modifier(WorkspaceConversationRow(isSelected: selectedConversation == row.id))
         .tint(.primary)
         .accessibilityValue(PhoneHubAgentConversationRow.accessibilityState(row))
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -514,17 +526,19 @@ struct PhoneHubAgentConversationRow: View {
         return UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits).capHeight
         #else
         // Mac text styles have fixed sizes.
-        return NSFont.preferredFont(forTextStyle: .subheadline).capHeight
+        return NSFont.systemFont(ofSize: 12).capHeight
         #endif
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(conversation.needsInput ? Color.orange : Color.accentColor)
-                .frame(width: 10, height: 10)
-                .opacity(attention ? 1 : 0)
-                .padding(.top, 6)
+            if !AppPlatform.isMac {
+                Circle()
+                    .fill(conversation.needsInput ? Color.orange : Color.accentColor)
+                    .frame(width: 10, height: 10)
+                    .opacity(attention ? 1 : 0)
+                    .padding(.top, 6)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if showsPin {
@@ -533,9 +547,11 @@ struct PhoneHubAgentConversationRow: View {
                             .foregroundStyle(Self.pinTint)
                     }
                     Text(conversation.title)
-                        .font(.body.weight(attention ? .semibold : .regular))
+                        .font(AppPlatform.isMac
+                              ? .system(size: 15, weight: attention ? .semibold : .regular)
+                              : .body.weight(attention ? .semibold : .regular))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        .lineLimit(AppPlatform.isMac ? 2 : 1)
                     Spacer(minLength: 8)
                     // Waiting on you is not work in progress.
                     if conversation.running && !conversation.needsInput {
@@ -547,7 +563,7 @@ struct PhoneHubAgentConversationRow: View {
                             .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + capHeight / 2 }
                     }
                     Text(PhoneHubAgentDateGroup.timeLabel(conversation.lastActivity, now: now, calendar: .current))
-                        .font(.subheadline)
+                        .font(AppPlatform.isMac ? .system(size: 12) : .subheadline)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                         .lineLimit(1)
@@ -555,7 +571,7 @@ struct PhoneHubAgentConversationRow: View {
                 }
                 if !caption.isEmpty {
                     Text(caption)
-                        .font(.subheadline)
+                        .font(AppPlatform.isMac ? .system(size: 12) : .subheadline)
                         .foregroundStyle(captionColor)
                         .lineLimit(1)
                 }
@@ -566,8 +582,17 @@ struct PhoneHubAgentConversationRow: View {
                         .lineLimit(2)
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if AppPlatform.isMac && attention {
+                    Circle()
+                        .fill(conversation.needsInput ? Color.orange : Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .offset(x: -9, y: 7)
+                        .accessibilityHidden(true)
+                }
+            }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, AppPlatform.isMac ? 0 : 3)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }

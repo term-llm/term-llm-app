@@ -123,6 +123,34 @@ struct MediaPlaybackShelf: View {
     }
 }
 
+/// One floating control surface, not glass on every child or on media content.
+/// The system handles contrast, Reduce Transparency and Reduce Motion.
+private struct PlaybackControlSurface: ViewModifier {
+    let usesSystemBackground: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if usesSystemBackground {
+            content
+        } else {
+            #if os(macOS)
+            if #available(macOS 26.0, *) {
+                content.glassEffect(.regular, in: .rect(cornerRadius: 18))
+            } else {
+                fallback(content)
+            }
+            #else
+            fallback(content)
+            #endif
+        }
+    }
+
+    private func fallback(_ content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial))
+            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+    }
+}
+
 private struct MusicMiniPlayerBar: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var compactLayout = false
@@ -193,12 +221,7 @@ private struct MusicMiniPlayerBar: View {
             .padding(.leading, 14)
             .padding(.trailing, 4)
             .padding(.vertical, 4)
-            .background {
-                if !usesSystemBackground {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
-                }
-            }
-            .shadow(color: usesSystemBackground ? .clear : .black.opacity(0.15), radius: 12, y: 4)
+            .modifier(PlaybackControlSurface(usesSystemBackground: usesSystemBackground))
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
             .accessibilityElement(children: .contain)
@@ -300,13 +323,8 @@ struct MiniPlayerBar: View {
             .background(alignment: .bottom) {
                 ListenMiniPlayerProgress(player: player)
             }
-            .background {
-                if !usesSystemBackground {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
-                }
-            }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .shadow(color: usesSystemBackground ? .clear : .black.opacity(0.15), radius: 12, y: 4)
+            .modifier(PlaybackControlSurface(usesSystemBackground: usesSystemBackground))
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
             .offset(y: max(0, drag))
@@ -599,9 +617,17 @@ struct ListenView: View {
             }
             Section {
                 if store.upNext.isEmpty {
-                    Text("Ask the agent to queue a podcast episode or generated audio.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    if AppPlatform.isMac {
+                        ContentUnavailableView("Nothing Queued", systemImage: "dot.radiowaves.left.and.right",
+                                               description: Text("Ask the agent to queue a podcast episode or generated audio."))
+                            .frame(maxWidth: .infinity)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } else {
+                        Text("Ask the agent to queue a podcast episode or generated audio.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(store.upNext) { item in
                     row(item)
@@ -631,6 +657,7 @@ struct ListenView: View {
                 }
             }
         }
+        .modifier(WorkspaceListWidth(enabled: AppPlatform.isMac))
         .accessibilityIdentifier(embedded ? "podcastsScreen" : "listenScreen")
         .navigationTitle(embedded ? "Podcasts" : "Listen")
     }

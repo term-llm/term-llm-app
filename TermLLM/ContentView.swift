@@ -952,11 +952,14 @@ struct ContentView: View {
         Task { await push.refreshAuthorization() }
     }
 
-    private var settingsPresentation: some View {
-        // A Mac sheet otherwise sizes to its content, which clips
-        // connection management and makes desktop settings needlessly cramped.
-        settings.frame(minWidth: AppPlatform.isMac ? 680 : nil,
-                       minHeight: AppPlatform.isMac ? 560 : nil)
+    @ViewBuilder private var settingsPresentation: some View {
+        #if os(macOS)
+        MacSettingsPresentation(onClose: { showingSettings = false }) {
+            settings
+        }
+        #else
+        settings
+        #endif
     }
 
     private var settings: some View {
@@ -1003,8 +1006,8 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("Settings")
-            .inlineNavigationTitle()
+            .settingsPageTitle("Settings", isRoot: true)
+            #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { showingSettings = false }
@@ -1012,31 +1015,47 @@ struct ContentView: View {
                         .accessibilityIdentifier("settings.done")
                 }
             }
+            #endif
         }
     }
 
     private var desktopChatAppearanceSection: some View {
         Section {
-            LabeledContent("Chat zoom", value: DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
-                .accessibilityIdentifier("settings.chatZoom")
-            HStack {
-                Button("Zoom Out", systemImage: "minus.magnifyingglass") {
-                    macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: -0.25)
+            HStack(spacing: 12) {
+                Text("Chat zoom")
+                Spacer(minLength: 12)
+                HStack(spacing: 8) {
+                    Button {
+                        macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: -0.25)
+                    } label: {
+                        Image(systemName: "minus")
+                    }
+                    .accessibilityLabel("Zoom out chat")
+                    .accessibilityIdentifier("settings.chatZoom.decrease")
+                    .disabled(DesktopChatAppearance.clamped(macChatZoom) <= 0.75)
+
+                    Text(DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
+                        .monospacedDigit()
+                        .frame(width: 48)
+                        .accessibilityLabel("Chat zoom")
+                        .accessibilityValue(DesktopChatAppearance.clamped(macChatZoom).formatted(.percent.precision(.fractionLength(0))))
+                        .accessibilityIdentifier("settings.chatZoom")
+
+                    Button {
+                        macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: 0.25)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Zoom in chat")
+                    .accessibilityIdentifier("settings.chatZoom.increase")
+                    .disabled(DesktopChatAppearance.clamped(macChatZoom) >= 2)
                 }
-                .accessibilityLabel("Zoom out chat")
-                .accessibilityIdentifier("settings.chatZoom.decrease")
-                .disabled(DesktopChatAppearance.clamped(macChatZoom) <= 0.75)
-                Spacer()
-                Button("Zoom In", systemImage: "plus.magnifyingglass") {
-                    macChatZoom = DesktopChatAppearance.adjusted(macChatZoom, by: 0.25)
-                }
-                .accessibilityLabel("Zoom in chat")
-                .accessibilityIdentifier("settings.chatZoom.increase")
-                .disabled(DesktopChatAppearance.clamped(macChatZoom) >= 2)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Actual Size") { macChatZoom = DesktopChatAppearance.defaultZoom }
+                    .accessibilityIdentifier("settings.chatZoom.reset")
             }
-            .buttonStyle(.borderless)
-            Button("Actual Size") { macChatZoom = DesktopChatAppearance.defaultZoom }
-                .accessibilityIdentifier("settings.chatZoom.reset")
         } header: {
             Text("Chat appearance")
         } footer: {

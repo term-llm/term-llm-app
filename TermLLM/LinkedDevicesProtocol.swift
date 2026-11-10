@@ -102,6 +102,7 @@ struct LinkedDevicesPairingFailure: LocalizedError {
                     : "The network connection failed (POSIX \(code.rawValue))."
             case .dns(let code): reason = "The network connection failed (DNS \(code))."
             case .tls(let code): reason = "The secure network connection failed (TLS \(code))."
+            case .wifiAware(let code): reason = "The network connection failed (Wi-Fi Aware \(code))."
             @unknown default: reason = "The network connection failed."
             }
             recovery = "Close this sheet and try again. If this repeats, report the error code and diagnostic stage below."

@@ -93,7 +93,6 @@ struct DeviceToolsInfoView: View {
                 Text("Per conversation")
             }
         }
-        .navigationTitle("Device tools")
-        .inlineNavigationTitle()
+        .settingsPageTitle("Device tools")
     }
 }

@@ -209,6 +209,16 @@ final class LinkedDevicesProtocolTests: XCTestCase {
         XCTAssertTrue(enrollment.contains("check Connections"))
     }
 
+    func testWiFiAwarePairingFailureHasSafeNetworkDiagnostic() throws {
+        guard #available(macOS 26.0, iOS 26.0, *) else {
+            throw XCTSkip("Wi-Fi Aware errors require the newer Network framework")
+        }
+        let failure = LinkedDevicesPairingFailure(stage: .startingLocalBridge,
+                                                  error: NWError.wifiAware(-42))
+        XCTAssertEqual(failure.reason, "The network connection failed (Wi-Fi Aware -42).")
+        XCTAssertTrue(failure.localizedDescription.contains("Diagnostic stage: starting-local-chat-bridge"))
+    }
+
     func testPairingFailuresNeverExposeArbitraryErrorsOrServerReasons() {
         let secret = "PRIVATE-PAIRING-CAPABILITY"
         let errors: [Error] = [

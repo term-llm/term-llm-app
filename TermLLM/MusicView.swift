@@ -86,6 +86,7 @@ struct MusicView: View {
             if let track = player.nowPlaying { nowPlayingSection(track) }
             playlistsSection
         }
+        .modifier(WorkspaceListWidth(enabled: AppPlatform.isMac))
         .accessibilityIdentifier("musicScreen")
         .navigationTitle("Music")
     }
@@ -171,8 +172,22 @@ struct MusicView: View {
     private var playlistsSection: some View {
         Section("Playlists") {
             if library.store.playlists.isEmpty {
-                ContentUnavailableView("No Playlists", systemImage: "music.note.list",
-                                       description: Text(AppPlatform.isMac ? "Create a playlist with +, or ask the agent to." : "Tap + to make one, or ask the agent to."))
+                if AppPlatform.isMac {
+                    ContentUnavailableView {
+                        Label("No Playlists", systemImage: "music.note.list")
+                    } description: {
+                        Text("Create a playlist, or ask the agent to make one.")
+                    } actions: {
+                        Button("New Playlist") { newName = ""; creating = true }
+                            .accessibilityIdentifier("music.empty.newPlaylist")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                } else {
+                    ContentUnavailableView("No Playlists", systemImage: "music.note.list",
+                                           description: Text("Tap + to make one, or ask the agent to."))
+                }
             }
             ForEach(library.store.playlists) { playlist in
                 NavigationLink(value: playlist.id) { PlaylistRow(playlist: playlist, player: player) }
