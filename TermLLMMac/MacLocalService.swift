@@ -25,6 +25,11 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     private var localServicesEnabled = false
     private let home: URL
     private var automaticTerminationDisabled = false
+    private lazy var computerUse: ComputerUseController = {
+        let controller = ComputerUseController(home: home)
+        controller.onChange = { [weak self] in self?.updateComputerUseIcon() }
+        return controller
+    }()
     private static let lifetimeReason = "term-llm menu-bar app is running"
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -66,6 +71,8 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
         guard !applicationStarted else { return }
         applicationStarted = true
         createStatusItemIfNeeded()
+        computerUse.start()
+        updateComputerUseIcon()
         ProcessInfo.processInfo.disableAutomaticTermination(Self.lifetimeReason)
         automaticTerminationDisabled = true
         NotificationCenter.default.addObserver(self, selector: #selector(willTerminate),
@@ -115,6 +122,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     }
 
     @objc private func willTerminate() {
+        computerUse.shutdownForApplicationQuit()
         if automaticTerminationDisabled {
             ProcessInfo.processInfo.enableAutomaticTermination(Self.lifetimeReason)
             automaticTerminationDisabled = false
@@ -154,10 +162,13 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        computerUse.menuOpen = true
+        computerUse.refreshStatus()
         if localServicesEnabled { model.startPolling() }
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        computerUse.menuOpen = false
         if localServicesEnabled && localServiceWindow?.isVisible != true { model.stopPolling() }
     }
 
@@ -178,6 +189,20 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
         addItem("Open term-llm", action: #selector(openTermLLM), to: menu,
                 enabled: MacClientWindow.shared.window != nil)
         addItem("Local Service…", action: #selector(showLocalService), to: menu)
+        addItem("Computer Use…", action: #selector(showComputerUse), to: menu)
+        if computerUse.enabled {
+            menu.addItem(.separator())
+            let status = NSMenuItem(title: "Computer use: \(computerUse.statusTitle)", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+            if computerUse.status.working { addItem("Stop", action: #selector(stopComputerUse), to: menu) }
+            addItem(computerUse.status.paused ? "Resume" : "Pause Computer Use", action: #selector(pauseComputerUse), to: menu)
+            for grant in computerUse.status.missing {
+                let item = NSMenuItem(title: "Allow \(grant)…", action: #selector(allowComputerUse(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = grant
+                menu.addItem(item)
+            }
+        }
         if localServicesEnabled {
             menu.addItem(.separator())
             let status = NSMenuItem(title: "Local service: \(model.statusTitle)", action: nil, keyEquivalent: "")
@@ -193,6 +218,19 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
         }
         menu.addItem(.separator())
         addItem("Quit term-llm", action: #selector(quitTermLLM), to: menu)
+    }
+
+    private func updateComputerUseIcon() {
+        statusItem?.button?.image = NSImage(systemSymbolName: computerUse.icon, accessibilityDescription: "term-llm")
+        statusItem?.button?.toolTip = computerUse.enabled ? "term-llm · Computer use: \(computerUse.statusTitle)" : "term-llm"
+        if computerUse.menuOpen, let menu = statusItem?.menu { menuNeedsUpdate(menu) }
+    }
+
+    @objc private func showComputerUse() { computerUse.showWindow() }
+    @objc private func stopComputerUse() { computerUse.stop() }
+    @objc private func pauseComputerUse() { computerUse.togglePause() }
+    @objc private func allowComputerUse(_ sender: NSMenuItem) {
+        if let grant = sender.representedObject as? String { computerUse.send("allow", grant: grant) }
     }
 
     private func addItem(_ title: String, action: Selector, to menu: NSMenu, enabled: Bool = true) {

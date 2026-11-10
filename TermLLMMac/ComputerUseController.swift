@@ -1,0 +1,345 @@
+import AppKit
+import Combine
+@preconcurrency import ComputerUseCore
+import Darwin
+import Foundation
+
+/// File-only setup logic. Tests inject both homes; no defaults or TCC calls.
+struct ComputerUseInstallation: Sendable {
+    let home: URL
+    let state: URL
+    let binary: URL
+    private var manager: FileManager { .default }
+    var enabledURL: URL { state.appendingPathComponent("enabled") }
+    var link: URL { home.appendingPathComponent(".local/bin/term-llm-computer") }
+    var skill: URL { home.appendingPathComponent(".config/term-llm/skills/term-llm-computer/SKILL.md") }
+    private var ownershipURL: URL { state.appendingPathComponent("command-link.json") }
+    var enabled: Bool { manager.fileExists(atPath: enabledURL.path) }
+
+    func setEnabled(_ value: Bool) throws {
+        try UnixSocket.makeOwnFolder(state.path)
+        if value {
+            try Data().write(to: enabledURL, options: .atomic)
+            chmod(enabledURL.path, 0o600)
+        } else if enabled {
+            try manager.removeItem(at: enabledURL)
+        }
+    }
+    private func ownedTargets() -> Set<String> {
+        guard let data = try? Data(contentsOf: ownershipURL),
+            let paths = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return Set(paths)
+    }
+    var linkDestination: String? { try? manager.destinationOfSymbolicLink(atPath: link.path) }
+    var linkIsCurrent: Bool { linkDestination == binary.path }
+    var skillInstalled: Bool { (try? String(contentsOf: skill, encoding: .utf8)) == ComputerUseSkill.text }
+
+    /// Repair only a link to this binary or a previously recorded target. In
+    /// particular, dangling foreign links and ordinary files are never replaced.
+    func installCommand(onlyIfOwned: Bool = false) throws {
+        var info = stat()
+        let exists = lstat(link.path, &info) == 0
+        if !exists && errno != ENOENT { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let destination = linkDestination
+        let ours = destination.map { $0 == binary.path || ownedTargets().contains($0) } ?? false
+        if exists && (!ours || info.st_mode & S_IFMT != S_IFLNK) {
+            if onlyIfOwned { return }
+            throw NSError(
+                domain: "ComputerUseInstallation", code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(link.path) already belongs to another installation. Nothing was changed."
+                ])
+        }
+        if onlyIfOwned && !ours { return }
+        if linkIsCurrent { return }
+        try UnixSocket.makeOwnFolder(state.path)
+        try manager.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var targets = ownedTargets()
+        targets.insert(binary.path)
+        // Record ownership before promotion so a moved app can always repair it.
+        try JSONEncoder().encode(targets.sorted()).write(to: ownershipURL, options: .atomic)
+        chmod(ownershipURL.path, 0o600)
+        let staged = link.deletingLastPathComponent().appendingPathComponent(".term-llm-computer-\(UUID().uuidString)")
+        try manager.createSymbolicLink(at: staged, withDestinationURL: binary)
+        defer { try? manager.removeItem(at: staged) }
+        // Do not clobber an occupant created since the initial inspection.
+        if !exists {
+            guard renameatx_np(AT_FDCWD, staged.path, AT_FDCWD, link.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } else {
+            var now = stat()
+            guard lstat(link.path, &now) == 0, now.st_ino == info.st_ino, now.st_dev == info.st_dev,
+                linkDestination == destination
+            else { throw CocoaError(.fileWriteFileExists) }
+            guard rename(staged.path, link.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+    }
+    func installSkill() throws {
+        // Never follow a link into someone else's configuration.
+        for path in [skill.deletingLastPathComponent(), skill] {
+            var info = stat()
+            if lstat(path.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        try manager.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ComputerUseSkill.text.write(to: skill, atomically: true, encoding: .utf8)
+    }
+}
+
+struct ComputerUseStatus: Sendable, Equatable {
+    var running = 0
+    var working = false
+    var paused = false
+    var grants: [String: Bool] = [:]
+    var missing: [String] { grants.filter { !$0.value }.map(\.key).sorted() }
+    var title: String {
+        if paused { return "Paused" }
+        if let grant = missing.first { return "Needs \(grant)" }
+        return working ? "Working" : "Ready"
+    }
+    var symbol: String {
+        if paused { return "pause.circle" }
+        if !missing.isEmpty { return "exclamationmark.triangle" }
+        return working ? "cursorarrow.rays" : "terminal"
+    }
+}
+
+/// Synchronous socket work is ONLY called from background work below.
+private enum ComputerUseTransport {
+    static func send(_ method: String, params: [String: String] = [:]) throws -> ComputerUseStatus {
+        let path = Paths.socketPath()
+        try UnixSocket.ownFolder((path as NSString).deletingLastPathComponent)
+        let fd = try UnixSocket.connect(path, timeout: 0.25)
+        defer { close(fd) }
+        guard UnixSocket.peerUID(fd) == getuid() else { throw CocoaError(.fileReadNoPermission) }
+        let reply = try Wire.call(Wire.control(method, params: params), on: fd, deadline: Date().addingTimeInterval(1))
+        guard let result = reply["result"] as? [String: Any], reply["error"] == nil, result["exit"] == nil else {
+            throw NSError(
+                domain: "ComputerUseTransport", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The helper could not complete \(method)."])
+        }
+        return ComputerUseStatus(
+            running: result["running"] as? Int ?? 0, working: result["working"] as? Bool ?? false,
+            paused: result["paused"] as? Bool ?? false, grants: result["grants"] as? [String: Bool] ?? [:])
+    }
+}
+
+@MainActor
+final class ComputerUseController: NSObject, ObservableObject {
+    @Published private(set) var enabled = false
+    @Published private(set) var status = ComputerUseStatus()
+    @Published private(set) var connected = false
+    @Published private(set) var error: String?
+    @Published private(set) var commandInstalled = false
+    @Published private(set) var skillInstalled = false
+    var onChange: (() -> Void)?
+    private let installation: ComputerUseInstallation
+    private let suppressed: Bool
+    private var polling: Task<Void, Never>?
+    private var window: NSWindow?
+    private var observer: NSObjectProtocol?
+    private var launching = false
+    private var quitting = false
+    private var nextLaunch = Date.distantPast
+    private var backoff: TimeInterval = 1
+    private var generation = 0
+    var menuOpen = false
+    var statusTitle: String { connected ? status.title : "Starting…" }
+    var icon: String { enabled ? status.symbol : "terminal" }
+
+    init(
+        home: URL = Paths.homeDirectory(), state: URL = Paths.stateDirectory(),
+        binary: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/term-llm-computer"),
+        suppressRuntime: Bool? = nil
+    ) {
+        installation = ComputerUseInstallation(home: home, state: state, binary: binary)
+        suppressed =
+            suppressRuntime
+            ?? (MacLocalServiceBridge.isHostedTestRun || HubFixture.isEnabled || PhoneHubFixture.isEnabled)
+        super.init()
+        enabled = installation.enabled
+    }
+    func start() {
+        guard !suppressed, !quitting else { return }
+        if observer == nil {
+            observer = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil, queue: .main
+            ) { [weak self] notification in
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                    app.bundleIdentifier == "com.termllm.app.computeruse"
+                else { return }
+                MainActor.assumeIsolated {
+                    guard let self, self.enabled, !self.quitting else { return }
+                    self.connected = false
+                    self.launching = false
+                    self.nextLaunch = Date().addingTimeInterval(self.backoff)
+                    self.backoff = min(60, self.backoff * 2)
+                }
+            }
+        }
+        refreshInstallations(repair: true)
+        if enabled { startPolling() }
+    }
+    func setEnabled(_ value: Bool) {
+        guard !suppressed, !quitting else { return }
+        do { try installation.setEnabled(value) } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        enabled = value
+        generation += 1
+        error = nil
+        if value {
+            nextLaunch = .distantPast
+            backoff = 1
+            startPolling()
+        } else {
+            polling?.cancel()
+            polling = nil
+            connected = false
+            status = ComputerUseStatus()
+            send("shutdown")
+        }
+        onChange?()
+    }
+    private func startPolling() {
+        guard polling == nil else { return }
+        polling = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.enabled, !self.quitting else { return }
+                await self.poll()
+                try? await Task.sleep(for: .milliseconds(self.menuOpen ? 400 : 2000))
+            }
+        }
+    }
+    func refreshStatus() {
+        guard enabled, !suppressed else { return }
+        Task { await poll() }
+    }
+    private func poll() async {
+        let epoch = generation
+        let value = await Task.detached(priority: .utility) { try? ComputerUseTransport.send("status") }.value
+        guard enabled, !quitting, epoch == generation else { return }
+        if let value {
+            status = value
+            connected = true
+            error = nil
+            // Do not reset the crash backoff on a single successful heartbeat.
+        } else {
+            connected = false
+            launchIfNeeded()
+        }
+        onChange?()
+    }
+    private func launchIfNeeded() {
+        guard !suppressed, enabled, !quitting, !launching, Date() >= nextLaunch else { return }
+        launching = true
+        nextLaunch = Date().addingTimeInterval(backoff)
+        backoff = min(60, backoff * 2)
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/term-llm Computer Use.app")
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = false
+        config.activates = false
+        config.addsToRecentItems = false
+        config.environment = [
+            "TERM_LLM_COMPUTER_HOST_PID": String(getpid()),
+            "TERM_LLM_COMPUTER_HOME": installation.state.path,
+            "TERM_LLM_COMPUTER_SOCKET": Paths.socketPath(),
+        ]
+        NSWorkspace.shared.openApplication(at: helper, configuration: config) { [weak self] _, error in
+            let message = error?.localizedDescription
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.launching = false
+                if !self.enabled || self.quitting {
+                    self.send("shutdown")
+                    return
+                }
+                if let message { self.error = message }
+            }
+        }
+    }
+    func send(_ method: String, grant: String? = nil) {
+        guard !suppressed else { return }
+        let epoch = generation
+        Task {
+            guard epoch == generation else { return }
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                do {
+                    _ = try ComputerUseTransport.send(method, params: grant.map { ["grant": $0] } ?? [:])
+                    return nil
+                } catch { return error.localizedDescription }
+            }.value
+            guard epoch == generation else { return }
+            if let failure, method != "shutdown" { error = failure }
+            if enabled { await poll() }
+        }
+    }
+    func togglePause() { send(status.paused ? "resume" : "pause") }
+    func stop() { send("stop") }
+
+    /// Termination is the sole bounded wait on the main thread: ensure shutdown
+    /// reaches the helper before this process exits. Its host monitor is fallback.
+    func shutdownForApplicationQuit() {
+        quitting = true
+        generation += 1
+        polling?.cancel()
+        polling = nil
+        guard !suppressed, enabled else { return }
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = try? ComputerUseTransport.send("shutdown")
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 1.5)
+    }
+    func refreshInstallations(repair: Bool = false) {
+        let setup = installation
+        Task {
+            let values = await Task.detached(priority: .utility) { () -> (Bool, Bool) in
+                if repair { try? setup.installCommand(onlyIfOwned: true) }
+                return (setup.linkIsCurrent, setup.skillInstalled)
+            }.value
+            commandInstalled = values.0
+            skillInstalled = values.1
+        }
+    }
+    func installCommand() { install(skill: false) }
+    func installSkill() { install(skill: true) }
+    private func install(skill: Bool) {
+        guard !suppressed else { return }
+        let setup = installation
+        Task {
+            error = await Task.detached(priority: .userInitiated) { () -> String? in
+                do {
+                    if skill { try setup.installSkill() } else { try setup.installCommand() }
+                    return nil
+                } catch { return error.localizedDescription }
+            }.value
+            refreshInstallations()
+        }
+    }
+    func showWindow() {
+        if window == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+                styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "Computer Use"
+            window.isReleasedWhenClosed = false
+            window.tabbingMode = .disallowed
+            let viewController = ComputerUseViewController(controller: self)
+            window.contentViewController = viewController
+            viewController.fitWindowToContent()
+            window.center()
+            self.window = window
+        }
+        refreshInstallations()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}

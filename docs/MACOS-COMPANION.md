@@ -15,7 +15,7 @@ The client has the same Agents, Chat, Music, Podcasts and remote connections as 
 | App menu-bar item | Present from startup; Open term-llm, optional Local Service and explicit Quit. Service status/chat/start/stop/restart appear from launch for existing managed or Developer Mode installs, or after opening local setup |
 | CLI installation | Official signed GitHub release → stable per-user runtime, signature/checksum verification, transactional replacement and backups |
 | Authenticated local chat | Verified managed loopback service handed to the full client's isolated Direct Node source |
-| Computer use / macOS Harness integration | **Deferred.** No bundled Python/PyObjC runtime or permission host |
+| Computer use | **Shell implemented, tool integration pending.** Bundled native permission helper and CLI, menu/settings lifecycle, and term-llm-only skill; no Python runtime. See [shell integration](design/COMPUTER-USE-SHELL.md) |
 | Developer ID signing and notarization | CI on push to `main`, published as GitHub releases ([setup](SELF-HOSTED-CI.md#notarized-mac-builds)) |
 | Automatic app updates | **Not implemented** |
 

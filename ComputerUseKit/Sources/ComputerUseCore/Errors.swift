@@ -43,6 +43,7 @@ public struct HarnessError: Error, Equatable, CustomStringConvertible {
 public enum Usage {
     /// Argument checks. The texts are part of the tool contract.
     public static let texts: [String: String] = [
+        "python_stdin": "Run one tool per command, for example: term-llm-computer get_app_state --app Finder",
         "app": "Give the app: --app <name, bundle id or path>",
         "element_index": "--element_index takes a whole number",
         "coordinate": "--x and --y must both be numbers",
