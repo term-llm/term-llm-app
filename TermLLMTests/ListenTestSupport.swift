@@ -256,22 +256,7 @@ final class FakeRead: ListenTransferRead, @unchecked Sendable {
     func fail(_ error: Error) { lock.withLock { _error = error } }
 }
 
-/// Polls until `condition` holds (or a few seconds pass).
-@MainActor
-func eventually(_ timeout: TimeInterval = 5, _ condition: () -> Bool) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition(), Date() < deadline {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-}
-
 /// Distinct bytes, so misplaced ranges show up.
 func mediaBody(_ count: Int) -> Data {
     Data((0..<count).map { UInt8(truncatingIfNeeded: ($0 >> 8) &+ ($0 &* 7)) })
-}
-
-/// Waits for main-actor tasks spawned by the code under test.
-@MainActor
-func settle() async {
-    for _ in 0..<20 { await Task.yield() }
 }

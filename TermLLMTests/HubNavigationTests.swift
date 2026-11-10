@@ -139,18 +139,16 @@ final class TailnetDiscoveryTests: XCTestCase, @unchecked Sendable {
     }
 }
 
-private final class TailnetHealthProtocol: URLProtocol, @unchecked Sendable {
+private final class TailnetHealthProtocol: ScriptedURLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        guard let url = request.url else { return }
+    override class func response(for request: URLRequest) throws -> Response {
+        let url = request.url!
         let errors: [String: URLError.Code] = ["dns": .cannotFindHost, "tls": .serverCertificateUntrusted,
                                                "timeout": .timedOut, "offline": .cannotConnectToHost]
         let host = url.host?.components(separatedBy: ".").first ?? ""
         if let code = errors[host] {
-            client?.urlProtocol(self, didFailWithError: NSError(domain: NSURLErrorDomain, code: code.rawValue,
-                userInfo: [NSLocalizedDescriptionKey: "private-detail", NSURLErrorFailingURLStringErrorKey: url.absoluteString]))
-            return
+            throw NSError(domain: NSURLErrorDomain, code: code.rawValue,
+                userInfo: [NSLocalizedDescriptionKey: "private-detail", NSURLErrorFailingURLStringErrorKey: url.absoluteString])
         }
         // The fixture accepts only the requested mount and credential-free probe.
         let validRequest = url.path == "/hub/healthz" && request.timeoutInterval == 15
@@ -158,11 +156,7 @@ private final class TailnetHealthProtocol: URLProtocol, @unchecked Sendable {
             && request.value(forHTTPHeaderField: "Cookie") == nil
         let statuses = ["auth": 401, "redirect": 302, "unavailable": 503]
         let status = validRequest ? (statuses[host] ?? 200) : 400
-        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil,
-                                       headerFields: ["Content-Type": "application/json"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data((host == "malformed" ? "not JSON" : #"{"status":"ok","role":"hub"}"#).utf8))
-        client?.urlProtocolDidFinishLoading(self)
+        return Response(status: status, headers: ["Content-Type": "application/json"],
+                        body: Data((host == "malformed" ? "not JSON" : #"{"status":"ok","role":"hub"}"#).utf8))
     }
-    override func stopLoading() {}
 }

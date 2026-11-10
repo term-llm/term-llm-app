@@ -112,14 +112,8 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
 
     private func settle(_ condition: @MainActor () -> Bool, timeout: Duration = .seconds(2),
                         file: StaticString = #filePath, line: UInt = #line) async {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                XCTFail("Condition not met in time", file: file, line: line)
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        try? await pollUntil(timeout: timeout, interval: .milliseconds(5),
+                             file: file, line: line, condition)
     }
 
     // MARK: Loading
