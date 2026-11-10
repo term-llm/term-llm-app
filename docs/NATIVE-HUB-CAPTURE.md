@@ -1,6 +1,6 @@
 # Native Hub: actual simulator test and capture
 
-This pipeline runs **the real iOS SwiftUI app with XCUITest** on `macos-15` using `/Applications/Xcode_26.2.app`. It records the same existing iPhone simulator selected by `scripts/select-ios-simulator.py` with `simctl recordVideo`, and exports actual XCUITest screenshot attachments as PNGs. It does not render slides or simulate a native UI in HTML.
+This pipeline runs **the real iOS SwiftUI app with XCUITest** on a local Mac using `/Applications/Xcode_26.2.app`. It records the same existing iPhone simulator selected by `scripts/select-ios-simulator.py` with `simctl recordVideo`, and exports actual XCUITest screenshot attachments as PNGs. It does not render slides or simulate a native UI in HTML.
 
 ## What is demo data—and what is not implemented
 
@@ -28,7 +28,7 @@ Nodes: **Demo Dev** (active and completed sessions), **Demo Stalled** (health re
 
 - Simulator DEBUG launch environment: `TERMLLM_NATIVE_HUB_FIXTURE_URL=http://localhost:8766/`. Only that exact URL is accepted. The app uses an isolated, cleared defaults suite and nonpersistent WebKit data store, does **not** preset the connected URL, and keeps device-tool sharing/push enrollment off. It never borrows production credentials/settings.
 - First-run field/button identifiers are `serverAddress` / `serverConnect`; the global disclosure is `hub.fixtureBanner`. Persistent native navigation is `hub.open` / `hub.chat`. Final Hub view identifiers are kept in sync with `TermLLMUITests/NativeHubUITests.swift`.
-- Project owner registers `TermLLMUITests/NativeHubUITests.swift` in an **iOS UI Testing Bundle** named `TermLLMUITests` (`com.apple.product-type.bundle.ui-testing`), app target dependency, `TEST_TARGET_NAME = TermLLM`, generated Info.plist, deployment target matching app, Swift 5. Include the test target in shared `TermLLM` scheme build-for-testing and non-skipped TestableReference. CI worker does not edit `project.pbxproj` or schemes.
+- `TermLLMUITests/NativeHubUITests.swift` runs in the **iOS UI Testing Bundle** `TermLLMUITests` (`TEST_TARGET_NAME = TermLLM`), a non-skipped testable of the shared `TermLLM` scheme.
 - Existing `Info.plist` has the `localhost` HTTP ATS exception; address validation restricts HTTP to simulator localhost. No arbitrary network exception is added.
 
 ## Running and obtaining media
@@ -44,14 +44,7 @@ export RUNNER_TEMP="$(mktemp -d)"
 bash scripts/native-hub/capture.sh
 ```
 
-For an existing completed CI run, authenticated repository readers can download:
-
-```sh
-gh run download RUN_ID --repo SamSaffron/term-llm-app \
-  --name native-hub-RUN_ID-RUN_ATTEMPT --dir native-hub-capture
-```
-
-Historical CI artifacts had a seven-day retention limit. New captures stay in the local `$RUNNER_TEMP/native-hub-artifacts/` directory; no automatic upload occurs. Outputs:
+Captures stay in the local `$RUNNER_TEMP/native-hub-artifacts/` directory; no automatic upload occurs. Outputs:
 
 - `native-hub-demo-fixture.mp4`: continuous actual simulator recording during the XCUITest run;
 - `screenshots/**/*.png`: first-run, entered connection, native dashboard, inspected screens, chat and stalled-chat recovery attachments; names/attachment associations are in the exported xcresult attachment manifest;
@@ -60,7 +53,7 @@ Historical CI artifacts had a seven-day retention limit. New captures stay in th
 - `fixture-requests.jsonl`, fixture/recording/export logs, simulator inventory and Xcode version;
 - `manifest.json`: checked-out commit, dirty-worktree flag, run/ref/SHA, simulator UDID, timestamps, exit status, fixture limitations, and SHA-256/size inventory. No environment dump.
 
-Use the actual downloaded PNG/MP4 paths with `show_media` to display the capture. Do not present Python unit-test placeholder bytes as captured media.
+Use the actual captured PNG/MP4 paths with `show_media` to display the capture. Do not present Python unit-test placeholder bytes as captured media.
 
 ## Pass/fail and verification limits
 

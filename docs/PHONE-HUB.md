@@ -9,7 +9,7 @@ It does not depend on the deferred WebRTC branch, SDK or remote demo services.
 - Add an explicit **Hub** or **Direct Node**, a display name, and its HTTPS root URL, including its mount prefix.
 - Connection metadata is saved locally. Credentials are not serialized into defaults or connection links.
 - Existing `serverURL` migrates into the catalog once. A positive public health-role result can classify the legacy endpoint; unknown/failed discovery requires review instead of a guessed type.
-- The selected source URL remains mirrored to the existing single-active-browser setting. Source-specific device-tool and shortcut opt-ins do not become app-wide grants.
+- The selected source URL remains mirrored to the existing single-active-browser setting. Device-tool sharing is one app-wide switch (any earlier per-server opt-in migrates to it), and the voice shortcut targets one saved agent across all connections.
 - Each source owns its WebKit website data and authentication. A changed endpoint/kind is a new trust identity; a name change is not.
 - Isolated storage may require a fresh sign-in after migrating the old URL. URL migration does not imply automatic copying of ambient browser credentials.
 - Listen items capture their originating source UUID when queued; later selection changes cannot substitute a different connection's cookies. Missing/corrupt catalogs, removed sources and media with unknown ownership fail closed for credentials. Previously queued unowned protected media may need to be added again from its signed-in source; public URLs do not gain credentials through URL matching alone.

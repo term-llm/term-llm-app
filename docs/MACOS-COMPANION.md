@@ -10,12 +10,12 @@ The client has the same Agents, Chat, Music, Podcasts and remote connections as 
 
 | Piece | Status |
 |---|---|
-| Full Mac client | Native macOS target `TermLLMMac`, sharing the iPhone/iPad sources; desktop sidebar, native menus and keyboard controls |
+| Full Mac client | Native macOS target `TermLLMMac`, sharing the iPhone/iPad sources; window-toolbar destination selector, native menus and keyboard controls |
 | Optional local setup | Native AppKit window in the app: one status line with the next step, details under Advanced |
-| App menu-bar item | Present from startup; Open term-llm, optional Local Service and explicit Quit. Service status/chat/start/stop/restart appear from launch for existing managed or Developer Mode installs, or after opening local setup |
+| App menu-bar item | Present from startup; Open term-llm, optional Local Service and Computer Use, the App Updates submenu and explicit Quit. Service status/chat/start/stop/restart appear from launch for existing managed or Developer Mode installs, or after opening local setup |
 | CLI installation | Official signed GitHub release → stable per-user runtime, signature/checksum verification, transactional replacement and backups |
 | Authenticated local chat | Verified managed loopback service handed to the full client's isolated Direct Node source |
-| Computer use | **Shell implemented, tool integration pending.** Bundled native permission helper and CLI, menu/settings lifecycle, and term-llm-only skill; no Python runtime. See [shell integration](design/COMPUTER-USE-SHELL.md) |
+| Computer use | **Implemented, off by default.** Bundled native helper and `term-llm-computer` CLI running all eleven tools, per-app approvals, Stop/Pause, menu/settings lifecycle, and the term-llm-only `computer-use` skill; no Python runtime. See [shell integration](design/COMPUTER-USE-SHELL.md) for verification limits |
 | Developer ID signing and notarization | CI on push to `main`, published as GitHub releases ([setup](SELF-HOSTED-CI.md#notarized-mac-builds)) |
 | App updates | Sparkle 2.10.1; automatic daily checks and user-confirmed install/relaunch, separately signed appcast and archives |
 
@@ -295,7 +295,7 @@ SIGUSR2 delivery, graceful replacement after active work, or production health p
 
 ## Known limits and non-claims
 
-- Sparkle and automatic app updates are not implemented. Gatekeeper acceptance of a CI release on another Mac, and production APNs delivery to it, are not yet verified. The official CLI release has its own signed/notarized distribution.
+- App updates check automatically but never install unattended: each installation needs confirmation. The [Sparkle test record](testing/MAC-SPARKLE-20261111.md) lists what the update flow has and has not been verified on. Gatekeeper acceptance of a CI release on another Mac, and production APNs delivery to it, are not yet verified. The official CLI release has its own signed/notarized distribution.
 - Native setup and the shared client must be exercised together on Mac; kit fixtures alone do not prove the UI handoff or a live service.
 - Login-item firing after reboot/login is not established by registering it, and Open at Login registration from an unsigned development build is not verified.
 - Non-GUI SSH sessions may not be able to read the core's login-Keychain token. A logged-in GUI session is required when Keychain interaction is needed.

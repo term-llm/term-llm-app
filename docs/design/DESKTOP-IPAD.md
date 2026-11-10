@@ -76,9 +76,9 @@ The native implementation has separate passing checks: 81 focused simulator test
 
 ## References consulted
 
-- `README.md`: native destinations, connection provenance, retained Chat context, settings scope, web-owned Chat header.
-- `output/walkthrough/04-agents.png`: existing mobile grouped Agents, system surfaces and four destinations.
-- `output/walkthrough/07-chat.png`: existing agent-owned web header, readable conversation and composer, persistent native destination access.
-- `output/playwright/header-concepts/media/selected/README.md`: no duplicate app header, stable Chat label, independent draft/playback state.
+- [`README.md`](../../README.md): native destinations, connection provenance, retained Chat context, settings scope, web-owned Chat header.
+- [`reference/walkthrough/04-agents.png`](reference/walkthrough/04-agents.png): existing mobile grouped Agents, system surfaces and four destinations.
+- [`reference/walkthrough/07-chat.png`](reference/walkthrough/07-chat.png): existing agent-owned web header, readable conversation and composer, persistent native destination access.
+- [`reference/header-concept-05/README.md`](reference/header-concept-05/README.md): no duplicate app header, stable Chat label, independent draft/playback state.
 
-The existing phone captures are reference material, not targets to replace. No files under `output/` are modified by this deliverable.
+The phone captures are reference material, not targets to replace; this concept does not modify them.

@@ -35,7 +35,10 @@ updates require an explicit service restart, not an automatic hard restart.
 **Remove…** preserves core data; **Stop Managing…** leaves the binary/link/services
 for `term-llm upgrade`. **Developer Mode…** (under Advanced) uses an explicit executable
 and disables installation, updates, migration and PATH/marker management.
-These CLI updates do not implement Mac app auto-update/Sparkle or app notarization.
+These are CLI updates only. The app itself is notarized by CI and updates through
+Sparkle (**Check for Updates…**, automatic daily checks, user-confirmed installation),
+which never replaces or restarts the managed CLI; see
+[Updating the app](MACOS-COMPANION.md#updating-the-app-not-the-cli).
 Live launchd migration and graceful reload remain unverified; fixture tests are
 not proof of live service behavior. See [the ownership guide](MACOS-COMPANION.md).
 
@@ -50,7 +53,7 @@ not proof of live service behavior. See [the ownership guide](MACOS-COMPANION.md
 
 **Platform differences:** Apple Music plays in-app through `ApplicationMusicPlayer` (macOS has no system Music player for apps). Podcasts need no audio-session setup on Mac. Notifications use a sandboxed Mac notification service extension (`TermLLMMacNotificationService`) sharing the iPhone extension's code, app group and Keychain group; the APNs environment comes from the app's signed `aps-environment` entitlement.
 
-The build is not yet a signed/notarized distribution. Compiling the shared media, notification, voice and linked-device paths does not prove live Apple Music authorization/playback, APNs delivery, microphone/camera permissions or remote peer connectivity on Mac. Those require separate live checks; do not infer device-only parity from a build or fixtures.
+CI Developer ID signs, notarizes and publishes release builds ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); builds run from Xcode stay development-signed. Compiling the shared media, notification, voice and linked-device paths does not prove live Apple Music authorization/playback, APNs delivery, microphone/camera permissions or remote peer connectivity on Mac. Those require separate live checks; do not infer device-only parity from a build or fixtures.
 
 The iPhone/iPad target no longer runs on Mac: Mac Catalyst and Designed for iPad/iPhone are both turned off.
 
