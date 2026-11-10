@@ -185,3 +185,129 @@ Not ported from the listed Python test files:
   ancestry tests, replaced by Swift compile/API tests and fixed helper identity.
 - Lock-screen's 11 parameterizations of nonexistent unlock features are one
   source-safety regression, not 11 duplicate tests.
+
+## App/window context port (`cu-ctx`)
+
+Added `Apps.swift`, `Windows.swift`, `Focus.swift`, `Settle.swift`, `Person.swift`,
+and `Instructions.swift`, ported from the same pinned Python reference. No shared
+Core/System primitive files or `Package.swift` were changed. Instance modules have
+`.shared` defaults (except `Instructions`, a value with an injectable state path).
+All AX access goes through `AX.backend`; error text comes from `Errors.make`.
+
+Primary public API (default arguments abbreviated here):
+
+```swift
+Apps.init(system: Apps.System = .init())
+Apps.resolve(_ identifier: String) throws -> AppTarget
+Apps.running(_ target: AppTarget) throws -> AppTarget
+Apps.launch(_ target: AppTarget, abandoned: () -> Bool = { false }) throws -> AppTarget
+Apps.kind(_ target: AppTarget) -> AppKind
+Apps.bundleID(_ pid: pid_t) -> String
+Apps.panelService(_ pid: pid_t) -> pid_t?
+Apps.panelOwner(_ candidates: [AppTarget]) throws -> AppTarget
+Apps.frontmost(hosts: Set<String> = [], procs: [Apps.Proc]? = nil) -> AppTarget?
+Apps.prewarm()
+Apps.catalog() -> [Apps.Used]
+Apps.listApps(hosts: Set<String> = []) -> [[String: Any]]
+
+Windows.init(system: Windows.System = .init())
+Windows.keyWindow(_ target: AppTarget) throws -> WindowRef // instance + static shared wrapper
+Windows.ordered(_ target: AppTarget) throws -> [WindowRef]
+Windows.at(_ target: AppTarget, point: CGPoint) throws -> WindowRef
+Windows.ref(_ element: UIElementRef) throws -> WindowRef
+Windows.windowRef(_ element: UIElementRef) throws -> WindowRef
+Windows.serverWindows(pid: pid_t? = nil) -> [Windows.Row]
+Windows.serverWindow(_ id: UInt32) -> Windows.Row?
+Windows.extraWindows(target: AppTarget, windowID: UInt32) -> [Windows.Row]
+Windows.openMenu(_ target: AppTarget) throws -> UIElementRef?
+Windows.shownMenu(_ target: AppTarget) throws -> UIElementRef?
+Windows.waitForMenu(_ target: AppTarget, opener: UIElementRef) throws -> UIElementRef?
+Windows.keepMenu(_ target: AppTarget, title: UIElementRef)
+Windows.closeMenu(_ target: AppTarget)
+Windows.watch(_ target: AppTarget) throws
+Windows.unwatch(_ target: AppTarget)
+
+Focus.init(system: Focus.System = .init())
+Focus.enforcer(_ target: AppTarget) -> Focus.Enforcer
+Focus.Enforcer.active<T>(window: WindowRef?, _ work: () throws -> T) throws -> T
+Focus.Enforcer.reallyActive / believesActive / believesFocus: Bool
+Focus.release(_ target: AppTarget)
+Focus.releaseAll()
+Focus.frontPID() -> pid_t // static
+Focus.noAttention(_ pid: pid_t) // static
+Focus.focusElement(_ element: UIElementRef) -> Bool // static
+
+Settle.wait(target: AppTarget, kind: AppKind, read: (WindowRef) throws -> Capture,
+            poll: TimeInterval? = nil, quiet: TimeInterval = 0.25, limit: TimeInterval = 5,
+            now: @escaping () -> TimeInterval, sleep: (TimeInterval) -> Void,
+            abandoned: () -> Bool = { false },
+            keyWindow: (AppTarget) throws -> WindowRef = Windows.keyWindow) throws -> Capture?
+// now/sleep also default to uptime/Thread.sleep. Static method; observer always stopped.
+
+Person.init(system: Person.System = .init(), hooks: Person.Hooks = .init())
+Person.startWatch(ownPID: pid_t)
+Person.gate(agent: AgentSession, target: AppTarget, stateRead: Bool,
+            abandoned: () -> Bool = { false }) throws
+Person.interrupted(_ target: AppTarget, since: TimeInterval) -> Bool
+Person.afterStateRead(_ target: AppTarget)
+Person.turnEnded(_ agent: AgentSession)
+Person.driven() -> [AppTarget]
+Person.wentTo(_ pid: pid_t, since: TimeInterval) -> Bool
+Person.secureInputPID() -> pid_t? // static
+Person.saw(kind: UInt32, sourcePID: pid_t, tag: Int64, pid: pid_t,
+           keycode: Int = 0, stray: Bool = false, command: Bool = false)
+
+Instructions.init(stateDirectory: @escaping () -> URL = { Paths.stateDirectory() })
+Instructions.personalDirectory() -> URL
+Instructions.note(_ bundleID: String) -> String?
+Instructions.prefix(agent: AgentSession, bundleID: String) -> String?
+```
+
+`Apps.System` covers processes, kernel executable checks, bundles/files, Launch
+Services, usage query, window readiness, panel ownership and clocks. `Proc` and
+`Used` are public value rows. `Windows.System` supplies CG rows/associations, clock
+and no-attention hook; `Row` exposes `id`, `pid`, `title`, `layer`, `frame`.
+Screenshot extras are `extraWindows(...).map { ($0.id, $0.frame) }`.
+`Focus.System` supplies front-pid, event posting, freeze/thaw, clocks, background
+work and the person's-switch predicate. Private symbol wrappers also accept fake
+symbol resolvers for grant-free tests. `Person.System` supplies the front process,
+bundle lookup, hardware idle, secure-input owner and listen preflight; `Hooks`
+supplies presence activity, timers, shown-menu and pid-only posting. Its callback
+logic (`onEvent(kind:event:reenable:)`) can be tested without installing a tap.
+
+Integration TODOs: presence must install `Person.shared.hooks.pointerActivity`;
+AppSession/tools supply Settle's read closure, own/clear `needsSettle`, and reuse the
+returned capture. Helper startup calls `Apps.shared.prewarm()` and
+`Person.shared.startWatch(ownPID:)` on its existing main loop. Session lifetimes
+balance `Windows.watch/unwatch`; calls use Person's gate/after-state-read and
+interruption predicate; turn cleanup calls `Person.turnEnded` and Focus release
+(per-app last driver, or releaseAll when all drivers stop). Nothing here imports
+the unmerged session, orchestration, policy, or presence implementation. The
+window-bounds TODO is retained from upstream: read bounds per state/action, not
+through a separate live tracker.
+
+Deliberate Swift differences: module-global state becomes injectable long-lived
+instances; Python context managers become throwing closure scopes; AX points are
+already normalized by the shared backend; a typed `System` closure cannot raise
+an arbitrary Python exception into the event callback. Notes are embedded/trimmed
+Swift literals (all eight checked against upstream SHA-256), with no library
+resources. Personal overrides remain under `Paths.stateDirectory()/instructions`,
+case-insensitive by basename, and unreadable/empty files suppress built-ins too.
+Process ids use `pid_t`, and Core's existing `AgentSession` replaces Python's
+session object; no dependency on the pending `AppSession` was introduced.
+
+Verification: `cd ComputerUseKit && swift build && swift test` passes: **96 new
+context tests**, **187 System**, **3 Core**, **1 Helper**, **191 total**, zero
+failures/runtime skips. Tests consolidate Python parameterizations into loops and
+use fake AX, clocks, app systems, C function pointers, hooks and temporary files.
+They do not launch apps, post input, install taps, change focus, or require grants.
+
+Not run/ported as live tests: Python's real-kernel/process inventory, real Mac
+resolve/background launch, idle-app AX settling, live event-tap/input and modifier
+state checks. Python-specific source/signature/import assertions and tests of
+unmerged actions/tools/CLI/Session settle-flag or cell-chaining behavior are not
+claimed here; equivalent local context decisions are exercised directly. Existing
+SystemAX tests own observer-registration unsupported/error-code behavior. No UI,
+signed-helper, TCC, or live focus-restore verification is claimed. The deprecated
+`NSWorkspace.fullPath(forApplication:)` fallback is intentionally retained for the
+upstream name-resolution behavior.
