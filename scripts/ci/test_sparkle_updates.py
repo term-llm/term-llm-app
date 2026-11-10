@@ -317,7 +317,7 @@ class PublishingTests(AppFixture):
     def setUp(self):
         super().setUp()
         self.public_verify = mock.patch.object(sparkle, "verify_public_archive")
-        self.public_verify.start()
+        self.verify_archive = self.public_verify.start()
         self.addCleanup(self.public_verify.stop)
 
     def fake_run(self, calls, fail=None):
@@ -330,19 +330,29 @@ class PublishingTests(AppFixture):
             return subprocess.CompletedProcess(args, 0, SIGNATURE.encode(), b"")
         return run
 
-    def test_zip_then_feed_atomic_rsync_and_exact_github_archive(self):
+    def test_zip_verify_feed_latest_verify_atomic_rsync_and_exact_github_archive(self):
         self.prepare()
         directory = build.secrets_directory(self.work, self.tools)
         calls = []
+        self.verify_archive.side_effect = lambda *args: calls.append(["verify", *args])
         with mock.patch.object(sparkle, "fetch", return_value=None):
             sparkle.publish(self.app, self.work, build.release_metadata(self.app), directory, self.fake_run(calls))
         uploads = [c for c in calls if c[0] == "rsync"]
-        self.assertEqual(len(uploads), 2)
+        self.assertEqual(len(uploads), 3)
         self.assertTrue(uploads[0][-2].endswith(".zip"))
         self.assertTrue(any(c[-1].endswith("appcast.xml") and "sign_update" in c[0] for c in calls))
         self.assertTrue(uploads[1][-2].endswith("appcast.xml"))
+        self.assertEqual(uploads[2][-2], uploads[0][-2], "Reuse the exact archive, never recompress")
+        self.assertEqual(uploads[2][-1], sparkle.DESTINATION + sparkle.LATEST_ASSET)
+        digest = hashlib.sha256(b"stapled exact zip bytes").hexdigest()
+        length = len(b"stapled exact zip bytes")
+        self.assertEqual([c for c in calls if c[0] in ("rsync", "verify")], [
+            uploads[0], ["verify", sparkle.BASE + sparkle.public_asset(build.release_metadata(self.app), digest), digest, length],
+            uploads[1], uploads[2], ["verify", sparkle.DOWNLOAD, digest, length]])
         for call in uploads:
-            if call[-2].endswith("appcast.xml"):
+            if call[-1].endswith(sparkle.LATEST_ASSET):
+                self.assertNotIn("--ignore-existing", call)
+            elif call[-2].endswith("appcast.xml"):
                 self.assertEqual(call[-1], sparkle.DESTINATION)
                 self.assertNotIn("--ignore-existing", call)
             else:
@@ -453,17 +463,24 @@ class PublishingTests(AppFixture):
 
     def test_secret_bearing_publish_tool_errors_are_fixed_and_redacted(self):
         sentinel = "PRIVATE-TOOL-OUTPUT-MUST-NOT-LEAK"
-        for branch in ("verify", "zip-sign", "feed-sign", "zip-upload", "feed-upload"):
+        for branch in ("verify", "zip-sign", "feed-sign", "zip-upload", "feed-upload", "latest-upload", "latest-verify"):
             with self.subTest(branch=branch):
                 self.prepare()
-                runner = self.fake_run([])
+                calls = []
+                runner = self.fake_run(calls)
                 failures = []
+                def verify(url, *args):
+                    if branch == "latest-verify" and url == sparkle.DOWNLOAD:
+                        failures.append(url)
+                        raise ValueError(sentinel)
+                self.verify_archive.side_effect = verify
                 def run(args, **kwargs):
                     fail = (branch == "verify" and "--verify" in args or
                             branch == "zip-sign" and "-p" in args or
                             branch == "feed-sign" and "sign_update" in args[0] and args[-1].endswith("appcast.xml") and "--verify" not in args or
                             branch == "zip-upload" and args[0] == "rsync" and args[-2].endswith(".zip") or
-                            branch == "feed-upload" and args[0] == "rsync" and args[-2].endswith("appcast.xml"))
+                            branch == "feed-upload" and args[0] == "rsync" and args[-2].endswith("appcast.xml") or
+                            branch == "latest-upload" and args[0] == "rsync" and args[-1].endswith(sparkle.LATEST_ASSET))
                     if fail:
                         failures.append(args)
                         return subprocess.CompletedProcess(args, 1, sentinel.encode(), sentinel.encode())
@@ -480,6 +497,10 @@ class PublishingTests(AppFixture):
                 self.assertNotIn(sentinel, stderr.getvalue())
                 self.assertEqual(len(failures), 1, "Must exercise the intended tool failure, not an earlier guard")
                 self.assertFalse((self.work / "sparkle-published.sha256").exists())
+                if branch.startswith("latest-"):
+                    self.assertIn("release is already published to Sparkle", stderr.getvalue())
+                    self.assertIn(sparkle.DOWNLOAD, stderr.getvalue())
+                    self.assertTrue(any(c[0] == "rsync" and c[-2].endswith("appcast.xml") for c in calls))
                 if branch == "verify":
                     parse.assert_not_called()
                 # App fixture lives under work; preserve it while resetting release state.
@@ -519,6 +540,10 @@ class PersistentPublishingTests(AppFixture):
                 if self.fail_feed:
                     raise ValueError("fake feed upload failed")
                 self.remote[sparkle.FEED] = data
+            elif args[-1] == sparkle.DESTINATION + sparkle.LATEST_ASSET:
+                self.assertNotIn("--ignore-existing", args)
+                # nginx aliases /mac/download to this otherwise unservable file.
+                self.remote[sparkle.DOWNLOAD] = data
             else:
                 self.assertIn("--ignore-existing", args)
                 name = args[-1].removeprefix(sparkle.DESTINATION)
@@ -568,8 +593,21 @@ class PersistentPublishingTests(AppFixture):
         self.assertIn("-8-" + hashlib.sha256(self.payload).hexdigest(), new_url)
         self.assertEqual((self.work / "term-llm-macos-1.0.1.zip").read_bytes(), self.payload)
 
+    def test_failed_feed_preserves_previous_latest_download(self):
+        self.publish()
+        previous_feed = self.remote[sparkle.FEED]
+        previous_latest = self.remote[sparkle.DOWNLOAD]
+        self.next_job(8, b"new release that cannot publish its feed")
+        self.fail_feed = True
+        with self.assertRaisesRegex(ValueError, "upload failed"):
+            self.publish()
+        self.assertEqual(self.remote[sparkle.FEED], previous_feed)
+        self.assertEqual(self.remote[sparkle.DOWNLOAD], previous_latest)
+        self.assertFalse(any(c[0] == "rsync" and c[-1].endswith(sparkle.LATEST_ASSET) for c in self.calls))
+
     def test_website_success_github_failure_next_job_advances_automatically(self):
         self.publish()
+        self.assertEqual(self.remote[sparkle.DOWNLOAD], self.payload)
         original_feed = self.remote[sparkle.FEED]
         self.tools._gh = lambda args: subprocess.CompletedProcess(args, 1, b"", b"fake GitHub failure")
         with self.assertRaises(build.CommandError):
@@ -585,9 +623,10 @@ class PersistentPublishingTests(AppFixture):
         info["CFBundleShortVersionString"] = recovered
         path.write_bytes(plistlib.dumps(info))
         self.publish()
+        self.assertEqual(self.remote[sparkle.DOWNLOAD], self.payload)
         items = ET.fromstring(self.remote[sparkle.FEED]).findall("channel/item")
         self.assertEqual([i.findtext("{" + sparkle.NS + "}shortVersionString") for i in items], ["1.0.2", "1.0.1"])
-        self.assertEqual(len([url for url in self.remote if url != sparkle.FEED]), 2)
+        self.assertEqual(len([url for url in self.remote if url not in (sparkle.FEED, sparkle.DOWNLOAD)]), 2)
 
     def test_existing_conflicting_content_is_not_overwritten_and_feed_not_uploaded(self):
         public = sparkle.BASE + sparkle.public_asset(build.release_metadata(self.app), hashlib.sha256(self.payload).hexdigest())

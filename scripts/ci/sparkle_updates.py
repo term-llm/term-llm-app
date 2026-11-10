@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 
 FEED = "https://term-llm.com/mac/appcast.xml"
 BASE = "https://term-llm.com/mac/"
+LATEST_ASSET = "term-llm-macos-latest.zip"
+DOWNLOAD = BASE + "download"
 HOST = "143.198.76.107"
 DESTINATION = "term-llm-updates@143.198.76.107:./"
 HELP = "docs/SELF-HOSTED-CI.md#sparkle-updates"
@@ -273,7 +275,7 @@ def verify_public_archive(url, expected_digest, expected_length):
 
 
 def publish(app, work, metadata, secrets_dir, run):
-    """Upload immutable payloads before the feed, each rsync using atomic rename."""
+    """Publish immutable ZIP, signed feed, then convenience ZIP via atomic rename."""
     verify_app(app, work)
     archive = work / metadata["asset"]
     if archive.exists():
@@ -315,5 +317,14 @@ def publish(app, work, metadata, secrets_dir, run):
     upload(archive, DESTINATION + metadata["publicAsset"], immutable=True)
     verify_public_archive(BASE + metadata["publicAsset"], digest, archive.stat().st_size)
     upload(feed, DESTINATION)
+    # The signed feed is the source of truth: the convenience link may lag it,
+    # but must never advertise a release before its feed upload succeeds.
+    try:
+        upload(archive, DESTINATION + LATEST_ASSET)
+        verify_public_archive(DOWNLOAD, digest, archive.stat().st_size)
+    except Exception:
+        raise ValueError(
+            "Latest Mac download publication failed; the release is already published "
+            f"to Sparkle, but {DOWNLOAD} could not be updated or verified; see {HELP}") from None
     # GitHub publication must consume these exact bytes, never run ditto again.
     (work / "sparkle-published.sha256").write_text(digest)
