@@ -42,6 +42,7 @@ public enum ComputerUseRuntime {
         // HelperMain's two-second maintenance timer owns cleanup; Screenshot
         // applies its own one-hour expiry (kept proof is outside this cache).
         configuration.onMaintenance = { screenshot.cleanup() }
+        configuration.wantsRelaunch = { permissions.wantsRelaunch() }
         configuration.onWorking = { ActivityBanner.shared.update(working: $0) }
         configuration.installStop = { ActivityBanner.shared.onStop = $0 }
         HelperMain.run(executor: executor, configuration: configuration)

@@ -13,6 +13,9 @@ public struct HelperConfiguration {
     public var grants: () -> [String: Bool]
     public var onStarted: () -> Void = {}
     public var onMaintenance: () -> Void = {}
+    /// Asked every maintenance tick while no call runs: true makes this helper exit
+    /// so its owning app starts a fresh one (a grant macOS reads only at launch).
+    public var wantsRelaunch: () -> Bool = { false }
     /// Running count is aggregated here; ActivityBanner owns the same 3 s grace.
     /// Called under the state lock: enqueue UI work, never wait or reenter server.
     public var onWorking: (Bool) -> Void = { _ in }
@@ -124,6 +127,12 @@ public final class HelperServer {
         ]
         condition.unlock()
         return value.merging(["grants": configuration.grants()]) { _, new in new }
+    }
+    func note(_ line: String) { log.write(line) }
+    public var hasRunningCalls: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return running > 0
     }
     public var isStopping: Bool {
         condition.lock()
@@ -480,6 +489,11 @@ public enum HelperMain {
             timer.setEventHandler {
                 server.reapSessions()
                 configuration.onMaintenance()
+                // Only an app-owned helper is started again by its owner.
+                if pid != nil, !server.hasRunningCalls, configuration.wantsRelaunch() {
+                    server.note("relaunch to read a new permission grant")
+                    server.requestShutdown()
+                }
                 if let pid {
                     if host == nil || ProcessIdentity.lookup(pid)?.started != host?.started { server.requestShutdown() }
                 } else if server.isIdle {

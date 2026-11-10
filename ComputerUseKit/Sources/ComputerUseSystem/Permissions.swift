@@ -76,7 +76,27 @@ public final class Permissions {
     public func status() -> [String: Bool] { Dictionary(uniqueKeysWithValues: Kind.allCases.map { ($0.rawValue, granted($0)) }) }
     public func request(_ kind: Kind) { MainThread.callOnMain { self.calls.request(kind) } }
     public func openSettings(_ kind: Kind) {
+        if Self.readAtLaunch.contains(kind) && !granted(kind) {
+            lock.lock(); awaitingRelaunch.insert(kind); settingsSeenSinceAllow = false; lock.unlock()
+        }
         MainThread.callOnMain { self.calls.request(kind); self.calls.open(Self.url(kind)) }
+    }
+    /// macOS answers these preflights from what the process had at launch (System
+    /// Settings says Input Monitoring needs "Quit & Reopen"), and the event tap is
+    /// only made at startup. A grant given in Settings shows only to a new helper.
+    public static let readAtLaunch: Set<Kind> = [.inputMonitoring, .postEvents]
+    private var awaitingRelaunch: Set<Kind> = []
+    private var settingsSeenSinceAllow = false
+    /// True once, after Allow… for a launch-read grant, when the person has been
+    /// to System Settings and closed it again: the helper should exit so its owner
+    /// starts a new one that sees the grant. Asked from the maintenance timer.
+    public func wantsRelaunch() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !awaitingRelaunch.isEmpty else { return false }
+        if calls.settingsOpen() { settingsSeenSinceAllow = true; return false }
+        guard settingsSeenSinceAllow else { return false }
+        awaitingRelaunch.removeAll()
+        return true
     }
     private func missing() -> [Kind] {
         lock.lock(); defer { lock.unlock() }

@@ -22,6 +22,27 @@ private final class FakePermissionMac {
     func gate() throws { try permissions.gate(deadline: now + 120) }
 }
 final class PermissionsTests: XCTestCase {
+    func testAllowForLaunchReadGrantAsksForOneRelaunchAfterSettingsCloses() {
+        let mac = FakePermissionMac(); mac.granted[.inputMonitoring] = false
+        XCTAssertFalse(mac.permissions.wantsRelaunch())
+        mac.permissions.openSettings(.inputMonitoring)
+        XCTAssertFalse(mac.permissions.wantsRelaunch())  // Settings still open
+        mac.settingsRunning = false
+        XCTAssertTrue(mac.permissions.wantsRelaunch())
+        XCTAssertFalse(mac.permissions.wantsRelaunch())  // once only
+    }
+    func testNoRelaunchWithoutSettingsSeenOrForLiveGrants() {
+        let mac = FakePermissionMac(); mac.granted[.inputMonitoring] = false; mac.settingsLaunches = false
+        mac.permissions.openSettings(.inputMonitoring)
+        XCTAssertFalse(mac.permissions.wantsRelaunch())  // the pane never showed
+        let live = FakePermissionMac(); live.granted[.accessibility] = false
+        live.permissions.openSettings(.accessibility)
+        live.settingsRunning = false
+        XCTAssertFalse(live.permissions.wantsRelaunch())  // AXIsProcessTrusted is live
+        let done = FakePermissionMac()  // already granted: nothing to wait for
+        done.permissions.openSettings(.postEvents); done.settingsRunning = false
+        XCTAssertFalse(done.permissions.wantsRelaunch())
+    }
     func testEverythingGrantedCheckedOnlyOnceAndNeverPrompted() throws {
         let mac = FakePermissionMac()
         try mac.gate(); try mac.gate()

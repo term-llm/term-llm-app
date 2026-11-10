@@ -161,6 +161,7 @@ final class ComputerUseController: NSObject, ObservableObject {
     private var quitting = false
     private var nextLaunch = Date.distantPast
     private var backoff: TimeInterval = 1
+    private var connectedSince: Date?
     private var generation = 0
     var menuOpen = false
     var statusTitle: String { connected ? status.title : "Starting…" }
@@ -246,8 +247,13 @@ final class ComputerUseController: NSObject, ObservableObject {
             error = nil
             // "Always allow" in the helper's panel changes the list while it shows.
             if window?.isVisible == true { refreshApprovals() }
-            // Do not reset the crash backoff on a single successful heartbeat.
+            // Do not reset the crash backoff on a single successful heartbeat, but
+            // a helper that stayed up a minute was not crashing: its next exit
+            // (for example to read a new permission grant) relaunches at once.
+            if connectedSince == nil { connectedSince = Date() }
+            if let since = connectedSince, Date().timeIntervalSince(since) > 60 { backoff = 1 }
         } else {
+            connectedSince = nil
             connected = false
             launchIfNeeded()
         }
