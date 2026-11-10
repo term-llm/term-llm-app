@@ -3,7 +3,7 @@
 This is a focused refinement of the mock, not a production app change.
 
 ```sh
-open output/playwright/header-concepts/media/selected/index.html
+open docs/design/reference/header-concept-05/index.html
 ```
 
 ## Decisions reflected here
@@ -26,4 +26,4 @@ The mocked agent-owned header is illustrative, not an assertion about the exact 
 - `interactive-refinement.png`: the focused prototype and design notes.
 - `verification.json`: browser checks for header ownership, terminology, pinned bottom tabs, draft retention, and playback independence.
 
-With the parent prototype directory served at port 8789, open `/media/selected/`. The local HTML also works directly without a server.
+The HTML works directly as a local file, without a server. Its **← Media concepts** link pointed to the parent gallery of six media concepts, which is not kept in the repository. `check-interactions.js` still writes its screenshots under the ignored `output/` directory, so re-running it does not overwrite these references.
