@@ -33,7 +33,7 @@ public final class Apps {
         public var executable: (pid_t) -> String = Apps.executable
         public var regular: (pid_t) -> Bool = { NSRunningApplication(processIdentifier: $0)?.activationPolicy == .regular }
         public var bundlePaths: (String) -> [String] = { id in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id).map(\.path) }
-        public var named: (String) -> String? = { NSWorkspace.shared.fullPath(forApplication: $0) }
+        public var named: (String) -> String? = { (NSWorkspace.shared as LaunchServicesName).fullPath(forApplication: $0) }
         public var open: (String) -> pid_t? = Apps.openBackground
         public var frontPIDs: () -> [pid_t] = { Windows.shared.serverWindows().filter { $0.layer == 0 }.map(\.pid) }
         public var used: () -> [Used] = Apps.queryUsed
@@ -301,6 +301,12 @@ public final class Apps {
 private extension Optional where Wrapped == String { var nonempty: String? { flatMap { $0.isEmpty ? nil : $0 } } }
 private extension String { var nonempty: String? { isEmpty ? nil : self } }
 private final class OpenResult { let lock = NSLock(); var pid: pid_t? }
+/// Upstream's last name lookup asks LaunchServices, which also finds apps outside
+/// the folders above (Instruments inside Xcode). AppKit has no undeprecated way to
+/// do that: the suggested replacement takes a bundle id, which resolve tried first.
+/// Called through this protocol so the deliberate use builds without a warning.
+private protocol LaunchServicesName { func fullPath(forApplication appName: String) -> String? }
+extension NSWorkspace: LaunchServicesName {}
 private final class RealApps {
     static let shared = RealApps()
     let lock = NSLock(); var known: [pid_t: Apps.Proc] = [:]

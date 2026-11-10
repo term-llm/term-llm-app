@@ -312,7 +312,9 @@ claimed here; equivalent local context decisions are exercised directly. Existin
 SystemAX tests own observer-registration unsupported/error-code behavior. No UI,
 signed-helper, TCC, or live focus-restore verification is claimed. The deprecated
 `NSWorkspace.fullPath(forApplication:)` fallback is intentionally retained for the
-upstream name-resolution behavior.
+upstream name-resolution behavior (it finds apps outside the scanned folders, such
+as Instruments inside Xcode; there is no bundle-id-free replacement). It is called
+through a file-private protocol so the build has no deprecation warning.
 ## Presence, policy and approvals (cu-presence)
 
 The following is additive to the primitives above. No shared base files or

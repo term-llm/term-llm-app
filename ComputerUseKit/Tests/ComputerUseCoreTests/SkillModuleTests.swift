@@ -3,14 +3,24 @@ import XCTest
 
 @testable import ComputerUseCore
 
-/// Runs the embedded `skill:term-llm-computer` source in JavaScriptCore with a
+/// Runs the embedded `skill:computer-use` source in JavaScriptCore with a
 /// fake `tools.shell` that answers in term-llm's shell-tool text format. QuickJS
 /// is term-llm's engine; JSC stands in for syntax and behaviour, not for it.
 final class SkillModuleTests: XCTestCase {
     func testFrontmatterDeclaresTheModule() {
         XCTAssertTrue(ComputerUseSkill.text.contains("code-mode:\n  module: js/index.mjs\n  files: [js/index.mjs]\n  requires:\n    tools: [shell]\n---"))
         XCTAssertEqual(ComputerUseSkill.modulePath, "js/index.mjs")
-        XCTAssertTrue(ComputerUseSkill.text.contains("import('skill:term-llm-computer')"))
+        XCTAssertTrue(ComputerUseSkill.text.contains("import('skill:\(ComputerUseSkill.name)')"))
+        XCTAssertTrue(ComputerUseSkill.text.hasPrefix("---\nname: \(ComputerUseSkill.name)\n"), "term-llm needs the folder's name")
+        XCTAssertEqual(ComputerUseSkill.name, "computer-use")
+    }
+
+    func testSkillPrefersSafeBatching() {
+        let text = ComputerUseSkill.text
+        XCTAssertTrue(text.contains("use one cell for multi-step UI tasks"))
+        XCTAssertTrue(text.contains("do not batch speculative clicks or discard intermediate reads"))
+        XCTAssertTrue(text.contains("Stop for failures, approval boundaries"))
+        XCTAssertFalse(text.contains("Plain shell calls are the default"))
     }
 
     func testModuleAgainstFakeShell() throws {

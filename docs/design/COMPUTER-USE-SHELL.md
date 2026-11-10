@@ -35,7 +35,10 @@ The command installer records its owned symlink targets in
 points to the current binary or a previously recorded target. Ordinary files and
 foreign links (including dangling links) are left alone. An absent command is
 installed only on the person's explicit Install/Repair action. The skill goes
-only to `~/.config/term-llm/skills/term-llm-computer/SKILL.md`.
+only to `~/.config/term-llm/skills/computer-use/SKILL.md`. Installing it also
+removes the `term-llm-computer/` skill earlier builds wrote: only a real
+`SKILL.md` with that name in a real folder, plus its module, never links or
+other files.
 
 ## Public package APIs
 

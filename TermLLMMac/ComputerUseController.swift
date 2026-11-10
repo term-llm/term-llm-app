@@ -12,7 +12,9 @@ struct ComputerUseInstallation: Sendable {
     private var manager: FileManager { .default }
     var enabledURL: URL { state.appendingPathComponent("enabled") }
     var link: URL { home.appendingPathComponent(".local/bin/term-llm-computer") }
-    var skill: URL { home.appendingPathComponent(".config/term-llm/skills/term-llm-computer/SKILL.md") }
+    var skill: URL { home.appendingPathComponent(".config/term-llm/skills/\(ComputerUseSkill.name)/SKILL.md") }
+    /// Earlier builds named the skill after the command. Agents would see both.
+    var legacySkill: URL { home.appendingPathComponent(".config/term-llm/skills/term-llm-computer/SKILL.md") }
     private var ownershipURL: URL { state.appendingPathComponent("command-link.json") }
     var enabled: Bool { manager.fileExists(atPath: enabledURL.path) }
 
@@ -33,11 +35,25 @@ struct ComputerUseInstallation: Sendable {
     }
     var linkDestination: String? { try? manager.destinationOfSymbolicLink(atPath: link.path) }
     var linkIsCurrent: Bool { linkDestination == binary.path }
-    /// The skill's `skill:term-llm-computer` module for spawn_script cells.
+    /// The skill's `skill:computer-use` module for spawn_script cells.
     var skillModule: URL { skill.deletingLastPathComponent().appendingPathComponent(ComputerUseSkill.modulePath) }
     var skillInstalled: Bool {
         (try? String(contentsOf: skill, encoding: .utf8)) == ComputerUseSkill.text
             && (try? String(contentsOf: skillModule, encoding: .utf8)) == ComputerUseSkill.module
+    }
+    /// Only the app's own old copy: a real file in a real folder, with the old name.
+    var legacySkillInstalled: Bool {
+        Self.kind(legacySkill.deletingLastPathComponent()) == S_IFDIR && Self.kind(legacySkill) == S_IFREG
+            && (try? String(contentsOf: legacySkill, encoding: .utf8))?.hasPrefix("---\nname: term-llm-computer\n") == true
+    }
+    /// An older app's skill is still there after an update: agents follow its text.
+    var skillState: ComputerUseSkillState {
+        if skillInstalled && !legacySkillInstalled { return .installed }
+        return manager.fileExists(atPath: skill.path) || legacySkillInstalled ? .outdated : .missing
+    }
+    private static func kind(_ url: URL) -> mode_t? {
+        var info = stat()
+        return lstat(url.path, &info) == 0 ? info.st_mode & S_IFMT : nil
     }
 
     /// Repair only a link to this binary or a previously recorded target. In
@@ -95,6 +111,20 @@ struct ComputerUseInstallation: Sendable {
         // The module first: term-llm refuses a SKILL.md whose declared module is missing.
         try ComputerUseSkill.module.write(to: skillModule, atomically: true, encoding: .utf8)
         try ComputerUseSkill.text.write(to: skill, atomically: true, encoding: .utf8)
+        try removeLegacySkill()
+    }
+    /// Removes only the files the app wrote there, SKILL.md first so term-llm
+    /// stops listing it, then the folders if nothing else is in them.
+    private func removeLegacySkill() throws {
+        guard legacySkillInstalled else { return }
+        let folder = legacySkill.deletingLastPathComponent()
+        let module = folder.appendingPathComponent(ComputerUseSkill.modulePath)
+        try manager.removeItem(at: legacySkill)
+        if Self.kind(module.deletingLastPathComponent()) == S_IFDIR && Self.kind(module) == S_IFREG {
+            try manager.removeItem(at: module)
+        }
+        rmdir(module.deletingLastPathComponent().path)
+        rmdir(folder.path)
     }
 }
 
@@ -119,6 +149,66 @@ struct ComputerUseStatus: Sendable, Equatable {
         if paused { return "pause.circle" }
         if !missing.isEmpty { return "exclamationmark.triangle" }
         return working ? "cursorarrow.rays" : "terminal"
+    }
+}
+
+enum ComputerUseSkillState: Sendable, Equatable { case installed, outdated, missing }
+
+/// The command link and skill files as last checked.
+struct ComputerUseSetup: Sendable, Equatable {
+    var commandInstalled: Bool
+    var skill: ComputerUseSkillState
+}
+
+/// What stops agents using Computer Use fully, called out at the top of the menu
+/// and the Computer Use window, each with the button that fixes it.
+enum ComputerUseIssue: Sendable, Equatable {
+    case grant(String)
+    case command
+    case skillMissing
+    case skillOutdated
+
+    /// Nothing while Computer Use is off. Grants come first: without the two
+    /// required ones nothing works. Files are skipped until they were checked.
+    static func list(enabled: Bool, status: ComputerUseStatus, setup: ComputerUseSetup?) -> [ComputerUseIssue] {
+        guard enabled else { return [] }
+        var issues = status.missing.map(ComputerUseIssue.grant)
+        if setup?.commandInstalled == false { issues.append(.command) }
+        if setup?.skill == .missing { issues.append(.skillMissing) }
+        if setup?.skill == .outdated { issues.append(.skillOutdated) }
+        return issues
+    }
+    /// For the status line and the menu.
+    var title: String {
+        switch self {
+        case .grant(let name): return "Needs \(name)"
+        case .command: return "Command not installed"
+        case .skillMissing: return "Skill not installed"
+        case .skillOutdated: return "Skill out of date"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .grant(let name):
+            let effect = [
+                "Accessibility": "Computer Use can't work without it.",
+                "Screen Recording": "Computer Use can't work without it.",
+                "Input Monitoring": "Computer Use can't tell when you use an app yourself, so it won't step back.",
+                "Event Posting": "Agents can't send clicks and keys to apps.",
+            ][name]
+            return ["\(name) isn't allowed.", effect].compactMap { $0 }.joined(separator: " ")
+        case .command: return "The term-llm-computer command isn't installed. Agents run it to use apps."
+        case .skillMissing: return "The computer-use skill isn't installed. Agents won't know how to use apps on this Mac."
+        case .skillOutdated: return "The computer-use skill is out of date. Agents follow older instructions until you update it."
+        }
+    }
+    var action: String {
+        switch self {
+        case .grant: return "Allow…"
+        case .command: return "Install Command"
+        case .skillMissing: return "Install Skill"
+        case .skillOutdated: return "Update Skill"
+        }
     }
 }
 
@@ -148,8 +238,8 @@ final class ComputerUseController: NSObject, ObservableObject {
     @Published private(set) var status = ComputerUseStatus()
     @Published private(set) var connected = false
     @Published private(set) var error: String?
-    @Published private(set) var commandInstalled = false
-    @Published private(set) var skillInstalled = false
+    /// Nil until the files were first checked, so launch never flashes a warning.
+    @Published private(set) var setup: ComputerUseSetup?
     @Published private(set) var alwaysAllowed: [ComputerUseApprovedApp] = []
     var onChange: (() -> Void)?
     private let installation: ComputerUseInstallation
@@ -164,8 +254,15 @@ final class ComputerUseController: NSObject, ObservableObject {
     private var connectedSince: Date?
     private var generation = 0
     var menuOpen = false
-    var statusTitle: String { connected ? status.title : "Starting…" }
-    var icon: String { enabled ? status.symbol : "terminal" }
+    var issues: [ComputerUseIssue] { ComputerUseIssue.list(enabled: enabled, status: status, setup: setup) }
+    var statusTitle: String {
+        guard connected else { return "Starting…" }
+        return status.paused ? status.title : issues.first?.title ?? status.title
+    }
+    var icon: String {
+        guard enabled else { return "terminal" }
+        return status.paused || issues.isEmpty ? status.symbol : "exclamationmark.triangle"
+    }
 
     init(
         home: URL = Paths.homeDirectory(), state: URL = Paths.stateDirectory(),
@@ -322,14 +419,22 @@ final class ComputerUseController: NSObject, ObservableObject {
         _ = done.wait(timeout: .now() + 1.5)
     }
     func refreshInstallations(repair: Bool = false) {
-        let setup = installation
+        let files = installation
         Task {
-            let values = await Task.detached(priority: .utility) { () -> (Bool, Bool) in
-                if repair { try? setup.installCommand(onlyIfOwned: true) }
-                return (setup.linkIsCurrent, setup.skillInstalled)
+            let value = await Task.detached(priority: .utility) { () -> ComputerUseSetup in
+                if repair { try? files.installCommand(onlyIfOwned: true) }
+                return ComputerUseSetup(commandInstalled: files.linkIsCurrent, skill: files.skillState)
             }.value
-            commandInstalled = values.0
-            skillInstalled = values.1
+            guard value != setup else { return }
+            setup = value
+            onChange?()
+        }
+    }
+    func fix(_ issue: ComputerUseIssue) {
+        switch issue {
+        case .grant(let name): send("allow", grant: name)
+        case .command: installCommand()
+        case .skillMissing, .skillOutdated: installSkill()
         }
     }
     /// approvals.json is the helper's file; it reads it on every check, so a

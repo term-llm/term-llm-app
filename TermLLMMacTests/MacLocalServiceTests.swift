@@ -121,11 +121,20 @@ final class MacLocalServiceTests: XCTestCase {
         window.orderOut(nil)
     }
 
-    func testMenuBarItemWorksWithoutLocalServiceSetup() {
-        let controller = MacLocalServiceController(home: home)
+    /// Computer Use state inside the temporary home, never this Mac's own.
+    private func isolatedComputerUse(enabled: Bool = false) throws -> ComputerUseController {
+        let files = ComputerUseInstallation(
+            home: home, state: home.appendingPathComponent("computer-use"),
+            binary: home.appendingPathComponent("term-llm.app/Contents/Helpers/term-llm-computer"))
+        if enabled { try files.setEnabled(true) }
+        return ComputerUseController(home: home, state: files.state, binary: files.binary, suppressRuntime: true)
+    }
+
+    func testMenuBarItemWorksWithoutLocalServiceSetup() throws {
+        let controller = MacLocalServiceController(home: home, computerUse: try isolatedComputerUse())
         let menu = NSMenu()
         controller.menuNeedsUpdate(menu)
-        XCTAssertEqual(menu.items.map(\.title), ["Open term-llm", "Local Service…", "", "Quit term-llm"],
+        XCTAssertEqual(menu.items.map(\.title), ["Open term-llm", "Local Service…", "Computer Use…", "", "Quit term-llm"],
                        "A remote-only app needs Open and Quit without local-service setup")
         XCTAssertFalse(menu.items.contains { $0.title.contains("Start Service") || $0.title.contains("Stop Service") },
                        "Opening the menu must not opt into local services")
@@ -137,17 +146,36 @@ final class MacLocalServiceTests: XCTestCase {
         for marker in [provisioner.manifestURL, DeveloperModeStore(provisioner: provisioner).url] {
             try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data("{}".utf8).write(to: marker)
-            let controller = MacLocalServiceController(home: home)
+            let controller = MacLocalServiceController(home: home, computerUse: try isolatedComputerUse())
             let menu = NSMenu()
             controller.menuNeedsUpdate(menu)
             XCTAssertEqual(menu.items.map(\.title), [
-                "Open term-llm", "Local Service…", "", "Local service: Not set up",
+                "Open term-llm", "Local Service…", "Computer Use…", "", "Local service: Not set up",
                 "Open Local Chat", "Start Service", "Restart Service", "", "Quit term-llm"
             ], "An existing \(marker.lastPathComponent) must expose controls before any setup or service action")
             XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == "Restart Service" }).isEnabled,
                            "Showing controls must not enable restarting an unverified service")
             try FileManager.default.removeItem(at: marker)
         }
+    }
+
+    func testComputerUseProblemsAreCalledOutAtTheTopOfTheMenu() async throws {
+        let computerUse = try isolatedComputerUse(enabled: true)
+        let controller = MacLocalServiceController(home: home, computerUse: computerUse)
+        let menu = NSMenu()
+        controller.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.items.first?.title, "Open term-llm", "Nothing is called out before the files are checked")
+        computerUse.refreshInstallations()
+        try await waitUntil("files checked") { computerUse.setup != nil }
+        controller.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.items.map(\.title), [
+            "Computer Use Needs Attention…", "", "Open term-llm", "Local Service…", "Computer Use…", "",
+            "Computer use: Starting…", "Pause Computer Use", "", "Quit term-llm",
+        ])
+        let callout = try XCTUnwrap(menu.items.first)
+        XCTAssertTrue(callout.isEnabled)
+        XCTAssertEqual(callout.action, NSSelectorFromString("showComputerUse"), "It opens the Computer Use window")
+        if #available(macOS 14.4, *) { XCTAssertEqual(callout.subtitle, "Command not installed · Skill not installed") }
     }
 
     // MARK: Local Service window

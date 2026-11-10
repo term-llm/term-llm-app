@@ -1,12 +1,12 @@
 import Foundation
 
 extension ComputerUseSkill {
-    /// js/index.mjs next to SKILL.md: `skill:term-llm-computer` for term-llm's
+    /// js/index.mjs next to SKILL.md: `skill:computer-use` for term-llm's
     /// spawn_script cells. Each function runs term-llm-computer through the
     /// cell's `shell` tool; it holds no authority of its own.
     public static let modulePath = "js/index.mjs"
     public static let module = #"""
-        // skill:term-llm-computer: term-llm-computer from a spawn_script cell.
+        // skill:computer-use: term-llm-computer from a spawn_script cell.
         // Every call is one `shell` tool call, with that tool's approvals, session and
         // cancellation. Results are the text the command prints; only list_apps is parsed.
 

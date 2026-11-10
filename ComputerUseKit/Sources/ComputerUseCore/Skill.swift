@@ -1,9 +1,11 @@
 import Foundation
 
 public enum ComputerUseSkill {
+    /// The skill's folder and `skill:` module name; the command keeps its own name.
+    public static let name = "computer-use"
     public static let text = #"""
         ---
-        name: term-llm-computer
+        name: computer-use
         description: Read and operate the apps on this Mac from the shell. Use it when a task needs an app's UI and no API, CLI or purpose-built tool can do it.
         code-mode:
           module: js/index.mjs
@@ -80,10 +82,12 @@ public enum ComputerUseSkill {
 
         ## In spawn_script
 
-        Plain shell calls are the default. Use a cell only to repeat read, find, act without a turn per step (scroll until a row shows, fill many fields), or to keep long trees out of your context. With spawn_script this skill's module gives every command as a function; each call is one `shell` call with its approvals.
+        Prefer batching whenever the next steps can be determined safely. When `spawn_script` is available, use one cell for multi-step UI tasks rather than a separate model/tool round trip for each command. Keep the read → act → read loop inside the cell: inspect each fresh state, choose the next action from it, and continue until the result is verified or you need the person's input. Use direct shell calls only for standalone reads or simple one-off actions.
+
+        Batch known actions with `&&` and finish with a state read; do not batch speculative clicks or discard intermediate reads. Keep long UI trees inside the cell and emit only relevant findings and the final proof screenshot path. Stop for failures, approval boundaries or a decision you cannot safely make from the state. With spawn_script this skill's module gives every command as a function; each call is one `shell` call with its approvals.
 
         ```js
-        const { computer } = await import('skill:term-llm-computer');
+        const { computer } = await import('skill:computer-use');
         let state = await computer.get_app_state({app: "TextEdit"}); // {text, screenshot, width, height}
         const save = computer.find(state, /\bbutton Save\b/); // newest matching line, or null
         if (save === null) throw new Error("no Save button");
@@ -96,7 +100,7 @@ public enum ComputerUseSkill {
         - A failed command throws the helper's message: do what it says. `error.outcome === "unknown"` means it did not finish: read before you try again.
         - `image(await computer.screenshot(state))` shows a read's screenshot.
         - If `shell` asks for a working directory, set `computer.options.working_dir = "/tmp"` in each cell.
-        - No `skill:term-llm-computer` module here: call `tools.shell({command: "term-llm-computer ...", timeout_seconds: 130})` and read its `text`.
+        - No `skill:computer-use` module here: call `tools.shell({command: "term-llm-computer ...", timeout_seconds: 130})` and read its `text`.
         - The rules above still hold: read before every action, use numbers only from the newest read, stop on any failure. `text(...)` only what you need.
         - Await every call, one at a time: a UI does one thing at once.
         - Let a cell that drives apps finish (`wait_script`) or `cancel_script` it before you end your turn: when the turn ends its apps are let go, and later actions fail.

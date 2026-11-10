@@ -20,7 +20,7 @@ Computer use is a **term-llm feature**. When it is turned on in the Mac app:
   Allow…, settings);
 - term-llm agents reach it through a per-user Unix socket with the bundled
   command `term-llm-computer` (`term-llm-computer get_app_state --app
-  Finder`), taught by a `term-llm-computer` skill that the app installs into
+  Finder`), taught by a `computer-use` skill that the app installs into
   term-llm's own skill folder.
 
 Nothing is installed for Claude Code, Codex, Pi or OpenCode: no skills, hooks or
@@ -88,7 +88,9 @@ Computer Use.app` (bundle layout, plists, entitlements, symbol strings).
    `term-llm.app/Contents/Helpers/term-llm-computer`, linked from
    `~/.local/bin/term-llm-computer` by the app.
 4. **term-llm only.** The skill goes into
-   `~/.config/term-llm/skills/term-llm-computer/SKILL.md`. The helper serves
+   `~/.config/term-llm/skills/computer-use/SKILL.md` (earlier builds used
+   `term-llm-computer/`; installing removes the app's own old copy so agents
+   never see both). The helper serves
    calls whose process ancestry contains a `term-llm` executable and refuses
    other callers by default. Ancestry is advisory, not a security boundary,
    but it keeps the feature scoped.
@@ -148,7 +150,7 @@ term-llm.app (main) ── launches (LaunchServices) ──▶ term-llm Computer
   carry the same session. A cell can outlive its turn; the skill tells agents
   to finish or cancel cells that drive apps before ending the turn.
 - The skill ships `js/index.mjs` (`ComputerUseSkill.module`), admitted as
-  `skill:term-llm-computer`: `computer.<tool>({app, ...flags})` runs the
+  `skill:computer-use`: `computer.<tool>({app, ...flags})` runs the
   command through `tools.shell` with a 130 s timeout, returns the printed
   text, and throws the helper's message on failure (`outcome: "unknown"` when
   the command did not finish). It declares only `shell` as a dependency and
@@ -165,6 +167,11 @@ term-llm.app (main) ── launches (LaunchServices) ──▶ term-llm Computer
 - **Computer Use…** is always in the term-llm menu. When enabled, the menu
   adds the status line, Stop (while working), Pause/Resume and
   `Allow <grant>…` for missing grants.
+- While enabled, a missing grant, a missing command link, or a missing or out
+  of date skill is called out first: **Computer Use Needs Attention…** tops the
+  menu (subtitle lists what), the menu-bar icon shows a warning, and the top
+  of the Computer Use window lists each problem with the button that fixes it.
+  Files are only reported once checked (launch, menu open, window, installs).
 - The Computer Use window has the enable switch, the grants with Allow…
   buttons, the command and skill status, the approved apps, and Advanced
   (socket path, log, Copy Diagnostics).

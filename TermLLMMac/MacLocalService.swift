@@ -25,15 +25,18 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     private var localServicesEnabled = false
     private let home: URL
     private var automaticTerminationDisabled = false
+    private let injectedComputerUse: ComputerUseController?
     private lazy var computerUse: ComputerUseController = {
-        let controller = ComputerUseController(home: home)
+        let controller = injectedComputerUse ?? ComputerUseController(home: home)
         controller.onChange = { [weak self] in self?.updateComputerUseIcon() }
         return controller
     }()
     private static let lifetimeReason = "term-llm menu-bar app is running"
 
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    /// Tests pass `computerUse` so the menu never reads this Mac's real state.
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, computerUse: ComputerUseController? = nil) {
         self.home = home
+        injectedComputerUse = computerUse
         let provisioner = CLIProvisioner(home: home)
         localServicesEnabled = FileManager.default.fileExists(atPath: provisioner.manifestURL.path)
             || FileManager.default.fileExists(atPath: DeveloperModeStore(provisioner: provisioner).url.path)
@@ -164,6 +167,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     func menuWillOpen(_ menu: NSMenu) {
         computerUse.menuOpen = true
         computerUse.refreshStatus()
+        if computerUse.enabled { computerUse.refreshInstallations() }
         if localServicesEnabled { model.startPolling() }
     }
 
@@ -186,6 +190,19 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        // A missing grant, command or skill is said first; the window fixes it.
+        let issues = computerUse.issues
+        if !issues.isEmpty {
+            let item = NSMenuItem(title: "Computer Use Needs Attention…", action: #selector(showComputerUse),
+                                  keyEquivalent: "")
+            item.target = self
+            item.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(paletteColors: [.systemOrange]))
+            let summary = issues.map(\.title).joined(separator: " · ")
+            if #available(macOS 14.4, *) { item.subtitle = summary } else { item.toolTip = summary }
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
         addItem("Open term-llm", action: #selector(openTermLLM), to: menu,
                 enabled: MacClientWindow.shared.window != nil)
         addItem("Local Service…", action: #selector(showLocalService), to: menu)
