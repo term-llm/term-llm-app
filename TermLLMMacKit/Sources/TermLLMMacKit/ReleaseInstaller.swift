@@ -47,13 +47,23 @@ public protocol ReleaseTransport: Sendable {
 /// Synchronous seam intended for background work, never the main actor.
 public struct GitHubReleaseTransport: ReleaseTransport {
     public var appVersion: String
-    public init(appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") { self.appVersion = appVersion }
+    private let configuration: URLSessionConfiguration
+    public init(appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev",
+                configuration: URLSessionConfiguration? = nil) {
+        self.appVersion = appVersion
+        let isolated = IsolatedSessionConfiguration.make(copying: configuration ?? .ephemeral)
+        if configuration == nil {
+            isolated.timeoutIntervalForRequest = 30
+            isolated.timeoutIntervalForResource = 180
+        }
+        self.configuration = isolated
+    }
+    func makeSession() -> URLSession {
+        URLSession(configuration: IsolatedSessionConfiguration.make(copying: configuration),
+                   delegate: ReleaseRedirects(), delegateQueue: nil)
+    }
     public func fetch(_ url: URL) throws -> ReleaseResponse {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 180
-        let session = URLSession(configuration: config, delegate: ReleaseRedirects(), delegateQueue: nil)
+        let session = makeSession()
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url)
         request.setValue("term-llm-mac/\(appVersion)", forHTTPHeaderField: "User-Agent")

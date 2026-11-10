@@ -28,13 +28,17 @@ public protocol ServiceVersionChecking {
 }
 public struct HTTPServiceVersionChecker: ServiceVersionChecking {
     private let configuration: URLSessionConfiguration
-    public init(configuration: URLSessionConfiguration = .ephemeral) { self.configuration = configuration }
+    public init(configuration: URLSessionConfiguration = .ephemeral) {
+        self.configuration = IsolatedSessionConfiguration.make(copying: configuration)
+    }
+    func makeSession() -> URLSession {
+        URLSession(configuration: IsolatedSessionConfiguration.make(copying: configuration),
+                   delegate: RejectRedirects(), delegateQueue: nil)
+    }
     public func matches(status: ServiceStatus, token: String, version: String) -> Bool {
         guard case .success(let endpoint) = ManagedLoopbackEndpoint.make(from: status) else { return false }
         let matches = OSAllocatedUnfairLock(initialState: false); let done = DispatchSemaphore(value: 0)
-        let config = configuration.copy() as! URLSessionConfiguration
-        config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
-        let session = URLSession(configuration: config, delegate: HealthRedirects(), delegateQueue: nil)
+        let session = makeSession()
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: endpoint.baseURL.appendingPathComponent("healthz"))
         request.timeoutInterval = 6; request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -52,11 +56,6 @@ public struct HTTPServiceVersionChecker: ServiceVersionChecking {
         return matches.withLock { $0 }
     }
 }
-private final class HealthRedirects: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
 /// All operations are synchronous background work. The model runs this through
 /// its detached work seam, so waiting for a graceful reload cannot block UI.
 public struct CLIUpdater {
