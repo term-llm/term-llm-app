@@ -1179,10 +1179,10 @@ final class PeerTransportTests: XCTestCase {
     }
 
     func testEmptyICEConfigurationIsValidForHostCandidates() throws {
-        let value = LinkedDevicesICECredentials(ice_servers: [], expires_at: nil)
+        let value = LinkedDevicesICECredentials(iceServers: [], expiresAt: nil)
         XCTAssertEqual(try LinkedDevicesBrokerClient.validateICE(value), value)
         XCTAssertThrowsError(try LinkedDevicesBrokerClient.validateICE(.init(
-            ice_servers: [PeerICEServer(urls: [], username: nil, credential: nil)], expires_at: nil)))
+            iceServers: [PeerICEServer(urls: [], username: nil, credential: nil)], expiresAt: nil)))
     }
 
     func testNativePeerPreservesSignedBasePathAndQueryExactly() throws {

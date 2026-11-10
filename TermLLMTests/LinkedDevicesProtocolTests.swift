@@ -50,7 +50,7 @@ final class LinkedDevicesProtocolTests: XCTestCase {
         let attempt = try LinkedDevicesPairingAttempt(link: link(), credential: credential, deviceName: "phone",
                                                        now: Date(timeIntervalSince1970: 1_900_000_000),
                                                        nonce: try data(deviceNonce))
-        XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.request.device_key.data), deviceKey)
+        XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.request.deviceKey.data), deviceKey)
         let transcript = LinkedDevicesTranscript.pairRequest(attempt.request, hostKey: try data(hostKey))
         XCTAssertEqual(LinkedDevicesBase64URL.encode(transcript),
                        "AAAAE3Rlcm0tbGxtL3BhaXJpbmcvdjIAAAAMcGFpci1yZXF1ZXN0AAAABmRldmljZQAAABCgoaKjpKWmp6ipqqusra6vAAAAIAOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4AAAAICmsuuFBvMrwsi4alNNNC8c2HlJtC_4SyJeUvJMilm3XAAAAIODh4uPk5ebn6Onq6-zt7u_w8fLz9PX29_j5-vv8_f7_AAAABXBob25l")
@@ -60,7 +60,7 @@ final class LinkedDevicesProtocolTests: XCTestCase {
                        "redYqpOeAgSKJdImOylqSQLzu7zXxKxhYfWr3BVFEZM")
         try assertValidSignatures(generated: attempt.request.sig.data,
                                   frozen: "qCkEwwvTAO1wsZrc3q9F9B7AIArcovGXgE1msKa7r5QNTgjCEXCEzZHdBIwKwGF6h6R8hctXwx1Rxd20H5JxCg",
-                                  transcript: transcript, publicKey: attempt.request.device_key.data)
+                                  transcript: transcript, publicKey: attempt.request.deviceKey.data)
         XCTAssertEqual(LinkedDevicesBase64URL.encode(attempt.requestHash),
                        "J7_QqLsW2vuSxBGIHCWR8lnuPDKfkveV5oKQuXQxOxA")
         XCTAssertEqual(attempt.sas, "505580")
@@ -72,13 +72,13 @@ final class LinkedDevicesProtocolTests: XCTestCase {
                                                        now: Date(timeIntervalSince1970: 1_900_000_000),
                                                        nonce: try data(deviceNonce))
         let answer = LinkedDevicesPairAnswer(
-            v: 2, type: "pair_answer", invitation_id: LinkedDevicesB64(try data(invitationID)),
-            host_key: LinkedDevicesB64(try data(hostKey)), device_key: LinkedDevicesB64(try data(deviceKey)),
-            device_nonce: LinkedDevicesB64(try data(deviceNonce)),
-            request_hash: LinkedDevicesB64(try data("J7_QqLsW2vuSxBGIHCWR8lnuPDKfkveV5oKQuXQxOxA")),
-            device_id: LinkedDevicesB64(try data("kJGSk5SVlpeYmZqbnJ2enw")),
-            reconnect_capability: LinkedDevicesB64(try data("QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8")),
-            scope: "web-v1", base_path: "/chat", host_label: "desk",
+            v: 2, type: "pair_answer", invitationID: LinkedDevicesB64(try data(invitationID)),
+            hostKey: LinkedDevicesB64(try data(hostKey)), deviceKey: LinkedDevicesB64(try data(deviceKey)),
+            deviceNonce: LinkedDevicesB64(try data(deviceNonce)),
+            requestHash: LinkedDevicesB64(try data("J7_QqLsW2vuSxBGIHCWR8lnuPDKfkveV5oKQuXQxOxA")),
+            deviceID: LinkedDevicesB64(try data("kJGSk5SVlpeYmZqbnJ2enw")),
+            reconnectCapability: LinkedDevicesB64(try data("QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8")),
+            scope: "web-v1", basePath: "/chat", hostLabel: "desk",
             mac: LinkedDevicesB64(try data("oZGEvpqORlY11rnDP2XyelRtML0wvQ9YXKDVgbP3gWY")),
             sig: LinkedDevicesB64(try data("SKgP9y-GFIEuP8b0k-EfOSExTsyJQOquWKdPVR5f7rmddTJSTrTNvuG6tsZ856G0ybZMPDBCARbmrkmtyYEOAQ")))
         XCTAssertEqual(LinkedDevicesBase64URL.encode(LinkedDevicesTranscript.pairAnswer(answer)),
@@ -105,7 +105,7 @@ final class LinkedDevicesProtocolTests: XCTestCase {
                        try fixtureString("transport_hello_transcript", in: fixture))
         try assertValidSignatures(generated: hello.sig.data,
                                   frozen: try fixtureString("transport_hello_signature", in: fixture),
-                                  transcript: helloTranscript, publicKey: hello.device_key.data)
+                                  transcript: helloTranscript, publicKey: hello.deviceKey.data)
 
         let challengeData = Data(try fixtureString("transport_challenge_json", in: fixture).utf8)
         let challenge = try LinkedDevicesMessageCodec.decode(
@@ -124,7 +124,7 @@ final class LinkedDevicesProtocolTests: XCTestCase {
                        try fixtureString("transport_request_hash", in: fixture))
         try assertValidSignatures(generated: request.request.sig.data,
                                   frozen: try fixtureString("transport_request_signature", in: fixture),
-                                  transcript: requestTranscript, publicKey: request.request.device_key.data)
+                                  transcript: requestTranscript, publicKey: request.request.deviceKey.data)
 
         let answerData = Data(try fixtureString("transport_answer_json", in: fixture).utf8)
         let answer = try LinkedDevicesMessageCodec.decode(
@@ -132,7 +132,7 @@ final class LinkedDevicesProtocolTests: XCTestCase {
             fields: ["v", "type", "challenge_id", "host_key", "host_nonce", "device_key", "device_nonce", "request_hash", "device_id", "answer_sdp", "sig"])
         XCTAssertEqual(try request.verify(answer), try fixtureString("transport_answer_sdp", in: fixture))
         var wrongHost = answer
-        wrongHost.host_key = LinkedDevicesB64(Data(repeating: 0xFF, count: 32))
+        wrongHost.hostKey = LinkedDevicesB64(Data(repeating: 0xFF, count: 32))
         XCTAssertThrowsError(try request.verify(wrongHost)) { error in
             XCTAssertEqual(error as? LinkedDevicesProtocolError, .hostIdentityChanged)
         }

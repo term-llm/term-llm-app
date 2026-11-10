@@ -96,7 +96,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
             diagnostic?.emit(.brokerConnected)
             do {
                 return try await establish(credential: credential, socket: socket,
-                                           ice: ice.ice_servers, diagnostic: diagnostic, closed: closed)
+                                           ice: ice.iceServers, diagnostic: diagnostic, closed: closed)
             } catch {
                 socket.close()
                 let reason = Self.diagnosticReason(error)
@@ -178,7 +178,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked S
                 let reject = try LinkedDevicesMessageCodec.decode(
                     LinkedDevicesPairReject.self, data: encoded, expectedType: "pair_reject",
                     fields: ["v", "type", "invitation_id", "reason"])
-                guard reject.invitation_id.data == invitationID else { throw LinkedDevicesProtocolError.invalid("pair rejection") }
+                guard reject.invitationID.data == invitationID else { throw LinkedDevicesProtocolError.invalid("pair rejection") }
                 let safe = ["denied", "expired", "invalid"].contains(reject.reason) ? reject.reason : "invalid"
                 throw LinkedDevicesProtocolError.rejected(safe)
             }
