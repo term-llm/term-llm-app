@@ -100,15 +100,7 @@ struct LinkedDevicesBrokerFrame: Codable, Equatable, Sendable {
     }
 }
 
-private final class LinkedDevicesNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
-final class LinkedDevicesBrokerClient: @unchecked Sendable {
+final class LinkedDevicesBrokerClient: Sendable {
     static let maxResponseBytes = 1 * 1024 * 1024
     let baseURL: URL
     private let session: URLSession
@@ -125,15 +117,11 @@ final class LinkedDevicesBrokerClient: @unchecked Sendable {
         while components.path.hasSuffix("/") { components.path.removeLast() }
         guard let normalized = components.url else { throw LinkedDevicesBrokerError.invalidAddress }
         self.baseURL = normalized
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.urlCredentialStorage = nil
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 25
-        session = URLSession(configuration: configuration, delegate: LinkedDevicesNoRedirect(), delegateQueue: nil)
+        let configuration = IsolatedURLSession.configuration {
+            $0.timeoutIntervalForRequest = 20
+            $0.timeoutIntervalForResource = 25
+        }
+        session = URLSession(configuration: configuration, delegate: RejectAllRedirects(), delegateQueue: nil)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -213,6 +201,9 @@ final class LinkedDevicesBrokerClient: @unchecked Sendable {
     }
 }
 
+// Sendability: URLSessionWebSocketTask supplies thread-safe I/O/cancellation;
+// lock protects our close-once flag. Callers use one receive loop per socket;
+// frames/encoders are local values and no mutable message state is shared.
 final class LinkedDevicesBrokerSocket: @unchecked Sendable {
     private let task: URLSessionWebSocketTask
     private let lock = NSLock()

@@ -92,9 +92,10 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.origin(for: server), forHTTPHeaderField: "Origin")
         request.httpBody = try JSONEncoder().encode(["code": code, "code_verifier": verifier])
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        let (data, response) = try await URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil).data(for: request)
+        let session = URLSession(configuration: IsolatedURLSession.configuration(),
+                                 delegate: RejectAllRedirects(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
               let body = try? JSONDecoder().decode(Redemption.self, from: data), body.ok else {
             throw LoginError.redemptionFailed
@@ -121,14 +122,6 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
                 continuation.resume()
             }
         }
-    }
-}
-
-private final class NoRedirects: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
     }
 }
 
