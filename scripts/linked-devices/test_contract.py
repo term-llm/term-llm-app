@@ -118,9 +118,11 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertNotIn("Authenticating this iPhone", pairing)
 
         connections = (ROOT / "TermLLM/PhoneHubView.swift").read_text()
-        self.assertIn('Text("Linked device ·', connections)
-        self.assertIn('Button("Connect") { linkedDevices.reconnectNow', connections)
+        self.assertIn('title = "Linked device"', connections)
+        self.assertIn('"\\(style.title) · \\(status.text)"', connections)
+        self.assertIn('Button("Connect now") { linkedDevices.reconnectNow', connections)
         self.assertIn('source.connection.isLinkedDevices ? "Forget" : "Remove"', connections)
+        self.assertIn('isLinked ? "Forget Device" : "Remove Connection"', connections)
 
         identity = (ROOT / "TermLLM/LinkedDevicesIdentityStore.swift").read_text()
         self.assertIn('"com.termllm.app.linked-devices.v2"', identity)
