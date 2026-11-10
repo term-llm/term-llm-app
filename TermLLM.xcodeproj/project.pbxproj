@@ -343,6 +343,7 @@
 		342F0D742F352423326CA2E9 /* WebKitHealthJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39B9E46958845DFE4731A7D0 /* WebKitHealthJournal.swift */; };
 		93177419C5ACDF1938C79A29 /* WebKitHealthReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFE488FC423243E421F8596 /* WebKitHealthReport.swift */; };
 		B613FAC1E8DABEF7C9623400 /* WebKitHealthReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFE488FC423243E421F8596 /* WebKitHealthReport.swift */; };
+		AB6F71E068DBED5F020BFE01 /* LocalServiceViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC1A67A4C22B71EF04A9341 /* LocalServiceViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -605,6 +606,7 @@
 		85C4A96D54820AB8E59306BC /* WebKitHealthPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthPolicy.swift; sourceTree = "<group>"; };
 		39B9E46958845DFE4731A7D0 /* WebKitHealthJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthJournal.swift; sourceTree = "<group>"; };
 		1AFE488FC423243E421F8596 /* WebKitHealthReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitHealthReport.swift; sourceTree = "<group>"; };
+		DEC1A67A4C22B71EF04A9341 /* LocalServiceViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServiceViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -892,6 +894,7 @@
 		F100000000000000000000B0 /* TermLLMMac */ = {
 			isa = PBXGroup;
 			children = (
+				033D2E22B012F522801B7132 /* LocalService */,
 				E51000000000000000000011 /* AppUpdateController.swift */,
 				E51000000000000000000012 /* AppUpdatePolicy.swift */,
 				F10000000000000000000001 /* TermLLMMacApp.swift */,
@@ -959,6 +962,14 @@
 				80A0F93453A636987AA4D8BD /* WebKitHealthModels.swift */,
 			);
 			path = WebKitHealth;
+			sourceTree = "<group>";
+		};
+		033D2E22B012F522801B7132 /* LocalService */ = {
+			isa = PBXGroup;
+			children = (
+				DEC1A67A4C22B71EF04A9341 /* LocalServiceViewController.swift */,
+			);
+			path = LocalService;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -1533,6 +1544,7 @@
 				F10000000000000000000067 /* MacAppDelegate.swift in Sources */,
 				F10000000000000000000068 /* MacWorkspace.swift in Sources */,
 				F10000000000000000000069 /* MacLocalService.swift in Sources */,
+				AB6F71E068DBED5F020BFE01 /* LocalServiceViewController.swift in Sources */,
 				F1000000000000000000006A /* CompanionModel.swift in Sources */,
 				F100000000000000000000BC /* PhoneHubAgentsOverview.swift in Sources */,
 			);
