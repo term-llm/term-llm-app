@@ -9,31 +9,47 @@ struct AgentSessionEntry: Codable, Sendable, Equatable {
     let id: String
     let number: Int64?
     let name: String?
-    let short_title: String?
-    let long_title: String?
-    let project_name: String?
+    let shortTitle: String?
+    let longTitle: String?
+    let projectName: String?
     let archived: Bool?
     let pinned: Bool?
-    let pin_order: Int64?
-    let created_at: Int64?
-    let last_message_at: Int64?
-    let message_count: Int?
-    let attention_store_instance_id: String?
-    let attention_seq: Int64?
-    let attention_unseen: Bool?
-    let parent_session_id: String?
+    let pinOrder: Int64?
+    let createdAt: Int64?
+    let lastMessageAt: Int64?
+    let messageCount: Int?
+    let attentionStoreInstanceID: String?
+    let attentionSeq: Int64?
+    let attentionUnseen: Bool?
+    let parentSessionID: String?
 
-    init(id: String, number: Int64? = nil, name: String? = nil, short_title: String? = nil, long_title: String? = nil,
-         project_name: String? = nil, archived: Bool? = nil, pinned: Bool? = nil, pin_order: Int64? = nil,
-         created_at: Int64? = nil, last_message_at: Int64? = nil, message_count: Int? = nil,
-         attention_store_instance_id: String? = nil, attention_seq: Int64? = nil, attention_unseen: Bool? = nil,
-         parent_session_id: String? = nil) {
-        self.id = id; self.number = number; self.name = name; self.short_title = short_title
-        self.long_title = long_title; self.project_name = project_name; self.archived = archived
-        self.pinned = pinned; self.pin_order = pin_order; self.created_at = created_at
-        self.last_message_at = last_message_at; self.message_count = message_count
-        self.attention_store_instance_id = attention_store_instance_id; self.attention_seq = attention_seq
-        self.attention_unseen = attention_unseen; self.parent_session_id = parent_session_id
+    enum CodingKeys: String, CodingKey {
+        case id, number, name
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case projectName = "project_name"
+        case archived, pinned
+        case pinOrder = "pin_order"
+        case createdAt = "created_at"
+        case lastMessageAt = "last_message_at"
+        case messageCount = "message_count"
+        case attentionStoreInstanceID = "attention_store_instance_id"
+        case attentionSeq = "attention_seq"
+        case attentionUnseen = "attention_unseen"
+        case parentSessionID = "parent_session_id"
+    }
+
+    init(id: String, number: Int64? = nil, name: String? = nil, shortTitle: String? = nil, longTitle: String? = nil,
+         projectName: String? = nil, archived: Bool? = nil, pinned: Bool? = nil, pinOrder: Int64? = nil,
+         createdAt: Int64? = nil, lastMessageAt: Int64? = nil, messageCount: Int? = nil,
+         attentionStoreInstanceID: String? = nil, attentionSeq: Int64? = nil, attentionUnseen: Bool? = nil,
+         parentSessionID: String? = nil) {
+        self.id = id; self.number = number; self.name = name; self.shortTitle = shortTitle
+        self.longTitle = longTitle; self.projectName = projectName; self.archived = archived
+        self.pinned = pinned; self.pinOrder = pinOrder; self.createdAt = createdAt
+        self.lastMessageAt = lastMessageAt; self.messageCount = messageCount
+        self.attentionStoreInstanceID = attentionStoreInstanceID; self.attentionSeq = attentionSeq
+        self.attentionUnseen = attentionUnseen; self.parentSessionID = parentSessionID
     }
 }
 
@@ -42,11 +58,16 @@ struct AgentSessionEntry: Codable, Sendable, Equatable {
 /// that predate paging (they answer a bounded snapshot).
 struct AgentSessionPage: Codable, Sendable, Equatable {
     let sessions: [AgentSessionEntry]
-    let next_cursor: String?
+    let nextCursor: String?
 
-    init(sessions: [AgentSessionEntry], next_cursor: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case sessions
+        case nextCursor = "next_cursor"
+    }
+
+    init(sessions: [AgentSessionEntry], nextCursor: String? = nil) {
         self.sessions = sessions
-        self.next_cursor = next_cursor
+        self.nextCursor = nextCursor
     }
 }
 
@@ -62,18 +83,31 @@ struct AgentSessionPatch: Encodable, Sendable, Equatable {
 struct AgentSessionPatchResult: Codable, Sendable, Equatable {
     let id: String
     let name: String?
-    let short_title: String?
-    let long_title: String?
+    let shortTitle: String?
+    let longTitle: String?
     let archived: Bool?
     let pinned: Bool?
-    let pin_order: Int64?
+    let pinOrder: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case archived, pinned
+        case pinOrder = "pin_order"
+    }
 }
 
 /// `PATCH /v1/sessions/pinned-order` answer: every pinned session in rank order.
 struct PinnedSessionOrder: Codable, Sendable, Equatable {
     struct Position: Codable, Sendable, Equatable {
         let id: String
-        let pin_order: Int64
+        let pinOrder: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case pinOrder = "pin_order"
+        }
     }
     let pinned: [Position]
 }
@@ -82,11 +116,11 @@ struct PinnedSessionOrder: Codable, Sendable, Equatable {
 
 /// One agent's conversation history and its metadata edits. Hubs reach the
 /// node through their validated proxy; a Direct Node answers for itself and
-/// ignores `node_id`.
+/// ignores `nodeID`.
 protocol HubSessionBrowsing: Sendable {
-    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage
-    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult
-    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder
+    func listSessions(nodeID: String, limit: Int, cursor: String?) async throws -> AgentSessionPage
+    func updateSession(nodeID: String, sessionID: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult
+    func reorderPinnedSessions(nodeID: String, sessionIDs: [String]) async throws -> PinnedSessionOrder
 }
 
 enum AgentSessionQuery {

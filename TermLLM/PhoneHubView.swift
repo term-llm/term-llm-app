@@ -238,7 +238,7 @@ struct PhoneHubView: View {
             let detail = ([
                 multipleSources ? row.source.name : nil,
                 row.node.status.reachable ? nil : "Offline",
-                row.node.sessions?.count_label,
+                row.node.sessions?.countLabel,
             ] as [String?]).compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             // The row opens the agent's page (new, pinned and recent
             // conversations); the compose button keeps a one-tap new chat.
@@ -252,7 +252,7 @@ struct PhoneHubView: View {
                     }
                     Spacer(minLength: 0)
                     Button {
-                        open(row.node.new_session_path, source: row.source, nodeID: row.node.id)
+                        open(row.node.newSessionPath, source: row.source, nodeID: row.node.id)
                     } label: {
                         Image(systemName: "square.and.pencil")
                             .font(.system(size: 16, weight: .semibold))
@@ -304,7 +304,7 @@ struct PhoneHubView: View {
     }
 
     private func sessionFlag(_ row: PhoneHubSession, flags: [PhoneHubSessionKey: PhoneHubSessionAttention]) -> PhoneHubSessionAttention? {
-        if row.session.interaction_required == true { return .inputRequired }
+        if row.session.interactionRequired == true { return .inputRequired }
         if let flag = flags[PhoneHubSessionKey(sourceID: row.source.id, nodeID: row.node.id, sessionID: row.session.id)] { return flag }
         return row.unseen ? .unseen : nil
     }
@@ -414,7 +414,7 @@ struct PhoneHubView: View {
         let key = PhoneHubSessionKey(sourceID: row.source.id, nodeID: row.node.id, sessionID: row.session.id)
         return Button {
             selectedSession = key
-            open(row.session.resume_path, source: row.source, nodeID: row.node.id)
+            open(row.session.resumePath, source: row.source, nodeID: row.node.id)
         } label: {
             HStack(spacing: 10) {
                 if !AppPlatform.isMac {
@@ -453,7 +453,7 @@ struct PhoneHubView: View {
                     Text("Input")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
-                } else if row.session.active_run == true {
+                } else if row.session.activeRun == true {
                     ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 }
             }
@@ -467,7 +467,7 @@ struct PhoneHubView: View {
 
     private func sessionCaption(_ row: PhoneHubSession) -> String {
         var parts = [row.node.name]
-        if let ms = row.session.last_message_at, ms > 0 {
+        if let ms = row.session.lastMessageAt, ms > 0 {
             parts.append(Date(timeIntervalSince1970: TimeInterval(ms) / 1000).formatted(.relative(presentation: .named)))
         }
         return parts.joined(separator: " · ")
@@ -498,7 +498,7 @@ struct PhoneHubView: View {
                     .accessibilityIdentifier("phoneHub.attention.\(row.source.id.uuidString).\(row.nodeID).\(row.sessionID).\(row.itemKey)")
                 if let request = row.seenRequest,
                    let source = aggregate.source(row.source.id),
-                   let item = source.store.inbox.first(where: { $0.node_id == row.nodeID && $0.session_id == request.session_id && $0.store_instance_id == request.store_instance_id && $0.attention_seq == request.attention_seq }) {
+                   let item = source.store.inbox.first(where: { $0.nodeID == row.nodeID && $0.sessionID == request.sessionID && $0.storeInstanceID == request.storeInstanceID && $0.attentionSeq == request.attentionSeq }) {
                     let busy = source.store.markingSeen.contains(HubStore.inboxItemKey(item))
                     Button {
                         Task { await source.store.markInboxItemSeen(item) }

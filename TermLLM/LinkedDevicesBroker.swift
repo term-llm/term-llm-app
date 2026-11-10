@@ -8,8 +8,13 @@ struct PeerICEServer: Codable, Sendable, Equatable, CustomStringConvertible {
 }
 
 struct LinkedDevicesICECredentials: Codable, Sendable, Equatable {
-    let ice_servers: [PeerICEServer]
-    let expires_at: String?
+    let iceServers: [PeerICEServer]
+    let expiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case iceServers = "ice_servers"
+        case expiresAt = "expires_at"
+    }
 }
 
 enum PeerBrokerAddress {
@@ -66,13 +71,23 @@ enum LinkedDevicesBrokerError: Error, Equatable, LocalizedError {
 
 struct LinkedDevicesBrokerFrame: Codable, Equatable, Sendable {
     let type: String
-    var peer_id: String?
-    var peer_kind: String?
+    var peerID: String?
+    var peerKind: String?
     var body: JSONValue?
     var role: String?
-    var peer_connected: Bool?
-    var lease_expires_at: String?
+    var peerConnected: Bool?
+    var leaseExpiresAt: String?
     var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case peerID = "peer_id"
+        case peerKind = "peer_kind"
+        case body, role
+        case peerConnected = "peer_connected"
+        case leaseExpiresAt = "lease_expires_at"
+        case error
+    }
 
     static func signal<T: Encodable>(_ value: T) throws -> Self {
         let data = try LinkedDevicesMessageCodec.encode(value)
@@ -136,8 +151,8 @@ final class LinkedDevicesBrokerClient: @unchecked Sendable {
     }
 
     static func validateICE(_ value: LinkedDevicesICECredentials) throws -> LinkedDevicesICECredentials {
-        guard value.ice_servers.count <= 16,
-              value.ice_servers.allSatisfy({ !$0.urls.isEmpty && $0.urls.count <= 8 }) else {
+        guard value.iceServers.count <= 16,
+              value.iceServers.allSatisfy({ !$0.urls.isEmpty && $0.urls.count <= 8 }) else {
             throw LinkedDevicesBrokerError.malformed
         }
         return value
@@ -160,8 +175,8 @@ final class LinkedDevicesBrokerClient: @unchecked Sendable {
         task.resume()
         let socket = LinkedDevicesBrokerSocket(task: task)
         let ready = try await socket.receive()
-        guard ready.type == "ready", ready.role == kind, ready.peer_id == peerID,
-              ready.peer_kind == kind else {
+        guard ready.type == "ready", ready.role == kind, ready.peerID == peerID,
+              ready.peerKind == kind else {
             socket.close()
             throw LinkedDevicesBrokerError.malformed
         }

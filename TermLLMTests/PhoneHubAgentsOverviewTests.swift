@@ -14,26 +14,26 @@ private enum OverviewFixture {
 
     static func session(_ id: String, _ title: String, minutesAgo: Int, running: Bool = false, input: Bool = false,
                         messages: Int = 12, root: String) -> HubNodeSession {
-        HubNodeSession(id: id, number: nil, short_title: title, long_title: nil, pinned: false, active_run: running,
-                       interaction_required: input, pending_interaction_count: input ? 1 : nil,
-                       pending_interaction_kinds: input ? ["approval"] : nil,
-                       last_message_at: nowMS - minutesAgo * 60_000, message_count: messages,
-                       resume_path: root + "chat/" + id)
+        HubNodeSession(id: id, number: nil, shortTitle: title, longTitle: nil, pinned: false, activeRun: running,
+                       interactionRequired: input, pendingInteractionCount: input ? 1 : nil,
+                       pendingInteractionKinds: input ? ["approval"] : nil,
+                       lastMessageAt: nowMS - minutesAgo * 60_000, messageCount: messages,
+                       resumePath: root + "chat/" + id)
     }
 
     static func node(id: String, name: String, root: String, reachable: Bool = true, version: String? = "0.9.99",
                      latency: Int = 0, error: String? = nil, countLabel: String, sessions: [HubNodeSession],
                      unseen: Int? = nil) -> HubNode {
-        let active = sessions.filter { $0.active_run == true || $0.interaction_required == true }
+        let active = sessions.filter { $0.activeRun == true || $0.interactionRequired == true }
         return HubNode(id: id, name: name, source: "fixture", connection: "http", url: "http://10.0.0.1/",
-                       base_path: root, proxy_path: root, new_session_path: root + "?new=1", has_token: false,
-                       status: HubNodeStatus(reachable: reachable, state: reachable ? "ok" : "error", latency_ms: latency,
+                       basePath: root, proxyPath: root, newSessionPath: root + "?new=1", hasToken: false,
+                       status: HubNodeStatus(reachable: reachable, state: reachable ? "ok" : "error", latencyMs: latency,
                                              version: version, agent: nil, capabilities: nil, details: nil, error: error),
-                       sessions: HubNodeSessions(count_label: countLabel, has_more: false, active_count: active.count,
-                                                 input_required_count: sessions.filter { $0.interaction_required == true }.count,
-                                                 unseen_count: unseen, attention_capability: nil, attention_last_success_at: nil,
+                       sessions: HubNodeSessions(countLabel: countLabel, hasMore: false, activeCount: active.count,
+                                                 inputRequiredCount: sessions.filter { $0.interactionRequired == true }.count,
+                                                 unseenCount: unseen, attentionCapability: nil, attentionLastSuccessAt: nil,
                                                  active: active, recent: sessions.filter { !active.contains($0) },
-                                                 resume_path: root),
+                                                 resumePath: root),
                        diagnostics: nil)
     }
 
@@ -53,30 +53,30 @@ private enum OverviewFixture {
 
     static var macAttention: AttentionResponse {
         func inbox(_ id: String, _ title: String, seq: Int) -> HubAttentionInboxItem {
-            HubAttentionInboxItem(node_id: "direct-node", node_name: "This Mac", session_id: id, store_instance_id: "store",
-                                  session_number: nil, title: title, outcome: "completed", terminal_at: nil,
-                                  attention_seq: seq, resume_path: "/chat/" + id)
+            HubAttentionInboxItem(nodeID: "direct-node", nodeName: "This Mac", sessionID: id, storeInstanceID: "store",
+                                  sessionNumber: nil, title: title, outcome: "completed", terminalAt: nil,
+                                  attentionSeq: seq, resumePath: "/chat/" + id)
         }
         return AttentionResponse(
-            total_running: 2, total_input_required: 1, total_unseen: 3,
-            nodes: [HubAttentionNode(node_id: "direct-node", node_name: "This Mac", capability_state: "ok", stale: false,
-                                     last_success_at: nil, last_error: nil, running_count: 2, input_required_count: 1,
-                                     unseen_count: 3, has_green_indicator: false)],
-            input_required: [HubInputRequiredItem(node_id: "direct-node", node_name: "This Mac", session_id: "restrict",
-                                                  session_number: nil, title: "Restrict Claude Model Access",
-                                                  pending_interaction_count: 1, pending_interaction_kinds: ["approval"],
-                                                  required_since: nil, resume_path: "/chat/restrict", stale: false)],
+            totalRunning: 2, totalInputRequired: 1, totalUnseen: 3,
+            nodes: [HubAttentionNode(nodeID: "direct-node", nodeName: "This Mac", capabilityState: "ok", stale: false,
+                                     lastSuccessAt: nil, lastError: nil, runningCount: 2, inputRequiredCount: 1,
+                                     unseenCount: 3, hasGreenIndicator: false)],
+            inputRequired: [HubInputRequiredItem(nodeID: "direct-node", nodeName: "This Mac", sessionID: "restrict",
+                                                  sessionNumber: nil, title: "Restrict Claude Model Access",
+                                                  pendingInteractionCount: 1, pendingInteractionKinds: ["approval"],
+                                                  requiredSince: nil, resumePath: "/chat/restrict", stale: false)],
             inbox: [inbox("install", "macOS Clean Install and Auto-Update Test", seq: 3),
                     inbox("update", "Updating to v0.9.99, Jobs Held Back", seq: 2),
                     inbox("cursor", "Fix sidebar cursor rewind on refresh", seq: 1)],
-            has_more: false)
+            hasMore: false)
     }
 
     /// The agent's first history page: pins first, then recent activity.
     static var macHistory: AgentSessionPage {
         func entry(_ id: String, _ title: String, minutesAgo: Int, pin: Int64? = nil, messages: Int = 12) -> AgentSessionEntry {
-            AgentSessionEntry(id: id, short_title: title, pinned: pin != nil, pin_order: pin,
-                              last_message_at: Int64(nowMS - minutesAgo * 60_000), message_count: messages)
+            AgentSessionEntry(id: id, shortTitle: title, pinned: pin != nil, pinOrder: pin,
+                              lastMessageAt: Int64(nowMS - minutesAgo * 60_000), messageCount: messages)
         }
         return AgentSessionPage(sessions: [
             entry("artifacts", "Interactive Conversation Artifacts", minutesAgo: 400, pin: 1, messages: 88),
@@ -143,10 +143,10 @@ final class PhoneHubAgentsOverviewTests: XCTestCase {
     func testCountsAgreeWithTheBadgeAndTheListedConversations() {
         var sessions = OverviewFixture.macSessions
         // Blocked on an approval: the run is active, but it is waiting on you.
-        sessions.append(HubNodeSession(id: "blocked", number: nil, short_title: "Blocked", long_title: nil, pinned: nil,
-                                       active_run: true, interaction_required: true, pending_interaction_count: 1,
-                                       pending_interaction_kinds: ["approval"], last_message_at: nil, message_count: nil,
-                                       resume_path: "/r/chat/blocked"))
+        sessions.append(HubNodeSession(id: "blocked", number: nil, shortTitle: "Blocked", longTitle: nil, pinned: nil,
+                                       activeRun: true, interactionRequired: true, pendingInteractionCount: 1,
+                                       pendingInteractionKinds: ["approval"], lastMessageAt: nil, messageCount: nil,
+                                       resumePath: "/r/chat/blocked"))
         let node = OverviewFixture.node(id: "jarvis", name: "Jarvis", root: "/r/", countLabel: "9 conversations",
                                         sessions: sessions, unseen: 5)
         let fallback = PhoneHubAgentSummary(source: connection(), node: node, attention: nil)
@@ -157,9 +157,9 @@ final class PhoneHubAgentsOverviewTests: XCTestCase {
         XCTAssertEqual(PhoneHubAgentSummary.highlights(node: node, attention: []).filter { $0.kind == .running }.count,
                        fallback.running, "The count matches the Running now list")
 
-        let attention = HubAttentionNode(node_id: "jarvis", node_name: "Jarvis", capability_state: "ok", stale: false,
-                                         last_success_at: nil, last_error: nil, running_count: 7, input_required_count: 0,
-                                         unseen_count: -3, has_green_indicator: false)
+        let attention = HubAttentionNode(nodeID: "jarvis", nodeName: "Jarvis", capabilityState: "ok", stale: false,
+                                         lastSuccessAt: nil, lastError: nil, runningCount: 7, inputRequiredCount: 0,
+                                         unseenCount: -3, hasGreenIndicator: false)
         let reported = PhoneHubAgentSummary(source: connection(), node: node, attention: attention)
         XCTAssertEqual([reported.running, reported.needsInput, reported.unread], [2, 0, 0], "Counts are never negative")
 
@@ -235,9 +235,9 @@ final class PhoneHubAgentsOverviewTests: XCTestCase {
     func testHighlightTitlesAndDetailsFallBackGracefully() {
         let source = connection()
         let node = OverviewFixture.node(id: "jarvis", name: "Jarvis", root: "/", countLabel: "", sessions: [
-            HubNodeSession(id: "s", number: 4, short_title: " ", long_title: nil, pinned: nil, active_run: nil,
-                           interaction_required: true, pending_interaction_count: nil, pending_interaction_kinds: ["question"],
-                           last_message_at: nil, message_count: nil, resume_path: "/chat/4"),
+            HubNodeSession(id: "s", number: 4, shortTitle: " ", longTitle: nil, pinned: nil, activeRun: nil,
+                           interactionRequired: true, pendingInteractionCount: nil, pendingInteractionKinds: ["question"],
+                           lastMessageAt: nil, messageCount: nil, resumePath: "/chat/4"),
         ])
         let rows = PhoneHubAgentSummary.highlights(node: node, attention: [attentionRow(source, session: "x", input: false, title: "", outcome: "ERRORED")])
         XCTAssertEqual(rows.map(\.title), ["Conversation 4", "Untitled conversation"])
@@ -293,10 +293,10 @@ final class PhoneHubAgentsOverviewSnapshotTests: XCTestCase {
             if connection.id == mac.id {
                 let node = OverviewFixture.node(id: "direct-node", name: "This Mac", root: OverviewFixture.macRoot,
                                                 countLabel: "200 conversations", sessions: OverviewFixture.macSessions, unseen: 3)
-                client.nodesResponse = { NodesResponse(nodes: [node], resolver_error: nil) }
+                client.nodesResponse = { NodesResponse(nodes: [node], resolverError: nil) }
                 client.attentionResponse = { OverviewFixture.macAttention }
             } else {
-                client.nodesResponse = { NodesResponse(nodes: OverviewFixture.hubNodes, resolver_error: nil) }
+                client.nodesResponse = { NodesResponse(nodes: OverviewFixture.hubNodes, resolverError: nil) }
             }
             let history = OverviewFixture.macHistory
             return HubSourceWorkspace(connection: connection, store: HubStore(client: client, pollInterval: 999),

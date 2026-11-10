@@ -16,39 +16,68 @@ struct DirectNodeHealth: Codable, Sendable, Equatable {
 enum DirectAttentionKind: String, Sendable, Codable, CaseIterable {
     case unseen        = "unseen"
     case running       = "running"
-    case input_required = "input_required"
+    case inputRequired = "input_required"
 }
 
 /// One item returned by GET /v1/attention.
 /// Timestamps are ISO8601 strings (Go `time.Time` JSON marshaling).
 struct DirectAttentionItem: Codable, Sendable, Equatable {
-    let session_id: String
-    let session_number: Int64?
-    let response_id: String?
+    let sessionID: String
+    let sessionNumber: Int64?
+    let responseID: String?
     let kind: String?
-    let lifecycle_state: String?
-    let attention_seq: Int64?
-    let short_title: String?
-    let long_title: String?
+    let lifecycleState: String?
+    let attentionSeq: Int64?
+    let shortTitle: String?
+    let longTitle: String?
     let outcome: String?
-    let terminal_at: String?
-    let started_at: String?
-    let interaction_required: Bool?
-    let pending_interaction_count: Int?
-    let pending_interaction_kinds: [String]?
-    let interaction_required_since: String?
-    let seen_through_seq: Int64?
-    let seen_rev: Int64?
+    let terminalAt: String?
+    let startedAt: String?
+    let interactionRequired: Bool?
+    let pendingInteractionCount: Int?
+    let pendingInteractionKinds: [String]?
+    let interactionRequiredSince: String?
+    let seenThroughSeq: Int64?
+    let seenRev: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case sessionNumber = "session_number"
+        case responseID = "response_id"
+        case kind
+        case lifecycleState = "lifecycle_state"
+        case attentionSeq = "attention_seq"
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case outcome
+        case terminalAt = "terminal_at"
+        case startedAt = "started_at"
+        case interactionRequired = "interaction_required"
+        case pendingInteractionCount = "pending_interaction_count"
+        case pendingInteractionKinds = "pending_interaction_kinds"
+        case interactionRequiredSince = "interaction_required_since"
+        case seenThroughSeq = "seen_through_seq"
+        case seenRev = "seen_rev"
+    }
 }
 
 /// Paginated response from GET /v1/attention.
 struct DirectAttentionPage: Codable, Sendable, Equatable {
-    let protocol_version: Int?
-    let store_instance_id: String
-    let snapshot_version: Int64?
+    let protocolVersion: Int?
+    let storeInstanceID: String
+    let snapshotVersion: Int64?
     let items: [DirectAttentionItem]
-    let next_cursor: String?
-    let has_more: Bool
+    let nextCursor: String?
+    let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol_version"
+        case storeInstanceID = "store_instance_id"
+        case snapshotVersion = "snapshot_version"
+        case items
+        case nextCursor = "next_cursor"
+        case hasMore = "has_more"
+    }
 }
 
 /// One session row returned by GET /v1/sessions/status.
@@ -56,31 +85,60 @@ struct DirectAttentionPage: Codable, Sendable, Equatable {
 struct DirectNodeSessionEntry: Codable, Sendable, Equatable {
     let id: String
     let number: Int64?
-    let project_id: String?
-    let project_name: String?
-    let short_title: String
-    let long_title: String?
+    let projectID: String?
+    let projectName: String?
+    let shortTitle: String
+    let longTitle: String?
     let pinned: Bool?
-    let active_run: Bool?
-    let active_response_id: String?
-    let run_epoch: Int64?
-    let started_rev: Int64?
-    let started_at: Int64?
-    let transcript_rev: Int64?
-    let message_count: Int?
-    let last_message_at: Int64?
-    let attention_store_instance_id: String?
-    let attention_seq: Int64?
-    let attention_response_id: String?
-    let seen_through_seq: Int64?
-    let seen_rev: Int64?
-    let seen_source: String?
-    let attention_unseen: Bool?
-    let attention_outcome: String?
-    let attention_terminal_at: Int64?
-    let interaction_required: Bool?
-    let pending_interaction_count: Int?
-    let pending_interaction_kinds: [String]?
+    let activeRun: Bool?
+    let activeResponseID: String?
+    let runEpoch: Int64?
+    let startedRev: Int64?
+    let startedAt: Int64?
+    let transcriptRev: Int64?
+    let messageCount: Int?
+    let lastMessageAt: Int64?
+    let attentionStoreInstanceID: String?
+    let attentionSeq: Int64?
+    let attentionResponseID: String?
+    let seenThroughSeq: Int64?
+    let seenRev: Int64?
+    let seenSource: String?
+    let attentionUnseen: Bool?
+    let attentionOutcome: String?
+    let attentionTerminalAt: Int64?
+    let interactionRequired: Bool?
+    let pendingInteractionCount: Int?
+    let pendingInteractionKinds: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, number
+        case projectID = "project_id"
+        case projectName = "project_name"
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case pinned
+        case activeRun = "active_run"
+        case activeResponseID = "active_response_id"
+        case runEpoch = "run_epoch"
+        case startedRev = "started_rev"
+        case startedAt = "started_at"
+        case transcriptRev = "transcript_rev"
+        case messageCount = "message_count"
+        case lastMessageAt = "last_message_at"
+        case attentionStoreInstanceID = "attention_store_instance_id"
+        case attentionSeq = "attention_seq"
+        case attentionResponseID = "attention_response_id"
+        case seenThroughSeq = "seen_through_seq"
+        case seenRev = "seen_rev"
+        case seenSource = "seen_source"
+        case attentionUnseen = "attention_unseen"
+        case attentionOutcome = "attention_outcome"
+        case attentionTerminalAt = "attention_terminal_at"
+        case interactionRequired = "interaction_required"
+        case pendingInteractionCount = "pending_interaction_count"
+        case pendingInteractionKinds = "pending_interaction_kinds"
+    }
 }
 
 /// Response from GET /v1/sessions/status.
@@ -101,43 +159,43 @@ struct DirectNodeSessionsStatus: Codable, Sendable, Equatable {
 /// | Hub cookie exclusion | `term_llm_hub_*` cookies are never forwarded; no root / sibling path leakage |
 /// | Bearer for all requests | `Authorization: Bearer` injected on every native request (GET + POST) and GET /healthz |
 /// | Origin | Set on every mutation (POST / PATCH / DELETE) |
-/// | on_unauthorized | Thread-safe, epoch-scoped — stale callbacks silenced after auth change |
-/// | validate_bearer | GET /healthz with candidate bearer, NO ambient cookies; rejects bare-200 without identity markers |
+/// | onUnauthorized | Thread-safe, epoch-scoped — stale callbacks silenced after auth change |
+/// | validateBearer | GET /healthz with candidate bearer, NO ambient cookies; rejects bare-200 without identity markers |
 /// | Redirects | Blocked by the underlying transport |
 ///
 /// ## Supported HubServing methods
-/// `healthz()`, `list_nodes()`, `list_attention(limit:)`, `mark_attention_seen(_:)`,
-/// `list_delegations()`
+/// `healthz()`, `listNodes()`, `listAttention(limit:)`, `markAttentionSeen(_:)`,
+/// `listDelegations()`
 ///
 /// ## Unsupported HubServing methods (throw HTTP 501)
 /// Bulk attention clear, all node management, registration, auth / security /
 /// passkey ceremonies, grant operations, native authorize.
 ///
 /// ## Additional node-specific methods
-/// `sessions_status()`, `list_node_attention(kind:limit:)`,
-/// `node_health()`, `validate_bearer(token:)`, `resume_path(session_id:session_number:)`
+/// `sessionsStatus()`, `listNodeAttention(kind:limit:)`,
+/// `nodeHealth()`, `validateBearer(token:)`, `resumePath(sessionID:sessionNumber:)`
 final class DirectNodeClient: @unchecked Sendable {
 
     // MARK: - Properties
 
     /// Base URL of the node (e.g. `http://localhost:8767/direct/`).
-    let base_url: URL
+    let baseURL: URL
 
-    /// Mount path derived from `base_url.path`, normalised (no trailing slash,
-    /// empty string for root).  Web session cookie must be scoped to `mount_path + "/"`.
-    let mount_path: String
+    /// Mount path derived from `baseURL.path`, normalised (no trailing slash,
+    /// empty string for root).  Web session cookie must be scoped to `mountPath + "/"`.
+    let mountPath: String
 
-    /// Exact lowercase host from base_url.  Cookie filtering rejects domain cookies.
-    let expected_host: String
+    /// Exact lowercase host from baseURL.  Cookie filtering rejects domain cookies.
+    let expectedHost: String
 
     /// Scheme + host[:port], omitting default ports.  Sent as Origin on mutations.
     let origin: String
 
-    let is_https: Bool
+    let isHTTPS: Bool
 
-    let cookie_source: @Sendable () async -> [HTTPCookie]
-    let bearer_source: @Sendable () async -> String?
-    let display_name_source: @Sendable () async -> String?
+    let cookieSource: @Sendable () async -> [HTTPCookie]
+    let bearerSource: @Sendable () async -> String?
+    let displayNameSource: @Sendable () async -> String?
 
     private let transport: any HubTransport
 
@@ -147,7 +205,7 @@ final class DirectNodeClient: @unchecked Sendable {
     private var _authEpoch: UInt64 = 0
 
     /// Fired as soon as the transport surfaces a 401/403, before body completion.
-    var on_unauthorized: (@Sendable () async -> Void)? {
+    var onUnauthorized: (@Sendable () async -> Void)? {
         get {
             authLock.lock()
             defer { authLock.unlock() }
@@ -166,43 +224,43 @@ final class DirectNodeClient: @unchecked Sendable {
     // MARK: - Initializer
 
     /// - Parameters:
-    ///   - base_url: Node origin + optional base path.
-    ///   - cookie_source: Async closure returning all cookies from the WK store.
+    ///   - baseURL: Node origin + optional base path.
+    ///   - cookieSource: Async closure returning all cookies from the WK store.
     ///     Only `term_llm_web_session` at the exact host + mount path is forwarded.
-    ///   - bearer_source: Async closure returning an optional native bearer token
+    ///   - bearerSource: Async closure returning an optional native bearer token
     ///     (e.g. from Keychain).  Injected for POST/PATCH/DELETE and GET /healthz.
     ///   - transport: Injectable transport for testing.  Defaults to
     ///     ``URLSessionHubTransport`` in production.
-    ///   - display_name_source: Current saved connection name, used when health
+    ///   - displayNameSource: Current saved connection name, used when health
     ///     does not supply a nonblank agent name.
     init(
-        base_url: URL,
-        cookie_source: @escaping @Sendable () async -> [HTTPCookie],
-        bearer_source: @escaping @Sendable () async -> String?,
+        baseURL: URL,
+        cookieSource: @escaping @Sendable () async -> [HTTPCookie],
+        bearerSource: @escaping @Sendable () async -> String?,
         transport: (any HubTransport)? = nil,
-        display_name_source: @escaping @Sendable () async -> String? = { nil }
+        displayNameSource: @escaping @Sendable () async -> String? = { nil }
     ) {
-        self.base_url = base_url
-        self.cookie_source = cookie_source
-        self.bearer_source = bearer_source
-        self.display_name_source = display_name_source
-        self.is_https = base_url.scheme?.lowercased() == "https"
-        self.expected_host = (base_url.host ?? "").lowercased()
+        self.baseURL = baseURL
+        self.cookieSource = cookieSource
+        self.bearerSource = bearerSource
+        self.displayNameSource = displayNameSource
+        self.isHTTPS = baseURL.scheme?.lowercased() == "https"
+        self.expectedHost = (baseURL.host ?? "").lowercased()
         self.transport = transport ?? URLSessionHubTransport()
 
-        // Use percentEncodedPath so mount_path is already percent-encoded and can
+        // Use percentEncodedPath so mountPath is already percent-encoded and can
         // be safely concatenated with other pre-encoded segments in mounted().
-        let raw = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!.percentEncodedPath
+        let raw = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!.percentEncodedPath
         if raw == "/" || raw.isEmpty {
-            self.mount_path = ""
+            self.mountPath = ""
         } else {
-            self.mount_path = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            self.mountPath = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
         }
 
-        let defaultPort = base_url.scheme == "http" ? 80 : 443
-        let port = base_url.port == defaultPort ? ""
-            : base_url.port.map { ":\($0)" } ?? ""
-        self.origin = "\(base_url.scheme ?? "https")://\(base_url.host ?? "localhost")\(port)"
+        let defaultPort = baseURL.scheme == "http" ? 80 : 443
+        let port = baseURL.port == defaultPort ? ""
+            : baseURL.port.map { ":\($0)" } ?? ""
+        self.origin = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "localhost")\(port)"
     }
 
     // MARK: - Cookie filtering (term_llm_web_session only)
@@ -211,20 +269,20 @@ final class DirectNodeClient: @unchecked Sendable {
     ///
     /// - **Name**: must be exactly `term_llm_web_session`.
     ///   All `term_llm_hub_*` cookies and other names are excluded.
-    /// - **Exact host**: cookie domain must equal `expected_host`; domain cookies rejected.
-    /// - **Path**: must equal the auth path (`mount_path + "/"` or `/` for root).
+    /// - **Exact host**: cookie domain must equal `expectedHost`; domain cookies rejected.
+    /// - **Path**: must equal the auth path (`mountPath + "/"` or `/` for root).
     ///   No root, sibling, or parent path leakage.
     /// - **Secure**: secure cookies only sent over HTTPS.
     /// - **Expiry**: expired cookies dropped.
     func filteredCookies(_ cookies: [HTTPCookie], for url: URL) -> [HTTPCookie] {
         let now = Date()
-        let authPath = mount_path.isEmpty ? "/" : mount_path + "/"
+        let authPath = mountPath.isEmpty ? "/" : mountPath + "/"
         return cookies.filter { cookie in
             guard cookie.name == "term_llm_web_session" else { return false }
-            guard cookie.domain.lowercased() == expected_host else { return false }
+            guard cookie.domain.lowercased() == expectedHost else { return false }
             let cp = cookie.path.isEmpty ? "/" : cookie.path
             guard cp == authPath else { return false }
-            if cookie.isSecure && !is_https { return false }
+            if cookie.isSecure && !isHTTPS { return false }
             if let expires = cookie.expiresDate, expires < now { return false }
             return true
         }
@@ -235,34 +293,34 @@ final class DirectNodeClient: @unchecked Sendable {
     /// Compute the browser resume URL for a session.
     ///
     /// Preserves session numbers (`/chat/42`) over opaque IDs (`/chat/<uuid>`).
-    func resume_path(session_id: String, session_number: Int64?) -> String {
-        let base = "\(mount_path)/chat/"
-        if let n = session_number, n > 0 { return "\(base)\(n)" }
-        return "\(base)\(session_id)"
+    func resumePath(sessionID: String, sessionNumber: Int64?) -> String {
+        let base = "\(mountPath)/chat/"
+        if let n = sessionNumber, n > 0 { return "\(base)\(n)" }
+        return "\(base)\(sessionID)"
     }
 
     // MARK: - Node-specific public methods
 
     /// GET /v1/sessions/search — full-text session search on this node.
-    func search_sessions(query: String, limit: Int) async throws -> SessionSearchResponse {
+    func searchSessions(query: String, limit: Int) async throws -> SessionSearchResponse {
         try await request("/v1/sessions/search?\(SessionSearchQuery.percentEncoded(query: query, limit: limit))")
     }
 
     /// GET /v1/sessions/status — list of sessions with attention and run state.
-    func sessions_status() async throws -> DirectNodeSessionsStatus {
+    func sessionsStatus() async throws -> DirectNodeSessionsStatus {
         try await request("/v1/sessions/status")
     }
 
     /// GET /v1/attention?kind=<kind>[&limit=<1…500>] — single-kind attention page.
     ///
     /// `limit` is clamped to `[1, 500]`.  Uses the same bounded 409-retry as
-    /// ``list_attention`` (up to 3 attempts) for consistency.
-    func list_node_attention(kind: DirectAttentionKind, limit: Int? = nil) async throws -> DirectAttentionPage {
+    /// ``listAttention`` (up to 3 attempts) for consistency.
+    func listNodeAttention(kind: DirectAttentionKind, limit: Int? = nil) async throws -> DirectAttentionPage {
         try await fetchAttentionWithRetry(kind: kind, limit: limit)
     }
 
     /// GET /healthz with the current bearer token; returns identity fields.
-    func node_health() async throws -> DirectNodeHealth {
+    func nodeHealth() async throws -> DirectNodeHealth {
         try await fetchHealthAuthenticated(useCallback: true)
     }
 
@@ -274,10 +332,10 @@ final class DirectNodeClient: @unchecked Sendable {
     /// failure; those fields are only included when the node trusts the caller.
     ///
     /// Does **not** modify the stored bearer credential, does **not** fire
-    /// `on_unauthorized` on a failed probe.
+    /// `onUnauthorized` on a failed probe.
     ///
     /// - Throws: ``HubAPIError`` on non-2xx or on 200 without identity markers.
-    func validate_bearer(token: String) async throws -> DirectNodeHealth {
+    func validateBearer(token: String) async throws -> DirectNodeHealth {
         let url = mounted("/healthz")
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
@@ -333,13 +391,13 @@ final class DirectNodeClient: @unchecked Sendable {
         req.timeoutInterval = Self.defaultTimeout
 
         // Cookies
-        let cookies = filteredCookies(await cookie_source(), for: url)
+        let cookies = filteredCookies(await cookieSource(), for: url)
         for (k, v) in HTTPCookie.requestHeaderFields(with: cookies) {
             req.setValue(v, forHTTPHeaderField: k)
         }
 
         // Bearer (always for healthz — identity requires auth)
-        if let t = await bearer_source() {
+        if let t = await bearerSource() {
             req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
 
@@ -374,12 +432,12 @@ final class DirectNodeClient: @unchecked Sendable {
             pathPart = suffix
             queryPart = nil
         }
-        var components = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!
-        // percentEncodedPath: mount_path is already percent-encoded (derived from
-        // base_url.percentEncodedPath), and pathPart may contain pre-encoded segments
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        // percentEncodedPath: mountPath is already percent-encoded (derived from
+        // baseURL.percentEncodedPath), and pathPart may contain pre-encoded segments
         // like %2F in session IDs.  Using the plain .path setter would re-encode %
         // as %25 (double-encoding); .percentEncodedPath leaves existing escapes intact.
-        components.percentEncodedPath = "\(mount_path)\(pathPart)"
+        components.percentEncodedPath = "\(mountPath)\(pathPart)"
         // percentEncodedQuery: query string is built from safe ASCII values only;
         // using the plain .query setter would unnecessarily re-escape & and =.
         components.percentEncodedQuery = queryPart
@@ -446,13 +504,13 @@ final class DirectNodeClient: @unchecked Sendable {
         }
 
         // Cookie: term_llm_web_session only
-        let cookies = filteredCookies(await cookie_source(), for: url)
+        let cookies = filteredCookies(await cookieSource(), for: url)
         for (k, v) in HTTPCookie.requestHeaderFields(with: cookies) {
             request.setValue(v, forHTTPHeaderField: k)
         }
 
         // Bearer on ALL native requests (GET + mutations)
-        if let t = await bearer_source() {
+        if let t = await bearerSource() {
             request.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
 
@@ -516,18 +574,18 @@ final class DirectNodeClient: @unchecked Sendable {
         HubNodeSession(
             id: entry.id,
             number: entry.number.map(Int.init),
-            short_title: entry.short_title,
-            long_title: entry.long_title,
+            shortTitle: entry.shortTitle,
+            longTitle: entry.longTitle,
             pinned: entry.pinned,
-            active_run: entry.active_run,
-            interaction_required: entry.interaction_required,
-            pending_interaction_count: entry.pending_interaction_count,
-            pending_interaction_kinds: entry.pending_interaction_kinds,
-            last_message_at: entry.last_message_at.map(Int.init),
-            message_count: entry.message_count,
-            resume_path: resume_path(
-                session_id: entry.id,
-                session_number: entry.number
+            activeRun: entry.activeRun,
+            interactionRequired: entry.interactionRequired,
+            pendingInteractionCount: entry.pendingInteractionCount,
+            pendingInteractionKinds: entry.pendingInteractionKinds,
+            lastMessageAt: entry.lastMessageAt.map(Int.init),
+            messageCount: entry.messageCount,
+            resumePath: resumePath(
+                sessionID: entry.id,
+                sessionNumber: entry.number
             )
         )
     }
@@ -537,35 +595,35 @@ final class DirectNodeClient: @unchecked Sendable {
         storeInstanceID: String
     ) -> HubAttentionInboxItem {
         HubAttentionInboxItem(
-            node_id: "direct-node",
-            node_name: "direct-node",
-            session_id: item.session_id,
-            store_instance_id: storeInstanceID,
-            session_number: item.session_number.map(Int.init),
-            title: item.short_title ?? "",
-            outcome: item.outcome ?? item.lifecycle_state ?? "",
-            terminal_at: item.terminal_at,
-            attention_seq: Int(item.attention_seq ?? 0),
-            resume_path: resume_path(
-                session_id: item.session_id,
-                session_number: item.session_number
+            nodeID: "direct-node",
+            nodeName: "direct-node",
+            sessionID: item.sessionID,
+            storeInstanceID: storeInstanceID,
+            sessionNumber: item.sessionNumber.map(Int.init),
+            title: item.shortTitle ?? "",
+            outcome: item.outcome ?? item.lifecycleState ?? "",
+            terminalAt: item.terminalAt,
+            attentionSeq: Int(item.attentionSeq ?? 0),
+            resumePath: resumePath(
+                sessionID: item.sessionID,
+                sessionNumber: item.sessionNumber
             )
         )
     }
 
     private func inputRequiredItem(from item: DirectAttentionItem) -> HubInputRequiredItem {
         HubInputRequiredItem(
-            node_id: "direct-node",
-            node_name: "direct-node",
-            session_id: item.session_id,
-            session_number: item.session_number.map(Int.init),
-            title: item.short_title ?? "",
-            pending_interaction_count: item.pending_interaction_count ?? 0,
-            pending_interaction_kinds: item.pending_interaction_kinds,
-            required_since: item.interaction_required_since,
-            resume_path: resume_path(
-                session_id: item.session_id,
-                session_number: item.session_number
+            nodeID: "direct-node",
+            nodeName: "direct-node",
+            sessionID: item.sessionID,
+            sessionNumber: item.sessionNumber.map(Int.init),
+            title: item.shortTitle ?? "",
+            pendingInteractionCount: item.pendingInteractionCount ?? 0,
+            pendingInteractionKinds: item.pendingInteractionKinds,
+            requiredSince: item.interactionRequiredSince,
+            resumePath: resumePath(
+                sessionID: item.sessionID,
+                sessionNumber: item.sessionNumber
             ),
             stale: nil
         )
@@ -586,9 +644,9 @@ extension DirectNodeClient: HubServing {
     /// current saved display name, then "direct-node". The node ID remains the
     /// stable sentinel "direct-node".
     /// Sessions are split into `active` (running or input-required) and `recent`.
-    func list_nodes() async throws -> NodesResponse {
+    func listNodes() async throws -> NodesResponse {
         // Concurrent: sessions/status (required) + healthz identity (best-effort)
-        async let statusTask = sessions_status()
+        async let statusTask = sessionsStatus()
         async let healthTask = fetchHealthAuthenticated(useCallback: false)
 
         let status = try await statusTask
@@ -600,34 +658,34 @@ extension DirectNodeClient: HubServing {
         if !healthAgent.isEmpty {
             agentName = healthAgent
         } else {
-            let displayName = await display_name_source()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let displayName = await displayNameSource()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             agentName = displayName.isEmpty ? "direct-node" : displayName
         }
 
-        let activeSessions = entries.filter { $0.active_run == true || $0.interaction_required == true }
-        let recentSessions = entries.filter { $0.active_run != true && $0.interaction_required != true }
+        let activeSessions = entries.filter { $0.activeRun == true || $0.interactionRequired == true }
+        let recentSessions = entries.filter { $0.activeRun != true && $0.interactionRequired != true }
 
         let activeCount  = activeSessions.count
-        let inputCount   = entries.filter { $0.interaction_required == true }.count
-        let unseenCount  = entries.filter { $0.attention_unseen == true }.count
+        let inputCount   = entries.filter { $0.interactionRequired == true }.count
+        let unseenCount  = entries.filter { $0.attentionUnseen == true }.count
 
         let nodeSessions = HubNodeSessions(
-            count_label: "\(entries.count) \(entries.count == 1 ? "conversation" : "conversations")",
-            has_more: false,
-            active_count: activeCount,
-            input_required_count: inputCount,
-            unseen_count: unseenCount,
-            attention_capability: nil,
-            attention_last_success_at: nil,
+            countLabel: "\(entries.count) \(entries.count == 1 ? "conversation" : "conversations")",
+            hasMore: false,
+            activeCount: activeCount,
+            inputRequiredCount: inputCount,
+            unseenCount: unseenCount,
+            attentionCapability: nil,
+            attentionLastSuccessAt: nil,
             active: activeSessions.isEmpty ? nil : activeSessions.map { nodeSession(from: $0) },
             recent: recentSessions.isEmpty ? nil : recentSessions.map { nodeSession(from: $0) },
-            resume_path: mount_path.isEmpty ? "/" : mount_path + "/"
+            resumePath: mountPath.isEmpty ? "/" : mountPath + "/"
         )
 
         let nodeStatus = HubNodeStatus(
             reachable: true,
             state: "ok",
-            latency_ms: 0,
+            latencyMs: 0,
             version: health?.version,
             agent: agentName,
             capabilities: health?.capabilities,
@@ -640,32 +698,32 @@ extension DirectNodeClient: HubServing {
             name: agentName,
             source: "direct",
             connection: "direct",
-            url: base_url.absoluteString,
-            base_path: mount_path.isEmpty ? "/" : mount_path + "/",
-            proxy_path: mount_path.isEmpty ? "/" : mount_path + "/",
-            new_session_path: mount_path.isEmpty ? "/?new=1" : "\(mount_path)/?new=1",
-            has_token: false,
+            url: baseURL.absoluteString,
+            basePath: mountPath.isEmpty ? "/" : mountPath + "/",
+            proxyPath: mountPath.isEmpty ? "/" : mountPath + "/",
+            newSessionPath: mountPath.isEmpty ? "/?new=1" : "\(mountPath)/?new=1",
+            hasToken: false,
             status: nodeStatus,
             sessions: nodeSessions,
             diagnostics: nil
         )
 
-        return NodesResponse(nodes: [node], resolver_error: nil)
+        return NodesResponse(nodes: [node], resolverError: nil)
     }
 
-    func test_node(_ form: NodeFormData) async throws -> TestNodeResponse {
+    func testNode(_ form: NodeFormData) async throws -> TestNodeResponse {
         throw HubAPIError(status: 501, message: "Node management is unavailable on a direct connection.")
     }
 
-    func add_node(_ form: NodeFormData) async throws -> AddNodeResponse {
+    func addNode(_ form: NodeFormData) async throws -> AddNodeResponse {
         throw HubAPIError(status: 501, message: "Node management is unavailable on a direct connection.")
     }
 
-    func remove_node(id: String) async throws -> RemovedNodeResponse {
+    func removeNode(id: String) async throws -> RemovedNodeResponse {
         throw HubAPIError(status: 501, message: "Node management is unavailable on a direct connection.")
     }
 
-    func reorder_nodes(node_ids: [String]) async throws -> NodeOrderResponse {
+    func reorderNodes(nodeIDs: [String]) async throws -> NodeOrderResponse {
         throw HubAPIError(status: 501, message: "Node management is unavailable on a direct connection.")
     }
 
@@ -675,15 +733,15 @@ extension DirectNodeClient: HubServing {
     ///
     /// All three kind requests run in parallel, each with bounded 409 retry
     /// (up to 3 attempts).  A failure on the running kind produces
-    /// `total_running = 0` without failing the overall call.
+    /// `totalRunning = 0` without failing the overall call.
     ///
     /// `limit` is clamped to `[1, 500]`.
-    func list_attention(limit: Int? = nil) async throws -> AttentionResponse {
+    func listAttention(limit: Int? = nil) async throws -> AttentionResponse {
         let clamped = limit.map { min(max($0, 1), 500) }
 
         // Concurrent: unseen inbox + input_required list + running count
         async let unseenTask   = fetchAttentionWithRetry(kind: .unseen, limit: clamped)
-        async let inputTask    = fetchAttentionWithRetry(kind: .input_required, limit: clamped)
+        async let inputTask    = fetchAttentionWithRetry(kind: .inputRequired, limit: clamped)
         async let runningTask  = fetchAttentionWithRetry(kind: .running, limit: clamped)
 
         let unseenPage   = try await unseenTask
@@ -693,37 +751,37 @@ extension DirectNodeClient: HubServing {
         let runningCount = runningPage?.items.count ?? 0
 
         let inbox = unseenPage.items.map {
-            inboxItem(from: $0, storeInstanceID: unseenPage.store_instance_id)
+            inboxItem(from: $0, storeInstanceID: unseenPage.storeInstanceID)
         }
         let inputRequired = inputPage.items.map { inputRequiredItem(from: $0) }
 
         let attentionNode = HubAttentionNode(
-            node_id: "direct-node",
-            node_name: "direct-node",
-            capability_state: "ok",
+            nodeID: "direct-node",
+            nodeName: "direct-node",
+            capabilityState: "ok",
             stale: false,
-            last_success_at: nil,
-            last_error: nil,
-            running_count: runningCount,
-            input_required_count: inputPage.items.count,
-            unseen_count: unseenPage.items.count,
-            has_green_indicator: runningCount == 0 && inputPage.items.isEmpty
-                && unseenPage.items.isEmpty && !unseenPage.has_more
+            lastSuccessAt: nil,
+            lastError: nil,
+            runningCount: runningCount,
+            inputRequiredCount: inputPage.items.count,
+            unseenCount: unseenPage.items.count,
+            hasGreenIndicator: runningCount == 0 && inputPage.items.isEmpty
+                && unseenPage.items.isEmpty && !unseenPage.hasMore
         )
 
         return AttentionResponse(
-            total_running: runningCount,
-            total_input_required: inputPage.items.count,
-            total_unseen: unseenPage.items.count,
+            totalRunning: runningCount,
+            totalInputRequired: inputPage.items.count,
+            totalUnseen: unseenPage.items.count,
             nodes: [attentionNode],
-            input_required: inputRequired,
+            inputRequired: inputRequired,
             inbox: inbox,
-            has_more: unseenPage.has_more || inputPage.has_more
+            hasMore: unseenPage.hasMore || inputPage.hasMore
         )
     }
 
     /// No bulk-clear endpoint on a direct node.
-    func clear_attention() async throws -> ClearAttentionResponse {
+    func clearAttention() async throws -> ClearAttentionResponse {
         throw HubAPIError(status: 501, message: "Bulk attention clear is unavailable on a direct connection.")
     }
 
@@ -734,19 +792,24 @@ extension DirectNodeClient: HubServing {
     ///
     /// - Throws: ``HubAPIError(status: 409, …)`` on snapshot conflict — caller
     ///   should reconcile authoritative session state and bounded-retry.
-    func mark_attention_seen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
-        guard !item.session_id.isEmpty, item.session_id != ".", item.session_id != ".." else {
+    func markAttentionSeen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
+        guard !item.sessionID.isEmpty, item.sessionID != ".", item.sessionID != ".." else {
             throw HubAPIError(status: 0, message: "Invalid session identifier for attention acknowledgement.")
         }
         struct SeenBody: Encodable {
-            let store_instance_id: String
-            let through_seq: Int
+            let storeInstanceID: String
+            let throughSeq: Int
+
+            enum CodingKeys: String, CodingKey {
+                case storeInstanceID = "store_instance_id"
+                case throughSeq = "through_seq"
+            }
         }
         let seenBody = SeenBody(
-            store_instance_id: item.store_instance_id,
-            through_seq: item.attention_seq
+            storeInstanceID: item.storeInstanceID,
+            throughSeq: item.attentionSeq
         )
-        let path = "/v1/sessions/\(item.session_id.directNodePathEncoded)/attention/seen"
+        let path = "/v1/sessions/\(item.sessionID.directNodePathEncoded)/attention/seen"
         _ = try await executeRequest(
             path, method: .POST, body: seenBody,
             extraHeaders: ["X-Term-LLM-Attention-Source": "phone"]
@@ -757,13 +820,13 @@ extension DirectNodeClient: HubServing {
     // MARK: Delegations
 
     /// Returns an empty list — a direct node has no hub delegation graph.
-    func list_delegations() async throws -> DelegationsResponse {
+    func listDelegations() async throws -> DelegationsResponse {
         DelegationsResponse(delegations: [])
     }
 
     // MARK: Registration — unsupported
 
-    func registration_info() async throws -> RegistrationInfoResponse {
+    func registrationInfo() async throws -> RegistrationInfoResponse {
         throw HubAPIError(status: 501, message: "Registration is unavailable on a direct connection.")
     }
 
@@ -773,19 +836,19 @@ extension DirectNodeClient: HubServing {
         throw HubAPIError(status: 501, message: "Session management is unavailable on a direct connection.")
     }
 
-    func list_credentials() async throws -> CredentialsResponse {
+    func listCredentials() async throws -> CredentialsResponse {
         throw HubAPIError(status: 501, message: "Credential management is unavailable on a direct connection.")
     }
 
-    func rename_credential(record_id: String, display_name: String) async throws -> HubCredential {
+    func renameCredential(recordID: String, displayName: String) async throws -> HubCredential {
         throw HubAPIError(status: 501, message: "Credential management is unavailable on a direct connection.")
     }
 
-    func remove_credential(record_id: String) async throws -> OkResponse {
+    func removeCredential(recordID: String) async throws -> OkResponse {
         throw HubAPIError(status: 501, message: "Credential management is unavailable on a direct connection.")
     }
 
-    func revoke_other_sessions() async throws -> RevokeSessionsResponse {
+    func revokeOtherSessions() async throws -> RevokeSessionsResponse {
         throw HubAPIError(status: 501, message: "Session management is unavailable on a direct connection.")
     }
 
@@ -795,49 +858,49 @@ extension DirectNodeClient: HubServing {
 
     // MARK: Passkey ceremonies — unsupported
 
-    func begin_login(return_path: String) async throws -> Data {
+    func beginLogin(returnPath: String) async throws -> Data {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
-    func finish_login(credential: Data) async throws -> RedirectResponse {
+    func finishLogin(credential: Data) async throws -> RedirectResponse {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
-    func begin_reauthentication() async throws -> Data {
+    func beginReauthentication() async throws -> Data {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
-    func finish_reauthentication(credential: Data) async throws -> OkResponse {
+    func finishReauthentication(credential: Data) async throws -> OkResponse {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
-    func begin_additional_registration(display_name: String) async throws -> Data {
+    func beginAdditionalRegistration(displayName: String) async throws -> Data {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
-    func finish_additional_registration(credential: Data) async throws -> HubCredential {
+    func finishAdditionalRegistration(credential: Data) async throws -> HubCredential {
         throw HubAPIError(status: 501, message: "Passkey authentication is unavailable on a direct connection.")
     }
 
     // MARK: Grant registration — unsupported
 
-    func verify_grant(prefix: GrantPrefix, code: String) async throws -> OkResponse {
+    func verifyGrant(prefix: GrantPrefix, code: String) async throws -> OkResponse {
         throw HubAPIError(status: 501, message: "Grant registration is unavailable on a direct connection.")
     }
 
-    func begin_grant_registration(prefix: GrantPrefix, display_name: String) async throws -> Data {
+    func beginGrantRegistration(prefix: GrantPrefix, displayName: String) async throws -> Data {
         throw HubAPIError(status: 501, message: "Grant registration is unavailable on a direct connection.")
     }
 
-    func finish_grant_registration(
-        prefix: GrantPrefix, credential: Data, return_path: String
+    func finishGrantRegistration(
+        prefix: GrantPrefix, credential: Data, returnPath: String
     ) async throws -> RedirectResponse {
         throw HubAPIError(status: 501, message: "Grant registration is unavailable on a direct connection.")
     }
 
     // MARK: Native authorize — unsupported
 
-    func authorize_native(challenge: String) async throws -> RedirectResponse {
+    func authorizeNative(challenge: String) async throws -> RedirectResponse {
         throw HubAPIError(status: 501, message: "Native authorize is unavailable on a direct connection.")
     }
 
@@ -845,7 +908,7 @@ extension DirectNodeClient: HubServing {
 
     /// GET /healthz with the current bearer token (injected for identity disclosure).
     ///
-    /// Returns the protocol ``HealthResponse``; call ``node_health()`` for the
+    /// Returns the protocol ``HealthResponse``; call ``nodeHealth()`` for the
     /// full identity payload including `agent`, `version`, and `capabilities`.
     func healthz() async throws -> HealthResponse {
         let health = try await fetchHealthAuthenticated(useCallback: true)
@@ -882,11 +945,11 @@ private extension String {
 }
 
 extension DirectNodeClient: HubSessionSearching {
-    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
-        try await search_sessions(query: query, limit: limit)
+    func searchSessions(nodeID: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+        try await searchSessions(query: query, limit: limit)
     }
 
-    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+    func sessionsStatus(nodeID: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
         guard let query = SessionSearchQuery.percentEncodedStatus(ids: ids) else { return DirectNodeSessionsStatus(sessions: []) }
         return try await request("/v1/sessions/status?\(query)")
     }
@@ -894,24 +957,24 @@ extension DirectNodeClient: HubSessionSearching {
 
 extension DirectNodeClient: HubSessionBrowsing {
     /// GET /v1/sessions — the web sidebar's listing, every project, paged.
-    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
+    func listSessions(nodeID: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
         try await request("/v1/sessions?\(AgentSessionQuery.percentEncoded(limit: limit, cursor: cursor))")
     }
 
     /// PATCH /v1/sessions/{id} — rename, archive or pin one conversation.
-    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
-        guard AgentSessionQuery.isSafeSessionID(session_id) else {
+    func updateSession(nodeID: String, sessionID: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
+        guard AgentSessionQuery.isSafeSessionID(sessionID) else {
             throw HubAPIError(status: 0, message: "Unsafe session identifier.")
         }
-        return try await request("/v1/sessions/\(session_id.directNodePathEncoded)", method: .PATCH, body: patch)
+        return try await request("/v1/sessions/\(sessionID.directNodePathEncoded)", method: .PATCH, body: patch)
     }
 
     /// PATCH /v1/sessions/pinned-order — the listed pins swap into the ranks
     /// they already hold; the answer is the complete committed order.
-    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder {
-        guard session_ids.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
+    func reorderPinnedSessions(nodeID: String, sessionIDs: [String]) async throws -> PinnedSessionOrder {
+        guard sessionIDs.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
             throw HubAPIError(status: 0, message: "Unsafe session identifier.")
         }
-        return try await request("/v1/sessions/pinned-order", method: .PATCH, body: ["session_ids": session_ids])
+        return try await request("/v1/sessions/pinned-order", method: .PATCH, body: ["session_ids": sessionIDs])
     }
 }

@@ -1113,7 +1113,7 @@ struct ContentView: View {
                         return
                     }
                     setVoiceTarget(VoiceShortcutTarget(sourceID: row.source.id, nodeID: row.node.id,
-                                                       name: row.node.name, path: row.node.new_session_path))
+                                                       name: row.node.name, path: row.node.newSessionPath))
                 }
             )) {
                 Text("None").tag("")

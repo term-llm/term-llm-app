@@ -138,7 +138,8 @@ class LinkedDevicesContractTests(unittest.TestCase):
     def test_swift_declares_frozen_v2_names_and_no_pilot_pairing(self):
         source = (ROOT / "TermLLM/LinkedDevicesProtocol.swift").read_text()
         for token in ('static let version = 2', 'required: ["v", "b", "h", "i", "e"]',
-                      'query["b"]', 'invitation_id:', 'reconnect_capability:',
+                      'query["b"]', 'invitationID = "invitation_id"',
+                      'reconnectCapability = "reconnect_capability"',
                       'static let maxBrokerFrameBytes = maxMessageBytes + 512',
                       '"transport_hello"', '"transport_challenge"', '"transport_request"',
                       '"transport_answer"', '"web-v1"', 'term-llm/pairing/v2'):
@@ -166,7 +167,7 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertIn("var maxRequestBodyBytes = 48_384", peer)
         self.assertIn('static let channelLabel = "term-llm-http-v1"', peer)
         self.assertNotIn('term-llm/pairing/v1', source)
-        self.assertNotIn('offer_sdp: LinkedDevicesB64', source)
+        self.assertNotIn('offerSDP: LinkedDevicesB64', source)
 
     def test_native_regressions_preserve_signature_backpressure_and_historic_failure_coverage(self):
         protocol_tests = (ROOT / "TermLLMTests/LinkedDevicesProtocolTests.swift").read_text()

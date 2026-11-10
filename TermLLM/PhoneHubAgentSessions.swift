@@ -36,31 +36,31 @@ struct PhoneHubAgentConversation: Identifiable, Equatable, Sendable {
 
     init(entry: AgentSessionEntry) {
         let pinned = entry.pinned == true
-        let seen = entry.attention_store_instance_id.flatMap { store -> AttentionSeenRequest? in
-            guard !store.isEmpty, let seq = entry.attention_seq, seq > 0 else { return nil }
-            return AttentionSeenRequest(store_instance_id: store, session_id: entry.id, attention_seq: Int(seq))
+        let seen = entry.attentionStoreInstanceID.flatMap { store -> AttentionSeenRequest? in
+            guard !store.isEmpty, let seq = entry.attentionSeq, seq > 0 else { return nil }
+            return AttentionSeenRequest(storeInstanceID: store, sessionID: entry.id, attentionSeq: Int(seq))
         }
         self.init(id: entry.id, number: entry.number,
-                  title: Self.title(entry.short_title, entry.name, entry.long_title, number: entry.number),
-                  projectName: entry.project_name.flatMap { $0.isEmpty ? nil : $0 },
-                  pinned: pinned, pinOrder: pinned ? entry.pin_order.flatMap { $0 > 0 ? $0 : nil } : nil,
-                  lastActivity: Self.date(entry.last_message_at ?? entry.created_at),
-                  messageCount: entry.message_count, unseen: entry.attention_unseen == true, seenRequest: seen)
+                  title: Self.title(entry.shortTitle, entry.name, entry.longTitle, number: entry.number),
+                  projectName: entry.projectName.flatMap { $0.isEmpty ? nil : $0 },
+                  pinned: pinned, pinOrder: pinned ? entry.pinOrder.flatMap { $0 > 0 ? $0 : nil } : nil,
+                  lastActivity: Self.date(entry.lastMessageAt ?? entry.createdAt),
+                  messageCount: entry.messageCount, unseen: entry.attentionUnseen == true, seenRequest: seen)
     }
 
     init(cached session: HubNodeSession) {
         self.init(id: session.id, number: session.number.map(Int64.init),
-                  title: Self.title(session.short_title, nil, session.long_title, number: session.number.map(Int64.init)),
-                  pinned: session.pinned == true, lastActivity: Self.date(session.last_message_at.map(Int64.init)),
-                  messageCount: session.message_count, running: session.active_run == true,
-                  needsInput: session.interaction_required == true)
+                  title: Self.title(session.shortTitle, nil, session.longTitle, number: session.number.map(Int64.init)),
+                  pinned: session.pinned == true, lastActivity: Self.date(session.lastMessageAt.map(Int64.init)),
+                  messageCount: session.messageCount, running: session.activeRun == true,
+                  needsInput: session.interactionRequired == true)
     }
 
     init(hit: SessionSearchEntry) {
         self.init(id: hit.id, number: hit.number,
-                  title: Self.title(hit.short_title, nil, hit.long_title, number: hit.number),
-                  pinned: hit.pinned == true, lastActivity: Self.date(hit.last_message_at),
-                  messageCount: hit.message_count, unseen: hit.attention_unseen == true, snippet: hit.snippet)
+                  title: Self.title(hit.shortTitle, nil, hit.longTitle, number: hit.number),
+                  pinned: hit.pinned == true, lastActivity: Self.date(hit.lastMessageAt),
+                  messageCount: hit.messageCount, unseen: hit.attentionUnseen == true, snippet: hit.snippet)
     }
 
     private static func title(_ short: String?, _ name: String?, _ long: String?, number: Int64?) -> String {
@@ -343,7 +343,7 @@ final class PhoneHubAgentSessions: ObservableObject {
         }
         let epoch = self.epoch
         do {
-            let page = try await browser.list_sessions(node_id: nodeID, limit: Self.pageSize, cursor: cursor)
+            let page = try await browser.listSessions(nodeID: nodeID, limit: Self.pageSize, cursor: cursor)
             guard gen == generation, !Task.isCancelled, current(source, epoch: epoch) else { return }
             apply(page, mode: mode)
         } catch {
@@ -355,9 +355,9 @@ final class PhoneHubAgentSessions: ObservableObject {
 
     private func apply(_ page: AgentSessionPage, mode: LoadMode) {
         let rows = page.sessions
-            .filter { $0.archived != true && $0.parent_session_id == nil }
+            .filter { $0.archived != true && $0.parentSessionID == nil }
             .map(PhoneHubAgentConversation.init(entry:))
-        let cursor = page.next_cursor.flatMap { $0.isEmpty ? nil : $0 }
+        let cursor = page.nextCursor.flatMap { $0.isEmpty ? nil : $0 }
         switch mode {
         case .replace:
             base = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -484,7 +484,7 @@ final class PhoneHubAgentSessions: ObservableObject {
         let epoch = self.epoch
         searchState = .searching
         do {
-            let found = try await searcher.search_sessions(node_id: nodeID, query: query,
+            let found = try await searcher.searchSessions(nodeID: nodeID, query: query,
                                                            limit: min(Self.searchLimit, SessionSearchQuery.maximumLimit))
             guard !Task.isCancelled, current(source, epoch: epoch) else { return }
             hits = found.sessions.map(PhoneHubAgentConversation.init(hit:))
@@ -515,10 +515,10 @@ final class PhoneHubAgentSessions: ObservableObject {
         pinFeedback &+= 1
         let title = row.title, nodeID = self.nodeID
         mutate(id, clear: { $0.pin = nil }, failure: pinned ? "Couldn’t pin “\(title)”." : "Couldn’t unpin “\(title)”.") {
-            try await browser.update_session(node_id: nodeID, session_id: id, patch: AgentSessionPatch(pinned: pinned))
+            try await browser.updateSession(nodeID: nodeID, sessionID: id, patch: AgentSessionPatch(pinned: pinned))
         } applied: { result, row in
             row.pinned = result.pinned ?? pinned
-            row.pinOrder = row.pinned ? (result.pin_order.flatMap { $0 > 0 ? $0 : nil } ?? next) : nil
+            row.pinOrder = row.pinned ? (result.pinOrder.flatMap { $0 > 0 ? $0 : nil } ?? next) : nil
         }
     }
 
@@ -528,9 +528,9 @@ final class PhoneHubAgentSessions: ObservableObject {
         edit(id) { $0.title = title }
         let nodeID = self.nodeID
         mutate(id, clear: { $0.title = nil }, failure: "Couldn’t rename “\(row.title)”.") {
-            try await browser.update_session(node_id: nodeID, session_id: id, patch: AgentSessionPatch(name: title))
+            try await browser.updateSession(nodeID: nodeID, sessionID: id, patch: AgentSessionPatch(name: title))
         } applied: { result, row in
-            let returned = result.short_title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let returned = result.shortTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             row.title = returned.isEmpty ? title : returned
         }
     }
@@ -542,7 +542,7 @@ final class PhoneHubAgentSessions: ObservableObject {
         notice = Notice(message: "Archived “\(row.title)”", undo: row)
         let nodeID = self.nodeID
         mutate(id, clear: { $0.archived = nil }, failure: "Couldn’t archive “\(row.title)”.") {
-            try await browser.update_session(node_id: nodeID, session_id: id, patch: AgentSessionPatch(archived: true))
+            try await browser.updateSession(nodeID: nodeID, sessionID: id, patch: AgentSessionPatch(archived: true))
         } applied: { _, _ in } removed: { [weak self] in
             self?.base[id] = nil
             self?.hits.removeAll { $0.id == id }
@@ -556,7 +556,7 @@ final class PhoneHubAgentSessions: ObservableObject {
         if base[id] == nil { base[id] = row }
         edit(id) { $0.archived = false }
         mutate(id, clear: { $0.archived = nil }, failure: "Couldn’t restore “\(row.title)”.") {
-            try await browser.update_session(node_id: nodeID, session_id: id, patch: AgentSessionPatch(archived: false))
+            try await browser.updateSession(nodeID: nodeID, sessionID: id, patch: AgentSessionPatch(archived: false))
         } applied: { _, _ in }
     }
 
@@ -586,11 +586,11 @@ final class PhoneHubAgentSessions: ObservableObject {
         let epoch = self.epoch, nodeID = self.nodeID
         Task { [weak self] in
             do {
-                let order = try await browser.reorder_pinned_sessions(node_id: nodeID, session_ids: ids)
+                let order = try await browser.reorderPinnedSessions(nodeID: nodeID, sessionIDs: ids)
                 guard let self, let source = self.source, self.current(source, epoch: epoch) else { return }
                 for position in order.pinned where self.base[position.id] != nil {
                     self.base[position.id]?.pinned = true
-                    self.base[position.id]?.pinOrder = position.pin_order
+                    self.base[position.id]?.pinOrder = position.pinOrder
                 }
                 self.clear(ids) { $0.pin = nil }
             } catch {
@@ -653,8 +653,8 @@ final class PhoneHubAgentSessions: ObservableObject {
                 if let removed {
                     removed()
                 } else {
-                    let answer = result ?? AgentSessionPatchResult(id: id, name: nil, short_title: nil, long_title: nil,
-                                                                   archived: nil, pinned: nil, pin_order: nil)
+                    let answer = result ?? AgentSessionPatchResult(id: id, name: nil, shortTitle: nil, longTitle: nil,
+                                                                   archived: nil, pinned: nil, pinOrder: nil)
                     if var row = self.base[id] {
                         applied(answer, &row)
                         self.base[id] = row
@@ -705,15 +705,15 @@ final class PhoneHubAgentSessions: ObservableObject {
 
     private static func runStates(_ node: HubNode) -> [String: RunState] {
         var states: [String: RunState] = [:]
-        for session in HubNavigation.nodeSessions(node) where session.active_run == true || session.interaction_required == true {
-            states[session.id] = RunState(running: session.active_run == true, needsInput: session.interaction_required == true)
+        for session in HubNavigation.nodeSessions(node) where session.activeRun == true || session.interactionRequired == true {
+            states[session.id] = RunState(running: session.activeRun == true, needsInput: session.interactionRequired == true)
         }
         return states
     }
 
     private static func signature(_ node: HubNode) -> [String] {
-        HubNavigation.nodeSessions(node).map { "\($0.id):\($0.last_message_at ?? 0):\($0.message_count ?? 0):\($0.pinned == true)" }
-            + [node.sessions?.count_label ?? ""]
+        HubNavigation.nodeSessions(node).map { "\($0.id):\($0.lastMessageAt ?? 0):\($0.messageCount ?? 0):\($0.pinned == true)" }
+            + [node.sessions?.countLabel ?? ""]
     }
 
     private static func message(_ error: Error) -> String {

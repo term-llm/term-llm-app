@@ -269,48 +269,122 @@ struct LinkedDevicesB64: Codable, Equatable, Sendable {
 struct LinkedDevicesPairRequest: Codable, Equatable, Sendable {
     var v = LinkedDevicesWire.version
     var type = "pair_request"
-    var invitation_id: LinkedDevicesB64
-    var device_key: LinkedDevicesB64
-    var device_nonce: LinkedDevicesB64
-    var device_name: String
+    var invitationID: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64
+    var deviceNonce: LinkedDevicesB64
+    var deviceName: String
     var mac: LinkedDevicesB64
     var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case invitationID = "invitation_id"
+        case deviceKey = "device_key"
+        case deviceNonce = "device_nonce"
+        case deviceName = "device_name"
+        case mac, sig
+    }
 }
 struct LinkedDevicesPairAnswer: Codable, Equatable, Sendable {
     var v: Int; var type: String
-    var invitation_id: LinkedDevicesB64; var host_key: LinkedDevicesB64
-    var device_key: LinkedDevicesB64; var device_nonce: LinkedDevicesB64
-    var request_hash: LinkedDevicesB64; var device_id: LinkedDevicesB64
-    var reconnect_capability: LinkedDevicesB64
-    var scope: String; var base_path: String; var host_label: String
+    var invitationID: LinkedDevicesB64; var hostKey: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64; var deviceNonce: LinkedDevicesB64
+    var requestHash: LinkedDevicesB64; var deviceID: LinkedDevicesB64
+    var reconnectCapability: LinkedDevicesB64
+    var scope: String; var basePath: String; var hostLabel: String
     var mac: LinkedDevicesB64; var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case invitationID = "invitation_id"
+        case hostKey = "host_key"
+        case deviceKey = "device_key"
+        case deviceNonce = "device_nonce"
+        case requestHash = "request_hash"
+        case deviceID = "device_id"
+        case reconnectCapability = "reconnect_capability"
+        case scope
+        case basePath = "base_path"
+        case hostLabel = "host_label"
+        case mac, sig
+    }
 }
 struct LinkedDevicesPairReject: Codable, Equatable, Sendable {
-    var v: Int; var type: String; var invitation_id: LinkedDevicesB64; var reason: String
+    var v: Int; var type: String; var invitationID: LinkedDevicesB64; var reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case invitationID = "invitation_id"
+        case reason
+    }
 }
 struct LinkedDevicesTransportHello: Codable, Equatable, Sendable {
     var v = LinkedDevicesWire.version; var type = "transport_hello"
-    var device_key: LinkedDevicesB64; var device_id: LinkedDevicesB64
-    var reconnect_capability: LinkedDevicesB64; var device_nonce: LinkedDevicesB64; var sig: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64; var deviceID: LinkedDevicesB64
+    var reconnectCapability: LinkedDevicesB64; var deviceNonce: LinkedDevicesB64; var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case deviceKey = "device_key"
+        case deviceID = "device_id"
+        case reconnectCapability = "reconnect_capability"
+        case deviceNonce = "device_nonce"
+        case sig
+    }
 }
 struct LinkedDevicesTransportChallenge: Codable, Equatable, Sendable {
-    var v: Int; var type: String; var challenge_id: LinkedDevicesB64
-    var host_key: LinkedDevicesB64; var host_nonce: LinkedDevicesB64
-    var device_key: LinkedDevicesB64; var device_id: LinkedDevicesB64
-    var expires_at: Int64; var sig: LinkedDevicesB64
+    var v: Int; var type: String; var challengeID: LinkedDevicesB64
+    var hostKey: LinkedDevicesB64; var hostNonce: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64; var deviceID: LinkedDevicesB64
+    var expiresAt: Int64; var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case challengeID = "challenge_id"
+        case hostKey = "host_key"
+        case hostNonce = "host_nonce"
+        case deviceKey = "device_key"
+        case deviceID = "device_id"
+        case expiresAt = "expires_at"
+        case sig
+    }
 }
 struct LinkedDevicesTransportRequest: Codable, Equatable, Sendable {
     var v = LinkedDevicesWire.version; var type = "transport_request"
-    var challenge_id: LinkedDevicesB64; var host_nonce: LinkedDevicesB64
-    var device_key: LinkedDevicesB64; var device_nonce: LinkedDevicesB64
-    var device_id: LinkedDevicesB64; var offer_sdp: String; var sig: LinkedDevicesB64
+    var challengeID: LinkedDevicesB64; var hostNonce: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64; var deviceNonce: LinkedDevicesB64
+    var deviceID: LinkedDevicesB64; var offerSDP: String; var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case challengeID = "challenge_id"
+        case hostNonce = "host_nonce"
+        case deviceKey = "device_key"
+        case deviceNonce = "device_nonce"
+        case deviceID = "device_id"
+        case offerSDP = "offer_sdp"
+        case sig
+    }
 }
 struct LinkedDevicesTransportAnswer: Codable, Equatable, Sendable {
-    var v: Int; var type: String; var challenge_id: LinkedDevicesB64
-    var host_key: LinkedDevicesB64; var host_nonce: LinkedDevicesB64
-    var device_key: LinkedDevicesB64; var device_nonce: LinkedDevicesB64
-    var request_hash: LinkedDevicesB64; var device_id: LinkedDevicesB64
-    var answer_sdp: String; var sig: LinkedDevicesB64
+    var v: Int; var type: String; var challengeID: LinkedDevicesB64
+    var hostKey: LinkedDevicesB64; var hostNonce: LinkedDevicesB64
+    var deviceKey: LinkedDevicesB64; var deviceNonce: LinkedDevicesB64
+    var requestHash: LinkedDevicesB64; var deviceID: LinkedDevicesB64
+    var answerSDP: String; var sig: LinkedDevicesB64
+
+    enum CodingKeys: String, CodingKey {
+        case v, type
+        case challengeID = "challenge_id"
+        case hostKey = "host_key"
+        case hostNonce = "host_nonce"
+        case deviceKey = "device_key"
+        case deviceNonce = "device_nonce"
+        case requestHash = "request_hash"
+        case deviceID = "device_id"
+        case answerSDP = "answer_sdp"
+        case sig
+    }
 }
 // swiftlint:enable identifier_name
 
@@ -342,36 +416,36 @@ enum LinkedDevicesTranscript {
     }
 
     static func pairRequest(_ request: LinkedDevicesPairRequest, hostKey: Data) -> Data {
-        build(label: "pair-request", fields: [Data("device".utf8), request.invitation_id.data, hostKey,
-                                               request.device_key.data, request.device_nonce.data, Data(request.device_name.utf8)])
+        build(label: "pair-request", fields: [Data("device".utf8), request.invitationID.data, hostKey,
+                                               request.deviceKey.data, request.deviceNonce.data, Data(request.deviceName.utf8)])
     }
     static func pairAnswer(_ answer: LinkedDevicesPairAnswer) -> Data {
-        build(label: "pair-answer", fields: [Data("host".utf8), answer.invitation_id.data, answer.host_key.data,
-                                              answer.device_key.data, answer.device_nonce.data, answer.request_hash.data,
-                                              answer.device_id.data, answer.reconnect_capability.data, Data(answer.scope.utf8),
-                                              Data(answer.base_path.utf8), Data(answer.host_label.utf8)])
+        build(label: "pair-answer", fields: [Data("host".utf8), answer.invitationID.data, answer.hostKey.data,
+                                              answer.deviceKey.data, answer.deviceNonce.data, answer.requestHash.data,
+                                              answer.deviceID.data, answer.reconnectCapability.data, Data(answer.scope.utf8),
+                                              Data(answer.basePath.utf8), Data(answer.hostLabel.utf8)])
     }
     static func transportHello(_ hello: LinkedDevicesTransportHello, hostKey: Data) -> Data {
-        build(label: "transport-hello", fields: [Data("device".utf8), hostKey, hello.device_key.data,
-                                                  hello.device_id.data, hello.reconnect_capability.data, hello.device_nonce.data])
+        build(label: "transport-hello", fields: [Data("device".utf8), hostKey, hello.deviceKey.data,
+                                                  hello.deviceID.data, hello.reconnectCapability.data, hello.deviceNonce.data])
     }
     static func transportChallenge(_ challenge: LinkedDevicesTransportChallenge) -> Data {
-        build(label: "transport-challenge", fields: [Data("host".utf8), challenge.challenge_id.data,
-                                                       challenge.host_key.data, challenge.host_nonce.data,
-                                                       challenge.device_key.data, challenge.device_id.data,
-                                                       Data(String(challenge.expires_at).utf8)])
+        build(label: "transport-challenge", fields: [Data("host".utf8), challenge.challengeID.data,
+                                                       challenge.hostKey.data, challenge.hostNonce.data,
+                                                       challenge.deviceKey.data, challenge.deviceID.data,
+                                                       Data(String(challenge.expiresAt).utf8)])
     }
     static func transportRequest(_ request: LinkedDevicesTransportRequest, hostKey: Data) -> Data {
-        build(label: "transport-request", fields: [Data("device".utf8), request.challenge_id.data, hostKey,
-                                                     request.host_nonce.data, request.device_key.data,
-                                                     request.device_nonce.data, request.device_id.data,
-                                                     Data(request.offer_sdp.utf8)])
+        build(label: "transport-request", fields: [Data("device".utf8), request.challengeID.data, hostKey,
+                                                     request.hostNonce.data, request.deviceKey.data,
+                                                     request.deviceNonce.data, request.deviceID.data,
+                                                     Data(request.offerSDP.utf8)])
     }
     static func transportAnswer(_ answer: LinkedDevicesTransportAnswer) -> Data {
-        build(label: "transport-answer", fields: [Data("host".utf8), answer.challenge_id.data, answer.host_key.data,
-                                                    answer.host_nonce.data, answer.device_key.data,
-                                                    answer.device_nonce.data, answer.request_hash.data,
-                                                    answer.device_id.data, Data(answer.answer_sdp.utf8)])
+        build(label: "transport-answer", fields: [Data("host".utf8), answer.challengeID.data, answer.hostKey.data,
+                                                    answer.hostNonce.data, answer.deviceKey.data,
+                                                    answer.deviceNonce.data, answer.requestHash.data,
+                                                    answer.deviceID.data, Data(answer.answerSDP.utf8)])
     }
     static func sas(secret: Data, invitationID: Data, hostKey: Data, deviceKey: Data) throws -> String {
         guard secret.count == 32, invitationID.count == 16, hostKey.count == 32, deviceKey.count == 32 else {
@@ -401,9 +475,9 @@ struct LinkedDevicesPairingAttempt: Sendable {
         }
         let deviceNonce = nonce ?? LinkedDevicesCrypto.random(32)
         guard deviceNonce.count == 32 else { throw LinkedDevicesProtocolError.invalid("device nonce") }
-        var value = LinkedDevicesPairRequest(invitation_id: LinkedDevicesB64(link.invitationID),
-                                              device_key: LinkedDevicesB64(key.publicKey.rawRepresentation),
-                                              device_nonce: LinkedDevicesB64(deviceNonce), device_name: deviceName,
+        var value = LinkedDevicesPairRequest(invitationID: LinkedDevicesB64(link.invitationID),
+                                              deviceKey: LinkedDevicesB64(key.publicKey.rawRepresentation),
+                                              deviceNonce: LinkedDevicesB64(deviceNonce), deviceName: deviceName,
                                               mac: LinkedDevicesB64(Data()), sig: LinkedDevicesB64(Data()))
         let transcript = LinkedDevicesTranscript.pairRequest(value, hostKey: link.hostKey)
         value.mac = LinkedDevicesB64(LinkedDevicesTranscript.mac(secret: link.pairingSecret, transcript: transcript))
@@ -417,16 +491,16 @@ struct LinkedDevicesPairingAttempt: Sendable {
     }
 
     func verify(_ answer: LinkedDevicesPairAnswer) throws -> LinkedDevicesCredential {
-        guard answer.v == 2, answer.type == "pair_answer", answer.host_key.data == link.hostKey else {
+        guard answer.v == 2, answer.type == "pair_answer", answer.hostKey.data == link.hostKey else {
             throw LinkedDevicesProtocolError.hostIdentityChanged
         }
-        guard answer.invitation_id == request.invitation_id, answer.device_key == request.device_key,
-              answer.device_nonce == request.device_nonce, answer.request_hash.data == requestHash,
-              answer.device_id.data.count == 16, answer.reconnect_capability.data.count == 32,
-              answer.scope == "web-v1", LinkedDevicesCrypto.validBasePath(answer.base_path) else {
+        guard answer.invitationID == request.invitationID, answer.deviceKey == request.deviceKey,
+              answer.deviceNonce == request.deviceNonce, answer.requestHash.data == requestHash,
+              answer.deviceID.data.count == 16, answer.reconnectCapability.data.count == 32,
+              answer.scope == "web-v1", LinkedDevicesCrypto.validBasePath(answer.basePath) else {
             throw LinkedDevicesProtocolError.invalid("pair answer binding")
         }
-        if !answer.host_label.isEmpty { try LinkedDevicesPairingLink.validateLabel(answer.host_label) }
+        if !answer.hostLabel.isEmpty { try LinkedDevicesPairingLink.validateLabel(answer.hostLabel) }
         let transcript = LinkedDevicesTranscript.pairAnswer(answer)
         guard LinkedDevicesCrypto.constantTimeEqual(answer.mac.data,
               LinkedDevicesTranscript.mac(secret: link.pairingSecret, transcript: transcript)) else {
@@ -436,10 +510,10 @@ struct LinkedDevicesPairingAttempt: Sendable {
             throw LinkedDevicesProtocolError.badSignature
         }
         return LinkedDevicesCredential(hostKey: link.hostKey, deviceSeed: deviceSeed,
-                                       deviceID: LinkedDevicesBase64URL.encode(answer.device_id.data),
-                                       reconnectCapability: answer.reconnect_capability.data, brokerURL: link.broker,
-                                       scope: answer.scope, basePath: answer.base_path,
-                                       hostLabel: answer.host_label.isEmpty ? link.hostLabel : answer.host_label,
+                                       deviceID: LinkedDevicesBase64URL.encode(answer.deviceID.data),
+                                       reconnectCapability: answer.reconnectCapability.data, brokerURL: link.broker,
+                                       scope: answer.scope, basePath: answer.basePath,
+                                       hostLabel: answer.hostLabel.isEmpty ? link.hostLabel : answer.hostLabel,
                                        pairedAt: Date())
     }
 }
@@ -457,10 +531,10 @@ struct LinkedDevicesTransportAttempt: Sendable {
         }
         let deviceNonce = nonce ?? LinkedDevicesCrypto.random(32)
         guard deviceNonce.count == 32 else { throw LinkedDevicesProtocolError.invalid("transport nonce") }
-        var hello = LinkedDevicesTransportHello(device_key: LinkedDevicesB64(key.publicKey.rawRepresentation),
-                                                 device_id: LinkedDevicesB64(deviceIDRaw),
-                                                 reconnect_capability: LinkedDevicesB64(capability),
-                                                 device_nonce: LinkedDevicesB64(deviceNonce), sig: LinkedDevicesB64(Data()))
+        var hello = LinkedDevicesTransportHello(deviceKey: LinkedDevicesB64(key.publicKey.rawRepresentation),
+                                                 deviceID: LinkedDevicesB64(deviceIDRaw),
+                                                 reconnectCapability: LinkedDevicesB64(capability),
+                                                 deviceNonce: LinkedDevicesB64(deviceNonce), sig: LinkedDevicesB64(Data()))
         let transcript = LinkedDevicesTranscript.transportHello(hello, hostKey: credential.hostKey)
         hello.sig = LinkedDevicesB64(try key.signature(for: transcript))
         return hello
@@ -469,14 +543,14 @@ struct LinkedDevicesTransportAttempt: Sendable {
     init(challenge: LinkedDevicesTransportChallenge, credential: LinkedDevicesCredential,
          offerSDP: String, now: Date = Date(), nonce: Data? = nil) throws {
         guard challenge.v == 2, challenge.type == "transport_challenge",
-              challenge.host_key.data == credential.hostKey else { throw LinkedDevicesProtocolError.hostIdentityChanged }
+              challenge.hostKey.data == credential.hostKey else { throw LinkedDevicesProtocolError.hostIdentityChanged }
         guard let deviceIDRaw = credential.deviceID.flatMap({ LinkedDevicesBase64URL.decode($0, maximumBytes: 16) }),
               deviceIDRaw.count == 16,
               let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: credential.deviceSeed),
-              challenge.challenge_id.data.count == 16, challenge.host_nonce.data.count == 32,
-               challenge.device_key.data == key.publicKey.rawRepresentation,
-               challenge.device_id.data == deviceIDRaw,
-               Int64(now.timeIntervalSince1970) - 30 < challenge.expires_at else {
+              challenge.challengeID.data.count == 16, challenge.hostNonce.data.count == 32,
+               challenge.deviceKey.data == key.publicKey.rawRepresentation,
+               challenge.deviceID.data == deviceIDRaw,
+               Int64(now.timeIntervalSince1970) - 30 < challenge.expiresAt else {
             throw LinkedDevicesProtocolError.invalid("transport challenge")
         }
         let challengeTranscript = LinkedDevicesTranscript.transportChallenge(challenge)
@@ -487,11 +561,11 @@ struct LinkedDevicesTransportAttempt: Sendable {
         _ = try LinkedDevicesCrypto.fingerprint(in: offerSDP)
         let deviceNonce = nonce ?? LinkedDevicesCrypto.random(32)
         guard deviceNonce.count == 32 else { throw LinkedDevicesProtocolError.invalid("transport nonce") }
-        var value = LinkedDevicesTransportRequest(challenge_id: challenge.challenge_id,
-                                                   host_nonce: challenge.host_nonce,
-                                                   device_key: LinkedDevicesB64(key.publicKey.rawRepresentation),
-                                                   device_nonce: LinkedDevicesB64(deviceNonce),
-                                                   device_id: LinkedDevicesB64(deviceIDRaw), offer_sdp: offerSDP,
+        var value = LinkedDevicesTransportRequest(challengeID: challenge.challengeID,
+                                                   hostNonce: challenge.hostNonce,
+                                                   deviceKey: LinkedDevicesB64(key.publicKey.rawRepresentation),
+                                                   deviceNonce: LinkedDevicesB64(deviceNonce),
+                                                   deviceID: LinkedDevicesB64(deviceIDRaw), offerSDP: offerSDP,
                                                    sig: LinkedDevicesB64(Data()))
         let transcript = LinkedDevicesTranscript.transportRequest(value, hostKey: credential.hostKey)
         value.sig = LinkedDevicesB64(try key.signature(for: transcript))
@@ -501,20 +575,20 @@ struct LinkedDevicesTransportAttempt: Sendable {
     }
 
     func verify(_ answer: LinkedDevicesTransportAnswer) throws -> String {
-        guard answer.v == 2, answer.type == "transport_answer", answer.host_key.data == hostKey else {
+        guard answer.v == 2, answer.type == "transport_answer", answer.hostKey.data == hostKey else {
             throw LinkedDevicesProtocolError.hostIdentityChanged
         }
-        guard answer.challenge_id == request.challenge_id, answer.host_nonce == request.host_nonce,
-              answer.device_key == request.device_key, answer.device_nonce == request.device_nonce,
-              answer.device_id == request.device_id, answer.request_hash.data == requestHash else {
+        guard answer.challengeID == request.challengeID, answer.hostNonce == request.hostNonce,
+              answer.deviceKey == request.deviceKey, answer.deviceNonce == request.deviceNonce,
+              answer.deviceID == request.deviceID, answer.requestHash.data == requestHash else {
             throw LinkedDevicesProtocolError.invalid("transport answer binding")
         }
         guard LinkedDevicesTranscript.verify(answer.sig.data, key: hostKey,
                                              transcript: LinkedDevicesTranscript.transportAnswer(answer)) else {
             throw LinkedDevicesProtocolError.badSignature
         }
-        _ = try LinkedDevicesCrypto.fingerprint(in: answer.answer_sdp)
-        return answer.answer_sdp
+        _ = try LinkedDevicesCrypto.fingerprint(in: answer.answerSDP)
+        return answer.answerSDP
     }
 }
 

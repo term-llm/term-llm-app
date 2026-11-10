@@ -68,7 +68,7 @@ struct HubPageConfiguration: Codable, Sendable, Equatable {
 /// instead of an HTML page (e.g. passkey 302 → login URL).
 struct HubRootRedirect: Sendable, Equatable {
     let status: Int
-    let login_url: String?      // from X-Term-LLM-Login-URL header
+    let loginURL: String?       // from X-Term-LLM-Login-URL header
     let location: String?       // from Location header
 }
 
@@ -86,63 +86,63 @@ enum HubDiscoveryResult: Sendable {
 /// transport never interprets it.
 ///
 /// Concrete-only methods (on ``HubClient`` but **not** here) keep mock
-/// burden small: ``discover()``, ``login_bearer(token:)``,
-/// ``clear_local_auth()``, ``page_configuration()``.
+/// burden small: ``discover()``, ``loginBearer(token:)``,
+/// ``clearLocalAuth()``, ``pageConfiguration()``.
 protocol HubServing: Sendable {
     // Nodes
-    func list_nodes() async throws -> NodesResponse
-    func test_node(_ form: NodeFormData) async throws -> TestNodeResponse
-    func add_node(_ form: NodeFormData) async throws -> AddNodeResponse
-    func remove_node(id: String) async throws -> RemovedNodeResponse
-    func reorder_nodes(node_ids: [String]) async throws -> NodeOrderResponse
+    func listNodes() async throws -> NodesResponse
+    func testNode(_ form: NodeFormData) async throws -> TestNodeResponse
+    func addNode(_ form: NodeFormData) async throws -> AddNodeResponse
+    func removeNode(id: String) async throws -> RemovedNodeResponse
+    func reorderNodes(nodeIDs: [String]) async throws -> NodeOrderResponse
 
     // Attention (limit: 1…500, server default when nil)
-    func list_attention(limit: Int?) async throws -> AttentionResponse
-    func clear_attention() async throws -> ClearAttentionResponse
-    func mark_attention_seen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse
+    func listAttention(limit: Int?) async throws -> AttentionResponse
+    func clearAttention() async throws -> ClearAttentionResponse
+    func markAttentionSeen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse
 
     // Delegations (read-only)
-    func list_delegations() async throws -> DelegationsResponse
+    func listDelegations() async throws -> DelegationsResponse
 
     // Registration
-    func registration_info() async throws -> RegistrationInfoResponse
+    func registrationInfo() async throws -> RegistrationInfoResponse
 
     // Auth / Session / Security
     func session() async throws -> HubSessionResponse
-    func list_credentials() async throws -> CredentialsResponse
-    func rename_credential(record_id: String, display_name: String) async throws -> HubCredential
-    func remove_credential(record_id: String) async throws -> OkResponse
-    func revoke_other_sessions() async throws -> RevokeSessionsResponse
+    func listCredentials() async throws -> CredentialsResponse
+    func renameCredential(recordID: String, displayName: String) async throws -> HubCredential
+    func removeCredential(recordID: String) async throws -> OkResponse
+    func revokeOtherSessions() async throws -> RevokeSessionsResponse
     func logout() async throws -> RedirectResponse
 
     // Passkey ceremonies – raw JSON Data, caller owns WebAuthn
-    func begin_login(return_path: String) async throws -> Data
-    func finish_login(credential: Data) async throws -> RedirectResponse
-    func begin_reauthentication() async throws -> Data
-    func finish_reauthentication(credential: Data) async throws -> OkResponse
-    func begin_additional_registration(display_name: String) async throws -> Data
-    func finish_additional_registration(credential: Data) async throws -> HubCredential
+    func beginLogin(returnPath: String) async throws -> Data
+    func finishLogin(credential: Data) async throws -> RedirectResponse
+    func beginReauthentication() async throws -> Data
+    func finishReauthentication(credential: Data) async throws -> OkResponse
+    func beginAdditionalRegistration(displayName: String) async throws -> Data
+    func finishAdditionalRegistration(credential: Data) async throws -> HubCredential
 
     // Grant registration (bootstrap / recovery)
-    func verify_grant(prefix: GrantPrefix, code: String) async throws -> OkResponse
-    func begin_grant_registration(prefix: GrantPrefix, display_name: String) async throws -> Data
-    func finish_grant_registration(prefix: GrantPrefix, credential: Data, return_path: String) async throws -> RedirectResponse
+    func verifyGrant(prefix: GrantPrefix, code: String) async throws -> OkResponse
+    func beginGrantRegistration(prefix: GrantPrefix, displayName: String) async throws -> Data
+    func finishGrantRegistration(prefix: GrantPrefix, credential: Data, returnPath: String) async throws -> RedirectResponse
 
     // Native authorize
-    func authorize_native(challenge: String) async throws -> RedirectResponse
+    func authorizeNative(challenge: String) async throws -> RedirectResponse
 
     // Health
     func healthz() async throws -> HealthResponse
 
     // Change feed long-poll (GET /api/changes). Optional: the default throws
     // ``HubChangesUnsupported`` so callers fall back to plain polling.
-    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse
+    func waitForChanges(since: UInt64?, timeout: Int) async throws -> HubChangesResponse
 }
 
 struct HubChangesUnsupported: Error {}
 
 extension HubServing {
-    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+    func waitForChanges(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
         throw HubChangesUnsupported()
     }
 }
@@ -155,11 +155,20 @@ struct HubChangesResponse: Codable, Sendable, Equatable {
 
 struct NodesResponse: Codable, Sendable, Equatable {
     let nodes: [HubNode]
-    let resolver_error: String?
+    let resolverError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case nodes
+        case resolverError = "resolver_error"
+    }
 }
 
 struct NodeOrderResponse: Codable, Sendable, Equatable {
-    let node_ids: [String]
+    let nodeIDs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case nodeIDs = "node_ids"
+    }
 }
 
 struct TestNodeResponse: Codable, Sendable, Equatable {
@@ -184,13 +193,23 @@ struct NodeFormData: Codable, Sendable, Equatable {
 // MARK: Attention
 
 struct AttentionResponse: Codable, Sendable, Equatable {
-    let total_running: Int
-    let total_input_required: Int
-    let total_unseen: Int
+    let totalRunning: Int
+    let totalInputRequired: Int
+    let totalUnseen: Int
     let nodes: [HubAttentionNode]
-    let input_required: [HubInputRequiredItem]
+    let inputRequired: [HubInputRequiredItem]
     let inbox: [HubAttentionInboxItem]
-    let has_more: Bool
+    let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case totalRunning = "total_running"
+        case totalInputRequired = "total_input_required"
+        case totalUnseen = "total_unseen"
+        case nodes
+        case inputRequired = "input_required"
+        case inbox
+        case hasMore = "has_more"
+    }
 }
 
 struct ClearAttentionResponse: Codable, Sendable, Equatable {
@@ -203,48 +222,92 @@ struct SeenAttentionResponse: Codable, Sendable, Equatable {
 }
 
 struct AttentionSeenRequest: Codable, Sendable, Equatable {
-    let store_instance_id: String
-    let session_id: String
-    let attention_seq: Int
+    let storeInstanceID: String
+    let sessionID: String
+    let attentionSeq: Int
+
+    enum CodingKeys: String, CodingKey {
+        case storeInstanceID = "store_instance_id"
+        case sessionID = "session_id"
+        case attentionSeq = "attention_seq"
+    }
 }
 
 struct HubAttentionNode: Codable, Sendable, Equatable {
-    let node_id: String
-    let node_name: String
-    let capability_state: String
+    let nodeID: String
+    let nodeName: String
+    let capabilityState: String
     let stale: Bool
-    let last_success_at: String?
-    let last_error: String?
-    let running_count: Int
-    let input_required_count: Int
-    let unseen_count: Int
-    let has_green_indicator: Bool
+    let lastSuccessAt: String?
+    let lastError: String?
+    let runningCount: Int
+    let inputRequiredCount: Int
+    let unseenCount: Int
+    let hasGreenIndicator: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case nodeID = "node_id"
+        case nodeName = "node_name"
+        case capabilityState = "capability_state"
+        case stale
+        case lastSuccessAt = "last_success_at"
+        case lastError = "last_error"
+        case runningCount = "running_count"
+        case inputRequiredCount = "input_required_count"
+        case unseenCount = "unseen_count"
+        case hasGreenIndicator = "has_green_indicator"
+    }
 }
 
 struct HubAttentionInboxItem: Codable, Sendable, Equatable {
-    let node_id: String
-    let node_name: String
-    let session_id: String
-    let store_instance_id: String?
-    let session_number: Int?
+    let nodeID: String
+    let nodeName: String
+    let sessionID: String
+    let storeInstanceID: String?
+    let sessionNumber: Int?
     let title: String
     let outcome: String
-    let terminal_at: String?
-    let attention_seq: Int
-    let resume_path: String
+    let terminalAt: String?
+    let attentionSeq: Int
+    let resumePath: String
+
+    enum CodingKeys: String, CodingKey {
+        case nodeID = "node_id"
+        case nodeName = "node_name"
+        case sessionID = "session_id"
+        case storeInstanceID = "store_instance_id"
+        case sessionNumber = "session_number"
+        case title, outcome
+        case terminalAt = "terminal_at"
+        case attentionSeq = "attention_seq"
+        case resumePath = "resume_path"
+    }
 }
 
 struct HubInputRequiredItem: Codable, Sendable, Equatable {
-    let node_id: String
-    let node_name: String
-    let session_id: String
-    let session_number: Int?
+    let nodeID: String
+    let nodeName: String
+    let sessionID: String
+    let sessionNumber: Int?
     let title: String
-    let pending_interaction_count: Int
-    let pending_interaction_kinds: [String]?
-    let required_since: String?
-    let resume_path: String
+    let pendingInteractionCount: Int
+    let pendingInteractionKinds: [String]?
+    let requiredSince: String?
+    let resumePath: String
     let stale: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case nodeID = "node_id"
+        case nodeName = "node_name"
+        case sessionID = "session_id"
+        case sessionNumber = "session_number"
+        case title
+        case pendingInteractionCount = "pending_interaction_count"
+        case pendingInteractionKinds = "pending_interaction_kinds"
+        case requiredSince = "required_since"
+        case resumePath = "resume_path"
+        case stale
+    }
 }
 
 // MARK: Delegations
@@ -255,31 +318,53 @@ struct DelegationsResponse: Codable, Sendable, Equatable {
 
 struct HubDelegation: Codable, Sendable, Equatable {
     let id: String
-    let origin_node: String
-    let target_node: String
-    let agent_name: String?
+    let originNode: String
+    let targetNode: String
+    let agentName: String?
     let prompt: String?
     let model: String?
     let cwd: String?
-    let job_id: String?
-    let run_id: String?
+    let jobID: String?
+    let runID: String?
     let status: String
     let depth: Int
     let chain: [String]?
-    let parent_delegation_id: String?
+    let parentDelegationID: String?
     let response: String?
     let error: String?
-    let created_at: String
-    let updated_at: String
+    let createdAt: String
+    let updatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case originNode = "origin_node"
+        case targetNode = "target_node"
+        case agentName = "agent_name"
+        case prompt, model, cwd
+        case jobID = "job_id"
+        case runID = "run_id"
+        case status, depth, chain
+        case parentDelegationID = "parent_delegation_id"
+        case response, error
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
 }
 
 // MARK: Registration
 
 struct RegistrationInfoResponse: Codable, Sendable, Equatable {
     let enabled: Bool
-    let token_configured: Bool?
-    let can_persist_nodes: Bool?
-    let registration_token: String?
+    let tokenConfigured: Bool?
+    let canPersistNodes: Bool?
+    let registrationToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case tokenConfigured = "token_configured"
+        case canPersistNodes = "can_persist_nodes"
+        case registrationToken = "registration_token"
+    }
 }
 
 // MARK: Auth / Session / Security
@@ -287,8 +372,14 @@ struct RegistrationInfoResponse: Codable, Sendable, Equatable {
 struct HubSessionResponse: Codable, Sendable, Equatable {
     let administrator: String
     let session: [String: JSONValue]
-    let recently_authenticated: Bool
-    let active_sessions: Int
+    let recentlyAuthenticated: Bool
+    let activeSessions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case administrator, session
+        case recentlyAuthenticated = "recently_authenticated"
+        case activeSessions = "active_sessions"
+    }
 }
 
 struct CredentialsResponse: Codable, Sendable, Equatable {
@@ -296,11 +387,19 @@ struct CredentialsResponse: Codable, Sendable, Equatable {
 }
 
 struct HubCredential: Codable, Sendable, Equatable {
-    let record_id: String
-    let display_name: String
+    let recordID: String
+    let displayName: String
     let transports: [String]?
-    let created_at: String
-    let last_used_at: String
+    let createdAt: String
+    let lastUsedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case recordID = "record_id"
+        case displayName = "display_name"
+        case transports
+        case createdAt = "created_at"
+        case lastUsedAt = "last_used_at"
+    }
 }
 
 struct RevokeSessionsResponse: Codable, Sendable, Equatable {
@@ -328,52 +427,93 @@ struct HubNode: Codable, Sendable, Equatable {
     let source: String
     let connection: String
     let url: String
-    let base_path: String
-    let proxy_path: String
-    let new_session_path: String
-    let has_token: Bool
+    let basePath: String
+    let proxyPath: String
+    let newSessionPath: String
+    let hasToken: Bool
     let status: HubNodeStatus
     let sessions: HubNodeSessions?
     let diagnostics: [HubNodeDiagnostic]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, source, connection, url
+        case basePath = "base_path"
+        case proxyPath = "proxy_path"
+        case newSessionPath = "new_session_path"
+        case hasToken = "has_token"
+        case status, sessions, diagnostics
+    }
 }
 
 struct HubNodeStatus: Codable, Sendable, Equatable {
     let reachable: Bool
     let state: String
-    let latency_ms: Int
+    let latencyMs: Int
     let version: String?
     let agent: String?
     let capabilities: [String]?
     let details: [String: String]?
     let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case reachable, state
+        case latencyMs = "latency_ms"
+        case version, agent, capabilities, details, error
+    }
 }
 
 struct HubNodeSessions: Codable, Sendable, Equatable {
-    let count_label: String
-    let has_more: Bool?
-    let active_count: Int?
-    let input_required_count: Int?
-    let unseen_count: Int?
-    let attention_capability: String?
-    let attention_last_success_at: Int?
+    let countLabel: String
+    let hasMore: Bool?
+    let activeCount: Int?
+    let inputRequiredCount: Int?
+    let unseenCount: Int?
+    let attentionCapability: String?
+    let attentionLastSuccessAt: Int?
     let active: [HubNodeSession]?
     let recent: [HubNodeSession]?
-    let resume_path: String?
+    let resumePath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case countLabel = "count_label"
+        case hasMore = "has_more"
+        case activeCount = "active_count"
+        case inputRequiredCount = "input_required_count"
+        case unseenCount = "unseen_count"
+        case attentionCapability = "attention_capability"
+        case attentionLastSuccessAt = "attention_last_success_at"
+        case active, recent
+        case resumePath = "resume_path"
+    }
 }
 
 struct HubNodeSession: Codable, Sendable, Equatable {
     let id: String
     let number: Int?
-    let short_title: String
-    let long_title: String?
+    let shortTitle: String
+    let longTitle: String?
     let pinned: Bool?
-    let active_run: Bool?
-    let interaction_required: Bool?
-    let pending_interaction_count: Int?
-    let pending_interaction_kinds: [String]?
-    let last_message_at: Int?
-    let message_count: Int?
-    let resume_path: String
+    let activeRun: Bool?
+    let interactionRequired: Bool?
+    let pendingInteractionCount: Int?
+    let pendingInteractionKinds: [String]?
+    let lastMessageAt: Int?
+    let messageCount: Int?
+    let resumePath: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, number
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case pinned
+        case activeRun = "active_run"
+        case interactionRequired = "interaction_required"
+        case pendingInteractionCount = "pending_interaction_count"
+        case pendingInteractionKinds = "pending_interaction_kinds"
+        case lastMessageAt = "last_message_at"
+        case messageCount = "message_count"
+        case resumePath = "resume_path"
+    }
 }
 
 /// One match from a node's `GET /v1/sessions/search` (full-text over message
@@ -382,13 +522,24 @@ struct HubNodeSession: Codable, Sendable, Equatable {
 struct SessionSearchEntry: Codable, Sendable, Equatable {
     let id: String
     let number: Int64?
-    let short_title: String?
-    let long_title: String?
+    let shortTitle: String?
+    let longTitle: String?
     let pinned: Bool?
-    let last_message_at: Int64?
-    let message_count: Int?
+    let lastMessageAt: Int64?
+    let messageCount: Int?
     let snippet: String?
-    let attention_unseen: Bool?
+    let attentionUnseen: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, number
+        case shortTitle = "short_title"
+        case longTitle = "long_title"
+        case pinned
+        case lastMessageAt = "last_message_at"
+        case messageCount = "message_count"
+        case snippet
+        case attentionUnseen = "attention_unseen"
+    }
 }
 
 struct SessionSearchResponse: Codable, Sendable, Equatable {
@@ -396,12 +547,12 @@ struct SessionSearchResponse: Codable, Sendable, Equatable {
 }
 
 /// Per-agent session search. Hubs proxy to each node; a Direct Node answers
-/// for itself and ignores `node_id`.
+/// for itself and ignores `nodeID`.
 protocol HubSessionSearching: Sendable {
-    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse
+    func searchSessions(nodeID: String, query: String, limit: Int) async throws -> SessionSearchResponse
     /// `GET /v1/sessions/status?ids=…`: current run/input state for exactly
     /// these sessions. Older nodes ignore `ids`; callers match by ID.
-    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus
+    func sessionsStatus(nodeID: String, ids: [String]) async throws -> DirectNodeSessionsStatus
 }
 
 enum SessionSearchQuery {
@@ -650,7 +801,7 @@ struct URLSessionHubTransport: HubTransport {
 /// | Redirects | Blocked via `URLSessionTaskDelegate` returning `nil` |
 /// | Origin | Set on every mutation (POST / PATCH / DELETE) |
 /// | 401/403 purge | Revoke as soon as the SDK exposes the response, before body completion; bare wire headers may remain buffered |
-/// | Response cookies | `Set-Cookie` headers are parsed, filtered to hub auth scope, and sunk to WK via `cookie_sink` — no ambient jar |
+/// | Response cookies | `Set-Cookie` headers are parsed, filtered to hub auth scope, and sunk to WK via `cookieSink` — no ambient jar |
 /// | Timeout | Bounded at 30 s per request |
 /// | Cookie scope | Auth cookies restricted to exact host + configured mount path; no sibling-root leakage, no `/foo` matching `/foobar` |
 /// | Passkey ceremonies | begin/finish return/accept raw `Data`; caller owns WebAuthn |
@@ -667,20 +818,20 @@ struct URLSessionHubTransport: HubTransport {
 final class HubClient: @unchecked Sendable {
 
     /// Base URL of the Hub (e.g. `https://hub.example.com/ui/`).
-    let base_url: URL
+    let baseURL: URL
 
-    /// Mount path derived from `base_url.path`, normalized (no trailing slash,
-    /// empty string for root).  Auth cookies are scoped to `mount_path + "/"`.
-    let mount_path: String
+    /// Mount path derived from `baseURL.path`, normalized (no trailing slash,
+    /// empty string for root).  Auth cookies are scoped to `mountPath + "/"`.
+    let mountPath: String
 
-    /// Exact lowercase host from base_url.  Cookie filtering rejects domain
+    /// Exact lowercase host from baseURL.  Cookie filtering rejects domain
     /// cookies that don't match exactly.
-    let expected_host: String
+    let expectedHost: String
 
-    let cookie_source: @Sendable () async -> [HTTPCookie]
-    let cookie_sink: @Sendable ([HTTPCookie]) async -> Void
+    let cookieSource: @Sendable () async -> [HTTPCookie]
+    let cookieSink: @Sendable ([HTTPCookie]) async -> Void
     let origin: String
-    let is_https: Bool
+    let isHTTPS: Bool
     private let transport: any HubTransport
 
     /// Fired as soon as the SDK exposes a 401/403, before waiting for body
@@ -689,7 +840,7 @@ final class HubClient: @unchecked Sendable {
     private let authorizationCallbackLock = NSLock()
     private var authorizationCallback: (@Sendable () async -> Void)?
     private var authorizationEpoch: UInt64 = 0
-    var on_unauthorized: (@Sendable () async -> Void)? {
+    var onUnauthorized: (@Sendable () async -> Void)? {
         get {
             authorizationCallbackLock.lock()
             defer { authorizationCallbackLock.unlock() }
@@ -707,7 +858,7 @@ final class HubClient: @unchecked Sendable {
     /// The request snapshot carries it across response delivery and actor hops.
     typealias CookieImporter = @Sendable ([HTTPCookie], @escaping @Sendable () -> Bool) async throws -> Void
     private var cookieImporter: CookieImporter?
-    var scoped_cookie_importer: CookieImporter? {
+    var scopedCookieImporter: CookieImporter? {
         get { authorizationCallbackLock.lock(); defer { authorizationCallbackLock.unlock() }; return cookieImporter }
         set {
             authorizationCallbackLock.lock()
@@ -740,7 +891,7 @@ final class HubClient: @unchecked Sendable {
         let isCurrent: @Sendable () -> Bool = { [weak self] in self?.authorizationIsCurrent(authorization.epoch) == true }
         guard isCurrent(), !Task.isCancelled else { throw CancellationError() }
         if let importer = authorization.importer { try await importer(cookies, isCurrent) }
-        else { await cookie_sink(cookies) }
+        else { await cookieSink(cookies) }
         guard isCurrent(), !Task.isCancelled else { throw CancellationError() }
     }
 
@@ -754,37 +905,37 @@ final class HubClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 30
 
     /// - Parameters:
-    ///   - base_url: Hub origin + optional base path.
-    ///   - cookie_source: Async closure returning all cookies (typically from
+    ///   - baseURL: Hub origin + optional base path.
+    ///   - cookieSource: Async closure returning all cookies (typically from
     ///     `WKWebsiteDataStore`).  The transport filters them strictly.
-    ///   - cookie_sink: Async closure to persist cookies into WK.
+    ///   - cookieSink: Async closure to persist cookies into WK.
     ///   - transport: Injectable transport for testing.  Defaults to
     ///     ``URLSessionHubTransport`` in production.
     init(
-        base_url: URL,
-        cookie_source: @escaping @Sendable () async -> [HTTPCookie],
-        cookie_sink: @escaping @Sendable ([HTTPCookie]) async -> Void = { _ in },
+        baseURL: URL,
+        cookieSource: @escaping @Sendable () async -> [HTTPCookie],
+        cookieSink: @escaping @Sendable ([HTTPCookie]) async -> Void = { _ in },
         transport: (any HubTransport)? = nil
     ) {
-        self.base_url = base_url
-        self.cookie_source = cookie_source
-        self.cookie_sink = cookie_sink
-        self.is_https = base_url.scheme?.lowercased() == "https"
-        self.expected_host = (base_url.host ?? "").lowercased()
+        self.baseURL = baseURL
+        self.cookieSource = cookieSource
+        self.cookieSink = cookieSink
+        self.isHTTPS = baseURL.scheme?.lowercased() == "https"
+        self.expectedHost = (baseURL.host ?? "").lowercased()
         self.transport = transport ?? URLSessionHubTransport()
 
-        // mount_path: "/ui" from "https://hub.example.com/ui/", "" for root
-        let raw = base_url.path
+        // mountPath: "/ui" from "https://hub.example.com/ui/", "" for root
+        let raw = baseURL.path
         if raw == "/" || raw.isEmpty {
-            self.mount_path = ""
+            self.mountPath = ""
         } else {
-            self.mount_path = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            self.mountPath = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
         }
 
         // Origin = scheme://host[:port]  (omit default ports)
-        let defaultPort = base_url.scheme == "http" ? 80 : 443
-        let port = base_url.port == defaultPort ? "" : base_url.port.map { ":\($0)" } ?? ""
-        self.origin = "\(base_url.scheme ?? "https")://\(base_url.host ?? "localhost")\(port)"
+        let defaultPort = baseURL.scheme == "http" ? 80 : 443
+        let port = baseURL.port == defaultPort ? "" : baseURL.port.map { ":\($0)" } ?? ""
+        self.origin = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "localhost")\(port)"
     }
 
     // MARK: - Concrete-only methods (not on HubServing)
@@ -793,7 +944,7 @@ final class HubClient: @unchecked Sendable {
     ///
     /// - On 200 with parseable `data-hub-config`: returns `.page(…)`.
     /// - On 401 with an HTML body containing `data-hub-config` (bearer login
-    ///   page): returns `.page(…)` after firing `on_unauthorized`.
+    ///   page): returns `.page(…)` after firing `onUnauthorized`.
     /// - On 3xx (blocked redirect) or 401 without parseable HTML: returns
     ///   `.redirect(…)` with header metadata.
     ///
@@ -809,7 +960,7 @@ final class HubClient: @unchecked Sendable {
         request.httpShouldHandleCookies = false
         request.timeoutInterval = Self.defaultTimeout
 
-        let cookies = filteredCookies(await cookie_source(), for: url)
+        let cookies = filteredCookies(await cookieSource(), for: url)
         let cookieHeaders = HTTPCookie.requestHeaderFields(with: cookies)
         for (key, value) in cookieHeaders {
             request.setValue(value, forHTTPHeaderField: key)
@@ -829,7 +980,7 @@ final class HubClient: @unchecked Sendable {
         if (300...399).contains(http.statusCode) {
             return .redirect(HubRootRedirect(
                 status: http.statusCode,
-                login_url: http.value(forHTTPHeaderField: "X-Term-LLM-Login-URL"),
+                loginURL: http.value(forHTTPHeaderField: "X-Term-LLM-Login-URL"),
                 location: http.value(forHTTPHeaderField: "Location")
             ))
         }
@@ -842,7 +993,7 @@ final class HubClient: @unchecked Sendable {
             }
             return .redirect(HubRootRedirect(
                 status: 401,
-                login_url: http.value(forHTTPHeaderField: "X-Term-LLM-Login-URL"),
+                loginURL: http.value(forHTTPHeaderField: "X-Term-LLM-Login-URL"),
                 location: http.value(forHTTPHeaderField: "Location")
             ))
         }
@@ -865,7 +1016,7 @@ final class HubClient: @unchecked Sendable {
 
     /// Convenience wrapper that calls ``discover()`` and extracts the
     /// ``HubPageConfiguration``, throwing if the root redirected.
-    func page_configuration() async throws -> HubPageConfiguration {
+    func pageConfiguration() async throws -> HubPageConfiguration {
         switch try await discover() {
         case .page(let config):
             return config
@@ -880,11 +1031,11 @@ final class HubClient: @unchecked Sendable {
     /// Authenticate with a bearer token.  Validates the token by making an
     /// `Authorization: Bearer <token>` request to `/api/nodes`.  On success,
     /// constructs a scoped, HTTPOnly `term_llm_hub_token` cookie and sinks
-    /// it into WK via `cookie_sink`.
+    /// it into WK via `cookieSink`.
     ///
     /// The token is never placed in a query string.  No token is stored
     /// outside WK's cookie jar.
-    func login_bearer(token: String) async throws {
+    func loginBearer(token: String) async throws {
         let authorization = captureAuthorization()
         let url = mounted("/api/nodes")
         var request = URLRequest(url: url)
@@ -894,7 +1045,7 @@ final class HubClient: @unchecked Sendable {
         request.httpShouldHandleCookies = false
         request.timeoutInterval = Self.defaultTimeout
 
-        // No on_unauthorized — this is a login attempt, not an authenticated request
+        // No onUnauthorized — this is a login attempt, not an authenticated request
         let (_, http) = try await transport.execute(request, onUnauthorized: nil)
 
         guard (200...299).contains(http.statusCode) else {
@@ -905,8 +1056,8 @@ final class HubClient: @unchecked Sendable {
         // but with Secure added on HTTPS.  HTTPOnly is set via the raw
         // Set-Cookie header parsing path since HTTPCookie(properties:) cannot
         // express it directly.
-        let cookiePath = mount_path.isEmpty ? "/" : mount_path + "/"
-        let host = expected_host
+        let cookiePath = mountPath.isEmpty ? "/" : mountPath + "/"
+        let host = expectedHost
         guard !host.isEmpty else {
             throw HubAPIError(status: 0, message: "Hub URL has no host.")
         }
@@ -915,7 +1066,7 @@ final class HubClient: @unchecked Sendable {
             value: token,
             host: host,
             path: cookiePath,
-            secure: is_https
+            secure: isHTTPS
         )
         guard let cookie else {
             throw HubAPIError(status: 0, message: "Failed to construct auth cookie.")
@@ -928,10 +1079,10 @@ final class HubClient: @unchecked Sendable {
     /// bearer/none logout (no server-side logout endpoint in those modes).
     /// Removes `term_llm_hub_token` and `term_llm_hub_session` by sinking
     /// expired replacements scoped to exact host + mount path.
-    func clear_local_auth() async {
+    func clearLocalAuth() async {
         let authorization = captureAuthorization()
-        let cookiePath = mount_path.isEmpty ? "/" : mount_path + "/"
-        let host = expected_host
+        let cookiePath = mountPath.isEmpty ? "/" : mountPath + "/"
+        let host = expectedHost
         guard !host.isEmpty else { return }
         let names = ["term_llm_hub_token", "term_llm_hub_session"]
         var expired: [HTTPCookie] = []
@@ -944,7 +1095,7 @@ final class HubClient: @unchecked Sendable {
                 .expires: Date(timeIntervalSince1970: 0),
                 .maximumAge: "0",
             ]
-            if is_https { properties[.secure] = true }
+            if isHTTPS { properties[.secure] = true }
             if let cookie = HTTPCookie(properties: properties) {
                 expired.append(cookie)
             }
@@ -1004,10 +1155,10 @@ final class HubClient: @unchecked Sendable {
     /// Filters raw WK cookies to those allowed for a specific request URL.
     ///
     /// Strict rules to prevent cross-hub cookie leakage:
-    /// - **Exact host**: cookie domain must equal `expected_host` exactly.
+    /// - **Exact host**: cookie domain must equal `expectedHost` exactly.
     ///   Domain cookies (`.example.com`) are rejected.
     /// - **Auth cookies**: known hub auth cookie names are restricted to the
-    ///   exact configured mount path (`mount_path + "/"`).  A root Hub's
+    ///   exact configured mount path (`mountPath + "/"`).  A root Hub's
     ///   `term_llm_hub_token` at path `/` is never sent to a nested Hub at
     ///   `/nested/`, and vice-versa.  `term_llm_web_*` cookies are excluded
     ///   entirely (they belong to per-node web UI, not native transport).
@@ -1018,11 +1169,11 @@ final class HubClient: @unchecked Sendable {
     func filteredCookies(_ cookies: [HTTPCookie], for url: URL) -> [HTTPCookie] {
         let now = Date()
         let requestPath = url.path.isEmpty ? "/" : url.path
-        let authPath = mount_path.isEmpty ? "/" : mount_path + "/"
+        let authPath = mountPath.isEmpty ? "/" : mountPath + "/"
         return cookies.filter { cookie in
             // Exact host match — reject domain cookies
             let cookieDomain = cookie.domain.lowercased()
-            guard cookieDomain == expected_host else { return false }
+            guard cookieDomain == expectedHost else { return false }
 
             // Reject web-session cookies (belong to per-node UI, not hub transport)
             if cookie.name.hasPrefix("term_llm_web_") { return false }
@@ -1046,7 +1197,7 @@ final class HubClient: @unchecked Sendable {
             }
 
             // Secure cookies over HTTPS only
-            if cookie.isSecure && !is_https { return false }
+            if cookie.isSecure && !isHTTPS { return false }
 
             // Expiry
             if let expires = cookie.expiresDate, expires < now { return false }
@@ -1094,8 +1245,8 @@ final class HubClient: @unchecked Sendable {
             queryPart = nil
         }
 
-        var components = URLComponents(url: base_url, resolvingAgainstBaseURL: false)!
-        components.path = "\(mount_path)\(pathPart)"
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        components.path = "\(mountPath)\(pathPart)"
         components.query = queryPart
         if let percentEncodedQuery { components.percentEncodedQuery = percentEncodedQuery }
         return components.url!
@@ -1163,7 +1314,7 @@ final class HubClient: @unchecked Sendable {
 
     /// Shared request execution: cookie filtering, Origin injection,
     /// SDK-response-time 401 purge, redirect blocking, bounded timeout,
-    /// response Set-Cookie processing through scoped cookie_sink.
+    /// response Set-Cookie processing through scoped cookieSink.
     private func executeRequest(
         _ path: String,
         method: Method = .GET,
@@ -1195,7 +1346,7 @@ final class HubClient: @unchecked Sendable {
         }
 
         // Cookie injection: strict host + mount-path + secure + expiry filter
-        let allCookies = await cookie_source()
+        let allCookies = await cookieSource()
         let cookies = filteredCookies(allCookies, for: url)
         let cookieHeaders = HTTPCookie.requestHeaderFields(with: cookies)
         for (key, value) in cookieHeaders {
@@ -1205,7 +1356,7 @@ final class HubClient: @unchecked Sendable {
         guard authorizationIsCurrent(authorization.epoch), !Task.isCancelled else { throw CancellationError() }
         let (data, http) = try await transport.execute(request, onUnauthorized: revokesOnUnauthorized ? authorization.callback : nil)
 
-        // Process response Set-Cookie headers through scoped cookie_sink.
+        // Process response Set-Cookie headers through scoped cookieSink.
         // No ambient jar — the only cookie persistence is through this sink.
         if authorizationIsCurrent(authorization.epoch) {
             try await sinkResponseCookies(from: http, for: url, authorization: authorization)
@@ -1240,17 +1391,17 @@ final class HubClient: @unchecked Sendable {
         let responseCookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
         guard !responseCookies.isEmpty else { return }
 
-        let authPath = mount_path.isEmpty ? "/" : mount_path + "/"
+        let authPath = mountPath.isEmpty ? "/" : mountPath + "/"
         let accepted = responseCookies.filter { cookie in
             // Exact host only
-            guard cookie.domain.lowercased() == expected_host else { return false }
+            guard cookie.domain.lowercased() == expectedHost else { return false }
             // Hub auth cookies only — don't sink arbitrary cookies
             guard Self.hubAuthCookieNames.contains(cookie.name) else { return false }
             // Must be scoped to this hub's mount path
             let cp = cookie.path.isEmpty ? "/" : cookie.path
             guard cp == authPath else { return false }
             // HTTPS: accept secure cookies only on HTTPS; on HTTP accept non-secure
-            if cookie.isSecure && !is_https { return false }
+            if cookie.isSecure && !isHTTPS { return false }
             return true
         }
         if !accepted.isEmpty {
@@ -1265,29 +1416,29 @@ extension HubClient: HubServing {
 
     // MARK: Nodes
 
-    func list_nodes() async throws -> NodesResponse {
+    func listNodes() async throws -> NodesResponse {
         try await request("/api/nodes")
     }
 
-    func test_node(_ form: NodeFormData) async throws -> TestNodeResponse {
+    func testNode(_ form: NodeFormData) async throws -> TestNodeResponse {
         try await request("/api/nodes/test", method: .POST, body: form)
     }
 
-    func add_node(_ form: NodeFormData) async throws -> AddNodeResponse {
+    func addNode(_ form: NodeFormData) async throws -> AddNodeResponse {
         try await request("/api/nodes", method: .POST, body: form)
     }
 
-    func remove_node(id: String) async throws -> RemovedNodeResponse {
+    func removeNode(id: String) async throws -> RemovedNodeResponse {
         try await request("/api/nodes/\(id.urlPathEncoded)", method: .DELETE)
     }
 
-    func reorder_nodes(node_ids: [String]) async throws -> NodeOrderResponse {
-        try await request("/api/nodes/order", method: .PATCH, body: ["node_ids": node_ids])
+    func reorderNodes(nodeIDs: [String]) async throws -> NodeOrderResponse {
+        try await request("/api/nodes/order", method: .PATCH, body: ["node_ids": nodeIDs])
     }
 
     // MARK: Attention
 
-    func list_attention(limit: Int? = nil) async throws -> AttentionResponse {
+    func listAttention(limit: Int? = nil) async throws -> AttentionResponse {
         if let limit {
             let clamped = min(max(limit, 1), 500)
             return try await request("/api/attention?limit=\(clamped)")
@@ -1295,30 +1446,30 @@ extension HubClient: HubServing {
         return try await request("/api/attention")
     }
 
-    func clear_attention() async throws -> ClearAttentionResponse {
+    func clearAttention() async throws -> ClearAttentionResponse {
         try await request("/api/attention/clear", method: .POST, body: EmptyBody())
     }
 
-    func mark_attention_seen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
+    func markAttentionSeen(_ item: AttentionSeenRequest) async throws -> SeenAttentionResponse {
         try await request("/api/attention/seen", method: .POST, body: item)
     }
 
     // MARK: Delegations
 
-    func list_delegations() async throws -> DelegationsResponse {
+    func listDelegations() async throws -> DelegationsResponse {
         try await request("/api/delegations")
     }
 
     // MARK: Changes
 
-    func wait_for_changes(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
+    func waitForChanges(since: UInt64?, timeout: Int) async throws -> HubChangesResponse {
         guard let since else { return try await request("/api/changes") }
         return try await request("/api/changes?since=\(since)&timeout=\(timeout)")
     }
 
     // MARK: Registration
 
-    func registration_info() async throws -> RegistrationInfoResponse {
+    func registrationInfo() async throws -> RegistrationInfoResponse {
         try await request("/api/registration-info")
     }
 
@@ -1328,23 +1479,23 @@ extension HubClient: HubServing {
         try await request("/api/auth/session")
     }
 
-    func list_credentials() async throws -> CredentialsResponse {
+    func listCredentials() async throws -> CredentialsResponse {
         try await request("/api/auth/credentials")
     }
 
-    func rename_credential(record_id: String, display_name: String) async throws -> HubCredential {
+    func renameCredential(recordID: String, displayName: String) async throws -> HubCredential {
         try await request(
-            "/api/auth/credentials/\(record_id.urlPathEncoded)",
+            "/api/auth/credentials/\(recordID.urlPathEncoded)",
             method: .PATCH,
-            body: ["display_name": display_name]
+            body: ["display_name": displayName]
         )
     }
 
-    func remove_credential(record_id: String) async throws -> OkResponse {
-        try await request("/api/auth/credentials/\(record_id.urlPathEncoded)", method: .DELETE)
+    func removeCredential(recordID: String) async throws -> OkResponse {
+        try await request("/api/auth/credentials/\(recordID.urlPathEncoded)", method: .DELETE)
     }
 
-    func revoke_other_sessions() async throws -> RevokeSessionsResponse {
+    func revokeOtherSessions() async throws -> RevokeSessionsResponse {
         try await request("/api/auth/sessions/revoke-others", method: .POST, body: EmptyBody())
     }
 
@@ -1354,53 +1505,53 @@ extension HubClient: HubServing {
 
     // MARK: Passkey ceremonies
 
-    func begin_login(return_path: String) async throws -> Data {
-        let body = try JSONEncoder().encode(["return_path": return_path])
+    func beginLogin(returnPath: String) async throws -> Data {
+        let body = try JSONEncoder().encode(["return_path": returnPath])
         return try await requestRaw("/api/auth/login/begin", body: body)
     }
 
-    func finish_login(credential: Data) async throws -> RedirectResponse {
+    func finishLogin(credential: Data) async throws -> RedirectResponse {
         try await request("/api/auth/login/finish", method: .POST, rawBody: credential)
     }
 
-    func begin_reauthentication() async throws -> Data {
+    func beginReauthentication() async throws -> Data {
         let body = try JSONEncoder().encode(EmptyBody())
         return try await requestRaw("/api/auth/reauth/begin", body: body)
     }
 
-    func finish_reauthentication(credential: Data) async throws -> OkResponse {
+    func finishReauthentication(credential: Data) async throws -> OkResponse {
         try await request("/api/auth/reauth/finish", method: .POST, rawBody: credential)
     }
 
-    func begin_additional_registration(display_name: String) async throws -> Data {
-        let body = try JSONEncoder().encode(["display_name": display_name])
+    func beginAdditionalRegistration(displayName: String) async throws -> Data {
+        let body = try JSONEncoder().encode(["display_name": displayName])
         return try await requestRaw("/api/auth/credentials/register/begin", body: body)
     }
 
     /// Server returns HTTP 201 with the newly created ``HubCredential``.
-    func finish_additional_registration(credential: Data) async throws -> HubCredential {
+    func finishAdditionalRegistration(credential: Data) async throws -> HubCredential {
         try await request("/api/auth/credentials/register/finish", method: .POST, rawBody: credential)
     }
 
     // MARK: Grant registration
 
-    func verify_grant(prefix: GrantPrefix, code: String) async throws -> OkResponse {
+    func verifyGrant(prefix: GrantPrefix, code: String) async throws -> OkResponse {
         try await request("\(prefix.rawValue)/verify", method: .POST, body: ["code": code])
     }
 
-    func begin_grant_registration(prefix: GrantPrefix, display_name: String) async throws -> Data {
-        let body = try JSONEncoder().encode(["display_name": display_name])
+    func beginGrantRegistration(prefix: GrantPrefix, displayName: String) async throws -> Data {
+        let body = try JSONEncoder().encode(["display_name": displayName])
         return try await requestRaw("\(prefix.rawValue)/register/begin", body: body)
     }
 
-    func finish_grant_registration(prefix: GrantPrefix, credential: Data, return_path: String) async throws -> RedirectResponse {
-        let query = return_path.isEmpty ? "" : "?return=\(return_path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? return_path)"
+    func finishGrantRegistration(prefix: GrantPrefix, credential: Data, returnPath: String) async throws -> RedirectResponse {
+        let query = returnPath.isEmpty ? "" : "?return=\(returnPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? returnPath)"
         return try await request("\(prefix.rawValue)/register/finish\(query)", method: .POST, rawBody: credential)
     }
 
     // MARK: Native authorize
 
-    func authorize_native(challenge: String) async throws -> RedirectResponse {
+    func authorizeNative(challenge: String) async throws -> RedirectResponse {
         try await request("/api/auth/native/authorize", method: .POST, body: ["challenge": challenge])
     }
 
@@ -1417,12 +1568,12 @@ extension HubClient: HubSessionSearching {
     /// Fan-out leg through the Hub's node proxy, which injects the node token.
     /// A 401/403 here may come from the node rather than the Hub session, so it
     /// fails this agent only; ordinary Hub polling owns Hub sign-in revocation.
-    func search_sessions(node_id: String, query: String, limit: Int) async throws -> SessionSearchResponse {
-        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+    func searchSessions(nodeID: String, query: String, limit: Int) async throws -> SessionSearchResponse {
+        guard SessionSearchQuery.isSafeNodeID(nodeID) else {
             throw HubAPIError(status: 0, message: "Unsafe node identifier.")
         }
         let data = try await executeRequest(
-            "/node/\(node_id)/v1/sessions/search",
+            "/node/\(nodeID)/v1/sessions/search",
             percentEncodedQuery: SessionSearchQuery.percentEncoded(query: query, limit: limit),
             revokesOnUnauthorized: false
         )
@@ -1430,13 +1581,13 @@ extension HubClient: HubSessionSearching {
         return try JSONDecoder().decode(SessionSearchResponse.self, from: data)
     }
 
-    func sessions_status(node_id: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
-        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+    func sessionsStatus(nodeID: String, ids: [String]) async throws -> DirectNodeSessionsStatus {
+        guard SessionSearchQuery.isSafeNodeID(nodeID) else {
             throw HubAPIError(status: 0, message: "Unsafe node identifier.")
         }
         guard let query = SessionSearchQuery.percentEncodedStatus(ids: ids) else { return DirectNodeSessionsStatus(sessions: []) }
         let data = try await executeRequest(
-            "/node/\(node_id)/v1/sessions/status",
+            "/node/\(nodeID)/v1/sessions/status",
             percentEncodedQuery: query,
             revokesOnUnauthorized: false
         )
@@ -1450,12 +1601,12 @@ extension HubClient: HubSessionSearching {
 extension HubClient: HubSessionBrowsing {
     /// Through the Hub's node proxy, like search: a 401/403 may come from the
     /// node rather than the Hub session, so it fails this request only.
-    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
-        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+    func listSessions(nodeID: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
+        guard SessionSearchQuery.isSafeNodeID(nodeID) else {
             throw HubAPIError(status: 0, message: "Unsafe node identifier.")
         }
         let data = try await executeRequest(
-            "/node/\(node_id)/v1/sessions",
+            "/node/\(nodeID)/v1/sessions",
             percentEncodedQuery: AgentSessionQuery.percentEncoded(limit: limit, cursor: cursor),
             revokesOnUnauthorized: false
         )
@@ -1463,15 +1614,15 @@ extension HubClient: HubSessionBrowsing {
         return try JSONDecoder().decode(AgentSessionPage.self, from: data)
     }
 
-    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
-        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+    func updateSession(nodeID: String, sessionID: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
+        guard SessionSearchQuery.isSafeNodeID(nodeID) else {
             throw HubAPIError(status: 0, message: "Unsafe node identifier.")
         }
-        guard AgentSessionQuery.isSafeSessionID(session_id) else {
+        guard AgentSessionQuery.isSafeSessionID(sessionID) else {
             throw HubAPIError(status: 0, message: "Unsafe session identifier.")
         }
         let data = try await executeRequest(
-            "/node/\(node_id)/v1/sessions/\(session_id)",
+            "/node/\(nodeID)/v1/sessions/\(sessionID)",
             method: .PATCH,
             body: patch,
             revokesOnUnauthorized: false
@@ -1480,17 +1631,17 @@ extension HubClient: HubSessionBrowsing {
         return try JSONDecoder().decode(AgentSessionPatchResult.self, from: data)
     }
 
-    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder {
-        guard SessionSearchQuery.isSafeNodeID(node_id) else {
+    func reorderPinnedSessions(nodeID: String, sessionIDs: [String]) async throws -> PinnedSessionOrder {
+        guard SessionSearchQuery.isSafeNodeID(nodeID) else {
             throw HubAPIError(status: 0, message: "Unsafe node identifier.")
         }
-        guard session_ids.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
+        guard sessionIDs.allSatisfy(AgentSessionQuery.isSafeSessionID) else {
             throw HubAPIError(status: 0, message: "Unsafe session identifier.")
         }
         let data = try await executeRequest(
-            "/node/\(node_id)/v1/sessions/pinned-order",
+            "/node/\(nodeID)/v1/sessions/pinned-order",
             method: .PATCH,
-            body: ["session_ids": session_ids],
+            body: ["session_ids": sessionIDs],
             revokesOnUnauthorized: false
         )
         if data.isEmpty { throw HubAPIError(status: 200, message: "Hub returned an empty response.") }

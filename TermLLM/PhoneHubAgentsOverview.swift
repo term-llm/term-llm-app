@@ -29,13 +29,13 @@ struct PhoneHubAgentSummary: Identifiable {
         self.source = source
         self.node = node
         let sessions = HubNavigation.nodeSessions(node)
-        running = sessions.filter { $0.active_run == true && $0.interaction_required != true && !waiting.contains($0.id) }.count
+        running = sessions.filter { $0.activeRun == true && $0.interactionRequired != true && !waiting.contains($0.id) }.count
         if let attention {
-            needsInput = max(0, attention.input_required_count)
-            unread = max(0, attention.unseen_count)
+            needsInput = max(0, attention.inputRequiredCount)
+            unread = max(0, attention.unseenCount)
         } else {
-            needsInput = max(0, node.sessions?.input_required_count ?? sessions.filter { $0.interaction_required == true }.count)
-            unread = max(0, node.sessions?.unseen_count ?? 0)
+            needsInput = max(0, node.sessions?.inputRequiredCount ?? sessions.filter { $0.interactionRequired == true }.count)
+            unread = max(0, node.sessions?.unseenCount ?? 0)
         }
     }
 
@@ -53,7 +53,7 @@ struct PhoneHubAgentSummary: Identifiable {
         }
         var parts = [String(localized: "Online")]
         if let version = Self.versionLabel(node.status.version) { parts.append(version) }
-        if node.status.latency_ms > 0 { parts.append(String(localized: "\(node.status.latency_ms) ms")) }
+        if node.status.latencyMs > 0 { parts.append(String(localized: "\(node.status.latencyMs) ms")) }
         return parts.joined(separator: " · ")
     }
 
@@ -67,7 +67,7 @@ struct PhoneHubAgentSummary: Identifiable {
 
     var symbol: String { source.isManagedLocalService ? "laptopcomputer" : "server.rack" }
 
-    var conversationCount: PhoneHubCountLabel? { PhoneHubCountLabel(node.sessions?.count_label) }
+    var conversationCount: PhoneHubCountLabel? { PhoneHubCountLabel(node.sessions?.countLabel) }
 
     static func versionLabel(_ version: String?) -> String? {
         guard let raw = version?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
@@ -80,7 +80,7 @@ struct PhoneHubAgentSummary: Identifiable {
     static func highlights(node: HubNode, attention: [PhoneHubAttention], limit: Int = .max) -> [PhoneHubAgentHighlight] {
         let sessions = HubNavigation.nodeSessions(node)
         let byID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let newestFirst = sessions.sorted { ($0.last_message_at ?? 0) > ($1.last_message_at ?? 0) }
+        let newestFirst = sessions.sorted { ($0.lastMessageAt ?? 0) > ($1.lastMessageAt ?? 0) }
         var seen = Set<String>()
         var rows: [PhoneHubAgentHighlight] = []
         func add(_ row: PhoneHubAgentHighlight) {
@@ -92,28 +92,28 @@ struct PhoneHubAgentSummary: Identifiable {
             let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
             return PhoneHubAgentHighlight(kind: kind, sessionID: item.sessionID,
                                           title: title.isEmpty ? session.map(Self.title) ?? String(localized: "Untitled conversation") : title,
-                                          path: item.path, date: Self.date(session?.last_message_at),
-                                          messageCount: session?.message_count,
+                                          path: item.path, date: Self.date(session?.lastMessageAt),
+                                          messageCount: session?.messageCount,
                                           detail: kind == .needsInput ? PhoneHubAgentHighlight.inputDetail(item.kinds)
                                                                       : PhoneHubAgentHighlight.outcomeDetail(item.outcome))
         }
         func row(_ kind: PhoneHubAgentHighlight.Kind, _ session: HubNodeSession) -> PhoneHubAgentHighlight {
-            PhoneHubAgentHighlight(kind: kind, sessionID: session.id, title: Self.title(session), path: session.resume_path,
-                                   date: Self.date(session.last_message_at), messageCount: session.message_count,
-                                   detail: kind == .needsInput ? PhoneHubAgentHighlight.inputDetail(session.pending_interaction_kinds ?? []) : nil)
+            PhoneHubAgentHighlight(kind: kind, sessionID: session.id, title: Self.title(session), path: session.resumePath,
+                                   date: Self.date(session.lastMessageAt), messageCount: session.messageCount,
+                                   detail: kind == .needsInput ? PhoneHubAgentHighlight.inputDetail(session.pendingInteractionKinds ?? []) : nil)
         }
         for item in attention where item.inputRequired { add(row(.needsInput, item)) }
-        for session in newestFirst where session.interaction_required == true { add(row(.needsInput, session)) }
-        for session in newestFirst where session.active_run == true { add(row(.running, session)) }
+        for session in newestFirst where session.interactionRequired == true { add(row(.needsInput, session)) }
+        for session in newestFirst where session.activeRun == true { add(row(.running, session)) }
         for item in attention where !item.inputRequired { add(row(.unread, item)) }
         for session in newestFirst { add(row(.recent, session)) }
         return rows
     }
 
     private static func title(_ session: HubNodeSession) -> String {
-        let short = session.short_title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let short = session.shortTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !short.isEmpty { return short }
-        if let long = session.long_title?.trimmingCharacters(in: .whitespacesAndNewlines), !long.isEmpty { return long }
+        if let long = session.longTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !long.isEmpty { return long }
         return session.number.map { String(localized: "Conversation \($0)") } ?? String(localized: "Untitled conversation")
     }
 
@@ -229,7 +229,7 @@ struct PhoneHubAgentsOverview: View {
 
     private func attentionNode(_ row: PhoneHubNode) -> HubAttentionNode? {
         guard let store = aggregate.source(row.source.id)?.store, store.attentionVerified, !store.unauthorized else { return nil }
-        return store.attentionNodes.first { $0.node_id == row.node.id }
+        return store.attentionNodes.first { $0.nodeID == row.node.id }
     }
 
     private static func attention(_ rows: [PhoneHubAttention], for agent: PhoneHubAgentSummary) -> [PhoneHubAttention] {
@@ -355,7 +355,7 @@ private struct PhoneHubAgentHome: View {
         .buttonStyle(.bordered)
         .fixedSize()
         .accessibilityIdentifier("phoneHub.node.\(summary.source.id.uuidString).\(summary.node.id)")
-        Button { onOpen(summary.node.new_session_path) } label: {
+        Button { onOpen(summary.node.newSessionPath) } label: {
             Label("New conversation", systemImage: "square.and.pencil").lineLimit(1)
         }
         .buttonStyle(.borderedProminent)
@@ -543,7 +543,7 @@ private struct PhoneHubAgentCard: View {
                 .opacity(summary.isOnline ? 1 : 0.55)
                 Spacer(minLength: 8)
                 if summary.isOnline {
-                    Button { onOpen(summary.node.new_session_path) } label: {
+                    Button { onOpen(summary.node.newSessionPath) } label: {
                         Image(systemName: "square.and.pencil")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.accentColor)
@@ -618,7 +618,7 @@ private struct PhoneHubAgentCard: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Text(summary.node.sessions?.count_label ?? "")
+            Text(summary.node.sessions?.countLabel ?? "")
                 .font(OverviewStyle.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

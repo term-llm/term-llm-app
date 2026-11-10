@@ -16,11 +16,11 @@ final class MockSessionBrowser: HubSessionBrowsing, @unchecked Sendable {
 
     init(list: @escaping List,
          update: @escaping Update = { id, patch in
-             AgentSessionPatchResult(id: id, name: patch.name, short_title: patch.name, long_title: nil,
-                                     archived: patch.archived, pinned: patch.pinned, pin_order: nil)
+             AgentSessionPatchResult(id: id, name: patch.name, shortTitle: patch.name, longTitle: nil,
+                                     archived: patch.archived, pinned: patch.pinned, pinOrder: nil)
          },
          reorder: @escaping Reorder = { ids in
-             PinnedSessionOrder(pinned: ids.enumerated().map { .init(id: $0.element, pin_order: Int64($0.offset + 1)) })
+             PinnedSessionOrder(pinned: ids.enumerated().map { .init(id: $0.element, pinOrder: Int64($0.offset + 1)) })
          }) {
         self.list = list
         self.update = update
@@ -31,17 +31,17 @@ final class MockSessionBrowser: HubSessionBrowsing, @unchecked Sendable {
     var patches: [(String, AgentSessionPatch)] { lock.withLock { _patches } }
     var reorders: [[String]] { lock.withLock { _reorders } }
 
-    func list_sessions(node_id: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
+    func listSessions(nodeID: String, limit: Int, cursor: String?) async throws -> AgentSessionPage {
         lock.withLock { _cursors.append(cursor) }
         return try await list(cursor)
     }
-    func update_session(node_id: String, session_id: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
-        lock.withLock { _patches.append((session_id, patch)) }
-        return try await update(session_id, patch)
+    func updateSession(nodeID: String, sessionID: String, patch: AgentSessionPatch) async throws -> AgentSessionPatchResult {
+        lock.withLock { _patches.append((sessionID, patch)) }
+        return try await update(sessionID, patch)
     }
-    func reorder_pinned_sessions(node_id: String, session_ids: [String]) async throws -> PinnedSessionOrder {
-        lock.withLock { _reorders.append(session_ids) }
-        return try await reorder(session_ids)
+    func reorderPinnedSessions(nodeID: String, sessionIDs: [String]) async throws -> PinnedSessionOrder {
+        lock.withLock { _reorders.append(sessionIDs) }
+        return try await reorder(sessionIDs)
     }
 }
 
@@ -50,10 +50,10 @@ private enum Rows {
     static let now = Int64(1_793_270_000_000)
 
     static func entry(_ id: String, minutesAgo: Int64, pin: Int64? = nil, unseen: Bool = false) -> AgentSessionEntry {
-        AgentSessionEntry(id: id, number: nil, short_title: id.capitalized, pinned: pin != nil, pin_order: pin,
-                          last_message_at: now - minutesAgo * 60_000, message_count: 4,
-                          attention_store_instance_id: unseen ? "store-1" : nil, attention_seq: unseen ? 3 : nil,
-                          attention_unseen: unseen)
+        AgentSessionEntry(id: id, number: nil, shortTitle: id.capitalized, pinned: pin != nil, pinOrder: pin,
+                          lastMessageAt: now - minutesAgo * 60_000, messageCount: 4,
+                          attentionStoreInstanceID: unseen ? "store-1" : nil, attentionSeq: unseen ? 3 : nil,
+                          attentionUnseen: unseen)
     }
 
     static func entries(_ prefix: String, _ range: Range<Int>) -> [AgentSessionEntry] {
@@ -72,22 +72,22 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     }
 
     private func cached(_ id: String, running: Bool = false, at: Int) -> HubNodeSession {
-        HubNodeSession(id: id, number: nil, short_title: id.capitalized, long_title: nil, pinned: false,
-                       active_run: running, interaction_required: false, pending_interaction_count: nil,
-                       pending_interaction_kinds: nil, last_message_at: at, message_count: 3,
-                       resume_path: "/home/node/jarvis/chat/\(id)")
+        HubNodeSession(id: id, number: nil, shortTitle: id.capitalized, longTitle: nil, pinned: false,
+                       activeRun: running, interactionRequired: false, pendingInteractionCount: nil,
+                       pendingInteractionKinds: nil, lastMessageAt: at, messageCount: 3,
+                       resumePath: "/home/node/jarvis/chat/\(id)")
     }
 
     private func node(_ sessions: [HubNodeSession], countLabel: String = "214 conversations") -> HubNode {
         HubNode(id: "jarvis", name: "jarvis", source: "fixture", connection: "http", url: "http://10.0.0.1/",
-                base_path: "", proxy_path: "/home/node/jarvis/", new_session_path: "/home/node/jarvis/?new=1",
-                has_token: false,
-                status: HubNodeStatus(reachable: true, state: "ok", latency_ms: 1, version: nil, agent: nil,
+                basePath: "", proxyPath: "/home/node/jarvis/", newSessionPath: "/home/node/jarvis/?new=1",
+                hasToken: false,
+                status: HubNodeStatus(reachable: true, state: "ok", latencyMs: 1, version: nil, agent: nil,
                                       capabilities: nil, details: nil, error: nil),
-                sessions: HubNodeSessions(count_label: countLabel, has_more: true, active_count: nil,
-                                          input_required_count: nil, unseen_count: nil, attention_capability: nil,
-                                          attention_last_success_at: nil, active: sessions.filter { $0.active_run == true },
-                                          recent: sessions.filter { $0.active_run != true }, resume_path: nil),
+                sessions: HubNodeSessions(countLabel: countLabel, hasMore: true, activeCount: nil,
+                                          inputRequiredCount: nil, unseenCount: nil, attentionCapability: nil,
+                                          attentionLastSuccessAt: nil, active: sessions.filter { $0.activeRun == true },
+                                          recent: sessions.filter { $0.activeRun != true }, resumePath: nil),
                 diagnostics: nil)
     }
 
@@ -102,7 +102,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     private func workspace(_ connection: HubConnection, client: MockHubClient = MockHubClient(),
                            browser: MockSessionBrowser, nodes: [HubNode] = []) async -> HubSourceWorkspace {
         let rows = nodes
-        client.nodesResponse = { NodesResponse(nodes: rows, resolver_error: nil) }
+        client.nodesResponse = { NodesResponse(nodes: rows, resolverError: nil) }
         let store = HubStore(client: client, pollInterval: 999)
         let source = HubSourceWorkspace(connection: connection, store: store, sessions: browser)
         sources.append(source)
@@ -127,7 +127,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     func testFirstPaintUsesCachedRowsThenTheNodeOrder() async {
         let browser = MockSessionBrowser { _ in
             AgentSessionPage(sessions: [Rows.entry("pinned", minutesAgo: 900, pin: 1), Rows.entry("fresh", minutesAgo: 1),
-                                        Rows.entry("cached", minutesAgo: 30)], next_cursor: nil)
+                                        Rows.entry("cached", minutesAgo: 30)], nextCursor: nil)
         }
         let source = await workspace(connection(), browser: browser,
                                      nodes: [node([cached("cached", at: Int(now) - 1_800_000), cached("busy", running: true, at: Int(now))])])
@@ -145,8 +145,8 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     func testInfiniteScrollPrefetchesAppendsAndDedupes() async {
         let browser = MockSessionBrowser { cursor in
             cursor == nil
-                ? AgentSessionPage(sessions: Rows.entries("a", 0..<30), next_cursor: "c+1/=")
-                : AgentSessionPage(sessions: [Rows.entry("a29", minutesAgo: 290)] + Rows.entries("b", 30..<40), next_cursor: nil)
+                ? AgentSessionPage(sessions: Rows.entries("a", 0..<30), nextCursor: "c+1/=")
+                : AgentSessionPage(sessions: [Rows.entry("a29", minutesAgo: 290)] + Rows.entries("b", 30..<40), nextCursor: nil)
         }
         let model = PhoneHubAgentSessions(source: await workspace(connection(), browser: browser), nodeID: "jarvis")
         model.appeared()
@@ -166,7 +166,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     func testFailedPageOffersRetry() async {
         let attempts = Counter()
         let browser = MockSessionBrowser { cursor in
-            guard cursor != nil else { return AgentSessionPage(sessions: Rows.entries("a", 0..<30), next_cursor: "next") }
+            guard cursor != nil else { return AgentSessionPage(sessions: Rows.entries("a", 0..<30), nextCursor: "next") }
             if attempts.increment() == 1 { throw HubAPIError(status: 503, message: "Node unavailable") }
             return AgentSessionPage(sessions: Rows.entries("b", 30..<35))
         }
@@ -205,11 +205,11 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
             if cursor == "older" { return AgentSessionPage(sessions: Rows.entries("old", 100..<103)) }
             if generation.increment() == 1 {
                 return AgentSessionPage(sessions: [Rows.entry("keep", minutesAgo: 5), Rows.entry("gone", minutesAgo: 6),
-                                                   Rows.entry("tail", minutesAgo: 7)], next_cursor: "older")
+                                                   Rows.entry("tail", minutesAgo: 7)], nextCursor: "older")
             }
             // "gone" was archived elsewhere; "new" just started.
             return AgentSessionPage(sessions: [Rows.entry("new", minutesAgo: 0), Rows.entry("keep", minutesAgo: 5),
-                                               Rows.entry("tail", minutesAgo: 7)], next_cursor: "older")
+                                               Rows.entry("tail", minutesAgo: 7)], nextCursor: "older")
         }
         let model = PhoneHubAgentSessions(source: await workspace(connection(), browser: browser), nodeID: "jarvis")
         model.appeared()
@@ -228,8 +228,8 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
         let browser = MockSessionBrowser(list: { _ in
             AgentSessionPage(sessions: [Rows.entry("p", minutesAgo: 50, pin: 4), Rows.entry("x", minutesAgo: 1)])
         }, update: { id, patch in
-            AgentSessionPatchResult(id: id, name: nil, short_title: nil, long_title: nil, archived: false,
-                                    pinned: patch.pinned, pin_order: 9)
+            AgentSessionPatchResult(id: id, name: nil, shortTitle: nil, longTitle: nil, archived: false,
+                                    pinned: patch.pinned, pinOrder: 9)
         })
         let model = PhoneHubAgentSessions(source: await workspace(connection(), browser: browser), nodeID: "jarvis")
         model.appeared()
@@ -294,7 +294,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
             AgentSessionPage(sessions: [Rows.entry("a", minutesAgo: 1, pin: 1), Rows.entry("b", minutesAgo: 2, pin: 2),
                                         Rows.entry("c", minutesAgo: 3, pin: 5)])
         }, reorder: { ids in
-            PinnedSessionOrder(pinned: zip(ids, [1, 2, 5] as [Int64]).map { .init(id: $0.0, pin_order: $0.1) })
+            PinnedSessionOrder(pinned: zip(ids, [1, 2, 5] as [Int64]).map { .init(id: $0.0, pinOrder: $0.1) })
         })
         let model = PhoneHubAgentSessions(source: await workspace(connection(), browser: browser), nodeID: "jarvis")
         model.appeared()
@@ -320,7 +320,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
         model.markSeen("x")
         XCTAssertFalse(model.conversations.first?.unseen ?? true)
         await settle { !client.markSeenCalls.isEmpty }
-        XCTAssertEqual(client.markSeenCalls.first, AttentionSeenRequest(store_instance_id: "store-1", session_id: "x", attention_seq: 3))
+        XCTAssertEqual(client.markSeenCalls.first, AttentionSeenRequest(storeInstanceID: "store-1", sessionID: "x", attentionSeq: 3))
     }
 
     func testLinkedDevicesCannotEditMetadata() async {
@@ -383,7 +383,7 @@ final class PhoneHubAgentSessionsTests: XCTestCase {
     }
 
     func testEntryTitlesFallBackAndSeenNeedsAnAttentionItem() {
-        let named = PhoneHubAgentConversation(entry: AgentSessionEntry(id: "1", number: 12, short_title: " ", long_title: "Long"))
+        let named = PhoneHubAgentConversation(entry: AgentSessionEntry(id: "1", number: 12, shortTitle: " ", longTitle: "Long"))
         XCTAssertEqual(named.title, "Long")
         let untitled = PhoneHubAgentConversation(entry: AgentSessionEntry(id: "2", number: 12))
         XCTAssertEqual(untitled.title, "Conversation 12")
@@ -408,28 +408,28 @@ final class HubSessionBrowsingClientTests: XCTestCase {
     }
 
     private func hub(_ transport: Transport) -> HubClient {
-        HubClient(base_url: URL(string: "https://hub.example/home/")!, cookie_source: { [] }, transport: transport)
+        HubClient(baseURL: URL(string: "https://hub.example/home/")!, cookieSource: { [] }, transport: transport)
     }
 
     private func direct(_ transport: Transport) -> DirectNodeClient {
-        DirectNodeClient(base_url: URL(string: "https://node.example/ui/")!, cookie_source: { [] },
-                         bearer_source: { nil }, transport: transport)
+        DirectNodeClient(baseURL: URL(string: "https://node.example/ui/")!, cookieSource: { [] },
+                         bearerSource: { nil }, transport: transport)
     }
 
     func testHubListsThroughTheNodeProxyWithAStrictlyEncodedCursor() async throws {
         let transport = Transport(body: #"{"sessions":[{"id":"s1","short_title":"Kyoto","pinned":true,"pin_order":2}],"next_cursor":"n2"}"#)
-        let page = try await hub(transport).list_sessions(node_id: "jarvis", limit: 500, cursor: "a+b/c=")
+        let page = try await hub(transport).listSessions(nodeID: "jarvis", limit: 500, cursor: "a+b/c=")
         let url = try XCTUnwrap(transport.requests.first?.url)
         XCTAssertEqual(url.path, "/home/node/jarvis/v1/sessions")
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery,
                        "scope=all&limit=100&cursor=a%2Bb%2Fc%3D")
-        XCTAssertEqual(page.sessions.first?.pin_order, 2)
-        XCTAssertEqual(page.next_cursor, "n2")
+        XCTAssertEqual(page.sessions.first?.pinOrder, 2)
+        XCTAssertEqual(page.nextCursor, "n2")
     }
 
     func testHubPatchSendsOriginAndOnlyTheChangedField() async throws {
         let transport = Transport(body: #"{"id":"20260101-120000-ab","pinned":true,"pin_order":3}"#)
-        let result = try await hub(transport).update_session(node_id: "jarvis", session_id: "20260101-120000-ab",
+        let result = try await hub(transport).updateSession(nodeID: "jarvis", sessionID: "20260101-120000-ab",
                                                              patch: AgentSessionPatch(pinned: true))
         let request = try XCTUnwrap(transport.requests.first)
         XCTAssertEqual(request.httpMethod, "PATCH")
@@ -437,12 +437,12 @@ final class HubSessionBrowsingClientTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://hub.example")
         let body = try JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Bool]
         XCTAssertEqual(body, ["pinned": true])
-        XCTAssertEqual(result.pin_order, 3)
+        XCTAssertEqual(result.pinOrder, 3)
     }
 
     func testDirectNodeReordersPinsAtItsOwnMount() async throws {
         let transport = Transport(body: #"{"pinned":[{"id":"b","pin_order":1},{"id":"a","pin_order":2}]}"#)
-        let order = try await direct(transport).reorder_pinned_sessions(node_id: "direct-node", session_ids: ["b", "a"])
+        let order = try await direct(transport).reorderPinnedSessions(nodeID: "direct-node", sessionIDs: ["b", "a"])
         let request = try XCTUnwrap(transport.requests.first)
         XCTAssertEqual(request.httpMethod, "PATCH")
         XCTAssertEqual(request.url?.path, "/ui/v1/sessions/pinned-order")
@@ -453,7 +453,7 @@ final class HubSessionBrowsingClientTests: XCTestCase {
 
     func testDirectNodeListsEveryProjectWithoutACursorOnTheFirstPage() async throws {
         let transport = Transport(body: #"{"sessions":[]}"#)
-        _ = try await direct(transport).list_sessions(node_id: "direct-node", limit: 30, cursor: nil)
+        _ = try await direct(transport).listSessions(nodeID: "direct-node", limit: 30, cursor: nil)
         let url = try XCTUnwrap(transport.requests.first?.url)
         XCTAssertEqual(url.path, "/ui/v1/sessions")
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery, "scope=all&limit=30")
@@ -463,7 +463,7 @@ final class HubSessionBrowsingClientTests: XCTestCase {
         let transport = Transport(body: "{}")
         for id in ["../x", "a/b", "", "..", "a?b"] {
             do {
-                _ = try await hub(transport).update_session(node_id: "jarvis", session_id: id, patch: AgentSessionPatch(archived: true))
+                _ = try await hub(transport).updateSession(nodeID: "jarvis", sessionID: id, patch: AgentSessionPatch(archived: true))
                 XCTFail("\(id) should be rejected")
             } catch {}
         }
