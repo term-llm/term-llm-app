@@ -97,7 +97,7 @@ public final class SystemAX: AXBackend {
         self.observerCalls = observerCalls
     }
     private func raw(_ ref: UIElementRef) -> AXUIElement {
-        let element = unsafeBitCast(ref.object, to: AXUIElement.self)
+        let element = unsafeDowncast(ref.object, to: AXUIElement.self)
         if let messagingTimeout { calls.timeout(element, messagingTimeout) }
         return element
     }
@@ -155,13 +155,13 @@ public final class SystemAX: AXBackend {
         let type = CFGetTypeID(cf)
         if type == CFStringGetTypeID() { return input as! String }
         if type == AXUIElementGetTypeID() { return UIElementRef(input as AnyObject) }
-        if type == CFBooleanGetTypeID() { return CFBooleanGetValue(unsafeBitCast(cf, to: CFBoolean.self)) }
+        if type == CFBooleanGetTypeID() { return CFBooleanGetValue(unsafeDowncast(cf, to: CFBoolean.self)) }
         if type == CFNumberGetTypeID() {
-            let number = unsafeBitCast(cf, to: CFNumber.self)
+            let number = unsafeDowncast(cf, to: CFNumber.self)
             return CFNumberIsFloatType(number) ? (input as! NSNumber).doubleValue as Any : (input as! NSNumber).intValue as Any
         }
         if type == AXValueGetTypeID() {
-            let ax = unsafeBitCast(cf, to: AXValue.self)
+            let ax = unsafeDowncast(cf, to: AXValue.self)
             switch AXValueGetType(ax) {
             case .cgPoint: var v = CGPoint.zero; return AXValueGetValue(ax, .cgPoint, &v) ? v : nil
             case .cgSize: var v = CGSize.zero; return AXValueGetValue(ax, .cgSize, &v) ? v : nil

@@ -2,11 +2,11 @@ import Foundation
 
 /// Table-driven argv contract, ported from macos-harness tools.py (43d9edf).
 /// Validation of numeric values belongs to the executor, not the argv parser.
-public struct ToolDefinition {
+public struct ToolDefinition: Sendable {
     public let name: String
     public var params: [String] = []
     public var bare: [String] = []
-    public var defaults: [String: Any] = [:]
+    public var defaults: [String: any Sendable] = [:]
     public var description: String = ""
     public var example: String = ""
     public var hidden: [String] = []
@@ -223,7 +223,7 @@ public enum ToolParser {
             default: break
             }
         }
-        return ParsedToolCall(name: name, arguments: tool.defaults.merging(args) { _, new in new })
+        return ParsedToolCall(name: name, arguments: (tool.defaults as [String: Any]).merging(args) { _, new in new })
     }
     public static func help(_ asked: String? = nil) throws -> String {
         guard let asked else {

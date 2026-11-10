@@ -10,6 +10,8 @@ public enum ComputerUseRuntime {
         .accessibility: "Accessibility", .screenRecording: "Screen Recording",
         .inputMonitoring: "Input Monitoring", .postEvents: "Event Posting",
     ]
+    /// Call on the main thread: it becomes the helper's AppKit loop.
+    @MainActor
     public static func run() -> Never {
         AX.backend = SystemAX()
         let dependencies = HarnessExecutor.Dependencies()

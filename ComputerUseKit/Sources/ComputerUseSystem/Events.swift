@@ -1,6 +1,7 @@
 import AppKit
 import ComputerUseCore
 import Foundation
+import os
 
 /// Input built for one window and posted to one process. Nothing here reaches the
 /// system event stream: the real pointer and the person's keyboard focus stay put.
@@ -65,10 +66,9 @@ public enum Events {
         if delay != 0 { sleep(delay) }
     }
 }
-private final class EventNumbers {
-    private let lock = NSLock()
-    private var number = 0
-    func next() -> Int { lock.lock(); defer { lock.unlock() }; number += 1; return number }
+private final class EventNumbers: Sendable {
+    private let number = OSAllocatedUnfairLock(initialState: 0)
+    func next() -> Int { number.withLock { $0 += 1; return $0 } }
 }
 
 /// One lookup and one warning per missing private call. A missing call disables

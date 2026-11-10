@@ -19,7 +19,7 @@ public struct HelperConfiguration {
     /// Running count is aggregated here; ActivityBanner owns the same 3 s grace.
     /// Called under the state lock: enqueue UI work, never wait or reenter server.
     public var onWorking: (Bool) -> Void = { _ in }
-    public var installStop: (@escaping () -> Void) -> Void = { _ in }
+    public var installStop: (@escaping @Sendable () -> Void) -> Void = { _ in }
     public var allow: (String) throws -> Void
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -460,9 +460,12 @@ public final class HelperServer {
 }
 
 public enum HelperMain {
+    /// Call on the main thread: it becomes the AppKit loop.
+    @MainActor
     public static func run(executor: ToolExecutor) -> Never {
         run(executor: executor, configuration: HelperConfiguration())
     }
+    @MainActor
     public static func run(executor: ToolExecutor, configuration: HelperConfiguration) -> Never {
         let server = HelperServer(executor: executor, configuration: configuration)
         server.onShutdown = { MainThread.stop() }

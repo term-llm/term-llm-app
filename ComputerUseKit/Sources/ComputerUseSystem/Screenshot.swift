@@ -15,7 +15,8 @@ public final class Screenshot {
     public static let retryAfter: TimeInterval = 60
     public static let captureTool = "/usr/sbin/screencapture"
     public static let phases = ["Capture Screenshot", "Write Screenshot File"]
-    public typealias Source = (UInt32, [UInt32]) -> CGImage?
+    /// Called on a worker thread, which a hung capture may keep.
+    public typealias Source = @Sendable (UInt32, [UInt32]) -> CGImage?
     public typealias Runner = (String, [String], TimeInterval) throws -> Void
     private static let log = Logger(subsystem: "com.termllm.app.computeruse", category: "screenshot")
     private let folder: URL
@@ -115,13 +116,16 @@ public final class Screenshot {
         for (index, source) in sources.enumerated() {
             cooldownLock.lock(); let until = silentUntil[index] ?? 0; cooldownLock.unlock()
             if uptime() < until { continue }
-            let result = ImageAnswer()
+            let result = OSAllocatedUnfairLock<CGImage?>(initialState: nil)
             let done = DispatchSemaphore(value: 0)
             // A capture can stay silent 40 s and then give nothing (measured).
             // Never hang a state read on its picture: stop waiting on the worker.
-            DispatchQueue.global().async { result.set(source(windowID, extraIDs)); done.signal() }
+            DispatchQueue.global().async {
+                let image = source(windowID, extraIDs)
+                result.withLock { $0 = image }; done.signal()
+            }
             let answered = done.wait(timeout: .now() + Self.captureTimeout) == .success
-            if let image = result.get() { return image }
+            if let image = result.withLock({ $0 }) { return image }
             // An answered nil (e.g. a minimized window) is tried next time. Only
             // a still-hanging call is left alone for a while.
             if !answered {
@@ -176,10 +180,4 @@ public final class Screenshot {
         }
     }
     private static func modified(_ url: URL) -> Date { (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantFuture }
-}
-private final class ImageAnswer {
-    private let lock = NSLock()
-    private var image: CGImage?
-    func set(_ image: CGImage?) { lock.lock(); defer { lock.unlock() }; self.image = image }
-    func get() -> CGImage? { lock.lock(); defer { lock.unlock() }; return image }
 }

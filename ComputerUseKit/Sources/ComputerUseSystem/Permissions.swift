@@ -11,7 +11,7 @@ public final class Permissions {
     public static let poll = 0.25
     public static let giveUp = 10.0 // Stop this long before the client; say "call again".
     public static let toolLook = 1.0
-    public enum Kind: String, CaseIterable {
+    public enum Kind: String, CaseIterable, Sendable {
         case accessibility, screenRecording = "screen_recording", postEvents = "post_events", inputMonitoring = "input_monitoring"
         public var pane: String {
             switch self {
@@ -41,7 +41,8 @@ public final class Permissions {
         }
         public var request: (Kind) -> Void = { kind in
             switch kind {
-            case .accessibility: _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+            // The key is kAXTrustedCheckOptionPrompt's value: Swift 6 imports that C global as shared mutable state.
+            case .accessibility: _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             case .screenRecording: _ = CGRequestScreenCaptureAccess()
             case .postEvents: _ = CGRequestPostEventAccess()
             case .inputMonitoring: _ = CGRequestListenEventAccess()

@@ -1,6 +1,7 @@
 import ComputerUseCore
 import Darwin
 import Foundation
+import os
 import XCTest
 
 @testable import ComputerUseHelper
@@ -323,34 +324,16 @@ private final class ProcessTable {
     init(_ records: [pid_t: ProcessIdentity]) { self.records = records }
     func get(_ pid: pid_t) -> ProcessIdentity? { records[pid] }
 }
-private final class LockedBool {
-    private let lock = NSLock()
-    private var stored: Bool
-    init(_ value: Bool) { stored = value }
+private final class LockedBool: Sendable {
+    private let stored: OSAllocatedUnfairLock<Bool>
+    init(_ value: Bool) { stored = OSAllocatedUnfairLock(initialState: value) }
     var value: Bool {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return stored
-        }
-        set {
-            lock.lock()
-            stored = newValue
-            lock.unlock()
-        }
+        get { stored.withLock { $0 } }
+        set { stored.withLock { $0 = newValue } }
     }
 }
-private final class LockedArray {
-    private let lock = NSLock()
-    private var stored: [Int] = []
-    func append(_ value: Int) {
-        lock.lock()
-        stored.append(value)
-        lock.unlock()
-    }
-    var values: [Int] {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
-    }
+private final class LockedArray: Sendable {
+    private let stored = OSAllocatedUnfairLock<[Int]>(initialState: [])
+    func append(_ value: Int) { stored.withLock { $0.append(value) } }
+    var values: [Int] { stored.withLock { $0 } }
 }

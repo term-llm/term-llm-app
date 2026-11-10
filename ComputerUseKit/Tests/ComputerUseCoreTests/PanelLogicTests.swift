@@ -1,3 +1,4 @@
+import os
 import XCTest
 
 @testable import ComputerUseCore
@@ -5,39 +6,56 @@ import XCTest
 final class PanelLogicTests: XCTestCase {
     func testAnswerIsOnceAndByIdentity() {
         let queue = AskQueue()
-        var answers: [String] = []
-        let a = Ask(title: "Same", choices: ["Yes", "No"]) { answers.append($0) }
-        let b = Ask(title: "Same", choices: ["Yes"]) { answers.append("b:" + $0) }
+        let answers = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let a = Ask(title: "Same", choices: ["Yes", "No"]) { choice in answers.withLock { $0.append(choice) } }
+        let b = Ask(title: "Same", choices: ["Yes"]) { choice in answers.withLock { $0.append("b:" + choice) } }
         queue.append(a)
         queue.append(b)
         queue.answer(a, choice: "invalid")
         XCTAssertEqual(queue.asks.count, 2)
         queue.answer(a, choice: "Yes")
         queue.answer(a, choice: "No")
-        XCTAssertEqual(answers, ["Yes"])
+        XCTAssertEqual(answers.withLock { $0 }, ["Yes"])
         XCTAssertTrue(queue.asks[0] === b)
     }
     func testWithdrawalNeverAnswersAndRemovesMatchingTitles() {
         let queue = AskQueue()
-        var answers = 0
-        queue.append(Ask(title: "a", choices: ["Yes"]) { _ in answers += 1 })
-        queue.append(Ask(title: "b", choices: []) { _ in answers += 1 })
-        queue.append(Ask(title: "a", choices: []) { _ in answers += 1 })
+        let answers = OSAllocatedUnfairLock(initialState: 0)
+        queue.append(Ask(title: "a", choices: ["Yes"]) { _ in answers.withLock { $0 += 1 } })
+        queue.append(Ask(title: "b", choices: []) { _ in answers.withLock { $0 += 1 } })
+        queue.append(Ask(title: "a", choices: []) { _ in answers.withLock { $0 += 1 } })
         queue.withdraw(title: "a")
         XCTAssertEqual(queue.asks.map(\.title), ["b"])
-        XCTAssertEqual(answers, 0)
+        XCTAssertEqual(answers.withLock { $0 }, 0)
     }
     func testReentrantAnswerRemovesBeforeCallback() {
         let queue = AskQueue()
-        var count = 0
-        var a: Ask!
-        a = Ask(title: "a", choices: ["yes"]) { _ in
-            count += 1
-            queue.answer(a, choice: "yes")
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        let asked = OSAllocatedUnfairLock<Ask?>(initialState: nil)
+        let a = Ask(title: "a", choices: ["yes"]) { _ in
+            count.withLock { $0 += 1 }
+            if let a = asked.withLock({ $0 }) { queue.answer(a, choice: "yes") }
         }
+        asked.withLock { $0 = a }
         queue.append(a)
         queue.answer(a, choice: "yes")
-        XCTAssertEqual(count, 1)
+        asked.withLock { $0 = nil } // Break the test callback's reference cycle.
+        XCTAssertEqual(count.withLock { $0 }, 1)
+    }
+    func testConcurrentAnswersInvokeCallbackOnceOutsideTheQueueLock() {
+        let queue = AskQueue()
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        let ask = Ask(title: "Concurrent", choices: ["yes"]) { _ in
+            count.withLock { $0 += 1 }
+            // This would deadlock if answer invoked the callback under its lock.
+            queue.append(Ask(title: "Next", choices: [], onAnswer: { _ in }))
+        }
+        queue.append(ask)
+        DispatchQueue.concurrentPerform(iterations: 100) { _ in
+            queue.answer(ask, choice: "yes")
+        }
+        XCTAssertEqual(count.withLock { $0 }, 1)
+        XCTAssertEqual(queue.asks.map(\.title), ["Next"])
     }
     func testPanelOrigin() {
         XCTAssertEqual(PanelGeometry.width, 340)

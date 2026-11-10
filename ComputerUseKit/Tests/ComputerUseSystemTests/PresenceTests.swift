@@ -1,5 +1,6 @@
 import ComputerUseCore
 import XCTest
+import os
 
 @testable import ComputerUseSystem
 
@@ -88,24 +89,24 @@ final class PresenceTests: XCTestCase {
     }
     func testAsksAreQueuedWithoutWaitingAndWithdrawnUnanswered() {
         var pending: [() -> Void] = []
-        var answers: [String] = []
+        let answers = OSAllocatedUnfairLock<[String]>(initialState: [])
         let questions = AskQueue()
         let p = Presence(
             send: { _ in }, schedule: { pending.append($0) }, ask: { questions.append($0) },
             withdraw: { questions.withdraw(title: $0) })
-        XCTAssertTrue(p.ask(title: "a", choices: ["yes"]) { answers.append($0) })
+        XCTAssertTrue(p.ask(title: "a", choices: ["yes"]) { choice in answers.withLock { $0.append(choice) } })
         XCTAssertTrue(questions.asks.isEmpty)
         pending.removeFirst()()
         let ask = questions.asks[0]
         questions.answer(ask, choice: "yes")
         questions.answer(ask, choice: "yes")
-        XCTAssertEqual(answers, ["yes"])
-        p.ask(title: "b", choices: ["yes"]) { answers.append($0) }
+        XCTAssertEqual(answers.withLock { $0 }, ["yes"])
+        p.ask(title: "b", choices: ["yes"]) { choice in answers.withLock { $0.append(choice) } }
         pending.removeFirst()()
         p.withdraw(title: "b")
         pending.removeFirst()()
         XCTAssertTrue(questions.asks.isEmpty)
-        XCTAssertEqual(answers, ["yes"])
+        XCTAssertEqual(answers.withLock { $0 }, ["yes"])
     }
     func testNilWindowAndLiveViewAreNoOpsAndInvalidInputsDoNotReachDrawing() {
         var count = 0

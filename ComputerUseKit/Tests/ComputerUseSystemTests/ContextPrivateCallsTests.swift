@@ -1,10 +1,20 @@
 import AppKit
+import os
 import XCTest
 @testable import ComputerUseSystem
 
 // C-compatible fakes for dlsym boundaries: never call the window server.
-private var privateTrace: [String] = []
-private var privateStatus: Int32 = 0
+// C function pointers cannot capture, so the fakes record into this global.
+private struct PrivateCalls: Sendable { var trace: [String] = [], status: Int32 = 0 }
+private let privateCalls = OSAllocatedUnfairLock(initialState: PrivateCalls())
+private var privateTrace: [String] {
+    get { privateCalls.withLock { $0.trace } }
+    set { privateCalls.withLock { $0.trace = newValue } }
+}
+private var privateStatus: Int32 {
+    get { privateCalls.withLock { $0.status } }
+    set { privateCalls.withLock { $0.status = newValue } }
+}
 private let getFront: @convention(c) (UnsafeMutableRawPointer) -> Int32 = { pointer in pointer.storeBytes(of: UInt64(123), as: UInt64.self); return 0 }
 private let getPID: @convention(c) (UnsafeRawPointer, UnsafeMutablePointer<pid_t>) -> Int32 = { number, pid in
     privateTrace.append("pid:\(number.load(as: UInt64.self))"); pid.pointee = 77; return 0

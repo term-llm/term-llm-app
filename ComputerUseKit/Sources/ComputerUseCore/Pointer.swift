@@ -24,7 +24,7 @@ public enum Pointer {
     public static let margin = 20.0, samples = 24, stretch = 0.38, squash = 0.18
     public static let tiltMax = 76.0, thinMax = 1.5, thinSpeed = 3000.0, tailTime = 1.4,
         frame = 1.0 / 60
-    public struct Shape: Equatable {
+    public struct Shape: Equatable, Sendable {
         public var a: Double, sx: Double, sy: Double, b: Double
         public init(a: Double = 0, sx: Double = 1, sy: Double = 1, b: Double = 0) {
             self.a = a

@@ -1,14 +1,16 @@
 import Foundation
+import os
 
 /// One question to the person. Identity, not equal text, controls answering once.
-public final class Ask {
+/// Asked from a worker; the panel answers it on the main thread.
+public final class Ask: Sendable {
     public let title: String
     public let subtitle: String?
     public let choices: [String]
-    public let onAnswer: (String) -> Void
+    public let onAnswer: @Sendable (String) -> Void
     public init(
         title: String, subtitle: String? = nil, choices: [String],
-        onAnswer: @escaping (String) -> Void
+        onAnswer: @escaping @Sendable (String) -> Void
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -17,20 +19,25 @@ public final class Ask {
     }
 }
 
-/// Waiting questions, the first on screen. The caller serializes access (main
-/// thread in the helper). A question is answered once, even with reentrant UI.
-public final class AskQueue {
-    public private(set) var asks: [Ask] = []
+/// Waiting questions, the first on screen (used on the main thread in the helper).
+/// A question is answered once, even with reentrant UI.
+public final class AskQueue: Sendable {
+    private let waiting = OSAllocatedUnfairLock<[Ask]>(initialState: [])
+    public var asks: [Ask] { waiting.withLock { $0 } }
     public init() {}
-    public func append(_ ask: Ask) { asks.append(ask) }
-    public func withdraw(title: String) { asks.removeAll { $0.title == title } }
+    public func append(_ ask: Ask) { waiting.withLock { $0.append(ask) } }
+    public func withdraw(title: String) { waiting.withLock { $0.removeAll { $0.title == title } } }
     public func answer(_ ask: Ask, choice: String) {
-        guard let index = asks.firstIndex(where: { $0 === ask }), ask.choices.contains(choice)
-        else {
-            return
+        let removed = waiting.withLock { asks -> Bool in
+            guard let index = asks.firstIndex(where: { $0 === ask }), ask.choices.contains(choice)
+            else {
+                return false
+            }
+            asks.remove(at: index)
+            return true
         }
-        asks.remove(at: index)
-        ask.onAnswer(choice)
+        // Outside the lock: the answer may append, withdraw or answer again.
+        if removed { ask.onAnswer(choice) }
     }
 }
 

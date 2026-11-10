@@ -2,6 +2,7 @@ import ComputerUseCore
 import Foundation
 import ImageIO
 import XCTest
+import os
 @testable import ComputerUseSystem
 
 final class ScreenshotTests: XCTestCase {
@@ -106,10 +107,10 @@ final class ScreenshotTests: XCTestCase {
         Screenshot(folder: folder.appendingPathComponent("absent")).cleanup()
     }
     func testNoImageFailsBeforeAskingForExtras() {
-        var asked: [UInt32] = []
-        let screenshot = screenshot(sources: [{ id, extra in asked.append(id); XCTAssertTrue(extra.isEmpty); return nil }])
+        let asked = OSAllocatedUnfairLock<[UInt32]>(initialState: [])
+        let screenshot = screenshot(sources: [{ id, extra in asked.withLock { $0.append(id) }; XCTAssertTrue(extra.isEmpty); return nil }])
         assertHarnessError("Taking the screenshot failed.") { _ = try screenshot.capture(fixtureWindow(), extras: [(9, .zero)]) }
-        XCTAssertEqual(asked, [7])
+        XCTAssertEqual(asked.withLock { $0 }, [7])
     }
     func testMenuCompositionAndPixelMapping() throws {
         let images = [UInt32(7): fakeImage(), UInt32(9): fakeImage(20, 40)]
@@ -124,24 +125,24 @@ final class ScreenshotTests: XCTestCase {
     }
     func testHungSourceTimesOutAndIsLeftAloneWhileFallbackWorks() throws {
         let release = DispatchSemaphore(value: 0)
-        var calls = 0
-        let screenshot = screenshot(sources: [{ _, _ in calls += 1; release.wait(); return nil }, { _, _ in fakeImage() }])
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let screenshot = screenshot(sources: [{ _, _ in calls.withLock { $0 += 1 }; release.wait(); return nil }, { _, _ in fakeImage() }])
         let start = ProcessInfo.processInfo.systemUptime
         defer { release.signal() }
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 3)
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
-        XCTAssertEqual(calls, 1); XCTAssertEqual(Screenshot.captureTimeout, 2); XCTAssertEqual(Screenshot.retryAfter, 60)
+        XCTAssertEqual(calls.withLock { $0 }, 1); XCTAssertEqual(Screenshot.captureTimeout, 2); XCTAssertEqual(Screenshot.retryAfter, 60)
     }
     func testAnsweredNilRetriesNextTimeAndSourcesStayInOrder() throws {
-        var asked: [String] = []
-        let screenshot = screenshot(sources: [{ _, _ in asked.append("first"); return nil }, { _, _ in asked.append("second"); return fakeImage() }])
+        let asked = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let screenshot = screenshot(sources: [{ _, _ in asked.withLock { $0.append("first") }; return nil }, { _, _ in asked.withLock { $0.append("second") }; return fakeImage() }])
         _ = try screenshot.capture(fixtureWindow()); _ = try screenshot.capture(fixtureWindow())
-        XCTAssertEqual(asked, ["first", "second", "first", "second"])
+        XCTAssertEqual(asked.withLock { $0 }, ["first", "second", "first", "second"])
     }
     func testOneFailedImageDoesNotCostNextRead() throws {
-        var gives: [CGImage?] = [nil, fakeImage()]
-        let screenshot = screenshot(sources: [{ _, _ in gives.removeFirst() }])
+        let gives = OSAllocatedUnfairLock<[CGImage?]>(initialState: [nil, fakeImage()])
+        let screenshot = screenshot(sources: [{ _, _ in gives.withLock { $0.removeFirst() } }])
         assertHarnessError("Taking the screenshot failed.") { _ = try screenshot.capture(fixtureWindow()) }
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
     }

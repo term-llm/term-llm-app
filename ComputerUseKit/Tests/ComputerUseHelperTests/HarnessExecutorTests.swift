@@ -790,6 +790,7 @@ final class HarnessExecutorTests: XCTestCase {
         XCTAssertTrue(executor.appSessions(agent)[0].cancel())
     }
     func testAgentCollectionsMutateAtomicallyAcrossAppAndPanelWorkers() {
+        let agent = agent!
         DispatchQueue.concurrentPerform(iterations: 500) { index in
             agent.denied.insert("app-\(index)")
             agent.instructed.insert("bundle-\(index)")

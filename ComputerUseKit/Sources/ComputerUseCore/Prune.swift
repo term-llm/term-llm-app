@@ -153,11 +153,11 @@ public enum Prune {
         }
         _ = visit(root); return root
     }
-    public static let passes: [(name: String, run: (Node, Context) -> Node)] = [
+    public static let passes: [(name: String, run: @Sendable (Node, Context) -> Node)] = [
         ("filterActions", { each($0, $1, filterActions) }),
-        ("associateTitles", associateTitles),
+        ("associateTitles", { associateTitles($0, $1) }),
         ("flattenIntoSelectable", { each($0, $1, flattenIntoSelectable) }),
-        ("flattenRedundantHierarchy", flattenRedundantHierarchy),
+        ("flattenRedundantHierarchy", { flattenRedundantHierarchy($0, $1) }),
         ("mergeSingleItemGroups", { each($0, $1, mergeSingleItemGroups) }),
         ("pruneNonDescriptive", { each($0, $1, pruneNonDescriptive) }),
         ("pruneEmptyDisabled", { each($0, $1, pruneEmptyDisabled) }),

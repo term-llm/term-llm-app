@@ -1,6 +1,7 @@
 import CoreGraphics
 import Darwin
 import Foundation
+import os
 
 // The wire between `term-llm-computer` and the helper (macos-harness protocol.py):
 // one frame is a 4-byte little-endian length, then UTF-8 JSON-RPC. Envelopes and
@@ -161,15 +162,14 @@ public enum Wire {
     }
 }
 
-final class Counter: @unchecked Sendable {
-    private var value: Int64 = 0
-    private let lock = NSLock()
+final class Counter: Sendable {
+    private let value = OSAllocatedUnfairLock<Int64>(initialState: 0)
 
     func next() -> Int64 {
-        lock.lock()
-        defer { lock.unlock() }
-        value += 1
-        return value
+        value.withLock {
+            $0 += 1
+            return $0
+        }
     }
 }
 

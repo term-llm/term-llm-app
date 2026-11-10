@@ -96,7 +96,8 @@ public struct StubToolExecutor: ToolExecutor {
 
 /// Arrival-ordered lock with cancellable waiters. A cancelled ticket is removed,
 /// not left at the head of the queue where it would stall every later caller.
-public final class AppFIFO {
+// Unchecked: `tickets` and `busy` are only read or written while holding `condition`.
+public final class AppFIFO: @unchecked Sendable {
     private let condition = NSCondition()
     private var tickets: [UUID] = []
     private var busy = false
