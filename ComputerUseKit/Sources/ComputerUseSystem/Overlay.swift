@@ -5,10 +5,11 @@ import QuartzCore
 /// In-process replacement for upstream's datagram drawing process. AppKit work is
 /// confined to the helper's main thread; Core Animation plays sampled pointer
 /// spring/press/fade frames independently while tool workers are busy.
+@MainActor
 public final class Overlay {
-    public static let shared = Overlay()
-    public static let accent = NSColor(srgbRed: 1, green: 127.0 / 255, blue: 39.0 / 255, alpha: 1)
-    public static func enabled(environment: [String: String] = ProcessInfo.processInfo.environment)
+    public nonisolated static let shared = Overlay()
+    public nonisolated static let accent = NSColor(srgbRed: 1, green: 127.0 / 255, blue: 39.0 / 255, alpha: 1)
+    public nonisolated static func enabled(environment: [String: String] = ProcessInfo.processInfo.environment)
         -> Bool
     {
         !["0", "false", "no", "off"].contains(
@@ -20,27 +21,22 @@ public final class Overlay {
     private var pollTimer: Timer?, expiry: Timer?
     private var observers: [NSObjectProtocol] = []
     private var screens: [CGRect] = [], area = CGRect.zero
-    public init() {}
-    deinit {
-        let panels = [pointer, flash, halo]
-        let timers = [pollTimer, expiry]
-        let observers = observers
-        let cleanup = {
-            for timer in timers { timer?.invalidate() }
-            for panel in panels { panel?.orderOut(nil) }
-            for observer in observers {
-                NSWorkspace.shared.notificationCenter.removeObserver(observer)
-            }
+    public nonisolated init() {}
+    // Runs on the main thread; a release elsewhere hops there first, as the windows need.
+    isolated deinit {
+        for timer in [pollTimer, expiry] { timer?.invalidate() }
+        for panel in [pointer, flash, halo] { panel?.orderOut(nil) }
+        for observer in observers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
-        if Thread.isMainThread { cleanup() } else { DispatchQueue.main.async(execute: cleanup) }
     }
-    public func send(_ command: OverlayCommand) {
+    public nonisolated func send(_ command: OverlayCommand) {
         guard Self.enabled(), command.valid else { return }
-        MainThread.onMain {
+        MainThread.onMain { [self] in
             // MainThread's no-runloop fallback is useful for pure tests, but must
             // never construct an AppKit window on a test/worker thread.
             guard Thread.isMainThread, MainThread.isRunning else { return }
-            self.command(command)
+            MainActor.assumeIsolated { self.command(command) }
         }
     }
     private func command(_ command: OverlayCommand) {
@@ -66,17 +62,22 @@ public final class Overlay {
         restack()
         marks(now: now)
         pollTimer?.invalidate()
+        // Both timers are scheduled on the main run loop, so they fire on the main thread.
         pollTimer = Timer(timeInterval: OverlayGeometry.poll, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let now = ProcessInfo.processInfo.systemUptime
-            self.restack()
-            self.marks(now: now)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                self.restack()
+                self.marks(now: now)
+            }
         }
         RunLoop.main.add(pollTimer!, forMode: .common)
         expiry?.invalidate()
         let remaining = max(
             0.01, scene.track.touched + scene.track.idle + OverlayGeometry.fade - now)
-        expiry = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in self?.hide() }
+        expiry = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hide() }
+        }
         RunLoop.main.add(expiry!, forMode: .common)
     }
     private static func panel() -> NSPanel {
@@ -133,7 +134,7 @@ public final class Overlay {
             observers.append(
                 NSWorkspace.shared.notificationCenter.addObserver(
                     forName: name, object: nil, queue: .main
-                ) { [weak self] _ in self?.restack() })
+                ) { [weak self] _ in MainActor.assumeIsolated { self?.restack() } })  // queue: .main
         }
     }
     private func animate(now: Double) {
@@ -190,7 +191,7 @@ public final class Overlay {
         picture?.layer?.add(sharpen, forKey: "sharpen")
         CATransaction.commit()
     }
-    public static func transform(shape: Pointer.Shape, press: Double) -> CATransform3D {
+    public nonisolated static func transform(shape: Pointer.Shape, press: Double) -> CATransform3D {
         var t = CGAffineTransform(translationX: Pointer.pivot.x, y: Pointer.pivot.y)
         t = t.rotated(by: shape.a * .pi / 180).scaledBy(x: shape.sx, y: shape.sy).rotated(
             by: shape.b * .pi / 180)
@@ -270,7 +271,7 @@ public final class Overlay {
             CATransaction.commit()
         }
     }
-    private static func windows() -> [OverlayGeometry.Window] {
+    private nonisolated static func windows() -> [OverlayGeometry.Window] {
         let rows =
             CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]]
             ?? []
@@ -305,7 +306,7 @@ public final class Overlay {
     }
     /// Paint × cover: black fog tint, white arrow fill and rim; cover is solid
     /// inside the arrow and the sampled radial fog outside. No bundled resources.
-    public static func pointerImage(coverOnly: Bool = false, fill: Double = Pointer.fill) -> NSImage
+    public nonisolated static func pointerImage(coverOnly: Bool = false, fill: Double = Pointer.fill) -> NSImage
     {
         NSImage(size: CGSize(width: 112, height: 112), flipped: true) { _ in
             guard let cg = NSGraphicsContext.current?.cgContext else { return false }

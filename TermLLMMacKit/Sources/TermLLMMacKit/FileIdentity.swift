@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Identity of an unchanged file. Rewriting its contents changes the
 /// modification and status-change times, and atomic replacement changes the
@@ -26,17 +27,14 @@ struct FileIdentity: Hashable, Sendable {
 }
 
 /// Process-wide memo for checks of unchanged files.
-final class FileCheckCache<Key: Hashable & Sendable, Value: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [Key: Value] = [:]
+final class FileCheckCache<Key: Hashable & Sendable, Value: Sendable>: Sendable {
+    private let values = OSAllocatedUnfairLock<[Key: Value]>(initialState: [:])
 
     func value(for key: Key) -> Value? {
-        lock.lock(); defer { lock.unlock() }
-        return values[key]
+        values.withLock { $0[key] }
     }
 
     func set(_ value: Value, for key: Key) {
-        lock.lock(); defer { lock.unlock() }
-        values[key] = value
+        values.withLock { $0[key] = value }
     }
 }

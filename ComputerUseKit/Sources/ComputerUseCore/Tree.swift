@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // Python strings count Unicode scalar values, not Swift extended graphemes or
 // NSString UTF-16 units. Keep this distinction throughout printing and offset maps.
@@ -429,10 +430,13 @@ public enum Tree {
 
     // Counted per app: two agents may drive the same app.
     public static let manual = "AXManualAccessibility"
-    private static let switchLock = NSLock()
-    private struct Held { var count: Int; let element: UIElementRef; let name: String; let was: Bool }
-    private static var heldSwitches: [pid_t: Held] = [:]
-    private static var switchOrder: [pid_t] = [] // Python popitem() releases newest first.
+    private struct Held: Sendable { var count: Int; let element: UIElementRef; let name: String; let was: Bool }
+    private struct HeldSwitches: Sendable {
+        var held: [pid_t: Held] = [:]
+        var order: [pid_t] = [] // Python popitem() releases newest first.
+    }
+    // Held across the switch writes too, so two apps' turns never interleave them.
+    private static let heldSwitches = OSAllocatedUnfairLock(initialState: HeldSwitches())
     public static func enable(_ target: AppTarget, _ kind: AppKind) -> Bool {
         let app = AX.backend.app(pid: target.pid ?? 0)
         // Electron takes manual even without listing it. Chrome does not: manual
@@ -440,30 +444,33 @@ public enum Tree {
         // enables its page even though it refuses both switches: 39 -> 665 lines.
         let offers = kind.electron || AX.backend.names(app).contains(manual)
         _ = try? AX.backend.get(app, "AXRole")
-        switchLock.lock(); defer { switchLock.unlock() }
         let pid = target.pid ?? 0
         let name = offers ? manual : "AXEnhancedUserInterface"
-        if heldSwitches[pid] == nil { switchOrder.append(pid) }
-        var held = heldSwitches[pid] ?? Held(count: 0, element: app, name: name, was: ReadString.bool(try? AX.backend.get(app, name)) == true)
-        held.count += 1
-        heldSwitches[pid] = held
-        if held.count == 1 { set(held, on: true) }
-        return held.count == 1
+        return heldSwitches.withLock { switches in
+            if switches.held[pid] == nil { switches.order.append(pid) }
+            var held = switches.held[pid] ?? Held(count: 0, element: app, name: name, was: ReadString.bool(try? AX.backend.get(app, name)) == true)
+            held.count += 1
+            switches.held[pid] = held
+            if held.count == 1 { set(held, on: true) }
+            return held.count == 1
+        }
     }
     public static func disable(_ target: AppTarget) {
-        switchLock.lock(); defer { switchLock.unlock() }
         let pid = target.pid ?? 0
-        guard var held = heldSwitches[pid] else { return }
-        held.count -= 1
-        if held.count <= 0 {
-            heldSwitches.removeValue(forKey: pid); switchOrder.removeAll { $0 == pid }; set(held, on: false)
+        heldSwitches.withLock { switches in
+            guard var held = switches.held[pid] else { return }
+            held.count -= 1
+            if held.count <= 0 {
+                switches.held.removeValue(forKey: pid); switches.order.removeAll { $0 == pid }; set(held, on: false)
+            }
+            else { switches.held[pid] = held }
         }
-        else { heldSwitches[pid] = held }
     }
     public static func disableAll() {
-        switchLock.lock(); defer { switchLock.unlock() }
-        for pid in switchOrder.reversed() { if let held = heldSwitches[pid] { set(held, on: false) } }
-        heldSwitches.removeAll(); switchOrder.removeAll()
+        heldSwitches.withLock { switches in
+            for pid in switches.order.reversed() { if let held = switches.held[pid] { set(held, on: false) } }
+            switches.held.removeAll(); switches.order.removeAll()
+        }
     }
     private static func set(_ held: Held, on: Bool) {
         // VoiceOver/another tool may have held it before us: leave that switch on.

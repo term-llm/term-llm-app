@@ -95,27 +95,14 @@ public enum LocalSessionProbe {
 
     /// Ephemeral, cookie-free, cache-free session that refuses redirects. The
     /// configuration is injectable so tests can install a URLProtocol stub.
-    static func makeSession(configuration: URLSessionConfiguration = .ephemeral) -> URLSession {
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 6
-        configuration.timeoutIntervalForResource = 10
-        return URLSession(configuration: configuration,
-                          delegate: NoRedirectDelegate(),
+    static func makeSession(configuration: URLSessionConfiguration? = nil) -> URLSession {
+        let isolated = IsolatedSessionConfiguration.make(copying: configuration ?? .ephemeral)
+        if configuration == nil {
+            isolated.timeoutIntervalForRequest = 6
+            isolated.timeoutIntervalForResource = 10
+        }
+        return URLSession(configuration: isolated,
+                          delegate: RejectRedirects(),
                           delegateQueue: nil)
-    }
-}
-
-private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession,
-                    task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        // Do not follow: a redirect could move a credentialed request to a
-        // different origin, and the probe must fail closed instead.
-        completionHandler(nil)
     }
 }

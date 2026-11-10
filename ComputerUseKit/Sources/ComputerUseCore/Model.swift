@@ -22,6 +22,7 @@ public enum Limits {
 /// A live accessibility element (an `AXUIElement`), or any object a test uses in
 /// its place. Two refs are the same element when `CFEqual` says so; never compare
 /// by pointer.
+// Unchecked: the wrapped AXUIElement is an immutable handle the AX API accepts on any thread.
 public struct UIElementRef: @unchecked Sendable {
     public let object: AnyObject
 
@@ -213,6 +214,7 @@ public struct PolicyDecision: Equatable, Sendable {
 
 /// One calling agent (a term-llm session). Lives in the helper between calls.
 /// Mutable state is synchronized across calls, turn hooks and approval callbacks.
+// Unchecked: every mutable field is private and read or written only while holding the recursive `stateLock`.
 public final class AgentSession: @unchecked Sendable {
     public let key: String
     /// Shared by lifecycle workers, approval callbacks and calls on different app

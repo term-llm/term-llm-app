@@ -68,7 +68,14 @@ public protocol AXObservation: AnyObject {
 
 public enum AX {
     /// The backend every module uses. Set once by the helper at start, or by a test.
-    nonisolated(unsafe) public static var backend: AXBackend = UnavailableAX()
+    public static var backend: AXBackend {
+        get { backendLock.lock(); defer { backendLock.unlock() }; return installed }
+        set { backendLock.lock(); defer { backendLock.unlock() }; installed = newValue }
+    }
+    // Guards replacement of the reference, not a backend's internal state. The
+    // AXBackend callback/value contract still needs a separate Sendable audit.
+    private static let backendLock = NSLock()
+    private static var installed: AXBackend = UnavailableAX()
 
     public static let errorNames: [Int32: String] = [
         -25200: "failure",

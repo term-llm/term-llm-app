@@ -158,6 +158,7 @@ final class AppLoginItemTests: XCTestCase {
     }
 }
 
+// Unchecked: each test creates its own instance and calls it only from the test's thread.
 private final class FakeLoginService: MainAppLoginService, @unchecked Sendable {
     var status: MainAppLoginStatus = .notRegistered
     var statusAfterRegister: MainAppLoginStatus = .enabled

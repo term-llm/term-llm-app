@@ -12,18 +12,22 @@ public final class Presence {
     private let lock = NSLock()
     private var pausedUntil = 0.0
     private let enabled: () -> Bool, now: () -> Double
-    private let send: (OverlayCommand) -> Void, schedule: (@escaping () -> Void) -> Void
+    private let send: (OverlayCommand) -> Void, schedule: (@escaping @Sendable () -> Void) -> Void
     private let show: (Ask) -> Void, drop: (String) -> Void
     public init(
         enabled: @escaping () -> Bool = { Overlay.enabled() },
         now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
         send: @escaping (OverlayCommand) -> Void = { Overlay.shared.send($0) },
-        schedule: @escaping (@escaping () -> Void) -> Void = MainThread.onMain,
-        ask: @escaping (Ask) -> Void = {
-            if MainThread.isRunning && Thread.isMainThread { Panel.shared.append($0) }
+        schedule: @escaping (@escaping @Sendable () -> Void) -> Void = MainThread.onMain,
+        ask: @escaping (Ask) -> Void = { ask in
+            if MainThread.isRunning && Thread.isMainThread {
+                MainActor.assumeIsolated { Panel.shared.append(ask) }
+            }
         },
-        withdraw: @escaping (String) -> Void = {
-            if MainThread.isRunning && Thread.isMainThread { Panel.shared.withdraw(title: $0) }
+        withdraw: @escaping (String) -> Void = { title in
+            if MainThread.isRunning && Thread.isMainThread {
+                MainActor.assumeIsolated { Panel.shared.withdraw(title: title) }
+            }
         }
     ) {
         self.enabled = enabled
@@ -83,7 +87,7 @@ public final class Presence {
     }
     @discardableResult public func ask(
         title: String, subtitle: String? = nil, choices: [String],
-        onAnswer: @escaping (String) -> Void
+        onAnswer: @escaping @Sendable (String) -> Void
     ) -> Bool { ask(Ask(title: title, subtitle: subtitle, choices: choices, onAnswer: onAnswer)) }
     @discardableResult public func withdraw(title: String) -> Bool {
         guard enabled() else { return false }

@@ -22,7 +22,7 @@ public struct ProcessIdentity: Equatable, Hashable {
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
         var path = [CChar](repeating: 0, count: Int(4 * MAXPATHLEN))
         _ = proc_pidpath(pid, &path, UInt32(path.count))
-        let name = String(cString: path)
+        let name = path.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
         let short = withUnsafeBytes(of: info.pbi_name) { bytes in
             String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
         }

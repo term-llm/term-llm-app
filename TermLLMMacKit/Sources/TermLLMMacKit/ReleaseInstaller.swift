@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import Security
 
 public struct SemanticVersion: Comparable, Equatable, Sendable, CustomStringConvertible {
@@ -46,32 +47,43 @@ public protocol ReleaseTransport: Sendable {
 /// Synchronous seam intended for background work, never the main actor.
 public struct GitHubReleaseTransport: ReleaseTransport {
     public var appVersion: String
-    public init(appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") { self.appVersion = appVersion }
+    private let configuration: URLSessionConfiguration
+    public init(appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev",
+                configuration: URLSessionConfiguration? = nil) {
+        self.appVersion = appVersion
+        let isolated = IsolatedSessionConfiguration.make(copying: configuration ?? .ephemeral)
+        if configuration == nil {
+            isolated.timeoutIntervalForRequest = 30
+            isolated.timeoutIntervalForResource = 180
+        }
+        self.configuration = isolated
+    }
+    func makeSession() -> URLSession {
+        URLSession(configuration: IsolatedSessionConfiguration.make(copying: configuration),
+                   delegate: ReleaseRedirects(), delegateQueue: nil)
+    }
     public func fetch(_ url: URL) throws -> ReleaseResponse {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 180
-        let session = URLSession(configuration: config, delegate: ReleaseRedirects(), delegateQueue: nil)
+        let session = makeSession()
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url)
         request.setValue("term-llm-mac/\(appVersion)", forHTTPHeaderField: "User-Agent")
-        let box = ResponseBox()
+        let box = OSAllocatedUnfairLock<Result<ReleaseResponse, any Error>?>(initialState: nil)
         let done = DispatchSemaphore(value: 0)
         let task = session.dataTask(with: request) { data, response, error in
-            if error != nil { box.result = .failure(ReleaseError.invalidResponse) }
+            let result: Result<ReleaseResponse, any Error>
+            if error != nil { result = .failure(ReleaseError.invalidResponse) }
             else if let http = response as? HTTPURLResponse, http.statusCode == 200,
                     let final = http.url, final.scheme == "https", let data {
-                box.result = .success(ReleaseResponse(data: data, url: final))
-            } else { box.result = .failure(ReleaseError.invalidResponse) }
+                result = .success(ReleaseResponse(data: data, url: final))
+            } else { result = .failure(ReleaseError.invalidResponse) }
+            box.withLock { $0 = result }
             done.signal()
         }
         task.resume()
         guard done.wait(timeout: .now() + 190) == .success else { task.cancel(); throw ReleaseError.invalidResponse }
-        return try box.result!.get()
+        return try box.withLock { $0 }!.get()
     }
 }
-private final class ResponseBox: @unchecked Sendable { var result: Result<ReleaseResponse, Error>? }
 private final class ReleaseRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {

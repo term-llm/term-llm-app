@@ -1,6 +1,7 @@
 import AppKit
 import ComputerUseCore
 import Darwin
+import os
 
 /// Resolve, launch in the background, and list apps. Every system look goes
 /// through System, including paths and the clock, so tests can replace the Mac.
@@ -16,13 +17,13 @@ public final class Apps {
     public static let filePanels: Set<String> = ["save-panel", "open-panel", "GoToWindow"]
     public static let usageQuery = "kMDItemContentType == \"com.apple.application-bundle\" && kMDItemFSName == \"*.app\" && kMDItemLastUsedDate_Ranking >= $time.today(-14)"
     public static let usageAttributes = ["kMDItemPath", "kMDItemLastUsedDate", "kMDItemLastUsedDate_Ranking", "kMDItemUseCount", "kMDItemDisplayName", "kMDItemCFBundleIdentifier"]
-    public struct Proc {
+    public struct Proc: Sendable {
         public var pid: pid_t; public var path: String?; public var bundleID: String; public var name: String; public var executable: String
         public init(pid: pid_t, path: String?, bundleID: String = "", name: String = "", executable: String = "") {
             self.pid = pid; self.path = path; self.bundleID = bundleID; self.name = name; self.executable = executable
         }
     }
-    public struct Used {
+    public struct Used: Sendable {
         public var path: String; public var lastUsed: TimeInterval?; public var useCount: Int?; public var name: String?; public var bundleID: String?
         public init(path: String, lastUsed: TimeInterval? = nil, useCount: Int? = nil, name: String? = nil, bundleID: String? = nil) {
             self.path = path; self.lastUsed = lastUsed; self.useCount = useCount; self.name = name; self.bundleID = bundleID
@@ -90,7 +91,7 @@ public final class Apps {
     public static func executable(_ pid: pid_t) -> String {
         var bytes = [CChar](repeating: 0, count: 4096)
         let length = proc_pidpath(pid, &bytes, UInt32(bytes.count))
-        return length > 0 ? clean(String(cString: bytes)) : ""
+        return length > 0 ? clean(bytes.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }) : ""
     }
     public static func systemPanelServices() -> [pid_t: pid_t] {
         typealias Responsible = @convention(c) (pid_t) -> pid_t
@@ -101,17 +102,18 @@ public final class Apps {
         return Dictionary(uniqueKeysWithValues: pids().filter { executable($0).hasSuffix("/" + Limits.panelService) }.map { ($0, responsible($0)) })
     }
     public static func openBackground(_ path: String) -> pid_t? {
-        let done = DispatchSemaphore(value: 0), result = OpenResult()
+        let done = DispatchSemaphore(value: 0), result = OSAllocatedUnfairLock<pid_t?>(initialState: nil)
         MainThread.onMain {
             let config = NSWorkspace.OpenConfiguration()
             config.activates = openOptions["activates"]!
             config.allowsRunningApplicationSubstitution = openOptions["allowsRunningApplicationSubstitution"]!
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: config) { app, _ in
-                result.lock.lock(); result.pid = app?.processIdentifier; result.lock.unlock(); done.signal()
+                let pid = app?.processIdentifier
+                result.withLock { $0 = pid }; done.signal()
             }
         }
         _ = done.wait(timeout: .now() + launchLimit)
-        result.lock.lock(); defer { result.lock.unlock() }; return result.pid
+        return result.withLock { $0 }
     }
     public static func queryUsed() -> [Used] {
         autoreleasepool {
@@ -300,29 +302,30 @@ public final class Apps {
 }
 private extension Optional where Wrapped == String { var nonempty: String? { flatMap { $0.isEmpty ? nil : $0 } } }
 private extension String { var nonempty: String? { isEmpty ? nil : self } }
-private final class OpenResult { let lock = NSLock(); var pid: pid_t? }
 /// Upstream's last name lookup asks LaunchServices, which also finds apps outside
 /// the folders above (Instruments inside Xcode). AppKit has no undeprecated way to
 /// do that: the suggested replacement takes a bundle id, which resolve tried first.
 /// Called through this protocol so the deliberate use builds without a warning.
 private protocol LaunchServicesName { func fullPath(forApplication appName: String) -> String? }
 extension NSWorkspace: LaunchServicesName {}
-private final class RealApps {
+private final class RealApps: Sendable {
     static let shared = RealApps()
-    let lock = NSLock(); var known: [pid_t: Apps.Proc] = [:]
+    private let known = OSAllocatedUnfairLock<[pid_t: Apps.Proc]>(initialState: [:])
     func running() -> [Apps.Proc] {
         autoreleasepool {
-            let pids = Apps.pids(); lock.lock(); defer { lock.unlock() }
-            known = known.filter { pids.contains($0.key) }
-            for pid in pids where known[pid] == nil {
-                guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
-                // For a bare program the system calls the program file its "bundle".
-                let bundle = app.bundleURL?.path
-                var directory: ObjCBool = false
-                let bundled = bundle.map { FileManager.default.fileExists(atPath: $0, isDirectory: &directory) && directory.boolValue } ?? false
-                known[pid] = Apps.Proc(pid: pid, path: bundled ? bundle.map(Apps.clean) : nil, bundleID: app.bundleIdentifier ?? "", name: app.localizedName ?? "", executable: app.executableURL?.lastPathComponent ?? "")
+            let pids = Apps.pids()
+            return known.withLock { known in
+                known = known.filter { pids.contains($0.key) }
+                for pid in pids where known[pid] == nil {
+                    guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
+                    // For a bare program the system calls the program file its "bundle".
+                    let bundle = app.bundleURL?.path
+                    var directory: ObjCBool = false
+                    let bundled = bundle.map { FileManager.default.fileExists(atPath: $0, isDirectory: &directory) && directory.boolValue } ?? false
+                    known[pid] = Apps.Proc(pid: pid, path: bundled ? bundle.map(Apps.clean) : nil, bundleID: app.bundleIdentifier ?? "", name: app.localizedName ?? "", executable: app.executableURL?.lastPathComponent ?? "")
+                }
+                return pids.compactMap { known[$0] }
             }
-            return pids.compactMap { known[$0] }
         }
     }
 }

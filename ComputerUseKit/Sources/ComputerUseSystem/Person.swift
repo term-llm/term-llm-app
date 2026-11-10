@@ -1,5 +1,6 @@
 import AppKit
 import ComputerUseCore
+import os
 
 /// The person comes first. A listen-only tap records their input; calls wait until
 /// five seconds of quiet, then actions fail until the agent reads the changed app.
@@ -178,15 +179,16 @@ public final class Person {
     }
 }
 
-private final class PersonBundleIDs {
+private final class PersonBundleIDs: Sendable {
     static let shared = PersonBundleIDs()
-    let lock = NSLock()
-    var values: [pid_t: String] = [:], order: [pid_t] = []
+    private struct Cache: Sendable { var values: [pid_t: String] = [:], order: [pid_t] = [] }
+    private let cache = OSAllocatedUnfairLock(initialState: Cache())
     func bundleOf(_ pid: pid_t) -> String {
-        lock.lock(); defer { lock.unlock() }
-        let value = values[pid] ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? ""
-        values[pid] = value; order.removeAll { $0 == pid }; order.append(pid)
-        if order.count > 256 { values.removeValue(forKey: order.removeFirst()) }
-        return value
+        cache.withLock { cache in
+            let value = cache.values[pid] ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? ""
+            cache.values[pid] = value; cache.order.removeAll { $0 == pid }; cache.order.append(pid)
+            if cache.order.count > 256 { cache.values.removeValue(forKey: cache.order.removeFirst()) }
+            return value
+        }
     }
 }

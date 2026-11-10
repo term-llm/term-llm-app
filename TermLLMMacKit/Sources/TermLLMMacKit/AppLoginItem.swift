@@ -67,7 +67,8 @@ public struct AppLoginItem: Sendable {
     }
 
     public let home: URL
-    public let fileManager: FileManager
+    // Unchecked: FileManager is documented thread-safe without a delegate; callers pass `.default` and nothing sets one.
+    nonisolated(unsafe) public let fileManager: FileManager
     /// nil uses only the launch agent.
     public let mainApp: MainAppLoginService?
 

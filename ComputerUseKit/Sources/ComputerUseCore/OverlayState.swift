@@ -74,7 +74,7 @@ public enum OverlayGeometry {
     }
 }
 
-public enum OverlayCommand {
+public enum OverlayCommand: Sendable {
     case move(CGPoint, pid: Int32? = nil, window: Int = 0, animate: Bool = true)
     case press(Int)
     case activity(String)

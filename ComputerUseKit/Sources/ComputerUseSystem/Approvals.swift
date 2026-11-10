@@ -7,7 +7,7 @@ import Foundation
 public final class Approvals {
     public static let deny = "Deny", session = "Allow for this session", always = "Always allow"
     public static let poll: TimeInterval = 0.25, giveUp: TimeInterval = 10
-    private struct Key: Hashable {
+    private struct Key: Hashable, Sendable {
         let agent: String?
         let bundle: String
     }

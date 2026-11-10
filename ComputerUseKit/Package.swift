@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // term-llm Computer Use: a Swift port of browser-use/macos-harness (MIT, see
@@ -11,7 +11,7 @@ import PackageDescription
 // No target has resources: the command-line tool can't carry a bundle.
 let package = Package(
     name: "ComputerUseKit",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "ComputerUseCore", targets: ["ComputerUseCore"]),
         .library(name: "ComputerUseSystem", targets: ["ComputerUseSystem"]),
@@ -29,5 +29,8 @@ let package = Package(
                     resources: [.copy("Fixtures")]),
         .testTarget(name: "ComputerUseHelperTests", dependencies: ["ComputerUseHelper"]),
         .testTarget(name: "ComputerUseClientTests", dependencies: ["ComputerUseClient"]),
-    ]
+    ],
+    // System adapters still expose mutable, non-Sendable callback seams. Do not
+    // hide them behind unchecked conformances to enable Swift 6. See SWIFT6.md.
+    swiftLanguageModes: [.v5]
 )

@@ -8,6 +8,7 @@ final class PresencePanel: NSPanel {
 }
 
 /// The questions waiting for the person, one at a time, top right. Main thread only.
+@MainActor
 public final class Panel: NSObject {
     public static let shared = Panel()
     public let questions = AskQueue()

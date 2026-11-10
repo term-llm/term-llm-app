@@ -14,17 +14,17 @@ public enum Keys {
     // Without a layout match, send a key event carrying the character; off skips it.
     public static let typeUnmatched = true
 
-    public struct Key: Equatable {
+    public struct Key: Equatable, Sendable {
         public let code: Int?
         public let flags: Int
         public init(_ code: Int?, _ flags: Int) { self.code = code; self.flags = flags }
     }
-    public struct Chord: Equatable {
+    public struct Chord: Equatable, Sendable {
         public let code: Int
         public let flags: Int
         public init(_ code: Int, _ flags: Int) { self.code = code; self.flags = flags }
     }
-    public struct KeyPress: Equatable {
+    public struct KeyPress: Equatable, Sendable {
         public let code: Int
         public let flags: Int
         public let text: String
