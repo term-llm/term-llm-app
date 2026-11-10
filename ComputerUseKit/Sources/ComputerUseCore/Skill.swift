@@ -5,6 +5,11 @@ public enum ComputerUseSkill {
         ---
         name: term-llm-computer
         description: Read and operate the apps on this Mac from the shell. Use it when a task needs an app's UI and no API, CLI or purpose-built tool can do it.
+        code-mode:
+          module: js/index.mjs
+          files: [js/index.mjs]
+          requires:
+            tools: [shell]
         ---
 
         # term-llm Computer Use
@@ -75,25 +80,24 @@ public enum ComputerUseSkill {
 
         ## In spawn_script
 
-        Plain shell calls are the default. Use a cell only to repeat read, find, act without a turn per step (scroll until a row shows, fill many fields), or to keep long trees out of your context. Each command is one `shell` call; read the text it prints, not `--json`: output over 50 KB is cut, and cut text still reads, cut JSON does not.
+        Plain shell calls are the default. Use a cell only to repeat read, find, act without a turn per step (scroll until a row shows, fill many fields), or to keep long trees out of your context. With spawn_script this skill's module gives every command as a function; each call is one `shell` call with its approvals.
 
         ```js
-        const q = w => "'" + String(w).replaceAll("'", "'\\''") + "'";
-        async function cu(...args) {
-          const r = await tools.shell({command: "term-llm-computer " + args.map(q).join(" ")});
-          if (!/\nexit_code: 0(\n|$)/.test(r.text)) throw new Error(r.text); // read again; never blindly retry
-          return (r.text.match(/^stdout:\n([\s\S]*?)(?=\n\nstderr:|\nexit_code:)/) || [, ""])[1];
-        }
-        const index = (state, pattern) => +(state.split("\n").find(l => pattern.test(l)) || "").match(/^[~+\t]*(\d+) /)?.[1];
-
-        let state = await cu("get_app_state", "--app", "TextEdit");
-        await cu("click", "--app", "TextEdit", "--element_index", index(state, /\bbutton Save\b/));
-        state = await cu("get_app_state", "--app", "TextEdit");
-        text(state.split("\n").filter(l => /^[~+]/.test(l)).join("\n")); // only what changed
+        const { computer } = await import('skill:term-llm-computer');
+        let state = await computer.get_app_state({app: "TextEdit"}); // {text, screenshot, width, height}
+        const save = computer.find(state, /\bbutton Save\b/); // newest matching line, or null
+        if (save === null) throw new Error("no Save button");
+        await computer.click({app: "TextEdit", element_index: save});
+        state = await computer.get_app_state({app: "TextEdit"});
+        text(computer.changes(state)); // only the ~ and + lines
         ```
 
-        - The rules above still hold: read before every action, use numbers only from the newest read, stop on any failure.
-        - `text(...)` only what you need. To see a screenshot: `const v = await tools.view_image({file_path: state.match(/^Screenshot \(\d+x\d+ px\): (.+)$/m)[1]}); image(v.content.find(b => b.type === "image"));`
+        - Arguments are each command's flags (`{app, element_index, x, y, key, text, value, ...}`); `true` is a bare flag. Actions return nothing, `get_app_state` the object above, `list_apps` an array. `computer.run("press_key", "--app", "TextEdit", "--key", "Return")` takes raw words.
+        - A failed command throws the helper's message: do what it says. `error.outcome === "unknown"` means it did not finish: read before you try again.
+        - `image(await computer.screenshot(state))` shows a read's screenshot.
+        - If `shell` asks for a working directory, set `computer.options.working_dir = "/tmp"` in each cell.
+        - No `skill:term-llm-computer` module here: call `tools.shell({command: "term-llm-computer ...", timeout_seconds: 130})` and read its `text`.
+        - The rules above still hold: read before every action, use numbers only from the newest read, stop on any failure. `text(...)` only what you need.
         - Await every call, one at a time: a UI does one thing at once.
         - Let a cell that drives apps finish (`wait_script`) or `cancel_script` it before you end your turn: when the turn ends its apps are let go, and later actions fail.
 

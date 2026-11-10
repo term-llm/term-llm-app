@@ -59,6 +59,14 @@ final class ComputerUseTests: XCTestCase {
         let text = try String(contentsOf: setup.skill, encoding: .utf8)
         XCTAssertTrue(text.contains("name: term-llm-computer"))
         XCTAssertTrue(text.contains("Esc on the Mac"))
+        XCTAssertEqual(setup.skillModule.path, setup.skill.deletingLastPathComponent().path + "/js/index.mjs")
+        XCTAssertTrue(try String(contentsOf: setup.skillModule, encoding: .utf8).contains("export const computer"))
+        XCTAssertTrue(text.contains("module: js/index.mjs"))
+        // A stale or missing module means the skill needs installing again.
+        try "// old".write(to: setup.skillModule, atomically: true, encoding: .utf8)
+        XCTAssertFalse(setup.skillInstalled)
+        try setup.installSkill()
+        XCTAssertTrue(setup.skillInstalled)
         try FileManager.default.removeItem(at: setup.skill)
         try FileManager.default.createSymbolicLink(
             atPath: setup.skill.path, withDestinationPath: home.appendingPathComponent("untouched").path)

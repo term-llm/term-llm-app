@@ -146,9 +146,17 @@ term-llm.app (main) ── launches (LaunchServices) ──▶ term-llm Computer
   with no helper listening they exit 0.
 - `spawn_script` cells call the same command through `tools.shell`, so they
   carry the same session. A cell can outlive its turn; the skill tells agents
-  to finish or cancel cells that drive apps before ending the turn. The skill
-  ships no code-mode module: term-llm refuses to activate a skill with a
-  module when the agent has no `spawn_script`, and most agents don't.
+  to finish or cancel cells that drive apps before ending the turn.
+- The skill ships `js/index.mjs` (`ComputerUseSkill.module`), admitted as
+  `skill:term-llm-computer`: `computer.<tool>({app, ...flags})` runs the
+  command through `tools.shell` with a 130 s timeout, returns the printed
+  text, and throws the helper's message on failure (`outcome: "unknown"` when
+  the command did not finish). It declares only `shell` as a dependency and
+  holds no authority of its own. Agents without `spawn_script` still activate
+  the skill and get its shell instructions (term-llm skips an unavailable
+  module instead of refusing the skill). The installer writes the module
+  before `SKILL.md`. `SkillModuleTests` runs the source in JavaScriptCore
+  with a fake shell; it was also checked once in term-llm's QuickJS.
 - Cancellation sources: client gone, Esc / Stop on the Mac, Pause, user input
   on the driven app. Each keeps its own error text.
 

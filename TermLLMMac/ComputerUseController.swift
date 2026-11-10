@@ -33,7 +33,12 @@ struct ComputerUseInstallation: Sendable {
     }
     var linkDestination: String? { try? manager.destinationOfSymbolicLink(atPath: link.path) }
     var linkIsCurrent: Bool { linkDestination == binary.path }
-    var skillInstalled: Bool { (try? String(contentsOf: skill, encoding: .utf8)) == ComputerUseSkill.text }
+    /// The skill's `skill:term-llm-computer` module for spawn_script cells.
+    var skillModule: URL { skill.deletingLastPathComponent().appendingPathComponent(ComputerUseSkill.modulePath) }
+    var skillInstalled: Bool {
+        (try? String(contentsOf: skill, encoding: .utf8)) == ComputerUseSkill.text
+            && (try? String(contentsOf: skillModule, encoding: .utf8)) == ComputerUseSkill.module
+    }
 
     /// Repair only a link to this binary or a previously recorded target. In
     /// particular, dangling foreign links and ordinary files are never replaced.
@@ -79,13 +84,16 @@ struct ComputerUseInstallation: Sendable {
     }
     func installSkill() throws {
         // Never follow a link into someone else's configuration.
-        for path in [skill.deletingLastPathComponent(), skill] {
+        let folder = skill.deletingLastPathComponent()
+        for path in [folder, skill, skillModule.deletingLastPathComponent(), skillModule] {
             var info = stat()
             if lstat(path.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK {
                 throw CocoaError(.fileWriteNoPermission)
             }
         }
-        try manager.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try manager.createDirectory(at: skillModule.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // The module first: term-llm refuses a SKILL.md whose declared module is missing.
+        try ComputerUseSkill.module.write(to: skillModule, atomically: true, encoding: .utf8)
         try ComputerUseSkill.text.write(to: skill, atomically: true, encoding: .utf8)
     }
 }
