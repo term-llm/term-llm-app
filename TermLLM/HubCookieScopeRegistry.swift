@@ -59,6 +59,7 @@ final class HubCookieScopeRegistry {
         let owner = sourceID.flatMap(connection)
         let security = sourceID.flatMap { entries[$0]?.security }
         let epoch = security?.epoch
+        await PersistentCookieStoreLoader.load(store)
         let cookies = await store.httpCookieStore.allCookies()
         guard sourceID == nil ? HubFixture.isEnabled : sourceID.flatMap(connection) == owner,
               security == nil || (security?.active == true && security?.cookiesReadable == true && security?.epoch == epoch) else { return [] }

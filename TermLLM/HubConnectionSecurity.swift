@@ -99,6 +99,22 @@ struct HubKeychainBearerStorage: HubBearerStorage {
     }
 }
 
+/// A UUID-backed WebKit store does not load its on-disk cookies until its
+/// network session exists. Until then, after a relaunch, `getAllCookies`
+/// returns nothing, so native requests went out unauthenticated, got a 401,
+/// and fail-closed revocation then erased the still-valid session. Fetching
+/// the store's cookie records first creates the session and loads the jar.
+@MainActor
+enum PersistentCookieStoreLoader {
+    private static var loaded: Set<UUID> = []
+
+    static func load(_ store: WKWebsiteDataStore) async {
+        guard store.isPersistent, let id = store.identifier, !loaded.contains(id) else { return }
+        _ = await store.dataRecords(ofTypes: [WKWebsiteDataTypeCookies])
+        loaded.insert(id)
+    }
+}
+
 @MainActor
 final class HubWebsiteDataBarrier {
     private static var sharedBarriers: [UUID: HubWebsiteDataBarrier] = [:]
@@ -157,14 +173,17 @@ final class HubConnectionSecurity {
     private let websiteDataBarrier: HubWebsiteDataBarrier
     private let cookieWriter: (@MainActor (HTTPCookie) async -> Void)?
     private let dataPurger: (@MainActor () async -> Void)?
+    private let storeLoader: @MainActor (WKWebsiteDataStore) async -> Void
 
     init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(),
          dataStore: WKWebsiteDataStore? = nil,
          websiteDataBarrier: HubWebsiteDataBarrier? = nil,
          cookieWriter: (@MainActor (HTTPCookie) async -> Void)? = nil,
-         dataPurger: (@MainActor () async -> Void)? = nil) {
+         dataPurger: (@MainActor () async -> Void)? = nil,
+         storeLoader: @escaping @MainActor (WKWebsiteDataStore) async -> Void = PersistentCookieStoreLoader.load) {
         self.cookieWriter = cookieWriter
         self.dataPurger = dataPurger
+        self.storeLoader = storeLoader
         id = connection.id
         server = connection.url
         self.bearerStorage = bearerStorage
@@ -177,6 +196,8 @@ final class HubConnectionSecurity {
         guard active, cookiesReadable else { return [] }
         let expected = epoch
         await websiteDataBarrier.wait()
+        guard active, cookiesReadable, epoch == expected else { return [] }
+        await storeLoader(dataStore)
         guard active, cookiesReadable, epoch == expected else { return [] }
         let cookies = await withCheckedContinuation { continuation in
             dataStore.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
@@ -221,6 +242,10 @@ final class HubConnectionSecurity {
     private func performCookieOperation(epoch expected: UInt64, isCurrent: @escaping @Sendable () -> Bool,
                                          operation: @escaping @MainActor () async -> Void) async -> Bool {
         await websiteDataBarrier.perform { [self] in
+            guard active, epoch == expected, isCurrent(), !Task.isCancelled else { return false }
+            // Load the persisted jar before writing, so it cannot later
+            // resurface over a cookie written or cleared in this process.
+            await storeLoader(dataStore)
             guard active, epoch == expected, isCurrent(), !Task.isCancelled else { return false }
             await operation()
             return active && epoch == expected && isCurrent() && !Task.isCancelled

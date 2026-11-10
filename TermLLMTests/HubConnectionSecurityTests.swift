@@ -36,6 +36,31 @@ final class HubConnectionSecurityTests: XCTestCase {
         let cookies = await security.cookies()
         XCTAssertTrue(cookies.isEmpty)
     }
+    /// After relaunch a UUID store reports no cookies until its persisted jar
+    /// is loaded; an early empty read caused a 401 that erased a valid session.
+    func testPersistedJarLoadsBeforeAnyCookieReadOrWrite() async throws {
+        let source = connection("/relaunch/")
+        final class Events { var log: [String] = [] }
+        let events = Events()
+        let gate = CookieWriteGate()
+        let security = HubConnectionSecurity(connection: source, bearerStorage: HubMemoryBearerStorage(),
+                                             dataStore: .nonPersistent(),
+                                             cookieWriter: { _ in events.log.append("write") },
+                                             storeLoader: { _ in events.log.append("load"); await gate.wait() })
+        let read = Task { @MainActor in
+            let cookies = await security.cookies()
+            events.log.append("read")
+            return cookies
+        }
+        while events.log.isEmpty { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(events.log, ["load"], "cookies must not be read before the persisted jar loads")
+        await gate.release()
+        _ = await read.value
+        XCTAssertEqual(events.log, ["load", "read"])
+        await security.saveCookies([try cookie(source, value: "session")], epoch: security.epoch)
+        XCTAssertEqual(events.log, ["load", "read", "load", "write"])
+    }
     func testCredentialIdentityIsUUIDScopedAndTrustRealmChangeStartsEmpty() throws {
         let storage = HubMemoryBearerStorage()
         let oldConnection = connection("/old/")
