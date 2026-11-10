@@ -1,10 +1,6 @@
 import Foundation
 import XCTest
-#if os(macOS)
-@testable import TermLLMMac
-#else
 @testable import TermLLM
-#endif
 
 @MainActor
 final class IsolatedURLSessionTests: XCTestCase {
