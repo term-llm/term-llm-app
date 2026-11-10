@@ -25,6 +25,8 @@ let package = Package(
         .target(name: "ComputerUseClient", dependencies: ["ComputerUseCore"]),
         .testTarget(name: "ComputerUseCoreTests", dependencies: ["ComputerUseCore"],
                     resources: [.copy("Fixtures")]),
+        .testTarget(name: "ComputerUseSystemTests", dependencies: ["ComputerUseSystem"],
+                    resources: [.copy("Fixtures")]),
         .testTarget(name: "ComputerUseHelperTests", dependencies: ["ComputerUseHelper"]),
     ]
 )
