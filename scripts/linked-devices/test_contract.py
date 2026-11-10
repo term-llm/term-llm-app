@@ -131,9 +131,12 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertNotIn("mobile" + "SharingHostKey", catalog)
 
         workflow = (ROOT / ".github/workflows/linked-devices-native.yml").read_text()
+        self.assertIn("test-plan: TermLLM-LinkedDevices", workflow)
+        plan = json.loads((ROOT / "TestPlans/TermLLM-LinkedDevices.xctestplan").read_text())
+        selected = {suite for target in plan["testTargets"] for suite in target.get("selectedTests", [])}
         for suite in ("LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests",
                       "LinkedDevicesRuntimeTests"):
-            self.assertIn(f"-only-testing:TermLLMTests/{suite}", workflow)
+            self.assertIn(suite, selected)
 
     def test_swift_declares_frozen_v2_names_and_no_pilot_pairing(self):
         source = (ROOT / "TermLLM/LinkedDevicesProtocol.swift").read_text()

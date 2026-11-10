@@ -2,6 +2,8 @@ name: Linked devices native validation
 
 # Opt-in only. The parent dispatches this after pushing the private PR.
 # Never use a GitHub-hosted/paid fallback for this private native build.
+# The job is native-simulator-tests.yml; the suites are listed in
+# TestPlans/TermLLM-LinkedDevices.xctestplan.
 on:
   workflow_dispatch:
 
@@ -14,80 +16,6 @@ concurrency:
 
 jobs:
   simulator:
-    runs-on: [self-hosted, macOS, ARM64, term-llm-local]
-    timeout-minutes: 30
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-    steps:
-      - name: Check out without persisted credentials
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Use installed MacBook tools and selected Xcode
-        run: |
-          source scripts/ci/bootstrap-macos.sh
-          printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
-          printf 'NATIVE_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-linked-devices.XXXXXX")" >> "$GITHUB_ENV"
-      - name: Create and boot a job-owned disposable iPhone simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/ci/test_owned_ios_simulator.py
-          simulator_name="term-llm-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
-          udid="$(python3 scripts/ci/owned-ios-simulator.py create \
-            --name "$simulator_name" \
-            --state-file "$NATIVE_TEST_DIR/owned-simulator.json")"
-          printf 'SIMULATOR_UDID=%s\n' "$udid" >> "$GITHUB_ENV"
-          xcodebuild -version
-      - name: Resolve pinned WebRTC package
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -resolvePackageDependencies \
-            -project TermLLM.xcodeproj \
-            -scheme TermLLM \
-            -clonedSourcePackagesDirPath "$NATIVE_TEST_DIR/SourcePackages"
-      - name: Link app and run linked devices regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project TermLLM.xcodeproj \
-            -scheme TermLLM \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$NATIVE_TEST_DIR/DerivedData" \
-            -clonedSourcePackagesDirPath "$NATIVE_TEST_DIR/SourcePackages" \
-            -resultBundlePath "$NATIVE_TEST_DIR/Tests.xcresult" \
-            -parallel-testing-enabled NO \
-            -maximum-concurrent-test-simulator-destinations 1 \
-            -only-testing:TermLLMTests/ServerAddressTests \
-            -only-testing:TermLLMTests/LinkedDevicesProtocolTests \
-            -only-testing:TermLLMTests/LinkedDevicesIdentityTests \
-            -only-testing:TermLLMTests/LinkedDevicesRuntimeTests \
-            -only-testing:TermLLMTests/PeerNWLoopbackListenerTests \
-            -only-testing:TermLLMTests/LinkedDevicesLiveWebKitTests \
-            -only-testing:TermLLMTests/LinkedDevicesDiagnosticsTests \
-            -only-testing:TermLLMTests/PeerTransportTests \
-            -only-testing:TermLLMTests/DirectNodeClientTests \
-            -only-testing:TermLLMTests/HubConnectionStoreTests \
-            -only-testing:TermLLMTests/BrowserLifecycleTests \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
-            2>&1 | tee "$NATIVE_TEST_DIR/xcodebuild.log"
-      - name: Delete only the job-owned simulator
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-linked-devices.* ]]; then
-            python3 scripts/ci/owned-ios-simulator.py cleanup \
-              --state-file "$NATIVE_TEST_DIR/owned-simulator.json"
-          fi
-      - name: Clean temporary native build results
-        if: always()
-        shell: bash
-        run: |
-          if [[ -n "${NATIVE_TEST_DIR:-}" && "$NATIVE_TEST_DIR" == "$RUNNER_TEMP"/term-llm-linked-devices.* ]]; then
-            rm -rf -- "$NATIVE_TEST_DIR"
-          fi
+    uses: ./.github/workflows/native-simulator-tests.yml
+    with:
+      test-plan: TermLLM-LinkedDevices

@@ -1,0 +1,55 @@
+name: Mac app tests (manual local Mac)
+
+# Opt-in only and self-hosted: never consume GitHub-hosted runner minutes.
+# TermLLMMacTests is hosted by the unsigned term-llm Mac app itself, which
+# opens its windows on the runner's logged-in desktop while the tests run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-app-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: [self-hosted, macOS, ARM64, term-llm-local]
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Use installed MacBook tools and selected Xcode
+        run: |
+          source scripts/ci/bootstrap-macos.sh
+          printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
+          printf 'MAC_TEST_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-mac-tests.XXXXXX")" >> "$GITHUB_ENV"
+          xcodebuild -version
+      - name: Build and run TermLLMMacTests without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project TermLLM.xcodeproj \
+            -scheme TermLLMMac \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$MAC_TEST_DIR/DerivedData" \
+            -resultBundlePath "$MAC_TEST_DIR/Tests.xcresult" \
+            -parallel-testing-enabled NO \
+            -only-testing:TermLLMMacTests \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' \
+            2>&1 | tee "$MAC_TEST_DIR/xcodebuild.log"
+      # Keep logs in the job output; do not incur GitHub artifact storage charges.
+      - name: Clean temporary Mac build results
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${MAC_TEST_DIR:-}" && "$MAC_TEST_DIR" == "$RUNNER_TEMP"/term-llm-mac-tests.* ]]; then
+            rm -rf -- "$MAC_TEST_DIR"
+          fi
