@@ -1,10 +1,10 @@
 # Computer use in term-llm.app
 
-Status: **in progress.** The app-shell wave is implemented; see
-[Computer Use shell integration](COMPUTER-USE-SHELL.md) for its public APIs,
-controls, tests, and deliberately stubbed execution/permission seams. A Swift port of `browser-use/macos-harness` at
+Status: **integrated.** The app shell and the helper's tool execution are
+wired; see [Computer Use shell integration](COMPUTER-USE-SHELL.md) for its public
+APIs, controls, tests and verification limits. A Swift port of `browser-use/macos-harness` at
 `43d9edf` (v0.2.1, MIT; its licence notice ships with the ported code in
-`ComputerUseKit/LICENSE-macos-harness`). This replaces the "Computer use /
+`ComputerUseKit/LICENSE-macos-harness`). This replaced the "Computer use /
 macOS Harness integration: Deferred" row in
 [MACOS-COMPANION.md](../MACOS-COMPANION.md).
 
