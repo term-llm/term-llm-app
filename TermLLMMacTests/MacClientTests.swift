@@ -84,15 +84,10 @@ final class LockedFlag: @unchecked Sendable {
 
 @MainActor
 func waitUntil(_ description: @autoclosure () -> String = "condition", timeout: TimeInterval = 10,
+               file: StaticString = #filePath, line: UInt = #line,
                _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-        guard Date() < deadline else {
-            throw NSError(domain: "TermLLMMacTests", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for \(description())"])
-        }
-        try await Task.sleep(for: .milliseconds(50))
-    }
+    try await pollUntil(description(), timeout: .seconds(timeout), interval: .milliseconds(50),
+                        file: file, line: line, condition)
 }
 
 /// The native Mac client's platform behavior. Mac Catalyst's WebKit has no

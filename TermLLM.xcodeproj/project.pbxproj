@@ -317,6 +317,12 @@
 		C10000000000000000000022 /* ComputerUseClient in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000082 /* ComputerUseClient */; };
 		C10000000000000000000023 /* term-llm Computer Use.app in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000030 /* term-llm Computer Use.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C10000000000000000000024 /* term-llm-computer in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000031 /* term-llm-computer */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		451556E6387F9765F150C099 /* AsyncTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA9EE548D564B364161B2CE6 /* AsyncTestSupport.swift */; };
+		78D94E51F495DF014401F2C3 /* AsyncTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA9EE548D564B364161B2CE6 /* AsyncTestSupport.swift */; };
+		3DC99391C95F2DFEF93060A8 /* AsyncTestSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB2F02CFDBC8BFBFCA42B0A /* AsyncTestSupportTests.swift */; };
+		AEC8B3DD3BD79AE77DC4F80B /* AsyncTestSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB2F02CFDBC8BFBFCA42B0A /* AsyncTestSupportTests.swift */; };
+		76C26971240AABE90C30C6D5 /* ScriptedURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C646A008518E43E6B348D2 /* ScriptedURLProtocol.swift */; };
+		C51E06C5C42F440F2C978CDA /* ScriptedURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C646A008518E43E6B348D2 /* ScriptedURLProtocol.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -566,6 +572,9 @@
 		C10000000000000000000006 /* ComputerUseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseTests.swift; sourceTree = "<group>"; };
 		C10000000000000000000030 /* term-llm Computer Use.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "term-llm Computer Use.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000031 /* term-llm-computer */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "term-llm-computer"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CA9EE548D564B364161B2CE6 /* AsyncTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTestSupport.swift; sourceTree = "<group>"; };
+		8FB2F02CFDBC8BFBFCA42B0A /* AsyncTestSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncTestSupportTests.swift; sourceTree = "<group>"; };
+		45C646A008518E43E6B348D2 /* ScriptedURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptedURLProtocol.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -755,6 +764,9 @@
 		000000000000000000000005 /* TermLLMTests */ = {
 			isa = PBXGroup;
 			children = (
+				CA9EE548D564B364161B2CE6 /* AsyncTestSupport.swift */,
+				8FB2F02CFDBC8BFBFCA42B0A /* AsyncTestSupportTests.swift */,
+				45C646A008518E43E6B348D2 /* ScriptedURLProtocol.swift */,
 				000000000000000000000807 /* HubNavigationTests.swift */,
 				000000000000000000000806 /* HubStoreTests.swift */,
 				000000000000000000000805 /* HubClientTests.swift */,
@@ -1256,6 +1268,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				451556E6387F9765F150C099 /* AsyncTestSupport.swift in Sources */,
+				3DC99391C95F2DFEF93060A8 /* AsyncTestSupportTests.swift in Sources */,
+				76C26971240AABE90C30C6D5 /* ScriptedURLProtocol.swift in Sources */,
 				000000000000000000000085 /* ServerAddressTests.swift in Sources */,
 				000000000000000000000827 /* HubNavigationTests.swift in Sources */,
 				000000000000000000000826 /* HubStoreTests.swift in Sources */,
@@ -1446,6 +1461,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				78D94E51F495DF014401F2C3 /* AsyncTestSupport.swift in Sources */,
+				AEC8B3DD3BD79AE77DC4F80B /* AsyncTestSupportTests.swift in Sources */,
+				C51E06C5C42F440F2C978CDA /* ScriptedURLProtocol.swift in Sources */,
 				E51000000000000000000003 /* AppUpdateTests.swift in Sources */,
 				C10000000000000000000016 /* ComputerUseTests.swift in Sources */,
 				F10000000000000000000074 /* ServerAddressTests.swift in Sources */,

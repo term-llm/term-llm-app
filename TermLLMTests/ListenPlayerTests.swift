@@ -282,8 +282,10 @@ final class ListenPlayerTests: XCTestCase {
         return server
     }
 
-    private func waitFor(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 where !condition() { try await Task.sleep(for: .milliseconds(20)) }
+    private func waitFor(file: StaticString = #filePath, line: UInt = #line,
+                         _ condition: () -> Bool) async throws {
+        try await pollUntil(timeout: .seconds(2), interval: .milliseconds(20),
+                            file: file, line: line, condition)
     }
 
     func testPlayingTheLoadedItemAgainKeepsItsBuffer() async throws {
@@ -829,7 +831,7 @@ private final class MediaTransportFixture: @unchecked Sendable {
     }
 }
 
-private final class MediaTransportProtocol: URLProtocol, @unchecked Sendable {
+private final class MediaTransportProtocol: ScriptedURLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     // Guarded by `lock`.
     nonisolated(unsafe) private static var recorded: [URL: [URLRequest]] = [:]
@@ -837,17 +839,12 @@ private final class MediaTransportProtocol: URLProtocol, @unchecked Sendable {
     static func requests(for url: URL) -> [URLRequest] { lock.withLock { recorded[url] ?? [] } }
     static func removeRequests(for url: URL) { lock.withLock { recorded[url] = nil } }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".media.example") == true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        guard let url = request.url else { return }
-        Self.lock.withLock { Self.recorded[url, default: []].append(request) }
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
-                                       headerFields: ["Content-Type": "audio/mpeg", "Set-Cookie": "session=response; Path=/"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("media".utf8))
-        client?.urlProtocolDidFinishLoading(self)
+    override class func response(for request: URLRequest) -> Response {
+        let url = request.url!
+        lock.withLock { recorded[url, default: []].append(request) }
+        return Response(headers: ["Content-Type": "audio/mpeg", "Set-Cookie": "session=response; Path=/"],
+                        body: Data("media".utf8))
     }
-    override func stopLoading() {}
 }
 
 @MainActor
@@ -980,7 +977,7 @@ final class ListenArtworkTests: XCTestCase {
     }
 }
 
-final class ArtworkProtocol: URLProtocol, @unchecked Sendable {
+final class ArtworkProtocol: ScriptedURLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     // Guarded by `lock`.
     nonisolated(unsafe) private static var counts: [URL: Int] = [:]
@@ -1002,16 +999,12 @@ final class ArtworkProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".artwork.example") == true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        guard let url = request.url else { return }
-        Self.lock.withLock { Self.counts[url, default: 0] += 1 }
+    override class func response(for request: URLRequest) -> Response {
+        let url = request.url!
+        lock.withLock { counts[url, default: 0] += 1 }
         let missing = url.lastPathComponent.hasPrefix("missing")
-        let response = HTTPURLResponse(url: url, statusCode: missing ? 404 : 200, httpVersion: nil,
-                                       headerFields: ["Content-Type": missing ? "text/html" : "image/jpeg"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: missing ? Data("<html>".utf8) : Self.body)
-        client?.urlProtocolDidFinishLoading(self)
+        return Response(status: missing ? 404 : 200,
+                        headers: ["Content-Type": missing ? "text/html" : "image/jpeg"],
+                        body: missing ? Data("<html>".utf8) : body)
     }
-    override func stopLoading() {}
 }
