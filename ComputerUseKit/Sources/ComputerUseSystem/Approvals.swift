@@ -35,7 +35,7 @@ public final class Approvals {
         self.sleep = sleep
         self.alive = alive
     }
-    /// TODO(integration): supply helper process lookup (pid AND start time).
+    /// HarnessExecutor supplies process lookup (pid AND start time).
     /// Without it, numeric keys fail closed across helper restarts. Named term-llm
     /// session IDs cannot be asked about a process and remain valid as upstream.
     public static func namedSessionAlive(_ key: String) -> Bool {
@@ -47,8 +47,9 @@ public final class Approvals {
         defer { lock.unlock() }
         return (store.always(), Array(Set(sessions.map(\.bundle))).sorted())
     }
-    /// CONTROL SOCKET ONLY. Never expose this method as an agent tool/command.
-    /// A control-socket grant lasts for this helper's life, or persists if always.
+    /// Human-facing/library API only. Never route from agent argv or the socket.
+    /// The main app edits ApprovalStore directly; panel answers are session-scoped.
+    /// A direct grant lasts for this helper's life, or persists if always.
     public func approve(bundleID: String, always: Bool) throws {
         try record(bundleID: bundleID, always: always, agent: nil)
     }
@@ -94,8 +95,12 @@ public final class Approvals {
         let key = Key(agent: agent.key, bundle: target.bundleID)
         while !approved(agent: agent, bundleID: target.bundleID, policy: policy) {
             lock.lock()
-            if agent.denied.contains(target.path) {
-                if !agent.signalsTurns { agent.denied.remove(target.path) }
+            let denied = agent.withState {
+                let denied = agent.denied.contains(target.path)
+                if denied && !agent.signalsTurns { agent.denied.remove(target.path) }
+                return denied
+            }
+            if denied {
                 lock.unlock()
                 throw Errors.make("not_approved", ["display_name": name])
             }
@@ -135,11 +140,11 @@ public final class Approvals {
             sleep(Self.poll)
         }
     }
-    /// TODO(integration): call under the helper's session lock at turn-start/end,
-    /// rather than concurrently mutating AgentSession.denied outside this seam.
+    /// HarnessExecutor calls this at turn boundaries. AgentSession.withState
+    /// synchronizes denial changes with lifecycle workers and panel callbacks.
     public func clearDenials(agent: AgentSession) {
         lock.lock()
         defer { lock.unlock() }
-        agent.denied.removeAll()
+        agent.withState { agent.denied.removeAll() }
     }
 }

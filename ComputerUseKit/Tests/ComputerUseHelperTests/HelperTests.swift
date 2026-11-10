@@ -27,10 +27,13 @@ final class HelperTests: XCTestCase {
     @discardableResult private func start(
         _ executor: ToolExecutor = StubToolExecutor(),
         sessions: Sessions = Sessions(), grants: @escaping () -> [String: Bool] = { [:] },
-        allow: @escaping (String) throws -> Void = { _ in }
+        allow: @escaping (String) throws -> Void = { _ in },
+        onWorking: @escaping (Bool) -> Void = { _ in }
     ) throws -> HelperServer {
+        var configuration = HelperConfiguration(environment: env, grants: grants, allow: allow)
+        configuration.onWorking = onWorking
         let server = HelperServer(
-            executor: executor, configuration: HelperConfiguration(environment: env, grants: grants, allow: allow),
+            executor: executor, configuration: configuration,
             sessions: sessions)
         try server.start()
         servers.append(server)
@@ -55,6 +58,29 @@ final class HelperTests: XCTestCase {
         server.stop()
         XCTAssertThrowsError(try server.start())
         XCTAssertFalse(FileManager.default.fileExists(atPath: Paths.socketPath(env: env)))
+    }
+
+
+    func testWorkingCallbackAggregatesConcurrentCallsAndStopUsesSharedPath() throws {
+        let began = DispatchSemaphore(value: 0), first = DispatchSemaphore(value: 0), second = DispatchSemaphore(value: 0)
+        let lock = NSLock(); var updates: [Bool] = []
+        let server = try start(ClosureExecutor { call in
+            began.signal()
+            _ = (call.agent.key == "one" ? first : second).wait(timeout: .now() + 3)
+            return ToolOutcome()
+        }, onWorking: { value in lock.lock(); updates.append(value); lock.unlock() })
+        let one = try connect(), two = try connect()
+        defer { close(one); close(two); first.signal(); second.signal() }
+        try Wire.write(request(["click", "Demo", "0"], session: "one"), to: one)
+        try Wire.write(request(["click", "Demo", "0"], session: "two"), to: two)
+        XCTAssertEqual(began.wait(timeout: .now() + 2), .success); XCTAssertEqual(began.wait(timeout: .now() + 2), .success)
+        first.signal(); _ = try Wire.read(from: one, deadline: Date().addingTimeInterval(2))
+        XCTAssertEqual(server.status["running"] as? Int, 1)
+        lock.lock(); let afterOne = updates; lock.unlock(); XCTAssertEqual(afterOne, [true, true, true])
+        server.stopCurrentTurn() // exactly the banner callback's shared control path
+        second.signal(); _ = try Wire.read(from: two, deadline: Date().addingTimeInterval(2))
+        lock.lock(); let afterBoth = updates; lock.unlock(); XCTAssertEqual(afterBoth, [true, true, true, false])
+        XCTAssertEqual(server.status["working"] as? Bool, true) // three-second grace
     }
 
     func testVersion() { XCTAssertFalse(ComputerUseHelperInfo.version.isEmpty) }

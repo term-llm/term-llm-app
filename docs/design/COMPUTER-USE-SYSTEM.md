@@ -99,7 +99,8 @@ Permissions.init(calls: Permissions.Calls = .init())
 Permissions.status() -> [String: Bool]
 Permissions.request(_ kind: Permissions.Kind)
 Permissions.openSettings(_ kind: Permissions.Kind)
-Permissions.gate(deadline: TimeInterval, abandoned: () -> Bool = { false }) throws
+Permissions.gate(deadline: TimeInterval, abandoned: () -> Bool = { false },
+                 requestUI: Bool = true) throws
 Permissions.diagnostics() -> [String: Any]
 Permissions.toolCanCapture() -> Bool
 Permissions.url(_ kind: Permissions.Kind) -> URL // static
@@ -117,13 +118,16 @@ format names, screenshot limits/phases) are public on their corresponding type.
 
 ## Integration points
 
-Marked `TODO(integration)` in code:
+Resolved by final orchestration:
 
-- Helper startup: `AX.backend = SystemAX()` (default **no** messaging timeout).
-- Before accepting requests: `Pasteboard().restoreSaved()` for crash recovery.
-- Every request: call `LockScreen.gate(stateRead:)` before touching an app.
-- Actions supplies paste's pid-targeted Command-V closure and optional `landed`
-  predicate. The primitives do not activate apps or invent focus behavior.
+- ComputerUseRuntime installs `AX.backend = SystemAX()` with no messaging timeout.
+- It restores saved pasteboard contents before accepting requests and on shutdown.
+- HarnessExecutor gates every read/action through LockScreen after permissions,
+  before Person and the app FIFO; locked calls never reach the read/action pipeline.
+- Actions supplies paste's pid-targeted Command-V closure and a landed predicate
+  watching the focused field. The pasteboard primitive invents no focus behavior.
+- Agent permission gates are passive (`requestUI: false`). Only human controls
+  invoke permission requests/open-pane methods, in the helper on MainThread.
 
 Other caller responsibilities (no missing imported modules): windows supplies
 `WindowRef` and screenshot extras; tools calls `keep` for `--keep`; helper owns
@@ -275,16 +279,14 @@ bundle lookup, hardware idle, secure-input owner and listen preflight; `Hooks`
 supplies presence activity, timers, shown-menu and pid-only posting. Its callback
 logic (`onEvent(kind:event:reenable:)`) can be tested without installing a tap.
 
-Integration TODOs: presence must install `Person.shared.hooks.pointerActivity`;
-AppSession/tools supply Settle's read closure, own/clear `needsSettle`, and reuse the
-returned capture. Helper startup calls `Apps.shared.prewarm()` and
-`Person.shared.startWatch(ownPID:)` on its existing main loop. Session lifetimes
-balance `Windows.watch/unwatch`; calls use Person's gate/after-state-read and
-interruption predicate; turn cleanup calls `Person.turnEnded` and Focus release
-(per-app last driver, or releaseAll when all drivers stop). Nothing here imports
-the unmerged session, orchestration, policy, or presence implementation. The
-window-bounds TODO is retained from upstream: read bounds per state/action, not
-through a separate live tracker.
+Final integration: ComputerUseRuntime connects Person.pointerActivity to Presence,
+starts the Person watch on the helper main loop, and prewarms Apps. HarnessExecutor
+supplies Settle's reader, clears needsSettle before waiting and reuses the returned
+capture. Session lifetimes balance Windows.watch/unwatch and Revisions.watch/reset;
+calls use Person.gate both before and after queueing, afterStateRead and its
+interruption predicate. Turn cleanup calls Person.turnEnded and Focus.release;
+shutdown calls releaseAll. The upstream window-bounds TODO remains deliberately
+outside orchestration: bounds are refreshed per state/action, not by a live tracker.
 
 Deliberate Swift differences: module-global state becomes injectable long-lived
 instances; Python context managers become throwing closure scopes; AX points are
@@ -311,7 +313,6 @@ SystemAX tests own observer-registration unsupported/error-code behavior. No UI,
 signed-helper, TCC, or live focus-restore verification is claimed. The deprecated
 `NSWorkspace.fullPath(forApplication:)` fallback is intentionally retained for the
 upstream name-resolution behavior.
-||||||| 8bfadc6
 ## Presence, policy and approvals (cu-presence)
 
 The following is additive to the primitives above. No shared base files or
@@ -495,7 +496,7 @@ Approvals.init(store: ApprovalStore = ApprovalStore(),
                sleep: @escaping (TimeInterval) -> Void = /* Thread.sleep */,
                alive: @escaping (String) -> Bool = Approvals.namedSessionAlive)
 Approvals.stored() -> (always: [String: String], session: [String])
-Approvals.approve(bundleID: String, always: Bool) throws // CONTROL SOCKET ONLY
+Approvals.approve(bundleID: String, always: Bool) throws // human-facing/library API, no agent route
 Approvals.approved(agent: AgentSession, bundleID: String, policy: PolicyDecision) -> Bool
 Approvals.ensure(agent: AgentSession, target: AppTarget, policy: PolicyDecision,
                  deadline: TimeInterval, abandoned: () -> Bool = { false }) throws
@@ -513,35 +514,34 @@ ActivityBanner.text: String // static, "term-llm is using your computer · Esc t
 ```
 
 `Approvals.approve` is **not an agent tool**. No `approve` command parser,
-self-approval fallback, or agent-key parameter is exposed. Only the authenticated
-helper **control socket**, on behalf of the main app's human-facing window,
-may route to it. Panel yeses use a private session-scoped recording method.
+self-approval fallback, agent-key parameter or helper control method is exposed.
+The main app's human-facing window edits `approvals.json` directly through
+`ApprovalStore`; panel yeses use a private session-scoped recording method.
 `ensure` refuses a denied/forbidden decision even with `ask == false`; the caller
 must still use `Policy.decide` first (disabled/security-process gates).
 
-### Integration responsibilities / TODO(integration)
+### Integrated orchestration responsibilities
 
-- Start `MainThread.run` in the **LSUIElement helper**, then use `Presence.shared`.
-  No standalone overlay process, socket, process restart logic or resources.
-- Inject `Policy(appKind: Apps.kind)` when that port lands. Default low-risk app
-  classification is only a seam; built-in lists still enforce refusals.
-- Resolve apps in orchestration, then call `Policy.decide` → `Approvals.ensure`
-  before any app read/action. Call `checkRecipient` before cross-process events,
-  `checkURL` after browser reads, and handle `blocked_url` by ending the session.
-- Keep one long-lived `Approvals` per helper. Inject `alive` using helper process
-  lookup for `pid:startTime` keys; the default refuses numeric grants after a
-  restart rather than accidentally blessing a reused pid. Named session IDs
-  persist as upstream. No dependency on unmerged AppSession/process/apps APIs.
-- Clear denials via `clearDenials` under the helper's session lock at turn boundaries;
-  don't concurrently mutate `AgentSession.denied` elsewhere. No-turn-signal denial
-  is consumed by one call. `ensure` waits only on worker threads with a wall-clock
-  deadline, stops 10 s early, and keeps the panel after timeout/disconnection.
-- Wire control-socket approval only to the main app's human UI, never to agent argv.
-- Aggregate concurrent call counts into `ActivityBanner.update(working:)` on
-  begin/end (not one false per finished call if another still runs). Wire `onStop`
-  to active-action cancellation plus refusal for the rest of the current turn.
-  Injected stop is intentionally not implemented by sending synthetic input.
-- Call `Presence.turnDone` on turn end; `ActivityBanner.stop` on helper teardown.
+- ComputerUseRuntime starts the LSUIElement helper's MainThread loop and uses
+  Presence.shared. There is no standalone overlay process/socket or resource set.
+- HarnessExecutor injects Policy(appKind: Apps.kind), resolves apps then calls
+  Policy.decide → Approvals.ensure before every app read/action. Actions calls
+  checkRecipient before cross-process AX operations/events; reads/browser action
+  chains call checkURL, with a blocked URL deactivating the app session.
+- One long-lived Approvals instance checks named sessions or pid:startTime against
+  helper process lookup. Malformed numeric identities fail closed. Turn boundaries
+  clear denials; AgentSession.withState serializes lifecycle and panel mutations.
+  Approval waits are worker-only, stop ten seconds before the deadline and retain
+  questions after disconnection/timeout as upstream.
+- There is no approval socket command or agent argv path. Persistent approval is
+  owned by ApprovalStore in the human-facing main-app window.
+- HelperServer aggregates running calls and calls ActivityBanner.update. The
+  banner's three-second linger matches server working status. Its onStop and the
+  stop control share stopCurrentTurn: active/recent agents are cancelled and
+  refused until turn-started. No synthetic input implements Stop.
+- Turn end and dead-agent reaping use one letGo path, app FIFOs and watcher/focus
+  cleanup, then Presence.turnDone only when no agent drives an app. Shutdown
+  drains reaping as well as socket workers and stops the banner.
 
 ### Intentional changes and verification limits
 
@@ -619,3 +619,40 @@ TCC prompt, real input posting or live-device verification is claimed.
 
 Shared base-file edits: **none**. The only existing file changed is this document,
 by appending this section. All Swift source and test changes are new owned files.
+
+## Final integration wave (cu-integ)
+
+`Actions.swift` ports the AX → pid-targeted mouse → fake-activation keys ladder,
+menu read/fill/pick/cancel, visible-part/scroll-area geometry, drag steps, scrolling,
+held keys/clicks with unconditional release, layout-aware typing, clipboard paste,
+value writes, rich-text selection and secondary actions. Timing/role constants and
+measured app quirks are retained. The real pointer never moves; only an explicitly
+requested Raise changes window order. The environment override is product-named
+TERM_LLM_COMPUTER_ALWAYS_SIMULATE_CLICK. Oversized wheel deltas are refused rather
+than trapping at Swift's Int32 boundary; nil text-marker results fail clearly.
+
+Public orchestration/test seams: Actions.Target (.line/.point), Actions.System,
+HarnessExecutor.Dependencies, appSessions, stillWanted, switchOff, letGo and
+agentExited; HelperConfiguration onStarted/onMaintenance/onWorking/installStop;
+ToolCallRequest withCleanupQueue; AgentSession.withState. Production defaults call
+the real primitives. Fakes replace effects, not request ordering. App sessions are
+per agent/canonical path and preserve first-use order for panel owner selection.
+
+Startup/teardown and API/result details are in [the shell guide](COMPUTER-USE-SHELL.md).
+All orchestration TODO(integration) markers are resolved. The sole remaining
+source marker is Windows' upstream live-bounds tracker note; refreshing bounds on
+each state/action is intentional. Live-view remains the existing intentional no-op.
+
+Final checks: swift build and swift test pass (**454 tests**, zero failures/skips:
+161 Core, 246 System, 47 Helper), including 32 new Actions tests, 34 executor tests
+and a concurrent working/Stop regression. The unsigned TermLLMMac build passes.
+The isolated no-grants socket smoke returns list_apps successfully and refuses
+Finder state with the missing Accessibility and Screen Recording text; the helper
+then stops cleanly. The disposable Finder app approval only bypassed the panel,
+not TCC; no grants, real app input or live-app screenshots were used.
+
+These checks do not establish real AX/action success, clipboard delivery to live
+apps, background focus preservation, TCC grant/revocation UI, real Esc delivery,
+pixel/appearance/multi-display correctness, signed LaunchServices responsibility,
+notarization or release signing. Historical per-wave counts/limits above describe
+those waves, not the final package totals. No live UI Screenshot proof is claimed.

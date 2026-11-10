@@ -3,7 +3,14 @@ import Foundation
 /// One app as one agent sees it. Lives in the helper between calls.
 public final class AppSession {
     public var agent: AgentSession
-    public var target: AppTarget
+    // These two fields are also snapshotted by panel ownership and turn reaping
+    // before taking an app FIFO; their values must not race a process restart.
+    private let contextLock = NSLock()
+    private var currentTarget: AppTarget
+    public var target: AppTarget {
+        get { contextLock.lock(); defer { contextLock.unlock() }; return currentTarget }
+        set { contextLock.lock(); defer { contextLock.unlock() }; currentTarget = newValue }
+    }
     /// A state read succeeded since the session or the turn began.
     public var active = false
     /// An action ran since the last state read.
@@ -19,10 +26,14 @@ public final class AppSession {
     public var cancel: () -> Bool = { false }
     /// The running app switched on at the first read; switch the same one off at
     /// turn end (tree.enable, windows.watch, revisions.watch).
-    public var watching: AppTarget?
+    private var watchedTarget: AppTarget?
+    public var watching: AppTarget? {
+        get { contextLock.lock(); defer { contextLock.unlock() }; return watchedTarget }
+        set { contextLock.lock(); defer { contextLock.unlock() }; watchedTarget = newValue }
+    }
 
     public init(agent: AgentSession, target: AppTarget) {
         self.agent = agent
-        self.target = target
+        self.currentTarget = target
     }
 }

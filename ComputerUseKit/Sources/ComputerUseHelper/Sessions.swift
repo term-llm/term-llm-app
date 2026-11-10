@@ -130,11 +130,18 @@ public final class Sessions {
     public func turnStarted(_ agent: AgentSession) {
         lock.lock()
         defer { lock.unlock() }
-        agent.ended = false
-        agent.signalsTurns = true
-        agent.denied.removeAll()
-        agent.instructed.removeAll()
+        agent.withState {
+            agent.ended = false
+            agent.signalsTurns = true
+            agent.denied.removeAll()
+            agent.instructed.removeAll()
+        }
         stopped.remove(agent.key)
+    }
+    /// Upstream let_go: only a cancelling end marks a signalled turn ended.
+    public func letGo(_ agent: AgentSession, cancel: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        agent.withState { if cancel { agent.cancels += 1; agent.ended = agent.signalsTurns } }
     }
     public func turnEnded(_ agent: AgentSession, cancel: Bool) {
         lock.lock()

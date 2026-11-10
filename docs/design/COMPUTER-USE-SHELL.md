@@ -1,10 +1,13 @@
 # Computer Use shell integration
 
-This is the shell wave of [COMPUTER-USE.md](COMPUTER-USE.md), ported from
-macos-harness `43d9edf`. It is **not yet an operating computer-use tool**. The
-bundled app currently uses `StubToolExecutor`; actions, app approvals, permission
-requests, and the Esc/presence UI still need their integration executors/modules.
-No Python runtime or third-party agent installation is shipped.
+The shell and final orchestration wave of [COMPUTER-USE.md](COMPUTER-USE.md),
+ported from macos-harness `43d9edf`. The bundled helper now runs
+`ComputerUseRuntime` → `HarnessExecutor`, not the stub: all eleven tools, app
+approvals, the read/action pipeline, permissions status/controls, presence and Esc
+cancellation are wired. No Python runtime or third-party agent installation is
+shipped. Fake-backed tests and the unsigned no-grants socket smoke pass; live
+AX/actions, real permission grants, appearance and signed-release behavior remain
+unverified.
 
 ## Products and ownership
 
@@ -65,6 +68,9 @@ never replays a possibly executed action. Both peers check kernel peer uid.
 public protocol ToolExecutor {
     func execute(_ call: ToolCallRequest) throws -> ToolOutcome
     func shutdown() // default no-op
+    func agentExited(_ agent: AgentSession,
+                     withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome)
+    // default no-op; HarnessExecutor uses the same letGo path as turn-ended
 }
 ```
 
@@ -82,6 +88,8 @@ that another main-thread callback needs.
 - `withAppQueue(path, work)`: shared FIFO across agents. Resolve the app first,
   then pass its **canonical bundle path**, not the user's alias. Other apps have
   independent queues. Queue waiters are cancellable.
+- `withCleanupQueue(path, work)`: the **same FIFO**, without the ended turn's
+  cancellation predicate, so cancellation cannot prevent resource release.
 
 `ToolOutcome(exit: Int32, stdout: String, stderr: String)` also has `.text` and
 `.failure` factories for text/JSON results. Throw `HarnessError` for a normal tool
@@ -90,10 +98,25 @@ will reconnect with stdin. The server already performs this preflight for the
 table's stdin-taking tools, strips exactly one terminal newline, and fills the
 argument. It converts execution failures to exit 1 (usage errors to exit 2).
 
-`StubToolExecutor` implements help, skill, turn-started and turn-ended [--cancel].
-Everything else fails clearly as not implemented. An integration executor should
-retain/delegate these lifecycle commands; they use the synchronized Sessions
-methods to update turn and cancellation marks.
+`HarnessExecutor` implements help, skill, doctor, turn hooks and the eleven tools.
+Its injectable `Dependencies` supplies the existing Apps/Windows/Person/Focus,
+Presence, Permissions, Screenshot, Approvals, Policy, Instructions and Actions
+instances, with effect-only closures for gates, reading, settling, screenshots,
+refetching and action dispatch. `Actions.System` similarly injects event posting,
+clocks, layout, focus, clipboard, presence and app/window primitives. Tests execute
+the real ordering/validation/state machine with fake effects.
+
+`HarnessExecutor.appSessions(_:)` returns sessions in first-use order (important
+for file-panel ownership), keyed by agent key and canonical app path. Mutations of
+an AppSession's revisions/active/settle/screenshot state occur under that app's
+FIFO. AgentSession state, including collection mutations, is synchronized across
+app workers, turn hooks and approval callbacks. AppSession target/watch snapshots
+are also synchronized for panel resolution and reaping.
+
+`StubToolExecutor` is retained only as a shell/protocol fixture. The helper app
+never selects it. There is **no agent-callable `approve` command**, parser entry or
+executor path. The person approves in the panel or the main app's window, which
+uses `ApprovalStore` directly.
 
 ### Sessions and server
 
@@ -103,10 +126,11 @@ methods to update turn and cancellation marks.
   keys by nonempty `TERM_LLM_SESSION_ID`, then `TERM_LLM_COMPUTER_SESSION`, then
   the first non-shell/wrapper parent pid + birth time. It records all `.app`
   bundle paths on the chain, and detects an orphaned wrapper left by a dead host.
-- Use `.turnStarted`, `.turnEnded(cancel:)`, `.isStopped`, `.hasEnded`,
-  `.cancellationGeneration`, `.hostGone`, and `.reap` rather than reading/writing
-  mutable AgentSession turn marks concurrently. App element/diff session storage
-  remains the executor/core integration's responsibility.
+- Use `.turnStarted`, `.letGo(cancel:)`, `.isStopped`, `.hasEnded`,
+  `.cancellationGeneration`, `.hostGone`, and `.reap` for lifecycle marks.
+  `HarnessExecutor` owns app element/diff state. `HelperServer.reapSessions()` calls
+  executor `agentExited` for every reaped process session, under the same app FIFOs;
+  reaping is drained with socket workers before shutdown.
 - Tool callers must have an ancestor whose executable basename is exactly
   `term-llm`. This is advisory product scoping, not a security boundary. The sole
   development override is the hidden `<state>/allow-any-caller` file. Environment
@@ -115,7 +139,11 @@ methods to update turn and cancellation marks.
 - `HelperConfiguration(environment:grants:allow:)` supplies permission hooks.
   `grants` returns `[String: Bool]` (default empty); `allow` takes a grant name
   (default explicit not-implemented failure). These hooks run off-main; marshal
-  permission UI via `MainThread` as necessary.
+  permission UI via `MainThread` as necessary. Production names are Accessibility,
+  Screen Recording, Input Monitoring and Event Posting. Agent permission gates are
+  passive (`requestUI: false`): missing grants return the shared missing-permissions
+  text, never open Settings or request a grant. Only the human `allow` control calls
+  the helper's permission request/open-pane methods.
 - `HelperServer(executor:configuration:sessions:)` exposes start/stop,
   requestShutdown, status, and answer (the latter for deterministic protocol
   tests). `start` acquires flock before binding a 0600 socket in a 0700 folder.
@@ -126,6 +154,10 @@ methods to update turn and cancellation marks.
   standalone development helpers idle out after 15 minutes. Reaping runs every
   two seconds. Logs contain only known command names/timing and lifecycle, never
   argv, environment, app names, UI contents, or typed text.
+- `Sessions.letGo(cancel:)` preserves upstream turn semantics: plain turn-ended
+  releases app sessions but permits a new read; `--cancel` also increments the
+  cancellation generation and marks a signalled turn ended until turn-started.
+  Denials are cleared at turn boundaries. Lifecycle cleanup uses `withCleanupQueue`.
 
 ## Controls and status
 
@@ -170,3 +202,52 @@ strips DYLD variables). This is not proof of a GUI/LaunchServices/TCC flow.
 Unsigned build and local socket fixtures do not prove release signing,
 notarization, grants, real UI actions, or Esc cancellation. Those checks belong
 to integration/device and Developer ID release verification.
+
+## Final integration behavior and verification
+
+Request order is tool-specific argument validation, app argument, ended turn,
+Apps.resolve, file-panel owner, Policy.decide, Approvals.ensure, Permissions.gate,
+LockScreen.gate, Person.gate, canonical-app FIFO, Person.gate again, deadline/client
+check, AppSession lookup, cancellation predicate, then read/action. An AX
+cannotComplete is reported as the named app not responding, never retried as a
+second action. Reads switch on Tree/Windows/Revisions once per process, reuse
+Settle's capture, check browser URLs before screenshots, number/diff the tree and
+record a shot for pixel coordinates. `TERM_LLM_COMPUTER_DIFF=0` disables diffs.
+Keys settle pending UI first; only set_value refetches ignoring a changed value.
+Browser chains check potentially changed URLs before the next action.
+
+get_app_state --json returns `{app, screenshot: {url} | null, text}`; --keep copies
+the screenshot into permanent proof and prints/returns its path/URI. Screenshot
+failure retains the tree and numbered actions, but pixel actions require a shot.
+Actions return the fixed “Done. Call `get_app_state`…” sentence, or JSON null.
+Limits are ten clicks, 20,000 Unicode scalars for typing, 30 seconds total holds
+(and the slow-app typing cap), with a one-second deadline margin checked again
+after settling/refetching.
+
+Startup installs SystemAX, restores the clipboard before serving, starts the
+Person watch on the AppKit loop, prewarms Apps and schedules screenshot expiry on
+the maintenance timer. The working callback aggregates running calls; ActivityBanner
+supplies the same three-second grace as status. Esc and the stop control call
+`stopCurrentTurn()`. Shutdown drains calls/reaping and releases Focus, AX tree
+switches/watchers, saved clipboard, presence, banner and expired screenshots.
+
+Verified on cu-integ: `swift build && swift test` (**454 tests**: 161 Core, 246
+System, 47 Helper; zero failures/skips), and the unsigned TermLLMMac xcodebuild.
+New logic coverage is 32 Actions tests, 34 executor tests and one concurrent-server
+working/Stop regression, plus removal-of-approve parser assertions. Parameterized
+Python cases are grouped into Swift methods/loops; Python import introspection,
+disabled switches, installer/telemetry commands and live-app tests are not claimed.
+
+Unsigned helper socket smoke used a disposable TERM_LLM_COMPUTER_HOME with
+allow-any-caller and a disposable Finder ApprovalStore entry (to bypass the human
+approval panel, **not TCC**). list_apps exited 0 with a JSON array including Finder.
+get_app_state --app Finder exited 1, before any state tree capture or app input, with:
+
+> term-llm Computer Use cannot work without Accessibility and Screen Recording.
+> Ask the user to allow term-llm Computer Use under Accessibility and Screen
+> Recording in System Settings; the Computer Use item of the term-llm menu shows
+> what is missing.
+
+The helper stopped cleanly on SIGTERM with empty stderr. No grant was requested,
+no app input was posted, and no live AX/TCC/UI success is claimed. The two
+main-app ComputerUse files and Core ApprovalStore were not edited by integration.

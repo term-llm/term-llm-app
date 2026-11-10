@@ -108,8 +108,8 @@ public final class Pasteboard {
         }
         return true
     }
-    // TODO(integration): actions supplies the pid-targeted Command-V callback and
-    // an optional landed predicate from the read/settle path. No focus is changed here.
+    // Actions supplies pid-targeted Command-V and watches the focused field for
+    // the optional landed predicate. No focus is changed by this primitive.
     public func paste(_ text: String, format: String, sendPasteKey: () throws -> Void,
                       timeout: TimeInterval = Pasteboard.readTimeout, landed: (() -> Bool)? = nil) throws {
         Self.pasteLock.lock(); defer { Self.pasteLock.unlock() }
@@ -150,7 +150,7 @@ public final class Pasteboard {
     }
     /// A helper that died mid-paste left the clipboard in a file. A half-written
     /// file restores nothing; a newer copy by the person is never overwritten.
-    // TODO(integration): call once at helper startup, before accepting requests.
+    // ComputerUseRuntime calls this before accepting requests, and on shutdown.
     public func restoreSaved() {
         Self.pasteLock.lock(); defer { Self.pasteLock.unlock() }
         let path = stateDirectory().appendingPathComponent(Self.restoreFile)

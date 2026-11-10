@@ -5,7 +5,7 @@ import Foundation
 /// Thin wrappers over accessibility. Any thread may call them. No messaging timeout
 /// is set by default: the system default applies to every call, as upstream.
 public final class SystemAX: AXBackend {
-    // TODO(integration): the helper installs SystemAX in AX.backend at startup.
+    // ComputerUseRuntime installs SystemAX in AX.backend before serving requests.
 
     // The one-call hierarchy copy is deliberately off upstream: measured on Lab
     // (12 Oct) it took 11 ms against 30 ms for the walk, but left out a web view's

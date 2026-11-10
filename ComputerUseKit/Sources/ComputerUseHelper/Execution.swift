@@ -14,9 +14,21 @@ public struct ToolCallRequest {
     public let cwd: String
     public let deadline: Date
     public let abandoned: () -> Bool
+    /// Same FIFO, but turn cancellation must not prevent releasing its resources.
+    public let withCleanupQueue: (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
     /// The executor resolves the app first, then uses its canonical bundle path.
     /// This queue is shared across ALL agents, not just this session.
     public let withAppQueue: (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
+    public init(name: String, arguments: [String: Any], stdin: String?, environment: [String: String],
+                agent: AgentSession, sessions: Sessions, cwd: String, deadline: Date,
+                abandoned: @escaping () -> Bool,
+                withCleanupQueue: ((_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome)? = nil,
+                withAppQueue: @escaping (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome) {
+        self.name = name; self.arguments = arguments; self.stdin = stdin; self.environment = environment
+        self.agent = agent; self.sessions = sessions; self.cwd = cwd; self.deadline = deadline
+        self.abandoned = abandoned; self.withAppQueue = withAppQueue
+        self.withCleanupQueue = withCleanupQueue ?? withAppQueue
+    }
 }
 
 public struct NeedStdin: Error { public init() {} }
@@ -56,8 +68,12 @@ public protocol ToolExecutor {
     func execute(_ call: ToolCallRequest) throws -> ToolOutcome
     /// Called after socket workers finish, with the AppKit loop still available.
     func shutdown()
+    func agentExited(_ agent: AgentSession, withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome)
 }
-extension ToolExecutor { public func shutdown() {} }
+extension ToolExecutor {
+    public func shutdown() {}
+    public func agentExited(_ agent: AgentSession, withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome) {}
+}
 
 /// Integration seam: no Accessibility, event posting, or capture is done here.
 public struct StubToolExecutor: ToolExecutor {

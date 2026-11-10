@@ -52,7 +52,6 @@ public enum ToolParser {
         "format": ("str", "text, md or html. Defaults to text"),
         "agent": ("str", "The agent CLI to install the skill for"),
         "scope": ("str", "project or user"),
-        "always": ("bool", "Keep the approval after this session"),
         "cancel": ("bool", "Also stop the action the agent still runs"),
         "tool": ("str", "A tool name"),
         "json": ("bool", "Print the result object as JSON"),
@@ -125,7 +124,6 @@ public enum ToolParser {
         ToolDefinition(name: "skill"),
         ToolDefinition(name: "turn-started"),
         ToolDefinition(name: "turn-ended", params: ["cancel"], defaults: ["cancel": false]),
-        ToolDefinition(name: "approve", params: ["app", "always"], bare: ["app"], defaults: ["always": false]),
         ToolDefinition(name: "help", bare: ["tool"]),
     ]
     public static var table: [String: ToolDefinition] {

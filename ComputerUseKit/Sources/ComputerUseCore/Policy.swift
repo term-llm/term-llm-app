@@ -237,7 +237,7 @@ public final class Policy {
     ) {
         files = [managedFile, userFile]
         self.appKind = appKind
-        // TODO(integration): supply Apps.kind so browsers receive the high-risk warning.
+        // HarnessExecutor supplies Apps.kind so browsers receive the high-risk warning.
     }
     public func load() throws -> Configuration {
         try Configuration(

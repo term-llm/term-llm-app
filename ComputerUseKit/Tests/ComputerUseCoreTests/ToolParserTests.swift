@@ -107,9 +107,13 @@ final class ToolParserTests: XCTestCase {
     }
     func testTablesAndHelp() throws {
         XCTAssertEqual(ToolParser.tools.count, 11)
+        XCTAssertThrowsError(try ToolParser.parse(["approve", "Finder"]))
+        XCTAssertThrowsError(try ToolParser.help("approve"))
+        XCTAssertFalse(try ToolParser.help().contains("approve"))
+        XCTAssertTrue(ComputerUseSkill.text.contains("Never operate the permission or settings controls of term-llm Computer Use: they are the person's."))
         XCTAssertEqual(
             Set(ToolParser.commands.map(\.name)),
-            Set(["doctor", "skill", "turn-started", "turn-ended", "approve", "help"]))
+            Set(["doctor", "skill", "turn-started", "turn-ended", "help"]))
         for tool in ToolParser.tools {
             XCTAssertFalse(tool.description.isEmpty)
             XCTAssertTrue(tool.example.hasPrefix(commandName + " " + tool.name))
