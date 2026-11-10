@@ -68,7 +68,7 @@ class WorkflowBudgetTests(unittest.TestCase):
         triggers = text.split("\npermissions:", 1)[0]
         self.assertNotIn("pull_request", triggers, "Signing secrets must never run for pull requests")
         self.assertIn("branches: [main]", triggers)
-        for path in ("'TermLLMMac/**'", "'scripts/ci/notarized-mac-build.py'"):
+        for path in ("'TermLLMMac/**'", "'scripts/ci/**'", "'TermLLMComputerUse/**'", "'ComputerUseKit/**'"):
             self.assertIn(path, triggers)
         self.assertIn("if: github.ref == 'refs/heads/main'", text)
         self.assertIn("persist-credentials: false", text)
@@ -90,6 +90,22 @@ class WorkflowBudgetTests(unittest.TestCase):
                 self.assertRegex(line, r"^\s+(OP_SERVICE_ACCOUNT_TOKEN): \$\{\{ secrets\.\1(?: != '')? \}\}$")
         self.assertIn("stage-notary-key", steps["Stage the notary key on the RAM disk"])
         self.assertNotIn("env:", steps["Notarize and staple"], "The long notary wait must not hold secrets")
+        for name in ("Fetch SHA-256 pinned Sparkle 2.10.1 signing tools", "Archive and export with Developer ID signing", "Sign and publish Sparkle archive and appcast"):
+            self.assertNotIn("env:", steps[name])
+            self.assertNotIn("OP_SERVICE_ACCOUNT_TOKEN", steps[name])
+        order = list(steps)
+        self.assertLess(order.index("Fetch SHA-256 pinned Sparkle 2.10.1 signing tools"), order.index("Install Developer ID profiles and import the identity into a RAM-disk keychain"))
+        self.assertLess(order.index("Notarize and staple"), order.index("Sign and publish Sparkle archive and appcast"))
+        self.assertLess(order.index("Sign and publish Sparkle archive and appcast"), order.index("Publish the notarized app as a GitHub release"))
+        self.assertIn("cancel-in-progress: false", text)
+        archive = steps["Archive and export with Developer ID signing"]
+        self.assertIn("SWIFT_ACTIVE_COMPILATION_CONDITIONS=", archive)
+        self.assertIn("OTHER_SWIFT_FLAGS=", archive)
+        for setting in ("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "OTHER_SWIFT_FLAGS"):
+            line, = [line.strip() for line in archive.splitlines() if line.strip().startswith(setting + "=")]
+            self.assertEqual(line.removesuffix(chr(92)).rstrip(), setting + "=",
+                             "Archive overrides must clear inherited local-test compiler conditions")
+        self.assertNotIn("SPARKLE_LOCAL_FEED_TEST", archive)
 
         helper = (ROOT / "scripts/ci/notarized-mac-build.py").read_text()
         names = re.search(r"SECRET_NAMES = \((.*?)\)", helper, re.S).group(1)

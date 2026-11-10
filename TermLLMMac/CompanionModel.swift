@@ -24,6 +24,9 @@ final class CompanionModel: ObservableObject {
     /// Registered for Open at Login, but waiting for approval in System Settings.
     @Published private(set) var loginItemNeedsApproval = false
     @Published private(set) var busy = false
+    @Published private(set) var preparingForTermination = false
+    private var activeRefreshes = 0
+
     @Published private(set) var actionError: String?
     @Published private(set) var lastAction: String?
     @Published private(set) var diagnostics = DiagnosticsReport(checks: [])
@@ -199,6 +202,9 @@ final class CompanionModel: ObservableObject {
     }
 
     func refresh() async {
+        guard !preparingForTermination else { return }
+        activeRefreshes += 1
+        defer { activeRefreshes -= 1 }
         await reloadOwnership()
         guard let controller else {
             status = nil
@@ -543,6 +549,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func refreshLoginItemPathIfNeeded() {
+        guard !preparingForTermination else { return }
         loginItem.refreshIfNeeded(appExecutable: appExecutableURL)
         syncLoginItem()
     }
@@ -646,6 +653,17 @@ final class CompanionModel: ObservableObject {
 
     // MARK: - Quit
 
+    /// Freeze before awaiting: scheduled/user mutations must not enter while
+    /// existing detached work is being drained for bundle replacement.
+    func prepareForTermination() async throws {
+        preparingForTermination = true
+        try await AppUpdateDrain.waitUntil(timeout: .seconds(300)) {
+            !self.busy && self.activeRefreshes == 0
+        }
+    }
+
+    func cancelTerminationPreparation() { preparingForTermination = false }
+
     func quitMenuBarApp() {
         NSApplication.shared.terminate(nil)
     }
@@ -663,6 +681,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func stopServiceAndQuit() {
+        guard !busy, !preparingForTermination else { return }
         guard let controller else {
             NSApplication.shared.terminate(nil)
             return
@@ -670,6 +689,7 @@ final class CompanionModel: ObservableObject {
         busy = true
         Task {
             _ = try? await perform { try controller.stop() }
+            busy = false
             NSApplication.shared.terminate(nil)
         }
     }
@@ -682,7 +702,7 @@ final class CompanionModel: ObservableObject {
                                   quiet: Bool = false,
                                   work: @escaping @Sendable () throws -> T,
                                   done: @escaping (T) -> Void) {
-        guard !busy else { return }
+        guard !busy, !preparingForTermination else { return }
         busy = true
         if !quiet { actionError = nil }
         lastAction = message

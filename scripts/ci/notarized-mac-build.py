@@ -7,7 +7,8 @@ read-only service account token that only `op` is given. The job mounts an
 owner-only RAM disk (memory only; anything macOS pages out goes to its
 encrypted swap), and the only secret material ever stored lands there: a job
 keychain holding the Developer ID key, piped in from memory and imported as
-non-extractable, and the notary API key. `cleanup` removes exactly what
+non-extractable, the notary API key, Sparkle signing key and pinned downloads
+SSH credentials. `cleanup` removes exactly what
 `prepare` added: the keychain and its search-list entry, the provisioning
 profiles it installed, the RAM disk and the work directory. Secret values never
 appear in anything this script prints.
@@ -26,6 +27,10 @@ import secrets
 import shutil
 import subprocess
 import sys
+
+# Also support importlib-based portable tests.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sparkle_updates
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +71,8 @@ OP_TOKEN = "OP_SERVICE_ACCOUNT_TOKEN"
 OP_CONFIG_DIR = "op"  # on the RAM disk, so `op` never writes to the user's config
 # Each secret is read from the 1Password reference in <NAME>_REF.
 SECRET_NAMES = ("MACOS_SIGN_P12", "MACOS_SIGN_PASSWORD", "MACOS_NOTARY_KEY", "MACOS_NOTARY_KEY_ID",
-                "MACOS_NOTARY_ISSUER_ID")
+                "MACOS_NOTARY_ISSUER_ID", "SPARKLE_PUBLIC_KEY", "SPARKLE_PRIVATE_KEY",
+                "DOWNLOADS_SSH_PRIVATE_KEY", "DOWNLOADS_SSH_KNOWN_HOSTS")
 
 
 class CommandError(RuntimeError):
@@ -441,6 +447,7 @@ def prepare(work, source, build_number, profiles_dir, profiles_destination, run,
     state["installedProfiles"] = installed
     save_state(work, state)
     secrets_dir = attach_ram_disk(work, run)
+    public_key = sparkle_updates.prepare(work, source, secrets_dir, lambda args: _run(run, args))
     certificate = pkcs12_bytes(source.read("MACOS_SIGN_P12", secrets_dir))
     password = text_secret(source.read("MACOS_SIGN_PASSWORD", secrets_dir), "MACOS_SIGN_PASSWORD")
     sha1, name = import_identity(work, certificate, password, run)
@@ -449,8 +456,15 @@ def prepare(work, source, build_number, profiles_dir, profiles_destination, run,
             raise ValueError(f"{summary['name']} was not generated for the Developer ID certificate in "
                              f"MACOS_SIGN_P12; regenerate it with that certificate")
     version_path = work / "version.txt"
-    version = version_path.read_text(encoding="utf-8").strip() if version_path.exists() else None
-    (work / SETTINGS_FILE).write_text(build_settings(name, summaries, build_number, version), encoding="utf-8")
+    version = version_path.read_text(encoding="utf-8").strip() if version_path.exists() else ""
+    version = sparkle_updates.advance_version(work, secrets_dir, lambda args: _run(run, args),
+                                             version, build_number)
+    version_path.write_text(version + "\n", encoding="utf-8")
+    # A literal // in base64 is an xcconfig comment, even in quoted values.
+    escaped_key = public_key.replace("/", "$(TERMLLM_SPARKLE_SLASH)")
+    settings = (build_settings(name, summaries, build_number, version) +
+                "TERMLLM_SPARKLE_SLASH = /\n" + f"SPARKLE_PUBLIC_ED_KEY = {escaped_key}\n")
+    (work / SETTINGS_FILE).write_text(settings, encoding="utf-8")
     with open(work / EXPORT_OPTIONS_FILE, "wb") as handle:
         plistlib.dump(export_options(sha1, summaries), handle)
     return name
@@ -602,8 +616,12 @@ def publish(app, work, repository, commit, run, environ=os.environ, echo=print):
         raise ValueError("Repository must be owner/name")
     metadata = release_metadata(app)
     archive = work / metadata["asset"]
-    _run(run, ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)])
+    marker = work / "sparkle-published.sha256"
+    if not archive.is_file() or not marker.is_file():
+        raise ValueError("Sparkle feed must be published successfully before GitHub release")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if marker.read_text() != digest:
+        raise ValueError("Release archive changed after Sparkle publication")
     notes = work / "release-notes.md"
     notes.write_text(release_notes(metadata, commit, digest), encoding="utf-8")
     created = _run(run, ["gh", "release", "create", metadata["tag"], str(archive), "--repo", repository,
@@ -686,7 +704,8 @@ def main(argv=None, run=subprocess.run, environ=os.environ):
     prepare_command.add_argument("--profiles-destination", default=str(XCODE_PROFILES_DIR))
     commands.add_parser("select-version", help="Choose the next Mac patch version").add_argument("--repository", required=True)
     commands.add_parser("stage-notary-key", help="Copy the notary API key onto the RAM disk")
-    for name in ("verify", "notarize"):
+    commands.add_parser("fetch-sparkle-tools", help="Download and verify pinned nonsecret signing tools")
+    for name in ("verify", "notarize", "publish-sparkle"):
         commands.add_parser(name).add_argument("--app", required=True)
     publish_command = commands.add_parser("publish", help="Create the GitHub release")
     publish_command.add_argument("--app", required=True)
@@ -706,6 +725,7 @@ def main(argv=None, run=subprocess.run, environ=os.environ):
                            options.profiles_destination, run)
             print(f"Signing with {name}")
         elif options.command == "verify":
+            sparkle_updates.verify_app(options.app, work)
             verify_signature(options.app, run)
             print("Developer ID signature, hardened runtime, timestamps and entitlements verified")
         elif options.command == "stage-notary-key":
@@ -713,12 +733,23 @@ def main(argv=None, run=subprocess.run, environ=os.environ):
             print("Notary key staged on the RAM disk")
         elif options.command == "notarize":
             notarize(options.app, work, run)
+        elif options.command == "fetch-sparkle-tools":
+            sparkle_updates.fetch_tools(work)
+        elif options.command == "publish-sparkle":
+            try:
+                sparkle_updates.publish(options.app, work, release_metadata(options.app),
+                                        secrets_directory(work, run), lambda args: _run(run, args))
+            finally:
+                directory = secrets_directory(work, run)
+                for name in sparkle_updates.FILES:
+                    (directory / name).unlink(missing_ok=True)
         elif options.command == "publish":
             publish(options.app, work, options.repository, options.commit, run, environ)
         else:
             return 0 if cleanup(work, run) else 1
     except (ValueError, OSError, CommandError, plistlib.InvalidFileException) as error:
-        print(f"error: {error}", file=sys.stderr)
+        help_text = f"; see {sparkle_updates.HELP}" if options.command in ("prepare", "publish-sparkle") else ""
+        print(f"::error::{error}{help_text}", file=sys.stderr)
         return 1
     return 0
 

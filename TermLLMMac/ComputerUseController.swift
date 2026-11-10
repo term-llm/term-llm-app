@@ -248,6 +248,9 @@ final class ComputerUseController: NSObject, ObservableObject {
     private var window: NSWindow?
     private var observer: NSObjectProtocol?
     private var launching = false
+    private var launchedHelper: NSRunningApplication?
+    private var pendingLaunches = 0
+    private var activeMutations = 0
     private var quitting = false
     private var nextLaunch = Date.distantPast
     private var backoff: TimeInterval = 1
@@ -371,10 +374,13 @@ final class ComputerUseController: NSObject, ObservableObject {
             "TERM_LLM_COMPUTER_HOME": installation.state.path,
             "TERM_LLM_COMPUTER_SOCKET": Paths.socketPath(),
         ]
-        NSWorkspace.shared.openApplication(at: helper, configuration: config) { [weak self] _, error in
+        pendingLaunches += 1
+        NSWorkspace.shared.openApplication(at: helper, configuration: config) { [weak self] app, error in
             let message = error?.localizedDescription
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.pendingLaunches -= 1
+                self.launchedHelper = app
                 self.launching = false
                 if !self.enabled || self.quitting {
                     self.send("shutdown")
@@ -385,7 +391,7 @@ final class ComputerUseController: NSObject, ObservableObject {
         }
     }
     func send(_ method: String, grant: String? = nil) {
-        guard !suppressed else { return }
+        guard !suppressed, !quitting else { return }
         let epoch = generation
         Task {
             guard epoch == generation else { return }
@@ -403,9 +409,56 @@ final class ComputerUseController: NSObject, ObservableObject {
     func togglePause() { send(status.paused ? "resume" : "pause") }
     func stop() { send("stop") }
 
+    /// Stop relaunch/polling first, settle any in-flight LaunchServices request,
+    /// then retain the precise application identities until they report exit.
+    /// The helper may drain active requests for 130 seconds after shutdown ack.
+    func beginTerminationPreparation() {
+        quitting = true
+        generation += 1
+        polling?.cancel()
+        polling = nil
+    }
+
+    func prepareForTermination() async throws {
+        beginTerminationPreparation()
+        guard !suppressed else { return }
+        try await AppUpdateDrain.waitUntil(timeout: .seconds(30)) {
+            self.pendingLaunches == 0 && self.activeMutations == 0
+        }
+        let expectedURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/term-llm Computer Use.app")
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.termllm.app.computeruse")
+        var helpers = running
+        if let launchedHelper, !launchedHelper.isTerminated, !helpers.contains(launchedHelper) {
+            helpers.append(launchedHelper)
+        }
+        // LaunchServices can return a same-ID app from another installation.
+        // Even a previously returned identity must belong to this bundle.
+        guard helpers.allSatisfy({ app in
+            app.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == expectedURL
+        }) else {
+            throw NSError(domain: "ComputerUseController", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Another app copy owns the running Computer Use helper."])
+        }
+        guard !helpers.isEmpty else { return }
+        _ = await Task.detached(priority: .userInitiated) { try? ComputerUseTransport.send("shutdown") }.value
+        // Do not wait on PID alone (which can be reused), or on socket removal.
+        // NSRunningApplication objects preserve each original process identity.
+        try await AppUpdateDrain.waitUntil(timeout: .seconds(150)) {
+            helpers.allSatisfy(\.isTerminated)
+        }
+    }
+
+    func cancelTerminationPreparation() {
+        quitting = false
+        generation += 1
+        if enabled && !suppressed { startPolling() }
+    }
+
     /// Termination is the sole bounded wait on the main thread: ensure shutdown
     /// reaches the helper before this process exits. Its host monitor is fallback.
     func shutdownForApplicationQuit() {
+        guard !quitting else { return }
         quitting = true
         generation += 1
         polling?.cancel()
@@ -419,8 +472,11 @@ final class ComputerUseController: NSObject, ObservableObject {
         _ = done.wait(timeout: .now() + 1.5)
     }
     func refreshInstallations(repair: Bool = false) {
+        guard !quitting else { return }
         let files = installation
+        activeMutations += 1
         Task {
+            defer { activeMutations -= 1 }
             let value = await Task.detached(priority: .utility) { () -> ComputerUseSetup in
                 if repair { try? files.installCommand(onlyIfOwned: true) }
                 return ComputerUseSetup(commandInstalled: files.linkIsCurrent, skill: files.skillState)
@@ -455,9 +511,11 @@ final class ComputerUseController: NSObject, ObservableObject {
         }
     }
     func forgetApproval(_ bundleID: String) {
-        guard !suppressed else { return }
+        guard !suppressed, !quitting else { return }
         let store = ApprovalStore(directory: installation.state)
+        activeMutations += 1
         Task {
+            defer { activeMutations -= 1 }
             error = await Task.detached(priority: .userInitiated) { () -> String? in
                 do {
                     try store.remove(bundleID: bundleID)
@@ -470,9 +528,11 @@ final class ComputerUseController: NSObject, ObservableObject {
     func installCommand() { install(skill: false) }
     func installSkill() { install(skill: true) }
     private func install(skill: Bool) {
-        guard !suppressed else { return }
+        guard !suppressed, !quitting else { return }
         let setup = installation
+        activeMutations += 1
         Task {
+            defer { activeMutations -= 1 }
             error = await Task.detached(priority: .userInitiated) { () -> String? in
                 do {
                     if skill { try setup.installSkill() } else { try setup.installCommand() }

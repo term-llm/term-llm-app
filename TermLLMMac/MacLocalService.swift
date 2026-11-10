@@ -16,6 +16,44 @@ import Combine
 /// isolated connection/credential store; there is no second Chat UI.
 @MainActor
 final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegate {
+    private(set) static weak var active: MacLocalServiceController?
+    private var preparingForTermination = false
+    private var modelInitialized = false
+    private var loginRefreshTask: Task<Void, Never>?
+    private(set) var loginRefreshPending = false
+
+    /// Admission stays closed until the detached mutation itself finishes,
+    /// even if a termination wait times out or the user retries quitting.
+    func startLoginRefresh(_ work: @escaping @Sendable () -> Void) {
+        guard !loginRefreshPending, !preparingForTermination else { return }
+        loginRefreshPending = true
+        loginRefreshTask = Task {
+            await Task.detached(priority: .utility, operation: work).value
+            loginRefreshPending = false
+            loginRefreshTask = nil
+        }
+    }
+
+    func waitForLoginRefresh(timeout: Duration = .seconds(30)) async throws {
+        try await AppUpdateDrain.waitUntil(timeout: timeout) { !self.loginRefreshPending }
+    }
+
+    /// Normal app termination (including Sparkle) cannot complete until its
+    /// filesystem/CLI mutations and its embedded helper have actually drained.
+    func prepareForTermination() async throws {
+        preparingForTermination = true
+        computerUse.beginTerminationPreparation()
+        if modelInitialized { try await model.prepareForTermination() }
+        try await waitForLoginRefresh()
+        try await computerUse.prepareForTermination()
+    }
+
+    func cancelTerminationPreparation() {
+        preparingForTermination = false
+        if modelInitialized { model.cancelTerminationPreparation() }
+        computerUse.cancelTerminationPreparation()
+    }
+
     /// (base URL, bearer credential, open Chat). `open: false` only adds This Mac.
     var onConnection: ((URL, String, Bool) -> Void)?
 
@@ -46,6 +84,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     // Remote-only installs stay lazy. Existing managed installs initialize the
     // model at launch for background CLI updates. Chat stays in the client.
     private lazy var model: CompanionModel = {
+        modelInitialized = true
         let model = CompanionModel(home: home)
         model.openLocalChatHandler = { [weak self] endpoint, token in
             guard let self else { return }
@@ -73,6 +112,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     func startApplication() {
         guard !applicationStarted else { return }
         applicationStarted = true
+        Self.active = self
         createStatusItemIfNeeded()
         computerUse.start()
         updateComputerUseIcon()
@@ -83,7 +123,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
         // An older build wrote a launch agent for Open at Login, which System
         // Settings lists as a background item; move it to Open at Login.
         if let executable = Bundle.main.executableURL, let system = AppLoginItem.systemService {
-            Task.detached(priority: .utility) {
+            startLoginRefresh {
                 AppLoginItem(mainApp: system).refreshIfNeeded(appExecutable: executable)
             }
         }
@@ -133,6 +173,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     }
 
     @objc func showLocalService() {
+        guard !preparingForTermination else { return }
         startApplication()
         localServicesEnabled = true
         model.refreshLoginItemPathIfNeeded()
@@ -233,6 +274,7 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
             addItem("Restart Service", action: #selector(restartService), to: menu,
                     enabled: canControl && model.status?.running == true)
         }
+        AppUpdateController.shared.addMenuItems(to: menu)
         menu.addItem(.separator())
         addItem("Quit term-llm", action: #selector(quitTermLLM), to: menu)
     }

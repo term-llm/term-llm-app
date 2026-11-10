@@ -34,6 +34,7 @@ struct TermLLMMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
+            AppUpdateCommands(updates: AppUpdateController.shared)
             MacCommands(center: DesktopCommandCenter.shared, window: MacClientWindow.shared,
                         localService: MacLocalServiceBridge.shared)
         }

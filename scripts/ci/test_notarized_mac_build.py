@@ -34,6 +34,10 @@ P12 = b"\x30\x82p12 bytes"  # DER starts with a SEQUENCE
 NOTARY_KEY = b"-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n"
 TOKEN = "ops_service-account-token-value"
 REFERENCES = {
+    "SPARKLE_PUBLIC_KEY": "op://term-llm CI/Mac Sparkle/public key",
+    "SPARKLE_PRIVATE_KEY": "op://term-llm CI/Mac Sparkle/private key",
+    "DOWNLOADS_SSH_PRIVATE_KEY": "op://term-llm CI/Mac downloads SSH/private key",
+    "DOWNLOADS_SSH_KNOWN_HOSTS": "op://term-llm CI/Mac downloads SSH/known hosts",
     "MACOS_SIGN_P12": "op://term-llm CI/Developer ID Application/developer-id.p12",
     "MACOS_SIGN_PASSWORD": "op://term-llm CI/Developer ID Application/password",
     "MACOS_NOTARY_KEY": "op://term-llm CI/App Store Connect notary key/AuthKey_KEYID12345.p8",
@@ -41,6 +45,10 @@ REFERENCES = {
     "MACOS_NOTARY_ISSUER_ID": "op://term-llm CI/App Store Connect notary key/issuer id",
 }
 VALUES = {
+    "SPARKLE_PUBLIC_KEY": base64.b64encode(b"p" * 32),
+    "SPARKLE_PRIVATE_KEY": base64.b64encode(b"s" * 32),
+    "DOWNLOADS_SSH_PRIVATE_KEY": b"-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n",
+    "DOWNLOADS_SSH_KNOWN_HOSTS": b"143.198.76.107 ssh-ed25519 AAAA\n",
     "MACOS_SIGN_P12": P12,
     "MACOS_SIGN_PASSWORD": P12_PASSWORD.encode(),
     "MACOS_NOTARY_KEY": NOTARY_KEY,
@@ -100,7 +108,7 @@ class FakeTools:
         if input is not None:
             self.inputs[len(self.calls) - 1] = input
         self.envs[len(self.calls) - 1] = env
-        handler = getattr(self, "_" + args[0].replace("-", "_"))
+        handler = getattr(self, "_" + Path(args[0]).name.replace("-", "_"))
         return handler(args)
 
     def input_for(self, *prefix):
@@ -135,6 +143,15 @@ class FakeTools:
 
     def _newfs_hfs(self, args):
         return completed(args)
+
+    def _sign_update(self, args):
+        return completed(args, stdout=base64.b64encode(bytes(64)))
+
+    def _swift(self, args):
+        return completed(args)
+
+    def _ssh_keygen(self, args):
+        return completed(args, stdout=b"ssh-ed25519 AAAA")
 
     def _op(self, args):
         assert args[:4] == ["op", "read", "--no-newline", "--cache=false"], args
@@ -224,6 +241,10 @@ class TemporaryJob(unittest.TestCase):
         self.runner_temp.mkdir()
         self.work = self.runner_temp / "term-llm-mac-release.abc123"
         self.work.mkdir()
+        (self.work / "version.txt").write_text("1.0.1\n")
+        self.feed_fetch = mock.patch.object(build.sparkle_updates, "fetch", return_value=None)
+        self.feed_fetch.start()
+        self.addCleanup(self.feed_fetch.stop)
         self.profiles_dir = self.root / "profiles"
         self.profiles_dir.mkdir()
         self.destination = self.root / "Provisioning Profiles"
@@ -454,7 +475,8 @@ class PrepareTests(TemporaryJob):
         secrets_dir = str(self.work / build.SECRETS_DIR)
         reads = [index for index, call in enumerate(self.tools.calls) if call[0] == "op"]
         self.assertEqual([self.tools.calls[index][-1] for index in reads],
-                         [REFERENCES["MACOS_SIGN_P12"], REFERENCES["MACOS_SIGN_PASSWORD"]])
+                         [REFERENCES[name] for name in ("SPARKLE_PUBLIC_KEY", "SPARKLE_PRIVATE_KEY",
+                     "DOWNLOADS_SSH_PRIVATE_KEY", "DOWNLOADS_SSH_KNOWN_HOSTS", "MACOS_SIGN_P12", "MACOS_SIGN_PASSWORD")])
         for index in reads:
             call = self.tools.calls[index]
             self.assertEqual(call[call.index("--config") + 1], secrets_dir + "/" + build.OP_CONFIG_DIR)
@@ -556,6 +578,10 @@ class AppFixture(TemporaryJob):
         (self.extension / "Contents").mkdir(parents=True)
         with open(self.app / "Contents/Info.plist", "wb") as handle:
             plistlib.dump({"CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "7",
+                           "SUFeedURL": "https://term-llm.com/mac/appcast.xml",
+                           "SUPublicEDKey": VALUES["SPARKLE_PUBLIC_KEY"].decode(),
+                           "SURequireSignedFeed": True, "SUVerifyUpdateBeforeExtraction": True,
+                           "SUSignedFeedFailureExpirationInterval": 0, "SUAllowsAutomaticUpdates": False,
                            "LSMinimumSystemVersion": "14.0"}, handle)
         self.reset_signatures()
 
@@ -728,6 +754,9 @@ class VersionTests(TemporaryJob):
 
 class PublishTests(AppFixture):
     def test_creates_a_latest_release_for_the_commit(self):
+        archive = self.work / "term-llm-macos-1.0.1.zip"
+        archive.write_bytes(b"exact Sparkle zip")
+        (self.work / "sparkle-published.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
         summary = self.work / "summary.md"
         tag = build.publish(self.app, self.work, "owner/repo", SHA, self.tools,
                             environ={"GITHUB_STEP_SUMMARY": str(summary)}, echo=lambda _: None)

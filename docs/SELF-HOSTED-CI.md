@@ -81,7 +81,7 @@ Before calling migration complete, push the new workflows, verify no active work
 
 ## Notarized Mac builds
 
-**Notarized Mac build** (`.github/workflows/notarized-mac-build.yml`) runs here for every push to `main` that changes the app, and on manual dispatch from `main`. It archives the `TermLLMMac` scheme in Release with Developer ID signing, exports and verifies it, notarizes and staples it, checks that Gatekeeper accepts it, then creates a release `mac-v<version>` with `term-llm-macos-<version>.zip`, marked Latest. CI automatically increments the patch version within the project's `MARKETING_VERSION` major/minor: `1.0.1`, `1.0.2`, and so on. To start a new minor series, manually change `MARKETING_VERSION` to `1.1` in both project configurations in `TermLLM.xcodeproj/project.pbxproj`; the next release is `1.1.1`. CI reads all published Mac releases to choose the next patch, ignores drafts, prereleases and the legacy `mac-v1.0-2` naming, and applies the version to both app and extension through its temporary xcconfig. It does not commit version bumps back to Git or change iOS versions. Failed/cancelled builds do not consume a patch; manual reruns after a successful publication get the next patch. The internal build number remains the workflow run number. Releases of this private repository are visible to its collaborators only. Installed copies do not update themselves; download the newest release.
+**Notarized Mac build** (`.github/workflows/notarized-mac-build.yml`) runs here for every push to `main` that changes the app, and on manual dispatch from `main`. It archives the `TermLLMMac` scheme in Release with Developer ID signing, exports and verifies it, notarizes and staples it, checks that Gatekeeper accepts it, then creates a release `mac-v<version>` with `term-llm-macos-<version>.zip`, marked Latest. CI automatically increments the patch version within the project's `MARKETING_VERSION` major/minor: `1.0.1`, `1.0.2`, and so on. To start a new minor series, manually change `MARKETING_VERSION` to `1.1` in both project configurations in `TermLLM.xcodeproj/project.pbxproj`; the next release is `1.1.1`. CI reads published GitHub Mac releases and, after authenticating it, the website appcast to choose the next patch, ignores drafts, prereleases and the legacy `mac-v1.0-2` naming, and applies the version to both app and extension through its temporary xcconfig. It does not commit version bumps back to Git or change iOS versions. Failed/cancelled builds do not consume a patch; manual reruns after a successful publication get the next patch. The internal build number remains the workflow run number. Releases of this private repository are visible to its collaborators only. The same stapled ZIP is EdDSA-signed for Sparkle and published with a signed appcast to `https://term-llm.com/mac/` before the private GitHub release; see [Sparkle updates](#sparkle-updates). **The website downloads are public.**
 
 One-time setup:
 
@@ -108,7 +108,7 @@ One-time setup:
 
 Secrets never touch the disk:
 
-- The job only runs for `main`, never for pull requests. The service account token enters only two short steps, and only as a step environment value: the runner writes `run` scripts to disk, so it is never interpolated into one (`scripts/ci/test_workflows.py` enforces both). The presence check receives a boolean. The helper removes the token from the environment its other tools inherit; only `op` gets it.
+- The job only runs for `main`, never for pull requests. The service account token enters only explicitly enumerated short staging steps, and only as a step environment value: the runner writes `run` scripts to disk, so it is never interpolated into one (`scripts/ci/test_workflows.py` enforces both). The presence check receives a boolean. The helper removes the token from the environment its other tools inherit; only `op` gets it.
 - `op read` returns each secret straight into the helper's memory, never into an environment variable or file. `op` runs with caching off and its configuration directory on the RAM disk, so it leaves nothing in your own 1Password CLI setup.
 - Each run mounts an 8 MiB RAM disk at `$RUNNER_TEMP/term-llm-mac-release.*/secrets`: memory only (anything macOS pages out goes to its encrypted swap), hidden from Finder, ownership enforced, root `0700`. If it isn't mounted that way, the job stops before using a secret.
 - The `.p12` is piped from memory into `security import` and the key is imported **non-extractable** into a keychain on the RAM disk, protected by a random password that is never stored. The keychain is put first on your keychain search list while the job runs.
@@ -119,3 +119,133 @@ Secrets never touch the disk:
 What this does not protect against: the runner runs as you, so for the few seconds a staging step runs, other processes running as you could read the service account token from its environment, and `ps` briefly shows the `.p12` password in `security import`'s arguments. While the job runs, your processes can use (not export) the signing key. Anyone who can push a workflow change to `main` can make the runner read the vault, as with any CI secret. For isolation from your own apps, run the runner as a separate macOS user.
 
 `scripts/ci/test_notarized_mac_build.py` covers the helper against fake Apple and 1Password tools, and `scripts/ci/test_workflows.py` guards the trigger and secret boundaries. Only a run with the real service account shows that 1Password and Apple accept it.
+
+## Sparkle updates
+
+**One-time setup, code only until Sam explicitly applies it.** This PR does not
+provision secrets, change the server, or publish a build. Review the public
+distribution decision before enabling this: **anyone can download the notarized
+Mac app from term-llm.com**, not just private-repository collaborators. The
+Sparkle feed URL is stable: `https://term-llm.com/mac/appcast.xml`.
+
+### 1. Generate and retain the real update-signing key
+
+Use Sparkle **2.10.1** tools from the pinned upstream release. The helper pins
+its tools archive SHA-256; Xcode's exact package requirement and committed
+`Package.resolved` pin the framework revision, whose `Package.swift` pins the
+binary checksum. Review those pins together when upgrading Sparkle.
+
+On Sam's trusted Mac, not in CI:
+
+```sh
+# Sparkle-2.10.1.tar.xz from the upstream GitHub release; verify before extracting.
+# SHA256: 1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+./bin/generate_keys --account term-llm-app
+./bin/generate_keys --account term-llm-app -p
+# Export into a private temporary location (prefer a protected RAM disk).
+umask 077
+./bin/generate_keys --account term-llm-app -x /PRIVATE-TEMP/sparkle-private-key
+```
+
+Create item **Mac Sparkle** in the **term-llm CI** vault, with exact fields:
+
+| Field | Contents | Used by |
+| --- | --- | --- |
+| `private key` | Entire exported base64 private key (concealed field) | `sign_update --ed-key-file`, on the job RAM disk only |
+| `public key` | Public base64 key from `generate_keys -p` (32 bytes decoded) | CI `SPARKLE_PUBLIC_ED_KEY` xcconfig → app `SUPublicEDKey` |
+
+Keep an offline backup. Losing the key can strand installed clients; never
+replace it casually. Preserve the Keychain account as well. Securely remove
+the temporary export after importing it into 1Password. Do not paste key values
+into GitHub Actions variables, a workflow, command arguments, or this repo.
+The existing read-only vault service account needs access to the new items;
+**OP_SERVICE_ACCOUNT_TOKEN remains the only GitHub secret**.
+
+### 2. Create the restricted upload credential and server directory
+
+Generate a separate Ed25519 SSH key on a trusted machine, with a meaningful
+comment (for example `term-llm-app-mac-downloads-ci`), dedicated solely to this
+upload account. The unattended key has no passphrase; protect its 1Password
+item and the runner accordingly. Never reuse a personal admin key.
+
+Create item **Mac downloads SSH** in **term-llm CI**:
+
+| Field | Contents |
+| --- | --- |
+| `private key` | Complete unencrypted OpenSSH Ed25519 private key (concealed field) |
+| `known hosts` | Pinned host-key line for `143.198.76.107`, verified through a trusted console/admin channel, not an unverified runtime `ssh-keyscan` |
+
+The uploader is fixed to `term-llm-updates@143.198.76.107`, port 22, with relative
+destination `./`. The SSH server confines that path to
+`/var/www/term-llm-downloads/mac/`. It cannot write the Hugo tree, nginx config,
+SSH authorization, or execute arbitrary commands. CI enforces strict host-key
+checking, disables agent/password forwarding and interactive prompts, and
+keeps key/known-hosts files only on the existing owner-only RAM disk. Review
+`rrsync` restrictions as part of server setup, not merely client-side flags.
+
+Server preparation is bundled here because the matching public repo must not
+receive a public PR for this private-app work:
+
+- [`deployment/setup-mac-downloads.sh`](deployment/setup-mac-downloads.sh):
+  reviewed one-time account/directory/forced-command setup; accepts **only the
+  public SSH key**. Run manually as root, after installing `rsync`/`rrsync`.
+- [`deployment/mac.conf`](deployment/mac.conf): candidate public-repo
+  `ops/nginx/mac.conf`, to install as
+  `/etc/nginx/term-llm-locations.d/mac.conf` after review. The existing HTTPS
+  vhost already includes that directory. No public branch/PR is needed now.
+
+The setup script deliberately refuses an existing account rather than silently
+changing one. Review `sshd -T -C user=term-llm-updates,host=localhost,addr=127.0.0.1`,
+then reload SSH explicitly. Prove that SSH shell/TTY/forwarding, downloads from
+the account (`rrsync -wo`), deletions, and `../` uploads are rejected, while two
+ordinary rsync uploads into `./` succeed. Use a harmless fixture file and
+remove it administratively after the test. The root-owned home/authorized_keys
+must remain outside the writeable upload root. Keep the account out of sudo.
+
+Install the nginx snippet; run `nginx -t` before manually reloading nginx.
+Check HTTPS certificates and a fixture's Content-Type/cache headers. Only
+`appcast.xml` and versioned ZIP names are served; directory listings, temporary
+files and dotfiles return 404. The downloads tree must **not** be under
+`/var/www/term-llm`: the public docs deploy uses `rsync -a --delete` there.
+Keep appcast uncached/revalidated, ZIP URLs immutable, and old archives retained
+while any published feed references them. Server-side retention is an explicit
+admin task; CI has no delete permission.
+
+### 3. Release and failure policy
+
+The main-only workflow first validates the new 1Password configuration and
+injects the public key. The token is stripped before launching other tools.
+After Developer ID signing, notarization and stapling, CI creates one final ZIP,
+signs its exact bytes with `sign_update`, produces a feed with a bounded history
+of 20 releases, and signs that XML too. Appcast build numbers are the monotonic
+workflow run numbers (`sparkle:version`), with the marketing version separately
+in `sparkle:shortVersionString`; minimum macOS is **14.0**. Short embedded notes
+work without private GitHub access.
+
+Publication is serialized. Public ZIP names include the marketing version, monotonic build number and full
+SHA-256 (`term-llm-macos-VERSION-BUILD-SHA256.zip`); the private GitHub asset
+retains `term-llm-macos-VERSION.zip`. A retry cannot reuse a URL for different
+bytes. The uploader uses `--ignore-existing` and verifies the public HTTPS
+object's byte count and SHA-256 before exposing it in the feed.
+The content-addressed ZIP uploads first using rsync's
+normal temporary-file/rename behavior, then `appcast.xml` uploads in a separate
+command, again with atomic rename. No `--inplace`, server shell, delete, or
+public artifact storage. Readers see the old feed until the new asset exists.
+The private GitHub release uses the **same ZIP**, and only runs after successful
+website publication. Missing new secrets, an inaccessible/malformed old feed,
+signature mismatch, nonmonotonic build, or failed transfer fails closed.
+Credential/signing/upload errors name this setup section. A first-feed HTTPS 404 is permitted;
+other failures must not silently reset history. A failed ZIP upload never
+publishes the feed. A failed feed upload can leave an unreferenced ZIP, but not
+a broken client update.
+
+**Why withhold the GitHub release on failure?** A successful release must mean
+the configured update channel is available, not silently ship another
+manual-download-only app. Conversely, a GitHub outage after website publication
+may leave the website ahead. The next main run authenticates website history
+and advances the marketing patch beyond both publication channels; it never
+overwrites the earlier archive or regresses its build. An orphaned upload from
+a failed feed commit has a distinct content-addressed URL and can be retained
+or removed administratively. No
+real website/key/Developer ID end-to-end claim can be made until Sam configures
+the server/items and observes the first main run.
