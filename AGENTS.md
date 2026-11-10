@@ -10,7 +10,7 @@
 - Follow existing patterns; keep changes scoped and add regression coverage for fixes.
 - Preserve per-connection credential, cookie and WebKit isolation. Never put secrets in URLs, defaults or logs.
 - Keep native navigation responsive independently of remote requests; preserve the retained Chat document across tab switches.
-- Do not edit generated `DerivedData/` or capture output. Do not reset developer simulators.
+- Do not edit generated `DerivedData/` or capture output. Generated mocks and screenshots go in the ignored `output/`; copy only what a doc cites into `docs/`. Do not reset developer simulators.
 
 ## Verification
 - Build app changes: `xcodebuild build -project TermLLM.xcodeproj -scheme TermLLM -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`.
