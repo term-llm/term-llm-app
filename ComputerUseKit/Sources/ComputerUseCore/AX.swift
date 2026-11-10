@@ -45,12 +45,20 @@ public protocol AXBackend: AnyObject {
     func frame(_ element: UIElementRef) -> CGRect?
     /// Hit test inside one app; with no app it asks the whole system.
     func at(_ app: UIElementRef?, x: Double, y: Double) -> UIElementRef?
+    /// Optional one-call hierarchy copy; nil falls back to per-element batched reads.
+    /// Values have exactly the requested attribute order. Backends without the private
+    /// hierarchy API need not implement this optimization.
+    func subtree(_ element: UIElementRef, _ names: [String], maxChildren: Int) -> [(UIElementRef, [Any?])]?
     /// False once the element is destroyed (kAXErrorInvalidUIElement).
     func alive(_ element: UIElementRef) -> Bool
     /// Hear `names` on `element` of process `pid`, delivered on the main run loop.
     /// The callback gets (notification name, element) and must only store.
     func observe(pid: pid_t, element: UIElementRef, names: [String],
                  callback: @escaping (String, UIElementRef) -> Void) throws -> AXObservation
+}
+
+public extension AXBackend {
+    func subtree(_ element: UIElementRef, _ names: [String], maxChildren: Int) -> [(UIElementRef, [Any?])]? { nil }
 }
 
 public protocol AXObservation: AnyObject {
