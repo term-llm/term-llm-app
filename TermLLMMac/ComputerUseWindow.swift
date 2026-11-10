@@ -14,8 +14,10 @@ final class ComputerUseViewController: NSViewController {
     private let skill = NSTextField(labelWithString: "")
     private let error = NSTextField(wrappingLabelWithString: "")
     private let pause = NSButton(title: "Pause Computer Use", target: nil, action: nil)
+    private let approvals = NSStackView()
     private let content = NSStackView()
     private var renderedGrants: [String: Bool]?
+    private var renderedApprovals: [ComputerUseApprovedApp]?
 
     init(controller: ComputerUseController) {
         self.controller = controller
@@ -28,7 +30,7 @@ final class ComputerUseViewController: NSViewController {
         headline.font = .systemFont(ofSize: 19, weight: .semibold)
         let explanation = NSTextField(
             wrappingLabelWithString:
-                "Let term-llm agents read and operate apps on this Mac. Grants belong only to the separate term-llm Computer Use helper. Use Stop in the menu to cancel an agent's turn."
+                "Let term-llm agents read and operate apps on this Mac. Only the separate term-llm Computer Use helper holds the permissions. An agent asks before it first uses each app. While one works, press Esc or choose Stop in the menu to stop it."
         )
         explanation.textColor = .secondaryLabelColor
         enable.target = self
@@ -38,11 +40,14 @@ final class ComputerUseViewController: NSViewController {
         grants.orientation = .vertical
         grants.alignment = .leading
         grants.spacing = 10
+        approvals.orientation = .vertical
+        approvals.alignment = .leading
+        approvals.spacing = 8
         let commandRow = row([command, button("Install / Repair…", #selector(installCommand))])
         let skillRow = row([skill, button("Install Skill", #selector(installSkill))])
         error.textColor = .systemRed
         let stack = content
-        [headline, explanation, enable, separator(), grants, separator(), commandRow, skillRow, pause, error].forEach {
+        [headline, explanation, enable, separator(), grants, separator(), approvals, separator(), commandRow, skillRow, pause, error].forEach {
             stack.addArrangedSubview($0)
         }
         stack.orientation = .vertical
@@ -58,6 +63,7 @@ final class ComputerUseViewController: NSViewController {
             explanation.widthAnchor.constraint(equalTo: stack.widthAnchor),
             error.widthAnchor.constraint(equalTo: stack.widthAnchor),
             grants.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            approvals.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         controller.objectWillChange.sink { [weak self] in
             // Published sends before the value changes; render on the next turn.
@@ -96,7 +102,36 @@ final class ComputerUseViewController: NSViewController {
                 grants.addArrangedSubview(row([label, allow]))
             }
         }
+        if renderedApprovals != controller.alwaysAllowed {
+            renderedApprovals = controller.alwaysAllowed
+            renderApprovals()
+        }
         fitWindowToContent()
+    }
+    private func renderApprovals() {
+        for child in approvals.arrangedSubviews {
+            approvals.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        let title = NSTextField(labelWithString: "Always allowed apps")
+        title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        approvals.addArrangedSubview(title)
+        if controller.alwaysAllowed.isEmpty {
+            let note = NSTextField(
+                wrappingLabelWithString: "None. Apps you choose Always Allow for appear here; remove one to be asked again.")
+            note.textColor = .secondaryLabelColor
+            approvals.addArrangedSubview(note)
+            note.widthAnchor.constraint(equalTo: approvals.widthAnchor).isActive = true
+            return
+        }
+        for app in controller.alwaysAllowed {
+            let label = NSTextField(labelWithString: app.name)
+            label.toolTip = app.bundleID
+            let remove = button("Remove", #selector(forgetApproval(_:)))
+            remove.identifier = NSUserInterfaceItemIdentifier(app.bundleID)
+            remove.setAccessibilityLabel("Remove \(app.name)")
+            approvals.addArrangedSubview(row([label, remove]))
+        }
     }
     func fitWindowToContent() {
         guard isViewLoaded, let window = view.window else { return }
@@ -130,6 +165,9 @@ final class ComputerUseViewController: NSViewController {
     @objc private func togglePause() { controller.togglePause() }
     @objc private func installCommand() { controller.installCommand() }
     @objc private func installSkill() { controller.installSkill() }
+    @objc private func forgetApproval(_ sender: NSButton) {
+        if let bundleID = sender.identifier?.rawValue { controller.forgetApproval(bundleID) }
+    }
     @objc private func allowGrant(_ sender: NSButton) {
         if let grant = sender.identifier?.rawValue { controller.send("allow", grant: grant) }
     }

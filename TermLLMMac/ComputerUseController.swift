@@ -90,6 +90,12 @@ struct ComputerUseInstallation: Sendable {
     }
 }
 
+/// An app the person chose "Always allow" for in the helper's approval panel.
+struct ComputerUseApprovedApp: Sendable, Equatable {
+    let bundleID: String
+    let name: String
+}
+
 struct ComputerUseStatus: Sendable, Equatable {
     var running = 0
     var working = false
@@ -136,6 +142,7 @@ final class ComputerUseController: NSObject, ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var commandInstalled = false
     @Published private(set) var skillInstalled = false
+    @Published private(set) var alwaysAllowed: [ComputerUseApprovedApp] = []
     var onChange: (() -> Void)?
     private let installation: ComputerUseInstallation
     private let suppressed: Bool
@@ -229,6 +236,8 @@ final class ComputerUseController: NSObject, ObservableObject {
             status = value
             connected = true
             error = nil
+            // "Always allow" in the helper's panel changes the list while it shows.
+            if window?.isVisible == true { refreshApprovals() }
             // Do not reset the crash backoff on a single successful heartbeat.
         } else {
             connected = false
@@ -309,6 +318,36 @@ final class ComputerUseController: NSObject, ObservableObject {
             skillInstalled = values.1
         }
     }
+    /// approvals.json is the helper's file; it reads it on every check, so a
+    /// removal here takes effect at the agent's next first use of that app.
+    func refreshApprovals() {
+        let store = ApprovalStore(directory: installation.state)
+        Task {
+            alwaysAllowed = await Task.detached(priority: .utility) { () -> [ComputerUseApprovedApp] in
+                store.always().keys.map { bundleID in
+                    var name = bundleID
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                        name = FileManager.default.displayName(atPath: url.path)
+                        if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
+                    }
+                    return ComputerUseApprovedApp(bundleID: bundleID, name: name)
+                }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            }.value
+        }
+    }
+    func forgetApproval(_ bundleID: String) {
+        guard !suppressed else { return }
+        let store = ApprovalStore(directory: installation.state)
+        Task {
+            error = await Task.detached(priority: .userInitiated) { () -> String? in
+                do {
+                    try store.remove(bundleID: bundleID)
+                    return nil
+                } catch { return error.localizedDescription }
+            }.value
+            refreshApprovals()
+        }
+    }
     func installCommand() { install(skill: false) }
     func installSkill() { install(skill: true) }
     private func install(skill: Bool) {
@@ -339,6 +378,7 @@ final class ComputerUseController: NSObject, ObservableObject {
             self.window = window
         }
         refreshInstallations()
+        refreshApprovals()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

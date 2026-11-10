@@ -40,6 +40,14 @@ final class ApprovalStoreTests: XCTestCase {
         try "{\"always\":{}}".write(to: store.file, atomically: true, encoding: .utf8)
         XCTAssertEqual(store.always(), [:])
     }
+    func testRemoveTakesBackOneApprovalOnly() throws {
+        try store.remove(bundleID: "absent")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.file.path))
+        try store.save(bundleID: "com.example.A")
+        try store.save(bundleID: "com.example.B")
+        try store.remove(bundleID: "com.example.A")
+        XCTAssertEqual(Array(store.always().keys), ["com.example.B"])
+    }
     func testPIDNeverStoredAlways() throws {
         try store.save(bundleID: "#pid:42")
         XCTAssertEqual(store.always(), [:])

@@ -26,6 +26,13 @@ public final class ApprovalStore {
         entries[bundleID] = date
         try Self.write(["always": entries, "modified": date], to: file)
     }
+    /// Take back an "Always allow" (the main app's Computer Use window). The app is
+    /// asked about again at its next first use in a session.
+    public func remove(bundleID: String, now: Date = Date()) throws {
+        var entries = always()
+        guard entries.removeValue(forKey: bundleID) != nil else { return }
+        try Self.write(["always": entries, "modified": ISO8601DateFormatter().string(from: now)], to: file)
+    }
     public var sessionsFile: URL {
         file.deletingLastPathComponent().appendingPathComponent("sessions.json")
     }
