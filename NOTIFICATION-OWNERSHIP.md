@@ -206,8 +206,9 @@ bundle. `.github/workflows/native-notification-tests.yml` adds a narrowly scoped
 manual-only workflow-dispatch self-hosted MacBook simulator job (no PR trigger),
 read-only contents permission, pinned
 checkout without persisted credentials, no secrets or signing, and a 30-minute
-job bound. It chooses an already available iPhone/iOS >=17 deterministically from
-`xcrun simctl` JSON; it never provisions a runtime/device. `xcodebuild test` uses
+job bound. Its shared job in `native-simulator-tests.yml` creates and boots a
+job-owned disposable iPhone simulator with `owned-ios-simulator.py`, then deletes
+only that simulator during cleanup; it never resets developer devices. `xcodebuild test` uses
 `CODE_SIGNING_ALLOWED=NO`, focuses the notification/browser/voice unit suites and
 excludes opt-in live E2E tests. Logs stream to the job output; temporary build
 results are cleaned locally, with no GitHub artifact upload or Actions cache.

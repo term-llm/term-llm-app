@@ -16,7 +16,7 @@
 
 ## Verification
 - Build iOS app changes: `xcodebuild build -project TermLLM.xcodeproj -scheme TermLLM -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`.
-- Run relevant XCTest suites with `xcodebuild test`, an explicit simulator destination, and `-only-testing:TermLLMTests/<Suite>`. See `.github/workflows/native-notification-tests.yml` for the unsigned test setup.
+- Run relevant XCTest suites with `xcodebuild test`, an explicit simulator destination, and `-only-testing:TermLLMTests/<Suite>`, or `-testPlan <name>` (`TestPlans/`: `TermLLM-Notifications`, `TermLLM-LinkedDevices`, `TermLLM-UnitTests`). See `.github/workflows/native-simulator-tests.yml` for the unsigned test setup.
 - Build Mac app changes: `xcodebuild build -project TermLLM.xcodeproj -scheme TermLLMMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` (compile check only: unsigned builds cannot use the Keychain).
 - Mac tests: `xcodebuild test -project TermLLM.xcodeproj -scheme TermLLMMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -only-testing:TermLLMMacTests`.
 - Mac packages: `(cd TermLLMMacKit && swift test)`; `(cd ComputerUseKit && swift build && swift test)`.
