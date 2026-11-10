@@ -117,7 +117,11 @@ class LinkedDevicesContractTests(unittest.TestCase):
         self.assertIn('accessibilityIdentifier("linkedDevices.confirmationCode")', pairing)
         self.assertNotIn("Authenticating this iPhone", pairing)
 
-        connections = (ROOT / "TermLLM/PhoneHubView.swift").read_text()
+        connections = "\n".join((ROOT / path).read_text() for path in (
+            "TermLLM/Hub/PhoneHubConnectionsView.swift",
+            "TermLLM/Hub/PhoneHubConnectionComponents.swift",
+            "TermLLM/Hub/PhoneHubConnectionDetailView.swift",
+        ))
         self.assertIn('title = "Linked device"', connections)
         self.assertIn('"\\(style.title) · \\(status.text)"', connections)
         self.assertIn('Button("Connect now") { linkedDevices.reconnectNow', connections)
