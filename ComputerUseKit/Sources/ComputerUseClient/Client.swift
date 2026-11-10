@@ -60,7 +60,11 @@ public enum ComputerUseClient {
         var stdin: String?
         var retried = false
         while true {
-            let fd = try connect(deadline: deadline)
+            // A turn boundary means nothing to a helper that is not running, and
+            // must never open the app: term-llm sends one at every turn.
+            guard let fd = try connect(deadline: deadline, launch: !turnBoundary(argv)) else {
+                return ["result": ["exit": 0, "stdout": "", "stderr": ""]]
+            }
             let answer: [String: Any]
             do {
                 defer { close(fd) }
@@ -93,6 +97,10 @@ public enum ComputerUseClient {
         }
     }
 
+    static func turnBoundary(_ argv: [String]) -> Bool {
+        ["turn-started", "turn-ended"].contains(argv.first ?? "")
+    }
+
     private static func tryConnect() throws -> Int32? {
         let path = Paths.socketPath()
         do {
@@ -114,8 +122,9 @@ public enum ComputerUseClient {
         } catch WireError.timedOut { return nil } catch { throw Errors.make("helper_unavailable") }
     }
 
-    private static func connect(deadline: Date) throws -> Int32 {
+    private static func connect(deadline: Date, launch: Bool) throws -> Int32? {
         if let fd = try tryConnect() { return fd }
+        if !launch { return nil }
         guard FileManager.default.fileExists(atPath: Paths.stateDirectory().appendingPathComponent("enabled").path)
         else {
             throw Errors.make("app_unavailable")

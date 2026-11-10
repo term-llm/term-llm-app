@@ -73,6 +73,30 @@ public enum ComputerUseSkill {
         - Drag does nothing: run `Raise` on the window line, drag again. Other window: copy, paste (Finder moves: `super+alt+v`).
         - After 15 idle minutes numbers are gone, apps are untouched: read again.
 
+        ## In spawn_script
+
+        Plain shell calls are the default. Use a cell only to repeat read, find, act without a turn per step (scroll until a row shows, fill many fields), or to keep long trees out of your context. Each command is one `shell` call; read the text it prints, not `--json`: output over 50 KB is cut, and cut text still reads, cut JSON does not.
+
+        ```js
+        const q = w => "'" + String(w).replaceAll("'", "'\\''") + "'";
+        async function cu(...args) {
+          const r = await tools.shell({command: "term-llm-computer " + args.map(q).join(" ")});
+          if (!/\nexit_code: 0(\n|$)/.test(r.text)) throw new Error(r.text); // read again; never blindly retry
+          return (r.text.match(/^stdout:\n([\s\S]*?)(?=\n\nstderr:|\nexit_code:)/) || [, ""])[1];
+        }
+        const index = (state, pattern) => +(state.split("\n").find(l => pattern.test(l)) || "").match(/^[~+\t]*(\d+) /)?.[1];
+
+        let state = await cu("get_app_state", "--app", "TextEdit");
+        await cu("click", "--app", "TextEdit", "--element_index", index(state, /\bbutton Save\b/));
+        state = await cu("get_app_state", "--app", "TextEdit");
+        text(state.split("\n").filter(l => /^[~+]/.test(l)).join("\n")); // only what changed
+        ```
+
+        - The rules above still hold: read before every action, use numbers only from the newest read, stop on any failure.
+        - `text(...)` only what you need. To see a screenshot: `const v = await tools.view_image({file_path: state.match(/^Screenshot \(\d+x\d+ px\): (.+)$/m)[1]}); image(v.content.find(b => b.type === "image"));`
+        - Await every call, one at a time: a UI does one thing at once.
+        - Let a cell that drives apps finish (`wait_script`) or `cancel_script` it before you end your turn: when the turn ends its apps are let go, and later actions fail.
+
         ## When a command fails
 
         - `No session is open`, `No element has the ID`, `older read`, `went away`, `not running any more`: run `get_app_state`, use the new numbers.

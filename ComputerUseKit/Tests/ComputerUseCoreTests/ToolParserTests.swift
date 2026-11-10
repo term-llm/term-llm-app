@@ -111,6 +111,10 @@ final class ToolParserTests: XCTestCase {
         XCTAssertThrowsError(try ToolParser.help("approve"))
         XCTAssertFalse(try ToolParser.help().contains("approve"))
         XCTAssertTrue(ComputerUseSkill.text.contains("Never operate the permission or settings controls of term-llm Computer Use: they are the person's."))
+        // The spawn_script example is JavaScript in a raw string: its shell quoting
+        // and escapes must reach the model unchanged.
+        XCTAssertTrue(ComputerUseSkill.text.contains(#"replaceAll("'", "'\\''")"#))
+        XCTAssertTrue(ComputerUseSkill.text.contains(#"/\nexit_code: 0(\n|$)/"#))
         XCTAssertEqual(
             Set(ToolParser.commands.map(\.name)),
             Set(["doctor", "skill", "turn-started", "turn-ended", "help"]))

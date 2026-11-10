@@ -28,5 +28,6 @@ let package = Package(
         .testTarget(name: "ComputerUseSystemTests", dependencies: ["ComputerUseSystem"],
                     resources: [.copy("Fixtures")]),
         .testTarget(name: "ComputerUseHelperTests", dependencies: ["ComputerUseHelper"]),
+        .testTarget(name: "ComputerUseClientTests", dependencies: ["ComputerUseClient"]),
     ]
 )

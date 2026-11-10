@@ -135,10 +135,20 @@ term-llm.app (main) ── launches (LaunchServices) ──▶ term-llm Computer
 
 ### Sessions, turns and cancellation
 
-- Session key: `TERM_LLM_SESSION_ID` when present (to be exported by core's
-  shell tool), else `TERM_LLM_COMPUTER_SESSION`, else the harness
+- Session key: `TERM_LLM_SESSION_ID` when present (core's shell tool exports
+  the session's ID and it wins over inherited values and model `env`
+  overrides), else `TERM_LLM_COMPUTER_SESSION`, else the harness
   process-ancestry key.
-- `turn-started` / `turn-ended [--cancel]` are kept, for term-llm core to call later.
+- Core runs `term-llm-computer turn-started` / `turn-ended [--cancel]` around
+  every tool-using, non-ephemeral session run (`internal/computeruse`), one
+  at a time and in order, only on macOS while `<state>/enabled` and the socket
+  exist. An interrupted run sends `--cancel`. Turn commands never open the app:
+  with no helper listening they exit 0.
+- `spawn_script` cells call the same command through `tools.shell`, so they
+  carry the same session. A cell can outlive its turn; the skill tells agents
+  to finish or cancel cells that drive apps before ending the turn. The skill
+  ships no code-mode module: term-llm refuses to activate a skill with a
+  module when the agent has no `spawn_script`, and most agents don't.
 - Cancellation sources: client gone, Esc / Stop on the Mac, Pause, user input
   on the driven app. Each keeps its own error text.
 
