@@ -106,6 +106,8 @@ struct ListenSessionFetching: ListenFetching {
     }
 
     /// A task delegate that keeps the session delegate's redirect rule.
+    // Sendability: immutable queue/usage/@Sendable event sink. Delegate callbacks
+    // forward values onto the transfer queue; the inherited redirect rule is stateless.
     private final class Forwarder: ListenMediaSession.Delegate, URLSessionDataDelegate, @unchecked Sendable {
         let queue: DispatchQueue
         let usage: ListenNetworkUsage
@@ -195,6 +197,9 @@ private final class LoaderRead: ListenTransferRead {
 /// servers ignoring ranges/omitting totals fall back to whole-file fetching.
 /// A partial file outlives the app and resumes with If-Range, so a file that
 /// changed on the server starts over.
+// Sendability: mutable transfer/file/read state is confined to queue after init
+// (and exclusive deinit). AVFoundation must install this delegate on that same
+// queue; public controls enqueue and progress synchronizes through queue.sync.
 final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     struct Saved: Sendable {
         let file: URL
@@ -400,6 +405,8 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         queue.async { self.add(pending.read) }
     }
 
+    // Ownership handoff, not arbitrary concurrent access: read() transfers use
+    // of this non-Sendable read to queue. Callers must not mutate it afterward.
     private struct PendingRead: @unchecked Sendable {
         let read: any ListenTransferRead
     }

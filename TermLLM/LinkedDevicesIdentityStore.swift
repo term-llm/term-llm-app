@@ -104,6 +104,7 @@ struct LinkedDevicesKeychainStorage: LinkedDevicesSecureStorage {
 #endif
 
 /// Test-only storage. Production construction always uses Keychain.
+// Sendability: every access to values is under lock; reads return Data values.
 final class LinkedDevicesMemoryStorage: LinkedDevicesSecureStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
@@ -135,6 +136,8 @@ struct LinkedDevicesCredential: Codable, Equatable, Sendable {
 /// Per-host Ed25519 identities. Preparing a pairing persists its identity
 /// before any request is sent, so approval can never create an unreconnectable
 /// source. There is deliberately no production memory fallback.
+// Sendability: lock serializes complete read/modify/write storage transactions.
+// The injected storage also conforms to Sendable; encoded documents are local.
 final class LinkedDevicesIdentityStore: @unchecked Sendable {
     private let storage: any LinkedDevicesSecureStorage
     private let lock = NSLock()

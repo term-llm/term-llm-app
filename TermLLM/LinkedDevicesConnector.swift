@@ -5,8 +5,8 @@ import UIKit
 #endif
 
 #if canImport(WebRTC)
-final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, @unchecked Sendable {
-    struct Paired: @unchecked Sendable {
+final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, Sendable {
+    struct Paired: Sendable {
         let credential: LinkedDevicesCredential
         let live: LinkedDevicesLiveConnection?
     }

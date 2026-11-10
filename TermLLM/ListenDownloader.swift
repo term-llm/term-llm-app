@@ -398,14 +398,14 @@ enum ListenMediaSession {
     static let shared = makeSession()
 
     static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.urlCredentialStorage = nil
-        if let protocolClasses { configuration.protocolClasses = protocolClasses }
+        let configuration = IsolatedURLSession.configuration {
+            if let protocolClasses { $0.protocolClasses = protocolClasses }
+        }
         return URLSession(configuration: configuration, delegate: Delegate(), delegateQueue: nil)
     }
 
+    // Stateless, but non-final so the data-task Forwarder can inherit the media
+    // redirect policy. Subclasses must separately uphold Sendable invariants.
     class Delegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,

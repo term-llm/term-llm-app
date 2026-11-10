@@ -10,7 +10,7 @@ struct LinkedDevicesUnavailable: Error, LocalizedError, Equatable {
 
 /// One authenticated WebRTC connection after the signed v2 transport
 /// handshake has completed. Pairing/reconnect code is the only producer.
-struct LinkedDevicesLiveConnection: @unchecked Sendable {
+struct LinkedDevicesLiveConnection: Sendable {
     let forwarder: PeerHTTPMultiplexer
     let authorization: PeerAuthorizationState
     let diagnostics: LinkedDevicesDiagnosticConnection?
@@ -38,6 +38,8 @@ protocol LinkedDevicesSessionConnecting: Sendable {
 /// connection may be replaced after suspend/network loss, while callers keep
 /// source identity. Requests are attempted exactly once: this layer never
 /// replays an uncertain mutation on a replacement connection.
+// Sendability: lock protects current/generation as one snapshot. Network work
+// uses the captured Sendable transport outside the lock and checks ownership later.
 final class LinkedDevicesSourceTransport: HubTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var current: WebRTCHubTransport?
@@ -94,6 +96,7 @@ final class LinkedDevicesSourceTransport: HubTransport, @unchecked Sendable {
     }
 }
 
+// Sendability: the sole mutable field, closed, is always accessed under lock.
 private final class LinkedDevicesEnrollmentTransportState: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
@@ -101,7 +104,7 @@ private final class LinkedDevicesEnrollmentTransportState: @unchecked Sendable {
     func markClosed() { lock.withLock { closed = true } }
 }
 
-private final class LinkedDevicesOfflineForwarder: PeerHTTPForwarding, @unchecked Sendable {
+private final class LinkedDevicesOfflineForwarder: PeerHTTPForwarding, Sendable {
     func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
         var header = PeerHeader()
         header.set("Content-Type", "text/plain; charset=utf-8")

@@ -317,6 +317,10 @@
 		C10000000000000000000022 /* ComputerUseClient in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000082 /* ComputerUseClient */; };
 		C10000000000000000000023 /* term-llm Computer Use.app in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000030 /* term-llm Computer Use.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C10000000000000000000024 /* term-llm-computer in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000031 /* term-llm-computer */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B7A62E9C504D48A5B4000002 /* IsolatedURLSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A62E9C504D48A5B4000001 /* IsolatedURLSession.swift */; };
+		B7A62E9C504D48A5B4000003 /* IsolatedURLSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A62E9C504D48A5B4000001 /* IsolatedURLSession.swift */; };
+		B7A62E9C504D48A5B4000005 /* IsolatedURLSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A62E9C504D48A5B4000004 /* IsolatedURLSessionTests.swift */; };
+		B7A62E9C504D48A5B4000006 /* IsolatedURLSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A62E9C504D48A5B4000004 /* IsolatedURLSessionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -566,6 +570,8 @@
 		C10000000000000000000006 /* ComputerUseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseTests.swift; sourceTree = "<group>"; };
 		C10000000000000000000030 /* term-llm Computer Use.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "term-llm Computer Use.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000031 /* term-llm-computer */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "term-llm-computer"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B7A62E9C504D48A5B4000001 /* IsolatedURLSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IsolatedURLSession.swift; sourceTree = "<group>"; };
+		B7A62E9C504D48A5B4000004 /* IsolatedURLSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IsolatedURLSessionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -665,6 +671,7 @@
 			children = (
 				000000000000000000000804 /* HubNavigation.swift */,
 				000000000000000000000803 /* HubConnection.swift */,
+				B7A62E9C504D48A5B4000001 /* IsolatedURLSession.swift */,
 				000000000000000000000802 /* HubView.swift */,
 				000000000000000000000801 /* HubStore.swift */,
 				000000000000000000000800 /* HubClient.swift */,
@@ -790,6 +797,7 @@
 				000000000000000000000431 /* PushLiveE2ETests.swift */,
 				D06F699DFDE196043BCD59DA /* HubConnectionStoreTests.swift */,
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
+				B7A62E9C504D48A5B4000004 /* IsolatedURLSessionTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
 				DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */,
 				F100000000000000000000BD /* PhoneHubAgentsOverviewTests.swift */,
@@ -1166,6 +1174,7 @@
 				DD0000000000000000000014,
 				000000000000000000000824 /* HubNavigation.swift in Sources */,
 				000000000000000000000823 /* HubConnection.swift in Sources */,
+				B7A62E9C504D48A5B4000002 /* IsolatedURLSession.swift in Sources */,
 				000000000000000000000822 /* HubView.swift in Sources */,
 				000000000000000000000821 /* HubStore.swift in Sources */,
 				000000000000000000000820 /* HubClient.swift in Sources */,
@@ -1290,6 +1299,7 @@
 				00000000000000000000045C /* PushLiveE2ETests.swift in Sources */,
 				759710A30BAC0C094E5336FC /* HubConnectionStoreTests.swift in Sources */,
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
+				B7A62E9C504D48A5B4000005 /* IsolatedURLSessionTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
 				DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */,
 				F100000000000000000000C0 /* PhoneHubAgentsOverviewTests.swift in Sources */,
@@ -1333,6 +1343,7 @@
 				F10000000000000000000011 /* MacLocalServiceBridge.swift in Sources */,
 				F10000000000000000000012 /* HubNavigation.swift in Sources */,
 				F10000000000000000000013 /* HubConnection.swift in Sources */,
+				B7A62E9C504D48A5B4000003 /* IsolatedURLSession.swift in Sources */,
 				F10000000000000000000014 /* HubView.swift in Sources */,
 				F10000000000000000000015 /* HubStore.swift in Sources */,
 				F10000000000000000000016 /* HubClient.swift in Sources */,
@@ -1482,6 +1493,7 @@
 				F10000000000000000000093 /* PushLiveE2ETests.swift in Sources */,
 				F10000000000000000000094 /* HubConnectionStoreTests.swift in Sources */,
 				F10000000000000000000095 /* HubConnectionSecurityTests.swift in Sources */,
+				B7A62E9C504D48A5B4000006 /* IsolatedURLSessionTests.swift in Sources */,
 				F10000000000000000000096 /* HubAggregateStoreTests.swift in Sources */,
 				F10000000000000000000097 /* PhoneHubAgentSessionsTests.swift in Sources */,
 				F10000000000000000000098 /* PhoneHubAgentRowRenderingTests.swift in Sources */,

@@ -1112,7 +1112,7 @@ struct MinuteAccumulator {
 
 /// JSON lines in Application Support, excluded from backups. Two small
 /// rotating files per kind; writes happen off the main thread.
-final class WebKitHealthJournal: @unchecked Sendable {
+final class WebKitHealthJournal: Sendable {
     private let queue = DispatchQueue(label: "com.termllm.webkit-health.journal", qos: .utility)
     let directory: URL
     static let maximumBytes = 256 * 1024

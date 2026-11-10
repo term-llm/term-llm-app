@@ -153,6 +153,8 @@ struct LinkedDevicesDiagnosticConnection: Sendable {
 }
 
 /// Process-local recorder. It retains only start times for currently active requests.
+// Sendability: lock protects connection IDs and requestStarts. clock/sink are
+// immutable @Sendable callbacks (may run concurrently); sink runs outside lock.
 final class LinkedDevicesDiagnostics: @unchecked Sendable {
     static let defaultsKey = "linkedDevicesDiagnostics"
     private static let maximumMilliseconds: UInt64 = 24 * 60 * 60 * 1_000

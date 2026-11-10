@@ -174,6 +174,8 @@ struct DirectNodeSessionsStatus: Codable, Sendable, Equatable {
 /// ## Additional node-specific methods
 /// `sessionsStatus()`, `listNodeAttention(kind:limit:)`,
 /// `nodeHealth()`, `validateBearer(token:)`, `resumePath(sessionID:sessionNumber:)`
+// Sendability: immutable connection/transport and @Sendable providers; authLock
+// protects _authCallback and _authEpoch, captured together for each request.
 final class DirectNodeClient: @unchecked Sendable {
 
     // MARK: - Properties

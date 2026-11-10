@@ -96,6 +96,10 @@ struct PeerBodyStream: AsyncSequence, Sendable {
 /// * Outbound frames wait while `bufferedAmount` exceeds the high-water mark.
 /// * Malformed inbound frames tear down the whole channel (fail closed).
 /// * `close()` fails every open stream — used by revoke/teardown.
+// Sendability: lock protects the stream registry, live StreamState fields,
+// counters/waiters and close callback. Removing a stream transfers its terminal
+// state to that one remover. sendLock orders request/cancel sends (sendLock before
+// lock); immutable Sendable channel/diagnostics own their own synchronization.
 final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     let limits: PeerWireLimits
     private let channel: PeerFrameChannel
@@ -114,7 +118,11 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
 
     /// Fired once when the multiplexer closes (channel loss, protocol
     /// violation or explicit close).
-    var onClose: (@Sendable (PeerWireError) -> Void)?
+    private var closeCallback: (@Sendable (PeerWireError) -> Void)?
+    var onClose: (@Sendable (PeerWireError) -> Void)? {
+        get { lock.withLock { closeCallback } }
+        set { lock.withLock { closeCallback = newValue } }
+    }
 
     private final class StreamState {
         /// Immutable Sendable identity captured by sender tasks. The task never
@@ -144,6 +152,8 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     /// invoking the recorder (clock/sink) while holding this lock. Reserving
     /// the start while the stream is still owned prevents close/fail from
     /// publishing a terminal before the recorder has registered its start.
+    // Sendability: lock protects every mutable slot/flag. A claimed event is
+    // delivered outside lock via the immutable Sendable diagnostics connection.
     private final class DiagnosticOrdering: @unchecked Sendable {
         private let lock = NSLock()
         private var start: LinkedDevicesDiagnosticEvent?
@@ -250,16 +260,18 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
                 let state: StreamState? = lock.withLock {
                     guard let s = streams[id] else { return nil }
                     s.headContinuation = cont
+                    if let headTimeout {
+                        // Publish the timer while the stream is still owned by
+                        // the registry, before close/fail can detach its state.
+                        s.timeoutTask = Task { [weak self] in
+                            try? await Task.sleep(nanoseconds: UInt64(max(0, headTimeout) * 1_000_000_000))
+                            if Task.isCancelled { return }
+                            self?.fail(id: id, error: .timedOut, sendCancel: true)
+                        }
+                    }
                     return s
                 }
                 guard let state else { cont.resume(throwing: PeerWireError.cancelled); return }
-                if let headTimeout {
-                    state.timeoutTask = Task { [weak self] in
-                        try? await Task.sleep(nanoseconds: UInt64(max(0, headTimeout) * 1_000_000_000))
-                        if Task.isCancelled { return }
-                        self?.fail(id: id, error: .timedOut, sendCancel: true)
-                    }
-                }
                 lock.withLock { activeSenders += 1 }
                 let ownershipToken = state.ownershipToken
                 let task = Task { [weak self, data, id, ownershipToken] in
@@ -286,16 +298,17 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     // MARK: Close
 
     func close(_ error: PeerWireError = .channelClosed, closeChannel: Bool = true) {
-        let (victims, waiters): ([StreamState], [CheckedContinuation<Void, Error>]) = lock.withLock {
-            if closed { return ([], []) }
+        let teardown: ([StreamState], [CheckedContinuation<Void, Error>], (@Sendable (PeerWireError) -> Void)?)? = lock.withLock {
+            if closed { return nil }
             closed = true
             closeError = error
             let v = Array(streams.values)
             streams.removeAll()
             let w = bufferWaiters
             bufferWaiters.removeAll()
-            return (v, w)
+            return (v, w, closeCallback)
         }
+        guard let (victims, waiters, callback) = teardown else { return }
         for s in victims {
             s.sendTask?.cancel()
             emitTerminal(Self.terminalEvent(for: s, error: error), for: s)
@@ -303,7 +316,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
         }
         for w in waiters { w.resume(throwing: error) }
         if closeChannel { channel.close() }
-        onClose?(error)
+        callback?(error)
     }
 
     // MARK: Inbound
@@ -532,7 +545,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
 
     private func waitForBufferSpace(id: String, ownershipToken: UUID) async throws {
         while true {
-            if lock.withLock({ closed }) { throw closeError }
+            if let error = lock.withLock({ closed ? closeError : nil }) { throw error }
             guard lock.withLock({ streams[id]?.ownershipToken == ownershipToken }),
                   !Task.isCancelled else { throw PeerWireError.cancelled }
             guard channel.isOpen else { throw PeerWireError.channelClosed }

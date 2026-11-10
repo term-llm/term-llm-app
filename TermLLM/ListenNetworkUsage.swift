@@ -6,6 +6,8 @@ import Foundation
 /// discarded/failed bodies count again. Direct AVPlayer HTTP/video streams,
 /// artwork and HTTP headers do not pass through this ledger. There are no
 /// retroactive totals or URLs here.
+// Sendability: queue confines ledger/recent/dirty/pendingWrite after init; reads
+// and flush use queue.sync. Configuration is immutable and clock is @Sendable.
 final class ListenNetworkUsage: @unchecked Sendable {
     struct Snapshot: Sendable {
         let todayBytes: Int64

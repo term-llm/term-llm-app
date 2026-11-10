@@ -40,6 +40,10 @@ private final class PeerWebRTCFactoryStore: @unchecked Sendable {
 /// after pairing/reconnect verification (MAC/signature/pinned host key) has
 /// produced a ``PeerAuthorizationState``; the channel is only handed out while
 /// that authorization is valid, and revoke closes the connection.
+// Sendability: lock protects Swift lifecycle state, callbacks and configuration.
+// SDK objects are snapshotted under lock; libwebrtc proxies marshal their own
+// calls to SDK threads. This relies on that SDK contract, not on Sendable metadata;
+// observers/signaling must support SDK-thread callbacks, invoked outside lock.
 final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     private static let factoryStore = PeerWebRTCFactoryStore()
 
@@ -52,12 +56,25 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     private var gatheringComplete = false
     private var revokeToken: UUID?
     private var disconnectWorkItem: DispatchWorkItem?
-    private(set) var phase: PeerConnectionPhase = .new
+    private var currentPhase: PeerConnectionPhase = .new
+    var phase: PeerConnectionPhase { lock.withLock { currentPhase } }
 
-    weak var signaling: PeerSignaling?
-    var onPhaseChange: (@Sendable (PeerConnectionPhase) -> Void)?
+    private weak var currentSignaling: PeerSignaling?
+    var signaling: PeerSignaling? {
+        get { lock.withLock { currentSignaling } }
+        set { lock.withLock { currentSignaling = newValue } }
+    }
+    private var phaseCallback: (@Sendable (PeerConnectionPhase) -> Void)?
+    var onPhaseChange: (@Sendable (PeerConnectionPhase) -> Void)? {
+        get { lock.withLock { phaseCallback } }
+        set { lock.withLock { phaseCallback = newValue } }
+    }
     /// Fired on loss/failure/close; callers tear down bridges/transports.
-    var onClose: (@Sendable () -> Void)?
+    private var closeCallback: (@Sendable () -> Void)?
+    var onClose: (@Sendable () -> Void)? {
+        get { lock.withLock { closeCallback } }
+        set { lock.withLock { closeCallback = newValue } }
+    }
 
     init(iceServers: [PeerICEServer], relayOnly: Bool = false) throws {
         super.init()
@@ -79,7 +96,7 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
                                                              delegate: self) else {
             throw PeerWebRTCError.factoryFailed
         }
-        peerConnection = pc
+        lock.withLock { peerConnection = pc }
     }
 
     private func authorized() -> Bool { lock.withLock { authorization }?.check() ?? false }
@@ -112,7 +129,11 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     }
 
     /// Bound on ICE gathering before the complete (non-trickle) SDP is signed.
-    var gatheringTimeout: TimeInterval = 10
+    private var configuredGatheringTimeout: TimeInterval = 10
+    var gatheringTimeout: TimeInterval {
+        get { lock.withLock { configuredGatheringTimeout } }
+        set { lock.withLock { configuredGatheringTimeout = newValue } }
+    }
 
     /// Waits for ICE gathering to complete (or the timeout, after which the
     /// candidates gathered so far are used if any exist) and returns the
@@ -160,7 +181,12 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
         }
         guard bound else { throw PeerWebRTCError.sdp("answer already applied") }
         let token = authorization.onRevoke { [weak self] in self?.close() }
-        lock.withLock { revokeToken = token }
+        let keep = lock.withLock {
+            guard peerConnection != nil else { return false }
+            revokeToken = token
+            return true
+        }
+        if !keep { authorization.removeHandler(token) }
         try await setRemote(RTCSessionDescription(type: .answer, sdp: sdp), on: pc)
     }
 
@@ -281,7 +307,7 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
         let wrapper = PeerRTCDataChannel(dc, onOpen: { [weak self] in self?.channelOpened() },
                                          onClosed: { [weak self] in self?.close() })
         let replaced: Bool = lock.withLock {
-            if channel != nil { return false }
+            if channel != nil || peerConnection == nil { return false }
             channel = wrapper
             return true
         }
@@ -317,7 +343,7 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
 
     private func scheduleDisconnectClose() {
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.lock.withLock({ self.phase == .disconnected }) else { return }
+            guard let self, self.lock.withLock({ self.currentPhase == .disconnected }) else { return }
             self.close()
         }
         let previous = lock.withLock { let old = disconnectWorkItem; disconnectWorkItem = work; return old }
@@ -331,8 +357,12 @@ final class PeerWebRTCSession: NSObject, @unchecked Sendable {
     }
 
     private func setPhase(_ p: PeerConnectionPhase) {
-        let changed: Bool = lock.withLock { if phase == p { return false }; phase = p; return true }
-        if changed { onPhaseChange?(p) }
+        let callback: (@Sendable (PeerConnectionPhase) -> Void)? = lock.withLock {
+            guard currentPhase != p else { return nil }
+            currentPhase = p
+            return phaseCallback
+        }
+        callback?(p)
     }
 }
 
@@ -381,6 +411,9 @@ extension PeerWebRTCSession: RTCPeerConnectionDelegate {
 }
 
 /// Adapts `RTCDataChannel` to ``PeerFrameChannel``.  Text frames only.
+// Sendability: lock protects handler slots and closedNotified; immutable open/
+// closed callbacks must support SDK-thread invocation. libwebrtc marshals the
+// channel operations internally; handler snapshots run outside our lock.
 final class PeerRTCDataChannel: NSObject, PeerFrameChannel, RTCDataChannelDelegate, @unchecked Sendable {
     private let channel: RTCDataChannel
     private let lock = NSLock()

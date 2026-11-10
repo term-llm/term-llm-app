@@ -14,7 +14,9 @@ enum HubFixture {
     }
 
     static var isEnabled: Bool { server != nil }
-    // UserDefaults is documented thread-safe.
+    // Sendability: UserDefaults documents concurrent access as thread-safe.
+    // Static initialization publishes this one immutable reference only after
+    // fixture reset/seeding; no subsequent mutation of the reference occurs.
     nonisolated(unsafe) static let defaults: UserDefaults = {
         if PhoneHubFixture.isEnabled { return PhoneHubFixture.defaults }
         guard isEnabled else { return .standard }
@@ -159,14 +161,10 @@ enum HubServerRole: Equatable {
     }
 
     static func discoveryConfiguration() -> URLSessionConfiguration {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.urlCredentialStorage = nil
-        configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = discoveryTimeout
-        configuration.timeoutIntervalForResource = discoveryTimeout
-        return configuration
+        IsolatedURLSession.configuration {
+            $0.timeoutIntervalForRequest = discoveryTimeout
+            $0.timeoutIntervalForResource = discoveryTimeout
+        }
     }
 
     static func detect(server: URL, configuration: URLSessionConfiguration) async throws -> HubServerRole {
@@ -177,7 +175,7 @@ enum HubServerRole: Equatable {
         var request = URLRequest(url: url, timeoutInterval: discoveryTimeout)
         request.httpShouldHandleCookies = false
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let session = URLSession(configuration: configuration, delegate: HubRoleRedirectBlocker(), delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: RejectAllRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         do {
             let (data, response) = try await session.data(for: request)
@@ -195,13 +193,5 @@ enum HubServerRole: Equatable {
             }
             throw DiscoveryFailure.unrecognized
         }
-    }
-}
-
-private final class HubRoleRedirectBlocker: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
     }
 }

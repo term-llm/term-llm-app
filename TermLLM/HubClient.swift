@@ -642,6 +642,9 @@ struct URLSessionHubTransport: HubTransport {
         })
     }
 
+    // Sendability: lock protects all mutable transfer/terminal state across
+    // task cancellation, URLSession delegates and purge tasks. Callbacks are
+    // immutable @Sendable values; continuations are claimed under lock, resumed outside.
     private final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         private let lock = NSLock()
         private let onUnauthorized: (@Sendable () async -> Void)?
@@ -815,6 +818,9 @@ struct URLSessionHubTransport: HubTransport {
 ///
 /// Reauthentication requires WebAuthn which this transport cannot perform.
 /// Callers must present the browser for passkey ceremonies.
+// Sendability: connection identity, transport and @Sendable providers are immutable.
+// authorizationCallbackLock protects callback/importer/epoch together; requests
+// carry snapshots and revalidate the epoch before publishing auth side effects.
 final class HubClient: @unchecked Sendable {
 
     /// Base URL of the Hub (e.g. `https://hub.example.com/ui/`).
@@ -1260,29 +1266,16 @@ final class HubClient: @unchecked Sendable {
     /// survives between requests except pooled connections. Each request
     /// attaches its own per-task delegate (`URLSessionTask.delegate`); the
     /// session delegate only exists as a redirect-blocking backstop.
-    static let sharedSession: URLSession = ephemeralSession(delegate: SessionRedirectBlocker())
+    static let sharedSession: URLSession = ephemeralSession(delegate: RejectAllRedirects())
 
     /// Creates an ephemeral URLSession with no cookie jar, no credential
     /// storage, no response cache, and the given delegate.
     static func ephemeralSession(delegate: URLSessionDelegate) -> URLSession {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.httpCookieStorage = nil
-        config.urlCredentialStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = defaultTimeout
-        config.timeoutIntervalForResource = defaultTimeout
-        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-    }
-
-    private final class SessionRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-        func urlSession(_ session: URLSession, task: URLSessionTask,
-                        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                        completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-            completionHandler(nil)
+        let config = IsolatedURLSession.configuration {
+            $0.timeoutIntervalForRequest = defaultTimeout
+            $0.timeoutIntervalForResource = defaultTimeout
         }
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     /// Core typed transport.
