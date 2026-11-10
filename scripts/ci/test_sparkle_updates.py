@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 
 import sparkle_updates as sparkle
@@ -104,6 +105,13 @@ class AppcastTests(unittest.TestCase):
 
 
 class FetchTests(unittest.TestCase):
+    def test_requests_use_publisher_user_agent(self):
+        # Cloudflare returns 403 for urllib's default Python-urllib agent.
+        self.assertNotIn("Python-urllib", sparkle.USER_AGENT)
+        opener = urllib.request._opener
+        self.assertIn(("User-Agent", sparkle.USER_AGENT), opener.addheaders)
+        self.assertFalse(any(name == "User-agent" for name, _ in opener.addheaders))
+
     def test_only_404_allows_initial_feed(self):
         for code in (404, 403, 429, 500):
             with self.subTest(code=code), mock.patch.object(sparkle.urllib.request, "urlopen", side_effect=urllib.error.HTTPError(sparkle.FEED, code, "error", {}, None)):
