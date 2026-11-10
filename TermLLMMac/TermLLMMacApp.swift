@@ -29,6 +29,10 @@ struct TermLLMMacApp: App {
             }
         }
         .defaultSize(width: 1180, height: 800)
+        // The selector identifies the destination. Never show a stale title
+        // contributed by one of the retained, currently hidden native pages.
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             MacCommands(center: DesktopCommandCenter.shared, window: MacClientWindow.shared,
                         localService: MacLocalServiceBridge.shared)

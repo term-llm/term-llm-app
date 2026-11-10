@@ -254,7 +254,8 @@ final class AppControlsTests: XCTestCase {
         XCTAssertEqual(WorkspacePlatform.current, .mac)
         XCTAssertTrue(WorkspacePlatform.current.usesWorkspaceChrome)
         #endif
-        XCTAssertEqual(WorkspaceLayoutPolicy(platform: .mac, width: 640).sidebarWidth, 220)
+        XCTAssertEqual(WorkspaceLayoutPolicy(platform: .mac, width: 640).sidebarWidth, 0,
+                       "Mac app navigation belongs in the window toolbar, not beside the web sidebar")
     }
 
     func testUserVisibleAppNameIsExactlyTheProductName() {

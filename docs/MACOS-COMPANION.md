@@ -12,7 +12,7 @@ The client has the same Agents, Chat, Music, Podcasts and remote connections as 
 |---|---|
 | Full Mac client | Native macOS target `TermLLMMac`, sharing the iPhone/iPad sources; desktop sidebar, native menus and keyboard controls |
 | Optional local setup | Native AppKit window in the app: one status line with the next step, details under Advanced |
-| App menu-bar item | Present from startup; Open term-llm, optional Local Service and explicit Quit. Service status/chat/start/stop/restart appear after opening local setup |
+| App menu-bar item | Present from startup; Open term-llm, optional Local Service and explicit Quit. Service status/chat/start/stop/restart appear from launch for existing managed or Developer Mode installs, or after opening local setup |
 | CLI installation | Official signed GitHub release → stable per-user runtime, signature/checksum verification, transactional replacement and backups |
 | Authenticated local chat | Verified managed loopback service handed to the full client's isolated Direct Node source |
 | Computer use / macOS Harness integration | **Deferred.** No bundled Python/PyObjC runtime or permission host |

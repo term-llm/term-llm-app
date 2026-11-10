@@ -1,6 +1,6 @@
 # Desktop & iPad — split-view concept
 
-**Visual reference, not a live app.** The self-contained HTML and its fictional conversations remain a design artifact. Its native layout direction is now implemented for Mac/iPad in `ContentView`, `WorkspaceShell`, and `WorkspaceHeader`; see [Mac support](../MAC-SUPPORT.md). The iPhone shell is unchanged. The illustrative web Chat styling is not an injected replacement for a server's real frontend.
+**Visual reference, not a live app.** The self-contained HTML and its fictional conversations remain a design artifact. Its native layout direction informed `ContentView`, `WorkspaceShell`, and `WorkspaceHeader`; see [Mac support](../MAC-SUPPORT.md). **The Mac shell now uses top window-toolbar destination navigation instead of the concept's app sidebar**, avoiding a native sidebar beside the embedded frontend's conversation sidebar. iPad keeps the adaptive app sidebar; the iPhone shell is unchanged. The illustrative web Chat styling is not an injected replacement for a server's real frontend.
 
 ## Open and capture
 

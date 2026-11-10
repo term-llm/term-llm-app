@@ -351,6 +351,31 @@ extension DesktopCommand {
 
 // MARK: - Workspace views
 
+/// App navigation belongs to the window, not to a destination's navigation
+/// stack or the remote Chat document. The frontend keeps its own conversation
+/// sidebar; a horizontal selector avoids placing an app sidebar beside it.
+struct MacWorkspaceToolbar: ToolbarContent {
+    let selection: AppTab
+    let onSelect: (AppTab) -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Picker("Destination", selection: Binding(get: { selection }, set: onSelect)) {
+                ForEach(AppTab.allCases, id: \.self) { tab in
+                    Text(tab.title)
+                        .tag(tab)
+                        .accessibilityIdentifier("appTab." + tab.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 360)
+            .help("Switch destination (⌘1–4)")
+            .accessibilityIdentifier("workspace.destinations")
+        }
+    }
+}
+
 /// Hiding is not enough for WKWebView: while attached to a window WebKit still
 /// treats the page as visible. Keep the hosting controller and its root
 /// identity, but detach its view while another destination is selected.

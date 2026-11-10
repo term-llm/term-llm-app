@@ -288,6 +288,87 @@ final class MacClientTests: XCTestCase {
         XCTAssertTrue(ready.first === client)
     }
 
+    /// Mount the production shell and its retained destination controllers, not
+    /// just the layout policy. This page has no server, credentials or bridges.
+    func testWorkspaceShellRetainsFullWidthChatAcrossTabsAndWidthsWithoutSidebarToggles() async throws {
+        let model = MacWorkspaceIdentityModel()
+        let host = NSHostingController(rootView: MacWorkspaceIdentityFixture(model: model))
+        host.sizingOptions = []
+        // This AppKit test window has no SwiftUI Scene to own a toolbar.
+        // Exercise the shell content without bridging window chrome.
+        host.sceneBridgingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: model.width, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.orderFront(nil)
+        defer {
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+        host.view.layoutSubtreeIfNeeded()
+        try await waitUntil("the shell to mount Chat") { model.webViews.count == 1 }
+        let original = try XCTUnwrap(model.webViews.first)
+        let identity = ObjectIdentifier(original)
+        original.loadHTMLString("""
+            <!doctype html><title>Workspace fixture</title>
+            <style>html,body{margin:0}textarea{width:80%;height:100px}</style>
+            <textarea aria-label="Draft"></textarea>
+            """, baseURL: nil)
+        try await waitUntil("the local Chat document to load") {
+            original.title == "Workspace fixture" && !original.isLoading
+        }
+        _ = try await original.evaluateJavaScript(
+            "document.querySelector('textarea').value = 'unsent Mac workspace draft'")
+
+        // Cross the old overlay/persistent breakpoint in both directions and
+        // return from every native destination at each width. In particular,
+        // narrow Chat must not lose 44 pt to a rail, or wide Chat 220 pt to a sidebar.
+        for width: CGFloat in [1200, 899, 900, 500, 1440] {
+            model.width = width
+            window.setContentSize(NSSize(width: width, height: 600))
+            for tab: AppTab in [.chat, .agents, .chat, .music, .chat, .podcasts, .chat] {
+                model.selection = tab
+                host.view.needsLayout = true
+                host.view.layoutSubtreeIfNeeded()
+                try await waitUntil("Chat visibility/layout at \(width) / \(tab)") {
+                    host.view.layoutSubtreeIfNeeded()
+                    guard model.updatedWidth == width,
+                          model.updatedVisibility == (tab == .chat) else { return false }
+                    if tab == .chat {
+                        return original.window === window && !original.isHiddenOrHasHiddenAncestor
+                            && abs(original.bounds.width - width) <= 1
+                    }
+                    return original.window == nil
+                }
+                XCTAssertEqual(model.webViews.count, 1, "Chat was recreated at \(width) / \(tab)")
+                XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(model.webViews.last)), identity)
+                XCTAssertEqual(model.dismantles, 0, "Leaving Chat must not discard its document")
+                if tab == .chat {
+                    let frame = original.convert(original.bounds, to: host.view)
+                    XCTAssertEqual(frame.minX, 0, accuracy: 1, "No leading rail or sidebar inset")
+                    XCTAssertEqual(frame.maxX, width, accuracy: 1, "Chat must fill the shell width")
+                    XCTAssertEqual(original.visibleRect.width, width, accuracy: 1,
+                                   "The full-width Chat must actually be visible, not clipped")
+                    let draft = try await original.evaluateJavaScript(
+                        "document.querySelector('textarea').value") as? String
+                    XCTAssertEqual(draft, "unsent Mac workspace draft")
+                }
+            }
+            try await waitUntil("all native destinations to receive their sidebar toggle at \(width)") {
+                [.agents, .music, .podcasts].allSatisfy { tab in
+                    model.nativeToggleSamples.contains { $0.tab == tab && $0.width == width }
+                }
+            }
+        }
+        XCTAssertTrue(model.updateIdentities.allSatisfy { $0 == identity })
+        XCTAssertTrue(model.nativeToggleSamples.allSatisfy { !$0.hasToggle },
+                      "Mac native destinations must receive nil: navigation belongs to the shell toolbar")
+        for tab: AppTab in [.agents, .music, .podcasts] {
+            XCTAssertEqual(model.nativeMounts[tab], 1, "Native destination stacks must stay mounted")
+        }
+    }
+
     func testMenuCommandsNeedTheClientWindowToOwnTheKeyboard() {
         let center = DesktopCommandCenter()
         var received: [DesktopCommand] = []
@@ -315,5 +396,89 @@ final class MacClientTests: XCTestCase {
     func testHostedTestRunShowsNoClientWindow() {
         XCTAssertTrue(MacLocalServiceBridge.isHostedTestRun)
         XCTAssertNil(MacClientWindow.shared.window, "The test host must not open the developer's connections")
+    }
+}
+
+/// Test-local roots deliberately avoid the app's stores, players and Keychain.
+@MainActor
+private final class MacWorkspaceIdentityModel: ObservableObject {
+    @Published var selection: AppTab = .chat
+    @Published var width: CGFloat = 820
+    var webViews: [WKWebView] = []
+    var updateIdentities: [ObjectIdentifier] = []
+    var updatedWidth: CGFloat?
+    var updatedVisibility: Bool?
+    var dismantles = 0
+    var nativeToggleSamples: [(tab: AppTab, width: CGFloat, hasToggle: Bool)] = []
+    var nativeMounts: [AppTab: Int] = [:]
+}
+
+@MainActor
+private struct MacWorkspaceIdentityFixture: View {
+    @ObservedObject var model: MacWorkspaceIdentityModel
+
+    var body: some View {
+        WorkspaceShell(platform: .mac, selection: model.selection, visitedTabs: Set(AppTab.allCases),
+                       chatAgentName: "Fixture Agent", onSelect: { model.selection = $0 }, onSettings: {}) { toggle in
+            nativeDestination(.agents, toggle: toggle)
+        } chat: {
+            MacWorkspaceWebViewProbe(model: model, width: model.width, isVisible: model.selection == .chat)
+        } music: { toggle in
+            nativeDestination(.music, toggle: toggle)
+        } podcasts: { toggle in
+            nativeDestination(.podcasts, toggle: toggle)
+        } shelf: {
+            EmptyView()
+        }
+        .frame(width: model.width, height: 600)
+    }
+
+    private func nativeDestination(_ tab: AppTab, toggle: (() -> Void)?) -> some View {
+        MacWorkspaceNativeProbe(model: model, tab: tab, width: model.width, hasToggle: toggle != nil)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@MainActor
+private struct MacWorkspaceWebViewProbe: NSViewRepresentable {
+    let model: MacWorkspaceIdentityModel
+    let width: CGFloat
+    let isVisible: Bool
+
+    func makeCoordinator() -> MacWorkspaceIdentityModel { model }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        model.webViews.append(view)
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {
+        model.updateIdentities.append(ObjectIdentifier(view))
+        model.updatedWidth = width
+        model.updatedVisibility = isVisible
+    }
+
+    static func dismantleNSView(_ view: WKWebView, coordinator: MacWorkspaceIdentityModel) {
+        coordinator.dismantles += 1
+    }
+}
+
+@MainActor
+private struct MacWorkspaceNativeProbe: NSViewRepresentable {
+    let model: MacWorkspaceIdentityModel
+    let tab: AppTab
+    let width: CGFloat
+    let hasToggle: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        model.nativeMounts[tab, default: 0] += 1
+        return NSView()
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        model.nativeToggleSamples.append((tab: tab, width: width, hasToggle: hasToggle))
     }
 }

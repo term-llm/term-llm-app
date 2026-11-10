@@ -17,7 +17,7 @@ The Mac app uses the desktop workspace, native window controls, a minimum 820 ×
 
 Chat hides macOS 27's floating **Write with Siri** button beside its composer and other multi-line fields (`ChatWebView` declines WebKit's affordance; `writingToolsBehavior = .none` does not hide it on macOS 27.0, [WebKit bug 327446](https://bugs.webkit.org/show_bug.cgi?id=327446)). Siri's writing help stays in the right-click menu.
 
-**Local Service…** in the sidebar, File menu or Settings is optional. It opens a short native Mac window: one status line with the next step (Set Up, Start, or Open Chat), at most one notice, and the two login preferences. Versions, paths, other copies of term-llm, service details and the remaining controls are under **Advanced**. The app’s menu-bar icon exists from startup, even without a local service; opening Local Service adds its service controls to that menu. The menu-bar item, Local Service window and AppKit window lifecycle are compiled into the app (`TermLLMMac/`); there is no plug-in bundle or second process. A running local service that passes verification appears as **This Mac** in the app's connections on its own, already signed in, so nobody has to type a loopback address. **Open Local Chat** does the same and then opens This Mac in the full client's normal Chat workspace. It does not open an independent companion chat. Removing This Mac stops it from being added again until Open Local Chat is used. See [Local service on Mac](MACOS-COMPANION.md) for installation, authentication and lifecycle details.
+**Local Service…** in the File menu or Settings is optional. It opens a short native Mac window: one status line with the next step (Set Up, Start, or Open Chat), at most one notice, and the two login preferences. Versions, paths, other copies of term-llm, service details and the remaining controls are under **Advanced**. The app’s menu-bar icon exists from startup, even without a local service; existing managed or Developer Mode installs show service controls from launch; remote-only installs add them when Local Service is opened. The menu-bar item, Local Service window and AppKit window lifecycle are compiled into the app (`TermLLMMac/`); there is no plug-in bundle or second process. A running local service that passes verification appears as **This Mac** in the app's connections on its own, already signed in, so nobody has to type a loopback address. **Open Local Chat** does the same and then opens This Mac in the full client's normal Chat workspace. It does not open an independent companion chat. Removing This Mac stops it from being added again until Open Local Chat is used. See [Local service on Mac](MACOS-COMPANION.md) for installation, authentication and lifecycle details.
 
 ### Local CLI ownership
 
@@ -56,8 +56,8 @@ The iPhone/iPad target no longer runs on Mac: Mac Catalyst and Designed for iPad
 
 Mac-only controls:
 
-- **Navigate:** Command–1 through Command–4 select Agents, Chat, Music, and Podcasts.
-- **Settings:** Command–comma.
+- **Navigate:** the compact window-toolbar selector or Command–1 through Command–4 select Agents, Chat, Music, and Podcasts.
+- **Settings:** term-llm → Settings… or Command–comma.
 - **Refresh:** Command–R refreshes Agents, or reloads the visible Chat. It does not reload a retained chat while another tab is selected. Music and Podcasts have no root refresh command.
 - **Chat back:** Command–[ when the visible Chat has a back item.
 - **Chat zoom:** View ▸ Zoom In / Zoom Out (Command–plus/minus) and Actual Size (Command–0, 100%); also in Settings → Chat appearance. This is WebKit page zoom, like Safari's: the page reflows at the window's width, from 75% to 200%, without navigating or reloading. iPhone/iPad are unaffected.
@@ -72,11 +72,12 @@ Multiple windows remain disabled. `NOTIFICATION-OWNERSHIP.md` gates them on prov
 The approved [desktop/iPad concepts](design/DESKTOP-IPAD.md) now inform the native larger-screen shell:
 
 - Device selection, not window width, chooses the shell: iPhone keeps its original TabView; iPad and Mac use the workspace at all widths.
-- The sidebar is 200pt on iPad / 220pt on Mac and persistent at 900pt and wider. Narrow windows use a dismissible overlay. A narrow Chat uses a 44pt leading navigation rail, not a floating button over the web header or composer.
+- iPad keeps its 200pt app sidebar, persistent at 900pt and wider. Narrow iPads use a dismissible overlay; narrow Chat has a 44pt leading navigation rail instead of a floating button over the web header or composer.
+- Mac app navigation lives in a compact, labelled window-toolbar selector at every width. There is no native app sidebar or leading toggle rail, leaving the embedded frontend's conversation sidebar as Chat's only sidebar. Settings stays in the app menu (Command–comma); Local Service remains in the File menu, Settings and menu-bar item.
 - Agents, Music and Podcasts have quiet 52pt minimum native root headers. Pushed agent/playlist screens retain native Back navigation. Agents, Attention and Sessions remain available. Wide Agents lists use a readable bounded measure.
 - Chat gets **no second native header**. Its frontend still owns the real header, typography, content width and composer. The concept's fictional chat and exact 760px/17px web design are not injected into remote pages.
 - Resizing and destination selection use one stable content hierarchy. Retained Chat leaves the native window when inactive without being discarded; native destinations stay mounted and hidden. Authorization revocation still tears down a hidden protected document.
-- A Mac window has a single title bar and toolbar, but every destination keeps its own navigation stack, so Mac destinations never put chrome there (a hidden page's back button or search field would otherwise stay over Chat). Pushed Mac pages (an agent, a playlist) draw their own header with Back, title, actions and search. Mac lists reorder by dragging; songs are removed from a playlist with its context menu.
+- A Mac window has a single title bar and shell-owned navigation toolbar. Every destination keeps its own navigation stack but never contributes window chrome (a hidden page's back button or search field would otherwise stay over Chat). Pushed Mac pages (an agent, a playlist) draw their own header with Back, title, actions and search. Mac lists reorder by dragging; songs are removed from a playlist with its context menu.
 - The shared playback shelf stays outside the scrolling destinations. Selecting a destination does not start or stop playback.
 
 The HTML concepts remain design references, not screenshots of the app.

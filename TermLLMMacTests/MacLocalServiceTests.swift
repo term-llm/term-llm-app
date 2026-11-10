@@ -122,7 +122,7 @@ final class MacLocalServiceTests: XCTestCase {
     }
 
     func testMenuBarItemWorksWithoutLocalServiceSetup() {
-        let controller = MacLocalServiceController()
+        let controller = MacLocalServiceController(home: home)
         let menu = NSMenu()
         controller.menuNeedsUpdate(menu)
         XCTAssertEqual(menu.items.map(\.title), ["Open term-llm", "Local Service…", "", "Quit term-llm"],
@@ -130,6 +130,24 @@ final class MacLocalServiceTests: XCTestCase {
         XCTAssertFalse(menu.items.contains { $0.title.contains("Start Service") || $0.title.contains("Stop Service") },
                        "Opening the menu must not opt into local services")
         XCTAssertEqual(menu.items.last?.action, #selector(MacLocalServiceController.quitTermLLM))
+    }
+
+    func testExistingLocalInstallShowsFullMenuWithoutOpeningSetupOrRestarting() throws {
+        let provisioner = CLIProvisioner(home: home)
+        for marker in [provisioner.manifestURL, DeveloperModeStore(provisioner: provisioner).url] {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: marker)
+            let controller = MacLocalServiceController(home: home)
+            let menu = NSMenu()
+            controller.menuNeedsUpdate(menu)
+            XCTAssertEqual(menu.items.map(\.title), [
+                "Open term-llm", "Local Service…", "", "Local service: Not set up",
+                "Open Local Chat", "Start Service", "Restart Service", "", "Quit term-llm"
+            ], "An existing \(marker.lastPathComponent) must expose controls before any setup or service action")
+            XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == "Restart Service" }).isEnabled,
+                           "Showing controls must not enable restarting an unverified service")
+            try FileManager.default.removeItem(at: marker)
+        }
     }
 
     // MARK: Local Service window

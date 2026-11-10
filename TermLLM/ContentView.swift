@@ -459,6 +459,11 @@ struct ContentView: View {
         } shelf: {
             playbackShelf()
         }
+        #if os(macOS)
+        .toolbar {
+            MacWorkspaceToolbar(selection: selectedTab, onSelect: selectTab)
+        }
+        #endif
         .onChange(of: shelfPlayback, initial: true) { _, playback in
             playbackShelfState.update(playback)
         }

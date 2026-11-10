@@ -147,17 +147,18 @@ struct WorkspaceLayoutPolicy: Equatable {
 
     var sidebarWidth: CGFloat {
         switch platform {
-        case .phone: 0
+        case .phone, .mac: 0
         case .pad: 200
-        case .mac: 220
         }
     }
-    var supportsPersistentSidebar: Bool { platform.usesWorkspaceChrome && width >= 900 }
+    // Mac destinations live in the window toolbar; only iPad has an app sidebar.
+    var supportsSidebar: Bool { platform == .pad }
+    var supportsPersistentSidebar: Bool { supportsSidebar && width >= 900 }
     var showsPersistentSidebar: Bool { supportsPersistentSidebar && !persistentSidebarHidden }
-    var showsOverlaySidebar: Bool { platform.usesWorkspaceChrome && !supportsPersistentSidebar && overlayPresented }
+    var showsOverlaySidebar: Bool { supportsSidebar && !supportsPersistentSidebar && overlayPresented }
     var showsSidebar: Bool { showsPersistentSidebar || showsOverlaySidebar }
     var contentInset: CGFloat { showsPersistentSidebar ? sidebarWidth : 0 }
-    var showsSidebarToggle: Bool { platform.usesWorkspaceChrome && !showsPersistentSidebar }
+    var showsSidebarToggle: Bool { supportsSidebar && !showsPersistentSidebar }
 }
 
 /// One structural hierarchy at every workspace width. Only frame/visibility
@@ -238,15 +239,17 @@ struct WorkspaceShell<Agents: View, Chat: View, Music: View, Podcasts: View, She
                     .allowsHitTesting(layout.showsOverlaySidebar)
                     .accessibilityHidden(true)
 
-                sidebar(layout)
-                    .frame(width: layout.sidebarWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(Color.platformSecondaryBackground)
-                    .overlay(alignment: .trailing) { Divider() }
-                    .offset(x: layout.showsSidebar ? 0 : -layout.sidebarWidth)
-                    .opacity(layout.showsSidebar ? 1 : 0)
-                    .allowsHitTesting(layout.showsSidebar)
-                    .accessibilityHidden(!layout.showsSidebar)
+                if layout.supportsSidebar {
+                    sidebar(layout)
+                        .frame(width: layout.sidebarWidth)
+                        .frame(maxHeight: .infinity)
+                        .background(Color.platformSecondaryBackground)
+                        .overlay(alignment: .trailing) { Divider() }
+                        .offset(x: layout.showsSidebar ? 0 : -layout.sidebarWidth)
+                        .opacity(layout.showsSidebar ? 1 : 0)
+                        .allowsHitTesting(layout.showsSidebar)
+                        .accessibilityHidden(!layout.showsSidebar)
+                }
             }
             .clipped()
             .onChange(of: layout.supportsPersistentSidebar) { _, _ in

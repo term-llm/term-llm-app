@@ -23,13 +23,22 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
     private var statusItem: NSStatusItem?
     private var applicationStarted = false
     private var localServicesEnabled = false
+    private let home: URL
     private var automaticTerminationDisabled = false
     private static let lifetimeReason = "term-llm menu-bar app is running"
+
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.home = home
+        let provisioner = CLIProvisioner(home: home)
+        localServicesEnabled = FileManager.default.fileExists(atPath: provisioner.manifestURL.path)
+            || FileManager.default.fileExists(atPath: DeveloperModeStore(provisioner: provisioner).url.path)
+        super.init()
+    }
 
     // Remote-only installs stay lazy. Existing managed installs initialize the
     // model at launch for background CLI updates. Chat stays in the client.
     private lazy var model: CompanionModel = {
-        let model = CompanionModel()
+        let model = CompanionModel(home: home)
         model.openLocalChatHandler = { [weak self] endpoint, token in
             guard let self else { return }
             guard let onConnection = self.onConnection else {
@@ -68,12 +77,15 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
                 AppLoginItem(mainApp: system).refreshIfNeeded(appExecutable: executable)
             }
         }
-        let provisioner = CLIProvisioner()
+        let provisioner = CLIProvisioner(home: home)
         // Earlier builds kept these files in ~/Library/Application Support/TermLLM.
         _ = try? provisioner.migrateLegacySupportDirectory()
         let developerMode = FileManager.default.fileExists(atPath: DeveloperModeStore(provisioner: provisioner).url.path)
         let managed = FileManager.default.fileExists(atPath: provisioner.manifestURL.path)
         if managed || developerMode {
+            // Existing installs need controls immediately, not only after the
+            // user opens setup (or restarts the service from that window).
+            localServicesEnabled = true
             model.startBackgroundConnect()
         }
         if managed && !developerMode {

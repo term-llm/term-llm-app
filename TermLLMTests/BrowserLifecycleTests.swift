@@ -1108,9 +1108,27 @@ extension BrowserLifecycleTests {
         }
     }
 
+    func testMacWorkspaceUsesFullWidthContentWithoutSidebarAtEveryWidth() {
+        for width: CGFloat in [320, 599, 768, 820, 899, 900, 1194, 1440] {
+            for hidden in [false, true] {
+                let policy = WorkspaceLayoutPolicy(platform: .mac, width: width,
+                                                   persistentSidebarHidden: hidden, overlayPresented: true)
+                XCTAssertTrue(policy.platform.usesWorkspaceChrome)
+                XCTAssertFalse(policy.supportsSidebar)
+                XCTAssertEqual(policy.sidebarWidth, 0)
+                XCTAssertFalse(policy.supportsPersistentSidebar)
+                XCTAssertFalse(policy.showsPersistentSidebar)
+                XCTAssertFalse(policy.showsOverlaySidebar)
+                XCTAssertFalse(policy.showsSidebar)
+                XCTAssertFalse(policy.showsSidebarToggle, "Mac Chat must not reserve a leading toggle rail")
+                XCTAssertEqual(policy.contentInset, 0)
+            }
+        }
+    }
+
     func testWorkspaceSidebarBreakpointDimensionsAndManualCollapse() {
-        for platform: WorkspacePlatform in [.pad, .mac] {
-            let sidebarWidth: CGFloat = platform == .mac ? 220 : 200
+        for platform: WorkspacePlatform in [.pad] {
+            let sidebarWidth: CGFloat = 200
             for width: CGFloat in [320, 599, 768, 899] {
                 var policy = WorkspaceLayoutPolicy(platform: platform, width: width)
                 XCTAssertTrue(policy.platform.usesWorkspaceChrome, "Narrow workspaces must not become phone tabs")
