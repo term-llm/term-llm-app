@@ -127,6 +127,10 @@ provision secrets, change the server, or publish a build. Review the public
 distribution decision before enabling this: **anyone can download the notarized
 Mac app from term-llm.com**, not just private-repository collaborators. The
 Sparkle feed URL is stable: `https://term-llm.com/mac/appcast.xml`.
+The stable latest Mac app download is **https://term-llm.com/mac/download**:
+a direct ZIP response (not a redirect), revalidated on every request, with
+attachment filename `term-llm-macos.zip`. Existing installs and feeds are
+unaffected; Sparkle continues to use the signed appcast and immutable archive URLs.
 
 ### 1. Generate and retain the real update-signing key
 
@@ -202,7 +206,19 @@ ordinary rsync uploads into `./` succeed. Use a harmless fixture file and
 remove it administratively after the test. The root-owned home/authorized_keys
 must remain outside the writeable upload root. Keep the account out of sudo.
 
-Install the nginx snippet; run `nginx -t` before manually reloading nginx.
+**After merging the stable-download change**, Sam must reinstall the reviewed
+nginx snippet, validate, and reload. From a checkout of the merged code on the
+downloads server (commands for Sam to run, not CI):
+
+```sh
+sudo install -o root -g root -m 0644 docs/deployment/mac.conf /etc/nginx/term-llm-locations.d/mac.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Apply the snippet before the next main release reaches publication: the final
+HTTPS verification requires `/mac/download` to be served directly. The link
+returns 404 until the first successful latest-ZIP upload; there is no backfill
+of existing releases or change to the existing feed.
 
 **Pruning old builds.** The upload account is write-only (`rrsync -wo -no-del`),
 so CI can never delete anything and every published zip (~23 MB) would otherwise
@@ -217,7 +233,8 @@ superseded ones instead:
 - It deletes nothing and exits 1 if `appcast.xml` is missing, malformed,
   contains a DTD, lists an unexpected URL, or its newest zip is not on disk.
   Only top-level regular files matching CI's content-addressed name are
-  candidates; `appcast.xml` and rsync temporary files are never touched.
+  candidates; `appcast.xml`, `term-llm-macos-latest.zip` and rsync temporary files
+  are never touched.
 - [`deployment/term-llm-mac-prune.service`](deployment/term-llm-mac-prune.service)
   runs it as `term-llm-updates` with no network and only the downloads directory
   writable; [`deployment/term-llm-mac-prune.timer`](deployment/term-llm-mac-prune.timer)
@@ -225,17 +242,19 @@ superseded ones instead:
 - Install or update with `sudo sh docs/deployment/install-mac-download-prune.sh`
   (dry run first, then enables the timer). Check with
   `journalctl -u term-llm-mac-prune.service`. Steady state is about 2 zips plus
-  whatever shipped in the last 48 hours.
+  whatever shipped in the last 48 hours, plus **one extra ~23 MB file** for
+  `term-llm-macos-latest.zip` (replaced each release, never pruned).
 
 `scripts/ci/test_mac_download_prune.py` feeds CI-generated appcasts and archive
 names through the prune script, so a change to either side's naming or feed
 format fails the lightweight checks.
 Check HTTPS certificates and a fixture's Content-Type/cache headers. Only
-`appcast.xml` and versioned ZIP names are served; directory listings, temporary
-files and dotfiles return 404. The downloads tree must **not** be under
+`appcast.xml`, `/mac/download` and content-addressed ZIP names are served;
+`/mac/term-llm-macos-latest.zip` itself, directory listings, temporary files and
+dotfiles return 404. The downloads tree must **not** be under
 `/var/www/term-llm`: the public docs deploy uses `rsync -a --delete` there.
-Keep appcast uncached/revalidated, ZIP URLs immutable, and old archives retained
-while any published feed references them. Server-side retention is an explicit
+Keep appcast and `/mac/download` uncached/revalidated, content-addressed ZIP URLs
+immutable, and old archives retained while any published feed references them. Server-side retention is an explicit
 admin task; CI has no delete permission.
 
 ### 3. Release and failure policy
@@ -256,15 +275,25 @@ bytes. The uploader uses `--ignore-existing` and verifies the public HTTPS
 object's byte count and SHA-256 before exposing it in the feed.
 The content-addressed ZIP uploads first using rsync's
 normal temporary-file/rename behavior, then `appcast.xml` uploads in a separate
-command, again with atomic rename. No `--inplace`, server shell, delete, or
-public artifact storage. Readers see the old feed until the new asset exists.
+command, again with atomic rename. **Last**, CI uploads the same verified archive
+bytes again as `term-llm-macos-latest.zip`, with overwrite allowed (no
+`--ignore-existing`), then verifies the exact byte count and SHA-256 over HTTPS
+at `/mac/download`. The feed is the source of truth: the convenience link may
+lag a release by seconds, but never points to a release not yet in the signed
+feed. All uploads retain the same macOS openrsync-compatible flags and atomic
+rename behavior. No `--inplace`, server shell, delete, or public artifact storage.
+Readers see the old feed until the new asset exists.
 The private GitHub release uses the **same ZIP**, and only runs after successful
 website publication. Missing new secrets, an inaccessible/malformed old feed,
 signature mismatch, nonmonotonic build, or failed transfer fails closed.
 Credential/signing/upload errors name this setup section. A first-feed HTTPS 404 is permitted;
 other failures must not silently reset history. A failed ZIP upload never
 publishes the feed. A failed feed upload can leave an unreferenced ZIP, but not
-a broken client update.
+a broken client update. Failure to upload or verify the latest download also
+fails the job with an explicit `::error::` saying **the release is already
+published to Sparkle**. It withholds the private GitHub release; the signed feed
+is not rolled back, and existing installs can still update. The next release
+advances past that published feed as usual.
 
 **Why withhold the GitHub release on failure?** A successful release must mean
 the configured update channel is available, not silently ship another

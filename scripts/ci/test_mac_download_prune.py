@@ -78,6 +78,16 @@ class PruneTests(unittest.TestCase):
         self.assertEqual(prune.BASE, sparkle.BASE)
         self.assertEqual(prune.NS, sparkle.NS)
 
+    def test_fixed_latest_zip_is_never_a_prune_candidate(self):
+        self.assertIsNone(prune.NAME.fullmatch("term-llm-macos-latest.zip"))
+        self.zips([1, 2, 3])
+        (self.dir / "appcast.xml").write_bytes(publish_feed([1, 2, 3]))
+        latest = self.dir / "term-llm-macos-latest.zip"
+        latest.write_bytes(b"latest archive")
+        self.assertEqual(self.run_prune()[0], 0)
+        self.assertEqual(latest.read_bytes(), b"latest archive")
+        self.assertNotIn(metadata(1)["publicAsset"], self.remaining())
+
     def test_keeps_two_newest_feed_items_and_deletes_superseded(self):
         self.zips(range(1, 6))
         (self.dir / "appcast.xml").write_bytes(publish_feed(range(1, 6)))
