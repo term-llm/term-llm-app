@@ -257,4 +257,46 @@ final class LinkedDevicesProtocolTests: XCTestCase {
         XCTAssertEqual(LinkedDevicesBrokerClient.apiError(status: 409, data: payload("peer_offline")), .peerOffline)
         XCTAssertEqual(LinkedDevicesBrokerClient.apiError(status: 429, data: payload("quota_exceeded")), .quotaExceeded)
     }
+
+    func testWireMessagesKeepEveryKey() throws {
+        try assertWireKeysRoundTrip(LinkedDevicesPairRequest.self, """
+        {"v":2,"type":"pair_request","invitation_id":"AAEC","device_key":"AwQF","device_nonce":"BgcI",
+         "device_name":"phone","mac":"CQoL","sig":"DA0O"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesPairAnswer.self, """
+        {"v":2,"type":"pair_answer","invitation_id":"AAEC","host_key":"AwQF","device_key":"BgcI",
+         "device_nonce":"CQoL","request_hash":"DA0O","device_id":"DxAR","reconnect_capability":"EhMU",
+         "scope":"web-v1","base_path":"/chat","host_label":"desk","mac":"FRYX","sig":"GBka"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesPairReject.self,
+                                    #"{"v":2,"type":"pair_reject","invitation_id":"AAEC","reason":"declined"}"#)
+        try assertWireKeysRoundTrip(LinkedDevicesTransportHello.self, """
+        {"v":2,"type":"transport_hello","device_key":"AAEC","device_id":"AwQF","reconnect_capability":"BgcI",
+         "device_nonce":"CQoL","sig":"DA0O"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesTransportChallenge.self, """
+        {"v":2,"type":"transport_challenge","challenge_id":"AAEC","host_key":"AwQF","host_nonce":"BgcI",
+         "device_key":"CQoL","device_id":"DA0O","expires_at":1800000000,"sig":"DxAR"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesTransportRequest.self, """
+        {"v":2,"type":"transport_request","challenge_id":"AAEC","host_nonce":"AwQF","device_key":"BgcI",
+         "device_nonce":"CQoL","device_id":"DA0O","offer_sdp":"v=0","sig":"DxAR"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesTransportAnswer.self, """
+        {"v":2,"type":"transport_answer","challenge_id":"AAEC","host_key":"AwQF","host_nonce":"BgcI",
+         "device_key":"CQoL","device_nonce":"DA0O","request_hash":"DxAR","device_id":"EhMU",
+         "answer_sdp":"v=0","sig":"FRYX"}
+        """)
+    }
+
+    func testBrokerMessagesKeepEveryKey() throws {
+        try assertWireKeysRoundTrip(LinkedDevicesBrokerFrame.self, """
+        {"type":"ready","peer_id":"p1","peer_kind":"device","body":{"v":2},"role":"device",
+         "peer_connected":true,"lease_expires_at":"2026-01-01T00:00:00Z","error":"none"}
+        """)
+        try assertWireKeysRoundTrip(LinkedDevicesICECredentials.self, """
+        {"ice_servers":[{"urls":["turn:turn.example:3478"],"username":"user","credential":"secret"}],
+         "expires_at":"2026-01-01T00:00:00Z"}
+        """)
+    }
 }

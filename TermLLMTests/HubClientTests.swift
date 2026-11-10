@@ -121,6 +121,23 @@ private func htmlResponse(
     return (Data(html.utf8), http)
 }
 
+/// Pins a wire model's JSON keys independently of its Swift property names.
+/// `json` must name every stored property with a non-null value; decoding and
+/// re-encoding must then reproduce it exactly, so a property that loses its
+/// wire key fails in at least one direction.
+func assertWireKeysRoundTrip<T: Codable>(_ type: T.Type, _ json: String,
+                                         file: StaticString = #filePath, line: UInt = #line) throws {
+    let data = Data(json.utf8)
+    let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary, file: file, line: line)
+    XCTAssertFalse(expected.allValues.contains { $0 is NSNull }, "\(T.self) fixture has a null value", file: file, line: line)
+    let value = try JSONDecoder().decode(T.self, from: data)
+    XCTAssertEqual(Mirror(reflecting: value).children.count, expected.count,
+                   "\(T.self) fixture must name every stored property", file: file, line: line)
+    let encoded = try JSONEncoder().encode(value)
+    let actual = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? NSDictionary, file: file, line: line)
+    XCTAssertEqual(actual, expected, "\(T.self) wire keys changed", file: file, line: line)
+}
+
 // MARK: - Model Codable tests
 
 final class HubClientModelTests: XCTestCase {
@@ -270,6 +287,86 @@ final class HubClientModelTests: XCTestCase {
     func testGrantPrefixRawValues() {
         XCTAssertEqual(GrantPrefix.bootstrap.rawValue, "/api/auth/bootstrap")
         XCTAssertEqual(GrantPrefix.recovery.rawValue, "/api/auth/recovery")
+    }
+
+    func testHubModelsKeepEveryWireKey() throws {
+        try assertWireKeysRoundTrip(NodesResponse.self, #"{"nodes":[],"resolver_error":"timeout"}"#)
+        try assertWireKeysRoundTrip(NodeOrderResponse.self, #"{"node_ids":["a","b"]}"#)
+        try assertWireKeysRoundTrip(HubNode.self, """
+        {"id":"n1","name":"Local","source":"config","connection":"direct","url":"http://localhost:3000",
+         "base_path":"/","proxy_path":"/node/n1/","new_session_path":"/node/n1/?new=1","has_token":true,
+         "status":{"reachable":true,"state":"ok","latency_ms":12},"sessions":{"count_label":"1 conversation"},
+         "diagnostics":[{"severity":"warning","code":"stale","message":"Stale"}]}
+        """)
+        try assertWireKeysRoundTrip(HubNodeStatus.self, """
+        {"reachable":true,"state":"ok","latency_ms":12,"version":"1.2.3","agent":"desk",
+         "capabilities":["api"],"details":{"mode":"direct"},"error":"none"}
+        """)
+        try assertWireKeysRoundTrip(HubNodeSessions.self, """
+        {"count_label":"2 conversations","has_more":true,"active_count":1,"input_required_count":1,
+         "unseen_count":3,"attention_capability":"ok","attention_last_success_at":1700000000000,
+         "active":[],"recent":[],"resume_path":"/node/n1/"}
+        """)
+        try assertWireKeysRoundTrip(HubNodeSession.self, """
+        {"id":"s1","number":4,"short_title":"Short","long_title":"Long","pinned":true,"active_run":true,
+         "interaction_required":true,"pending_interaction_count":2,"pending_interaction_kinds":["approval"],
+         "last_message_at":1700000000000,"message_count":9,"resume_path":"/node/n1/chat/4"}
+        """)
+        try assertWireKeysRoundTrip(AttentionResponse.self, """
+        {"total_running":3,"total_input_required":1,"total_unseen":5,
+         "nodes":[],"input_required":[],"inbox":[],"has_more":true}
+        """)
+        try assertWireKeysRoundTrip(HubAttentionNode.self, """
+        {"node_id":"n1","node_name":"Local","capability_state":"ok","stale":false,
+         "last_success_at":"2025-01-01T00:00:00Z","last_error":"none","running_count":3,
+         "input_required_count":1,"unseen_count":5,"has_green_indicator":false}
+        """)
+        try assertWireKeysRoundTrip(HubInputRequiredItem.self, """
+        {"node_id":"n1","node_name":"Local","session_id":"s1","session_number":4,"title":"Title",
+         "pending_interaction_count":1,"pending_interaction_kinds":["approval"],
+         "required_since":"2025-01-01T00:00:00Z","resume_path":"/node/n1/chat/4","stale":false}
+        """)
+        try assertWireKeysRoundTrip(HubAttentionInboxItem.self, """
+        {"node_id":"n1","node_name":"Local","session_id":"s2","store_instance_id":"store","session_number":5,
+         "title":"Title","outcome":"completed","terminal_at":"2025-01-01T00:00:00Z","attention_seq":7,
+         "resume_path":"/node/n1/chat/5"}
+        """)
+        try assertWireKeysRoundTrip(AttentionSeenRequest.self,
+                                    #"{"store_instance_id":"store","session_id":"s1","attention_seq":7}"#)
+        try assertWireKeysRoundTrip(HubDelegation.self, """
+        {"id":"d1","origin_node":"n1","target_node":"n2","agent_name":"coder","prompt":"Prompt","model":"m",
+         "cwd":"/tmp","job_id":"j1","run_id":"r1","status":"running","depth":1,"chain":["n1","n2"],
+         "parent_delegation_id":"d0","response":"done","error":"none",
+         "created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-02T00:00:00Z"}
+        """)
+        try assertWireKeysRoundTrip(RegistrationInfoResponse.self, """
+        {"enabled":true,"token_configured":true,"can_persist_nodes":false,"registration_token":"abc"}
+        """)
+        try assertWireKeysRoundTrip(HubSessionResponse.self, """
+        {"administrator":"admin","session":{"key":"value"},"recently_authenticated":true,"active_sessions":2}
+        """)
+        try assertWireKeysRoundTrip(HubCredential.self, """
+        {"record_id":"r1","display_name":"My Key","transports":["usb"],
+         "created_at":"2025-01-01","last_used_at":"2025-06-01"}
+        """)
+        try assertWireKeysRoundTrip(SessionSearchEntry.self, """
+        {"id":"s1","number":4,"short_title":"Short","long_title":"Long","pinned":true,
+         "last_message_at":1700000000000,"message_count":9,"snippet":"hit","attention_unseen":true}
+        """)
+    }
+
+    func testSessionBrowsingModelsKeepEveryWireKey() throws {
+        try assertWireKeysRoundTrip(AgentSessionPage.self, #"{"sessions":[],"next_cursor":"c2"}"#)
+        try assertWireKeysRoundTrip(AgentSessionEntry.self, """
+        {"id":"s1","number":4,"name":"Named","short_title":"Short","long_title":"Long","project_name":"proj",
+         "archived":false,"pinned":true,"pin_order":2,"created_at":1700000000000,"last_message_at":1700000001000,
+         "message_count":9,"attention_store_instance_id":"store","attention_seq":7,"attention_unseen":true,
+         "parent_session_id":"s0"}
+        """)
+        try assertWireKeysRoundTrip(AgentSessionPatchResult.self, """
+        {"id":"s1","name":"Named","short_title":"Short","long_title":"Long","archived":true,"pinned":false,"pin_order":3}
+        """)
+        try assertWireKeysRoundTrip(PinnedSessionOrder.Position.self, #"{"id":"s1","pin_order":1}"#)
     }
 }
 

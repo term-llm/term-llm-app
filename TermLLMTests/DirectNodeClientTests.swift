@@ -173,6 +173,29 @@ final class DirectNodeClientModelTests: XCTestCase {
         XCTAssertEqual(DirectAttentionKind.running.rawValue, "running")
         XCTAssertEqual(DirectAttentionKind.input_required.rawValue, "input_required")
     }
+
+    func testDirectNodeModelsKeepEveryWireKey() throws {
+        try assertWireKeysRoundTrip(DirectAttentionPage.self, """
+        {"protocol_version":2,"store_instance_id":"store","snapshot_version":42,"items":[],
+         "next_cursor":"c2","has_more":true}
+        """)
+        try assertWireKeysRoundTrip(DirectAttentionItem.self, """
+        {"session_id":"s1","session_number":7,"response_id":"r1","kind":"unseen","lifecycle_state":"terminal",
+         "attention_seq":42,"short_title":"Short","long_title":"Long","outcome":"completed",
+         "terminal_at":"2025-10-24T12:00:00Z","started_at":"2025-10-24T11:00:00Z","interaction_required":true,
+         "pending_interaction_count":1,"pending_interaction_kinds":["approval"],
+         "interaction_required_since":"2025-10-24T11:30:00Z","seen_through_seq":41,"seen_rev":3}
+        """)
+        try assertWireKeysRoundTrip(DirectNodeSessionEntry.self, """
+        {"id":"s1","number":1,"project_id":"p1","project_name":"proj","short_title":"Short","long_title":"Long",
+         "pinned":true,"active_run":true,"active_response_id":"r1","run_epoch":2,"started_rev":3,
+         "started_at":1700000000000,"transcript_rev":4,"message_count":9,"last_message_at":1700000001000,
+         "attention_store_instance_id":"store","attention_seq":7,"attention_response_id":"r0",
+         "seen_through_seq":6,"seen_rev":5,"seen_source":"phone","attention_unseen":true,
+         "attention_outcome":"completed","attention_terminal_at":1700000002000,"interaction_required":true,
+         "pending_interaction_count":1,"pending_interaction_kinds":["approval"]}
+        """)
+    }
 }
 
 // MARK: - Mount path and resume path tests
