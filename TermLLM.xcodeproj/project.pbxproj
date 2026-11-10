@@ -317,6 +317,18 @@
 		C10000000000000000000022 /* ComputerUseClient in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000082 /* ComputerUseClient */; };
 		C10000000000000000000023 /* term-llm Computer Use.app in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000030 /* term-llm Computer Use.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C10000000000000000000024 /* term-llm-computer in Embed Computer Use */ = {isa = PBXBuildFile; fileRef = C10000000000000000000031 /* term-llm-computer */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		67788D55AA3ED15A515DCD38 /* PhoneHubConnectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1D59806B14E76B0C241120 /* PhoneHubConnectionsView.swift */; };
+		2315D933EB64A3AE9E324115 /* PhoneHubConnectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1D59806B14E76B0C241120 /* PhoneHubConnectionsView.swift */; };
+		113BDA69E841E3D6256B1CF8 /* PhoneHubConnectionComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA12750E3F32365EC585AFA /* PhoneHubConnectionComponents.swift */; };
+		65FEB4390DABFD77CA9BDC41 /* PhoneHubConnectionComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA12750E3F32365EC585AFA /* PhoneHubConnectionComponents.swift */; };
+		C4F27ACD5FD0C7ECB0B79DE5 /* PhoneHubConnectionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7E07F24729D1A974762E128 /* PhoneHubConnectionDetailView.swift */; };
+		77A536E080EAF04CEAA08CB9 /* PhoneHubConnectionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7E07F24729D1A974762E128 /* PhoneHubConnectionDetailView.swift */; };
+		9243BCFA26E30073CFAECB57 /* PhoneHubConnectionEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E3731DCF259E1CF178697A9 /* PhoneHubConnectionEditor.swift */; };
+		2FFA2DE1414CCA98295ABA18 /* PhoneHubConnectionEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E3731DCF259E1CF178697A9 /* PhoneHubConnectionEditor.swift */; };
+		13F4411712215BDA6C0F03EB /* PhoneHubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */; };
+		7FFD3579E004A1CA6F8ED8FA /* PhoneHubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */; };
+		5E4A832300F6B84D2AC47AB3 /* WorkspaceComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */; };
+		BC5FED135011C3DE39506C84 /* WorkspaceComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -566,6 +578,12 @@
 		C10000000000000000000006 /* ComputerUseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseTests.swift; sourceTree = "<group>"; };
 		C10000000000000000000030 /* term-llm Computer Use.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "term-llm Computer Use.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000031 /* term-llm-computer */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "term-llm-computer"; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A1D59806B14E76B0C241120 /* PhoneHubConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubConnectionsView.swift; sourceTree = "<group>"; };
+		8CA12750E3F32365EC585AFA /* PhoneHubConnectionComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubConnectionComponents.swift; sourceTree = "<group>"; };
+		E7E07F24729D1A974762E128 /* PhoneHubConnectionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubConnectionDetailView.swift; sourceTree = "<group>"; };
+		4E3731DCF259E1CF178697A9 /* PhoneHubConnectionEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubConnectionEditor.swift; sourceTree = "<group>"; };
+		B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubComponents.swift; sourceTree = "<group>"; };
+		F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceComponents.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -663,6 +681,8 @@
 		000000000000000000000004 /* TermLLM */ = {
 			isa = PBXGroup;
 			children = (
+				0D12FE633F3A0C296961C32F /* Workspace */,
+				A991693874018BE01021B135 /* Hub */,
 				000000000000000000000804 /* HubNavigation.swift */,
 				000000000000000000000803 /* HubConnection.swift */,
 				000000000000000000000802 /* HubView.swift */,
@@ -877,6 +897,26 @@
 		};
 		C10000000000000000000070 /* TermLLMComputerUse */ = {isa = PBXGroup; children = (C10000000000000000000003 /* main.swift */, C10000000000000000000004 /* Info.plist */, ); path = TermLLMComputerUse; sourceTree = "<group>"; };
 		C10000000000000000000071 /* TermLLMComputerCLI */ = {isa = PBXGroup; children = (C10000000000000000000005 /* main.swift */, ); path = TermLLMComputerCLI; sourceTree = "<group>"; };
+		A991693874018BE01021B135 /* Hub */ = {
+			isa = PBXGroup;
+			children = (
+				B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */,
+				4E3731DCF259E1CF178697A9 /* PhoneHubConnectionEditor.swift */,
+				E7E07F24729D1A974762E128 /* PhoneHubConnectionDetailView.swift */,
+				8CA12750E3F32365EC585AFA /* PhoneHubConnectionComponents.swift */,
+				4A1D59806B14E76B0C241120 /* PhoneHubConnectionsView.swift */,
+			);
+			path = Hub;
+			sourceTree = "<group>";
+		};
+		0D12FE633F3A0C296961C32F /* Workspace */ = {
+			isa = PBXGroup;
+			children = (
+				F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */,
+			);
+			path = Workspace;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1230,6 +1270,12 @@
 				ED4F44C3DC21E1F0606A760A /* HubAggregateStore.swift in Sources */,
 				0572E2EE50B823E7CEE1D63F /* DirectNodeClient.swift in Sources */,
 				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
+				5E4A832300F6B84D2AC47AB3 /* WorkspaceComponents.swift in Sources */,
+				13F4411712215BDA6C0F03EB /* PhoneHubComponents.swift in Sources */,
+				9243BCFA26E30073CFAECB57 /* PhoneHubConnectionEditor.swift in Sources */,
+				C4F27ACD5FD0C7ECB0B79DE5 /* PhoneHubConnectionDetailView.swift in Sources */,
+				113BDA69E841E3D6256B1CF8 /* PhoneHubConnectionComponents.swift in Sources */,
+				67788D55AA3ED15A515DCD38 /* PhoneHubConnectionsView.swift in Sources */,
 				A633D910B85C23F03349FEA4 /* PhoneHubAgentView.swift in Sources */,
 				A606D0DADCBADBD4FD3399A0 /* PhoneHubAgentSessions.swift in Sources */,
 				F100000000000000000000BF /* PhoneHubAgentsOverview.swift in Sources */,
@@ -1396,6 +1442,12 @@
 				F10000000000000000000050 /* HubAggregateStore.swift in Sources */,
 				F10000000000000000000051 /* DirectNodeClient.swift in Sources */,
 				F10000000000000000000052 /* PhoneHubView.swift in Sources */,
+				BC5FED135011C3DE39506C84 /* WorkspaceComponents.swift in Sources */,
+				7FFD3579E004A1CA6F8ED8FA /* PhoneHubComponents.swift in Sources */,
+				2FFA2DE1414CCA98295ABA18 /* PhoneHubConnectionEditor.swift in Sources */,
+				77A536E080EAF04CEAA08CB9 /* PhoneHubConnectionDetailView.swift in Sources */,
+				65FEB4390DABFD77CA9BDC41 /* PhoneHubConnectionComponents.swift in Sources */,
+				2315D933EB64A3AE9E324115 /* PhoneHubConnectionsView.swift in Sources */,
 				F10000000000000000000053 /* PhoneHubAgentView.swift in Sources */,
 				F10000000000000000000054 /* PhoneHubAgentSessions.swift in Sources */,
 				F10000000000000000000055 /* HubSessionBrowsing.swift in Sources */,
