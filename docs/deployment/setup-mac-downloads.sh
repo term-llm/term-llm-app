@@ -47,3 +47,4 @@ sshd -t
 echo 'Created restricted account. Review effective sshd configuration, then reload SSH yourself.'
 echo 'Install docs/deployment/mac.conf, nginx -t, then reload nginx yourself.'
 echo 'Verify restrictions and pin the server host key before allowing CI publication.'
+echo 'Then run install-mac-download-prune.sh to install the daily prune of superseded zips.'
