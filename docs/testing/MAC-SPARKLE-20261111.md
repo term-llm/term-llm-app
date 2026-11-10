@@ -1,6 +1,7 @@
 # Sparkle self-update verification — 11 November 2026
 
-Private branch `feat/mac-sparkle-updates`, based on `49679ff`. No production
+Private branch `feat/mac-sparkle-updates`, initially based on `49679ff` and
+rebased onto intervening main `1f0536e`. No production
 server, 1Password item, GitHub secret, runner registration, or public repository
 was changed. This change is a PR only; do not merge until setup is reviewed.
 
@@ -33,8 +34,8 @@ was changed. This change is a PR only; do not merge until setup is reviewed.
 | --- | --- |
 | `python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v` | 104 passed |
 | `swift test -j 2` in `TermLLMMacKit` | 118 tests, 1 skipped, 0 failures |
-| Hosted updater/lifecycle/Computer Use/menu XCTest selection | 31 passed |
-| TermLLMMac Release builds 9000 and 9001 | Both passed |
+| Hosted updater/lifecycle/Computer Use/menu XCTest selection | 38 passed after rebase (31 passed in the recorded pre-rebase run) |
+| TermLLMMac Release builds 9000 and 9001 | Both passed before capture; integrated Release 9001 rebuilt successfully after rebase |
 | Generic iOS Simulator build, x86_64, unsigned | Passed; Sparkle not linked to iOS |
 | Pinned signer + CI-generated XML + CryptoKit public-key consistency | Passed; tampered XML rejected |
 | Nginx snippet, local fixture vhost only | Syntax, XML/ZIP types, cache headers and deny routes passed |
@@ -54,6 +55,21 @@ Independent static security review found and then cleared: authenticated
 history before re-signing, immutable content-addressed archive retry behavior,
 website/GitHub version recovery, and bounded login-refresh drainage. The
 reviewer did not independently run the reported tests.
+
+## Integration after recording
+
+After PR creation, main advanced with Computer Use permission-relaunch/setup
+changes and the Agents overview. The branch was rebased onto `1f0536e`, preserving
+those features alongside the updater barriers. An added regression checks setup
+refresh admission and restoration. The integrated app source at `05fc5de` passed
+a fresh Mac Release build, **38 hosted tests**, **118 MacKit tests (1 skipped)**,
+and generic iOS Simulator build. A scoped independent static re-review found
+no blocking integration issue.
+
+**The video/stills record pre-rebase `61720e3`, not the final rebased build.**
+They prove the updater flow at that feature revision. The final helper/setup
+integration is covered by the subsequent build/tests and static review, not a
+second update recording. No enabled-helper/TCC behavior is claimed.
 
 ## Evidence
 
