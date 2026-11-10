@@ -329,6 +329,12 @@
 		7FFD3579E004A1CA6F8ED8FA /* PhoneHubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */; };
 		5E4A832300F6B84D2AC47AB3 /* WorkspaceComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */; };
 		BC5FED135011C3DE39506C84 /* WorkspaceComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */; };
+		E9B60ED62C89DAC30E1E0F74 /* MediaPlaybackShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4D39B90FD823A0F955215F /* MediaPlaybackShelf.swift */; };
+		DF4B8D98D6E3F9755EB5E371 /* MediaPlaybackShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4D39B90FD823A0F955215F /* MediaPlaybackShelf.swift */; };
+		F3D9385132FB34FC8C7E022E /* ListenPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1CFDFB163758500B9769E3 /* ListenPlayerView.swift */; };
+		2EF5CA2A523914C3C5455C3A /* ListenPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1CFDFB163758500B9769E3 /* ListenPlayerView.swift */; };
+		9B76766D0F7980A0BD673E51 /* ListenComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = FADB545B718C9F1F16DA3157 /* ListenComponents.swift */; };
+		42AE570827889F31A6287649 /* ListenComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = FADB545B718C9F1F16DA3157 /* ListenComponents.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -584,6 +590,9 @@
 		4E3731DCF259E1CF178697A9 /* PhoneHubConnectionEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubConnectionEditor.swift; sourceTree = "<group>"; };
 		B8AFD1AD34BFD20D0CDEA54E /* PhoneHubComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubComponents.swift; sourceTree = "<group>"; };
 		F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceComponents.swift; sourceTree = "<group>"; };
+		BB4D39B90FD823A0F955215F /* MediaPlaybackShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackShelf.swift; sourceTree = "<group>"; };
+		6C1CFDFB163758500B9769E3 /* ListenPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenPlayerView.swift; sourceTree = "<group>"; };
+		FADB545B718C9F1F16DA3157 /* ListenComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenComponents.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -681,6 +690,7 @@
 		000000000000000000000004 /* TermLLM */ = {
 			isa = PBXGroup;
 			children = (
+				854A48BBBC88EB701C89C503 /* Listen */,
 				0D12FE633F3A0C296961C32F /* Workspace */,
 				A991693874018BE01021B135 /* Hub */,
 				000000000000000000000804 /* HubNavigation.swift */,
@@ -915,6 +925,16 @@
 				F2915D5904C8B356F3264084 /* WorkspaceComponents.swift */,
 			);
 			path = Workspace;
+			sourceTree = "<group>";
+		};
+		854A48BBBC88EB701C89C503 /* Listen */ = {
+			isa = PBXGroup;
+			children = (
+				FADB545B718C9F1F16DA3157 /* ListenComponents.swift */,
+				6C1CFDFB163758500B9769E3 /* ListenPlayerView.swift */,
+				BB4D39B90FD823A0F955215F /* MediaPlaybackShelf.swift */,
+			);
+			path = Listen;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -1253,6 +1273,9 @@
 				000000000000000000000245 /* Listen.swift in Sources */,
 				000000000000000000000246 /* ListenTools.swift in Sources */,
 				000000000000000000000247 /* ListenViews.swift in Sources */,
+				9B76766D0F7980A0BD673E51 /* ListenComponents.swift in Sources */,
+				F3D9385132FB34FC8C7E022E /* ListenPlayerView.swift in Sources */,
+				E9B60ED62C89DAC30E1E0F74 /* MediaPlaybackShelf.swift in Sources */,
 				000000000000000000000250 /* ListenTransfer.swift in Sources */,
 				000000000000000000000251 /* ListenArtwork.swift in Sources */,
 				000000000000000000000143 /* AppleNavigation.swift in Sources */,
@@ -1425,6 +1448,9 @@
 				F1000000000000000000003F /* Listen.swift in Sources */,
 				F10000000000000000000040 /* ListenTools.swift in Sources */,
 				F10000000000000000000041 /* ListenViews.swift in Sources */,
+				42AE570827889F31A6287649 /* ListenComponents.swift in Sources */,
+				2EF5CA2A523914C3C5455C3A /* ListenPlayerView.swift in Sources */,
+				DF4B8D98D6E3F9755EB5E371 /* MediaPlaybackShelf.swift in Sources */,
 				F10000000000000000000042 /* ListenTransfer.swift in Sources */,
 				F10000000000000000000043 /* ListenArtwork.swift in Sources */,
 				F10000000000000000000044 /* AppleNavigation.swift in Sources */,
