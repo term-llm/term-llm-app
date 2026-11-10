@@ -1,7 +1,5 @@
 # term-llm push relay
 
-This module provides two separate commands: the encrypted Web Push relay described below (`go build .`), and the existing operator-only bearer-authenticated relay (`go build -o term-llm-push ./cmd/term-llm-push`). The latter retains its original configuration and API; see [operator relay documentation](ops/OPERATOR-RELAY.md) and [existing deployment notes](ops/DEPLOYMENT.md). The `ops/` directory holds separate service and nginx templates for each command; deploy the pair that matches the binary you build and do not replace one with the other.
-
 A small Go service that lets self-hosted term-llm servers send native iOS notifications to the term-llm app.
 
 Only the holder of the app's APNs key can push to it, and that key cannot be shipped to self-hosted servers. The app therefore registers a Web Push subscription whose endpoint is this relay. term-llm sends ordinary encrypted Web Push (RFC 8030/8291/8292) to that endpoint, exactly as it does for browsers. The relay forwards the still-encrypted body to APNs. The app's Notification Service Extension decrypts it on the device.
@@ -142,6 +140,8 @@ These limits bound outbound volume; they do not guarantee availability. An attac
    ```
 
 4. **TLS:** terminate TLS in front of the relay. Use `/healthz` as the health check. The APNs client itself requires HTTP/2 over TLS 1.2 or newer, ignores proxy environment variables and does not follow redirects; `APNS_*_URL` plain-HTTP overrides are only for loopback test fakes.
+
+`push.term-llm.com` runs the binary under systemd behind nginx instead of Docker. Its unit and vhost templates are in `ops/`; the host layout and rollout procedure are in [ops/ENCRYPTED-DEPLOYMENT.md](ops/ENCRYPTED-DEPLOYMENT.md).
 
 Rate limits are kept in memory per instance; see [Abuse limits and trust model](#abuse-limits-and-trust-model). Logs are JSON on stdout. Devices appear only as a short hash, and payloads are never logged. Transport failures are logged without request URLs or headers, so the device token and provider credential are not exposed.
 

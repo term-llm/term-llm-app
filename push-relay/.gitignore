@@ -1,4 +1,6 @@
 /term-llm-push
+# `go build ./...` writes this binary because the module has a single main package.
+/push-relay
 *.p8
 /relay-token
 /endpoint-token-keys
