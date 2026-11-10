@@ -58,50 +58,16 @@ struct PhoneHubView: View {
 
     var body: some View {
         NavigationStack(path: $agentPath) {
-            WorkspaceSessionList(wide: usesWorkspaceChrome) {
-                if connections.connections.isEmpty {
-                    Section {
-                        VStack(spacing: 16) {
-                            Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
-                            Text("Your agents, all in one place").font(.title3.bold())
-                            Text("Add a connection to bring your agents together.")
-                                .foregroundStyle(.secondary)
-                            Button { editor = Editor() } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "plus")
-                                        .accessibilityHidden(true)
-                                    Text("Add Connection")
-                                }
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, minHeight: 28)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
-                            .buttonBorderShape(.roundedRectangle(radius: 16))
-                            .frame(maxWidth: 320)
-                            .accessibilityIdentifier("phoneHub.addConnection")
-                            Button("Try demo") {
-                                do {
-                                    let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)
-                                    onOpenChat(source.id, source.url)
-                                } catch { navigationError = error.localizedDescription }
-                            }.accessibilityIdentifier("phoneHub.demo")
-                        }
-                        .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 28)
-                    }
-                }
-                if !connections.connections.isEmpty {
-                    Section {
-                        if let navigationError { Text(navigationError).foregroundStyle(.orange) }
-                        switch panel {
-                        case .nodes: nodes
-                        case .attention: attention
-                        case .sessions: sessions
-                        }
-                    }
-                    #if os(macOS)
-                    .listSectionSeparator(.hidden)
-                    #endif
+            Group {
+                // Mac and iPad give the Agents panel a page of its own: one
+                // agent's live work, or a card per agent. iPhone keeps the list.
+                if usesWorkspaceChrome && panel == .nodes && !connections.connections.isEmpty && !visibleNodes.isEmpty {
+                    PhoneHubAgentsOverview(aggregate: aggregate, nodes: visibleNodes, isVisible: isVisible,
+                                           navigationError: navigationError,
+                                           onOpen: { path, source, nodeID in open(path, source: source, nodeID: nodeID) },
+                                           onShowAttention: { panel = .attention })
+                } else {
+                    rootList
                 }
             }
             // Polling must not animate or rebuild the surrounding list layout.
@@ -210,6 +176,55 @@ struct PhoneHubView: View {
             let canonical = HubConnectionStore.canonicalURL(url.absoluteString)
             editor = Editor(source: connections.connections.first { $0.url == canonical }, address: url.absoluteString)
             pendingConnectionURL = nil
+        }
+    }
+
+    private var rootList: some View {
+        WorkspaceSessionList(wide: usesWorkspaceChrome) {
+            if connections.connections.isEmpty {
+                Section {
+                    VStack(spacing: 16) {
+                        Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
+                        Text("Your agents, all in one place").font(.title3.bold())
+                        Text("Add a connection to bring your agents together.")
+                            .foregroundStyle(.secondary)
+                        Button { editor = Editor() } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "plus")
+                                    .accessibilityHidden(true)
+                                Text("Add Connection")
+                            }
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .buttonBorderShape(.roundedRectangle(radius: 16))
+                        .frame(maxWidth: 320)
+                        .accessibilityIdentifier("phoneHub.addConnection")
+                        Button("Try demo") {
+                            do {
+                                let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)
+                                onOpenChat(source.id, source.url)
+                            } catch { navigationError = error.localizedDescription }
+                        }.accessibilityIdentifier("phoneHub.demo")
+                    }
+                    .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 28)
+                }
+            }
+            if !connections.connections.isEmpty {
+                Section {
+                    if let navigationError { Text(navigationError).foregroundStyle(.orange) }
+                    switch panel {
+                    case .nodes: nodes
+                    case .attention: attention
+                    case .sessions: sessions
+                    }
+                }
+                #if os(macOS)
+                .listSectionSeparator(.hidden)
+                #endif
+            }
         }
     }
 

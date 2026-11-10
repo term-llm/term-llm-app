@@ -242,6 +242,10 @@
 		F10000000000000000000068 /* MacWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* MacWorkspace.swift */; };
 		F10000000000000000000069 /* MacLocalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* MacLocalService.swift */; };
 		F1000000000000000000006A /* CompanionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000005 /* CompanionModel.swift */; };
+		F100000000000000000000BF /* PhoneHubAgentsOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000BB /* PhoneHubAgentsOverview.swift */; };
+		F100000000000000000000C0 /* PhoneHubAgentsOverviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000BD /* PhoneHubAgentsOverviewTests.swift */; };
+		F100000000000000000000BC /* PhoneHubAgentsOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000BB /* PhoneHubAgentsOverview.swift */; };
+		F100000000000000000000BE /* PhoneHubAgentsOverviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100000000000000000000BD /* PhoneHubAgentsOverviewTests.swift */; };
 		F1000000000000000000006B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* Assets.xcassets */; };
 		F1000000000000000000006C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000300 /* PrivacyInfo.xcprivacy */; };
 		F1000000000000000000006D /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000420 /* NotificationService.swift */; };
@@ -536,6 +540,8 @@
 		F10000000000000000000003 /* MacWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWorkspace.swift; sourceTree = "<group>"; };
 		F10000000000000000000004 /* MacLocalService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacLocalService.swift; sourceTree = "<group>"; };
 		F10000000000000000000005 /* CompanionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionModel.swift; sourceTree = "<group>"; };
+		F100000000000000000000BB /* PhoneHubAgentsOverview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentsOverview.swift; sourceTree = "<group>"; };
+		F100000000000000000000BD /* PhoneHubAgentsOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHubAgentsOverviewTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F10000000000000000000007 /* TermLLMMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TermLLMMac.entitlements; sourceTree = "<group>"; };
 		F10000000000000000000008 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
@@ -717,6 +723,7 @@
 				FFBE03F21D886C57FDE63AF6 /* PhoneHubView.swift */,
 				EEBED04EDD8BCD82DD76AE55 /* PhoneHubAgentView.swift */,
 				85FB29225BA6865D7162CD9C /* PhoneHubAgentSessions.swift */,
+				F100000000000000000000BB /* PhoneHubAgentsOverview.swift */,
 				122ED40C4A03E009BC7DD13F /* HubSessionBrowsing.swift */,
 				A10000000000000000000001 /* PeerWireProtocol.swift */,
 				A10000000000000000000002 /* PeerHTTPMultiplexer.swift */,
@@ -777,6 +784,7 @@
 				693D02EAE352037F176A84EC /* HubConnectionSecurityTests.swift */,
 				E7FE94C84E91CF6BA164A811 /* HubAggregateStoreTests.swift */,
 				DEB589E9D0C65437A42969AC /* PhoneHubAgentSessionsTests.swift */,
+				F100000000000000000000BD /* PhoneHubAgentsOverviewTests.swift */,
 				3E73E3A7D51E463423259300 /* PhoneHubAgentRowRenderingTests.swift */,
 				630F2E00D669C33FC9928299 /* DirectNodeClientTests.swift */,
 				A11000000000000000000001 /* LinkedDevicesIdentityTests.swift */,
@@ -1211,6 +1219,7 @@
 				FCAFBFA99014D6ED21CD7A82 /* PhoneHubView.swift in Sources */,
 				A633D910B85C23F03349FEA4 /* PhoneHubAgentView.swift in Sources */,
 				A606D0DADCBADBD4FD3399A0 /* PhoneHubAgentSessions.swift in Sources */,
+				F100000000000000000000BF /* PhoneHubAgentsOverview.swift in Sources */,
 				407AC317A3BDC0A564FB47B1 /* HubSessionBrowsing.swift in Sources */,
 				A20000000000000000000001 /* PeerWireProtocol.swift in Sources */,
 				A20000000000000000000002 /* PeerHTTPMultiplexer.swift in Sources */,
@@ -1270,6 +1279,7 @@
 				73E1AEC342683BAE25AFE388 /* HubConnectionSecurityTests.swift in Sources */,
 				69CAFC90C9CBDB922C5E9D61 /* HubAggregateStoreTests.swift in Sources */,
 				DC0AD39441284BB0F5E8E4A2 /* PhoneHubAgentSessionsTests.swift in Sources */,
+				F100000000000000000000C0 /* PhoneHubAgentsOverviewTests.swift in Sources */,
 				0DCDE0401715B1A04E45450F /* PhoneHubAgentRowRenderingTests.swift in Sources */,
 				7D9E0933D6BBD919ECD150D0 /* DirectNodeClientTests.swift in Sources */,
 				A21000000000000000000001 /* LinkedDevicesIdentityTests.swift in Sources */,
@@ -1399,6 +1409,7 @@
 				F10000000000000000000068 /* MacWorkspace.swift in Sources */,
 				F10000000000000000000069 /* MacLocalService.swift in Sources */,
 				F1000000000000000000006A /* CompanionModel.swift in Sources */,
+				F100000000000000000000BC /* PhoneHubAgentsOverview.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1464,6 +1475,7 @@
 				F1000000000000000000009C /* LinkedDevicesRuntimeTests.swift in Sources */,
 				F1000000000000000000009D /* MacLocalServiceTests.swift in Sources */,
 				F1000000000000000000009E /* MacClientTests.swift in Sources */,
+				F100000000000000000000BE /* PhoneHubAgentsOverviewTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

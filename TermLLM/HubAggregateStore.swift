@@ -87,6 +87,10 @@ struct PhoneHubAttention: Identifiable {
     let path: String
     let inputRequired: Bool
     let seenRequest: AttentionSeenRequest?
+    /// What a needs-input item is waiting for, e.g. `approval`.
+    var kinds: [String] = []
+    /// How an unseen result ended, e.g. `completed`.
+    var outcome: String? = nil
     var id: PhoneHubIdentity {
         PhoneHubIdentity(sourceID: source.id, nodeID: nodeID, sessionID: sessionID, key: itemKey)
     }
@@ -596,13 +600,15 @@ final class HubAggregateStore: ObservableObject {
             let connection = source.connection
             let required = source.store.inputRequired.map { item in
                 PhoneHubAttention(source: connection, nodeID: item.node_id, sessionID: item.session_id,
-                                  itemKey: "input", title: item.title, path: item.resume_path, inputRequired: true, seenRequest: nil)
+                                  itemKey: "input", title: item.title, path: item.resume_path, inputRequired: true, seenRequest: nil,
+                                  kinds: item.pending_interaction_kinds ?? [])
             }
             let unseen = source.store.inbox.map { item in
                 PhoneHubAttention(source: connection, nodeID: item.node_id, sessionID: item.session_id,
                                   itemKey: "unseen.\(item.store_instance_id ?? "").\(item.attention_seq)", title: item.title,
                                   path: item.resume_path, inputRequired: false,
-                                  seenRequest: item.store_instance_id.map { AttentionSeenRequest(store_instance_id: $0, session_id: item.session_id, attention_seq: item.attention_seq) })
+                                  seenRequest: item.store_instance_id.map { AttentionSeenRequest(store_instance_id: $0, session_id: item.session_id, attention_seq: item.attention_seq) },
+                                  outcome: item.outcome)
             }
             return required + unseen
         }

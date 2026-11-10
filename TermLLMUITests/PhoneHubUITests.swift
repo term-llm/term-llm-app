@@ -382,6 +382,29 @@ final class PhoneHubUITests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceFleetKeepsCollidingAgentRoutesSeparate() throws {
+        try requireWorkspaceDevice()
+        continueAfterFailure = false
+        launch(reset: true, seed: ["work", "home"])
+        _ = required(app.descendants(matching: .any)["phoneHub.overview.totals"].firstMatch)
+        for source in ["work", "home"] {
+            let node = "phoneHub.node." + id(source) + ".shared"
+            let open = required(app.buttons[node])
+            reveal(open)
+            open.tap()
+            _ = required(app.descendants(matching: .any)["phoneHub.agent"].firstMatch)
+            let name = source == "work" ? "Work agent" : "Home agent"
+            required(app.navigationBars[name].buttons["Agents"]).tap()
+            let compose = required(app.buttons[node + ".new"])
+            reveal(compose)
+            compose.tap()
+            _ = required(app.webViews.staticTexts[source == "work" ? "Work fixture chat" : "Home fixture chat"])
+            selectWorkspaceDestination("agents")
+        }
+        shot("workspace-fleet-ipad")
+    }
+
+    @MainActor
     func testWorkspaceRetainsExactFixtureConversationAndDraftAcrossDestinations() throws {
         try requireWorkspaceDevice()
         continueAfterFailure = false
