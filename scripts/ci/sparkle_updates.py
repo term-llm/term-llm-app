@@ -306,7 +306,9 @@ def publish(app, work, metadata, secrets_dir, run):
                       "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"])
     def upload(path, destination, immutable=False):
         try:
-            run(["rsync", "-rt", "--checksum", "--perms", "--chmod=F644",
+            # The runner uses macOS openrsync: no -r (sent to the server as
+            # --dirs, which rrsync rejects) and only its relative --chmod form.
+            run(["rsync", "-t", "--checksum", "--perms", "--chmod=Fu=rw,Fgo=r",
                  *(["--ignore-existing"] if immutable else []), "-e", ssh, str(path), destination])
         except Exception:
             raise ValueError(f"Sparkle upload failed; see {HELP}") from None
