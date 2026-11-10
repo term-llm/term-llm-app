@@ -25,6 +25,12 @@ MAX_HISTORY = 20
 ARCHIVE_URL = re.compile(re.escape(BASE) +
                          r"term-llm-macos-([0-9]+(?:\.[0-9]+)*)-([1-9][0-9]*)-([0-9a-f]{64})\.zip")
 FILES = ("sparkle-key", "downloads-key", "downloads-known-hosts")
+# term-llm.com sits behind Cloudflare, which rejects urllib's default
+# "Python-urllib/x.y" User-Agent with HTTP 403. Identify the publisher instead.
+USER_AGENT = "term-llm-app-ci/1.0 (Sparkle publisher)"
+_opener = urllib.request.build_opener()
+_opener.addheaders = [("User-Agent", USER_AGENT)]
+urllib.request.install_opener(_opener)
 
 
 def decoded(value, lengths):
