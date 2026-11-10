@@ -2,8 +2,9 @@ name: Notarized Mac build
 
 # Every app change pushed to main becomes a Developer ID signed, notarized and
 # stapled term-llm.app on this repository's Releases page. Self-hosted only: no
-# hosted fallback, Actions cache or artifact storage (the release asset is the
-# only upload). Prerequisites: docs/SELF-HOSTED-CI.md, "Notarized Mac builds".
+# hosted fallback, Actions cache or artifact storage. Release uploads go to
+# the production Sparkle feed and GitHub Releases.
+# Prerequisites: docs/SELF-HOSTED-CI.md#sparkle-updates and "Notarized Mac builds".
 on:
   push:
     branches: [main]
@@ -12,9 +13,12 @@ on:
       - 'TermLLM/**'
       - 'TermLLMMac/**'
       - 'TermLLMMacKit/**'
+      - 'TermLLMComputerUse/**'
+      - 'TermLLMComputerCLI/**'
+      - 'ComputerUseKit/**'
       - 'TermLLMNotificationService/**'
       - 'TermLLM.xcodeproj/**'
-      - 'scripts/ci/notarized-mac-build.py'
+      - 'scripts/ci/**'
       - '.github/workflows/notarized-mac-build.yml'
   workflow_dispatch:
 
@@ -23,7 +27,7 @@ permissions:
 
 concurrency:
   group: notarized-mac-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -38,6 +42,10 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       # 1Password secret references, not secrets: the signing items live in the
       # "term-llm CI" vault, which the OP_SERVICE_ACCOUNT_TOKEN service account can read.
+      SPARKLE_PUBLIC_KEY_REF: 'op://term-llm CI/Mac Sparkle/public key'
+      SPARKLE_PRIVATE_KEY_REF: 'op://term-llm CI/Mac Sparkle/private key'
+      DOWNLOADS_SSH_PRIVATE_KEY_REF: 'op://term-llm CI/Mac downloads SSH/private key'
+      DOWNLOADS_SSH_KNOWN_HOSTS_REF: 'op://term-llm CI/Mac downloads SSH/known hosts'
       MACOS_SIGN_P12_REF: 'op://term-llm CI/Developer ID Application/developer-id.p12'
       MACOS_SIGN_PASSWORD_REF: 'op://term-llm CI/Developer ID Application/password'
       MACOS_NOTARY_KEY_REF: 'op://term-llm CI/App Store Connect notary key/AuthKey_94WH5NUQB4.p8'
@@ -60,6 +68,8 @@ jobs:
         run: |
           python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" \
             select-version --repository "$GITHUB_REPOSITORY"
+      - name: Fetch SHA-256 pinned Sparkle 2.10.1 signing tools
+        run: python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" fetch-sparkle-tools
       # The only GitHub secret is the 1Password service account token. This
       # step only receives whether it is set.
       - name: Require the 1Password service account token and CLI
@@ -86,10 +96,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Release builds must not inherit a local-feed test -D condition,
+          # whether supplied as active conditions or OTHER_SWIFT_FLAGS.
           xcodebuild archive -quiet \
             -project TermLLM.xcodeproj \
             -scheme TermLLMMac \
             -configuration Release \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS= \
+            OTHER_SWIFT_FLAGS= \
             -destination 'generic/platform=macOS' \
             -archivePath "$MAC_RELEASE_DIR/term-llm.xcarchive" \
             -derivedDataPath "$MAC_RELEASE_DIR/DerivedData" \
@@ -111,6 +125,12 @@ jobs:
         run: |
           python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" \
             notarize --app "$MAC_RELEASE_DIR/export/term-llm.app"
+      - name: Sign and publish Sparkle archive and appcast
+        run: |
+          python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" \
+            publish-sparkle --app "$MAC_RELEASE_DIR/export/term-llm.app"
+      # The feed is the production release boundary. GitHub mirrors the exact zip
+      # only after successful feed upload (see docs/SELF-HOSTED-CI.md#sparkle-updates).
       - name: Publish the notarized app as a GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

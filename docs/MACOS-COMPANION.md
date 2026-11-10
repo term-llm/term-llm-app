@@ -4,7 +4,7 @@ Local CLI/service management is an **optional part of the native term-llm Mac ap
 
 The client has the same Agents, Chat, Music, Podcasts and remote connections as the iPhone app. **Local Service…** opens an AppKit settings window in the same process; its controller and `CompanionModel` (in `TermLLMMac/`) use `TermLLMMacKit` for provisioning and service management. It is not another app, service daemon, or app users must configure separately. Remote connections work without using it.
 
-> **Delivery status:** once its signing secrets and profiles are configured, CI Developer ID signs, notarizes, staples and publishes every app change pushed to `main` as a GitHub release ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)). There is no Sparkle feed or automatic app update. Builds run from Xcode stay development-signed; only CI release builds are notarized.
+> **Delivery status:** once its signing secrets and profiles are configured, CI Developer ID signs, notarizes, staples and publishes every app change pushed to `main` as a GitHub release ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)). Sparkle 2 checks for signed app updates daily from `https://term-llm.com/mac/appcast.xml`; installation is user-confirmed. Public download publication requires the separate [Sparkle setup](SELF-HOSTED-CI.md#sparkle-updates). Builds run from Xcode stay development-signed; only CI release builds are notarized.
 
 ## What exists
 
@@ -17,7 +17,7 @@ The client has the same Agents, Chat, Music, Podcasts and remote connections as 
 | Authenticated local chat | Verified managed loopback service handed to the full client's isolated Direct Node source |
 | Computer use | **Shell implemented, tool integration pending.** Bundled native permission helper and CLI, menu/settings lifecycle, and term-llm-only skill; no Python runtime. See [shell integration](design/COMPUTER-USE-SHELL.md) |
 | Developer ID signing and notarization | CI on push to `main`, published as GitHub releases ([setup](SELF-HOSTED-CI.md#notarized-mac-builds)) |
-| Automatic app updates | **Not implemented** |
+| App updates | Sparkle 2.10.1; automatic daily checks and user-confirmed install/relaunch, separately signed appcast and archives |
 
 ## The Local Service window
 
@@ -54,7 +54,7 @@ unit tests for each state.
 used by Homebrew, install.sh and `term-llm upgrade`. The CLI has been Developer ID
 signed and notarized since **0.9.94**, the minimum supported version. The app
 never builds or bundles a CLI. The app itself is notarized separately, by CI
-([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); Sparkle and app auto-update remain unimplemented.
+([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); app updates use Sparkle and do not replace or restart the managed CLI.
 
 Choose **Set Up term-llm** in **Local Service…**. The app resolves
 `https://github.com/samsaffron/term-llm/releases/latest`, selects native hardware
@@ -302,3 +302,46 @@ SIGUSR2 delivery, graceful replacement after active work, or production health p
 - The Mac service integration is not sandboxed: it must execute the CLI and manage the user's service. It is not a computer-use permission host.
 - `TermLLMMacKit` uses Swift 5 language mode; the app, including the local-service UI, is Swift 6 and imports the kit with `@preconcurrency`.
 - Live push delivery, media authorization/playback, camera permissions and linked-device connectivity require platform-specific verification. Shared source/build coverage is not a parity claim for those external capabilities.
+
+
+## Updating the app (not the CLI)
+
+**term-llm → Check for Updates…** and the menu-bar **App Updates** submenu
+open Sparkle's standard update UI. Automatic checks default to once a day;
+the app menu and submenu let you turn them off. Downloads/installations are
+user-confirmed, not unattended. The Local Service window's update controls
+continue to manage the CLI independently.
+
+**Rollout:** 1.0.5 and earlier contain no updater. Install the first
+updater-enabled release manually once; Sparkle can then update that installed
+copy. This does not retrofit an updater into an already-running old app.
+
+The production feed and versioned archives live under `https://term-llm.com/mac/`,
+outside the docs site's deployment root. **These are public downloads**, despite
+the source repository and GitHub releases being private. CI must be configured
+before releasing an updater-enabled build; see [one-time setup](SELF-HOSTED-CI.md#sparkle-updates).
+Sparkle's public key is injected into the built app, never the private key.
+Missing/invalid key configuration disables the updater with a development
+configuration diagnostic; it does not fall back to an unsigned updater.
+Signed feeds (with no signature-failure expiration) and verification before
+ZIP extraction are mandatory. Sparkle itself retains its upstream Developer ID
+signed-DMG key-rotation fallback; this pipeline publishes ZIPs, not DMGs. Do not
+change archive formats or rotate keys without reviewing that policy.
+
+Replacing the GUI is separate from CLI installation and launchd ownership.
+An app update must not stop the managed service or change its autostart/Open at
+Login preference. The app's menu-bar item runs in the app process, not a
+second watchdog. Computer Use is a separate bundled helper; update preparation
+must drain it before the old bundle is replaced. The new GUI starts its own
+helper normally, retaining the user's enabled/paused preference and owned CLI
+link. The host app is **not sandboxed**; do not enable Sparkle's sandbox-only
+installer/downloader XPC configuration or disable library validation. Xcode
+embeds the complete Sparkle framework, including its installation machinery;
+CI verifies/signs the resulting nested bundle before notarization.
+
+For a local development demo only, a Debug build or an explicitly compiled
+`SPARKLE_LOCAL_FEED_TEST` build can use `SPARKLE_FEED_URL=http://127.0.0.1:PORT/appcast.xml`
+and a throwaway `SPARKLE_PUBLIC_ED_KEY`. Menus label the local test feed. No
+runtime preference/environment switch can redirect production builds to that
+feed. Never use a throwaway key or that build condition for a distributed build.
+A normal Release accepts only the production HTTPS feed.

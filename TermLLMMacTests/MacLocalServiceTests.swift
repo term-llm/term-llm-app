@@ -134,8 +134,11 @@ final class MacLocalServiceTests: XCTestCase {
         let controller = MacLocalServiceController(home: home, computerUse: try isolatedComputerUse())
         let menu = NSMenu()
         controller.menuNeedsUpdate(menu)
-        XCTAssertEqual(menu.items.map(\.title), ["Open term-llm", "Local Service…", "Computer Use…", "", "Quit term-llm"],
+        XCTAssertEqual(menu.items.map(\.title), ["Open term-llm", "Local Service…", "Computer Use…",
+                                               "App Updates Unavailable", "", "Quit term-llm"],
                        "A remote-only app needs Open and Quit without local-service setup")
+        XCTAssertFalse(menu.items.first { $0.title == "App Updates Unavailable" }?.isEnabled ?? true,
+                       "The hosted test must expose a diagnostic, never a live updater")
         XCTAssertFalse(menu.items.contains { $0.title.contains("Start Service") || $0.title.contains("Stop Service") },
                        "Opening the menu must not opt into local services")
         XCTAssertEqual(menu.items.last?.action, #selector(MacLocalServiceController.quitTermLLM))
@@ -151,7 +154,7 @@ final class MacLocalServiceTests: XCTestCase {
             controller.menuNeedsUpdate(menu)
             XCTAssertEqual(menu.items.map(\.title), [
                 "Open term-llm", "Local Service…", "Computer Use…", "", "Local service: Not set up",
-                "Open Local Chat", "Start Service", "Restart Service", "", "Quit term-llm"
+                "Open Local Chat", "Start Service", "Restart Service", "App Updates Unavailable", "", "Quit term-llm"
             ], "An existing \(marker.lastPathComponent) must expose controls before any setup or service action")
             XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == "Restart Service" }).isEnabled,
                            "Showing controls must not enable restarting an unverified service")
@@ -170,12 +173,26 @@ final class MacLocalServiceTests: XCTestCase {
         controller.menuNeedsUpdate(menu)
         XCTAssertEqual(menu.items.map(\.title), [
             "Computer Use Needs Attention…", "", "Open term-llm", "Local Service…", "Computer Use…", "",
-            "Computer use: Starting…", "Pause Computer Use", "", "Quit term-llm",
+            "Computer use: Starting…", "Pause Computer Use", "App Updates Unavailable", "", "Quit term-llm",
         ])
         let callout = try XCTUnwrap(menu.items.first)
         XCTAssertTrue(callout.isEnabled)
         XCTAssertEqual(callout.action, NSSelectorFromString("showComputerUse"), "It opens the Computer Use window")
         if #available(macOS 14.4, *) { XCTAssertEqual(callout.subtitle, "Command not installed · Skill not installed") }
+    }
+
+    func testComputerUseSetupRefreshIsFrozenDuringTerminationPreparation() async throws {
+        let computerUse = try isolatedComputerUse(enabled: true)
+        computerUse.beginTerminationPreparation()
+        computerUse.refreshInstallations(repair: true)
+        await Task.yield()
+        XCTAssertNil(computerUse.setup, "Termination preparation must not admit file repair or setup refresh work")
+        computerUse.cancelTerminationPreparation()
+        computerUse.refreshInstallations()
+        try await waitUntil("files checked after cancellation") { computerUse.setup != nil }
+        XCTAssertEqual(computerUse.setup, ComputerUseSetup(commandInstalled: false, skill: .missing))
+        XCTAssertEqual(computerUse.issues, [.command, .skillMissing],
+                       "Cancelling preparation must restore main's setup diagnostics")
     }
 
     // MARK: Local Service window
