@@ -20,7 +20,7 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
 
     var cookieSink: (@MainActor ([HTTPCookie]) async throws -> Void)?
 
-    func signIn(to server: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    func signIn(to server: URL, completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
         guard session == nil else { return }
         let cookieSink = self.cookieSink
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -31,7 +31,10 @@ final class NativeLogin: NSObject, ASWebAuthenticationPresentationContextProvidi
         let verifier = Data(bytes).base64URLEncodedString()
         let state = Self.challenge(for: verifier)
         let start = endpoint(server, "auth/native/\(state)")
-        let session = ASWebAuthenticationSession(url: start, callbackURLScheme: callbackScheme) { [weak self] callback, error in
+        // AuthenticationServices calls this handler on a private background queue
+        // (on macOS, its LaunchAgent queue). It must stay @Sendable/nonisolated:
+        // a closure inferred as @MainActor here traps in Swift 6's isolation check.
+        let session = ASWebAuthenticationSession(url: start, callbackURLScheme: callbackScheme) { @Sendable [weak self] callback, error in
             Task { @MainActor in
                 guard let self else { return }
                 self.session = nil

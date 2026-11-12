@@ -64,7 +64,10 @@ import SwiftUI
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Server address").font(.subheadline.weight(.medium))
                                 HStack {
-                                    TextField("https://server.example/", text: $address)
+                                    // The visible caption above is the label; hiding the field's own
+                                    // label stops macOS forms from drawing the prompt as a side column.
+                                    TextField("Server address", text: $address, prompt: Text("https://server.example/"))
+                                        .labelsHidden()
                                         .urlTextEntry().autocorrectionDisabled()
                                         .focused($focusedField, equals: .address)
                                         .submitLabel(.next)
@@ -87,7 +90,8 @@ import SwiftUI
                             }
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Name (optional)").font(.subheadline.weight(.medium))
-                                TextField("My server", text: $name)
+                                TextField("Name", text: $name, prompt: Text("My server"))
+                                    .labelsHidden()
                                     .focused($focusedField, equals: .name)
                                     .submitLabel(.go)
                                     .onSubmit { if serverURL != nil { save() } }
@@ -128,6 +132,9 @@ import SwiftUI
                             }
                         }
                     }
+                    // Sheets are a separate hosting root on macOS; restate the grouped
+                    // style so the form gets inset sections instead of label columns.
+                    .formStyle(.grouped)
                     .scrollDismissesKeyboard(.interactively)
                 }
             }

@@ -589,13 +589,21 @@ struct HubView: View {
 
     private func discover() async {
         do {
-            let config = try await client.pageConfiguration()
-            configuration = config
-            store.setAuthMode(HubAuthMode(rawValue: config.authMode) ?? .passkey)
-            configurationError = nil
-            if tab == .security, config.passkeyAuth { await store.loadSecurity() }
+            switch try await client.discover() {
+            case .page(let config):
+                configuration = config
+                store.setAuthMode(HubAuthMode(rawValue: config.authMode) ?? .passkey)
+                configurationError = nil
+                if tab == .security, config.passkeyAuth { await store.loadSecurity() }
+            case .redirect:
+                // A passkey Hub redirects its root to the login page until the
+                // session signs in. That is the expected sign-in state, not an error.
+                store.setAuthMode(.passkey)
+                configurationError = nil
+            }
         } catch {
-            configurationError = "Could not read Hub configuration: \(error.localizedDescription). Direct servers can still use Chat."
+            let reason = error.localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            configurationError = "Could not read Hub configuration: \(reason). Direct servers can still use Chat."
         }
     }
 
