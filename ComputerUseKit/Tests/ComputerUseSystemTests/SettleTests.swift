@@ -7,7 +7,7 @@ final class SettleTests: ContextTestCase {
     func wait(_ kind: AppKind = .init(), poll: Double? = nil, quiet: Double = Settle.quiet, limit: Double = Settle.limit, abandoned: () -> Bool = { false }) throws -> Capture? {
         try Settle.wait(target: target, kind: kind, read: { _ in
             self.reads += 1; return Capture(windowTitle: "Test", appName: "Test", windowID: 7, lines: [], loading: self.loading)
-        }, poll: poll, quiet: quiet, limit: limit, now: { self.clock.time }, sleep: { self.clock.sleep($0) }, abandoned: abandoned, keyWindow: { _ in
+        }, poll: poll, quiet: quiet, limit: limit, now: clock.now, sleep: { self.clock.sleep($0) }, abandoned: abandoned, keyWindow: { _ in
             if !self.hasWindow { throw Errors.make("no_windows") }; return fixtureWindow()
         })
     }
@@ -35,18 +35,18 @@ final class SettleTests: ContextTestCase {
         XCTAssertEqual(Settle.notifications.count, 10)
         XCTAssertEqual(Set(Settle.notifications), ["AXTitleChanged", "AXLayoutChanged", "AXFocusedWindowChanged", "AXFocusedUIElementChanged", "AXElementBusyChanged", "AXMenuOpened", "AXSheetCreated", "AXWindowCreated", "AXCreated", "AXUIElementDestroyed"])
         for name in Settle.notifications where name != Settle.titleChanged {
-            let heard = Settle.Heard(now: { self.clock.time }); clock.time += 1; heard.note(name, element: ax.app(pid: 77)); XCTAssertEqual(heard.quietFor(), 0)
+            let heard = Settle.Heard(now: clock.now); clock.time += 1; heard.note(name, element: ax.app(pid: 77)); XCTAssertEqual(heard.quietFor(), 0)
         }
     }
     func testRepeatedSameTitleIgnoredNewTitleCountsAndElementsSeparate() {
-        let heard = Settle.Heard(now: { self.clock.time }), one = ContextElement(attrs: ["AXTitle": "A"]), two = ContextElement(attrs: ["AXTitle": "A"])
+        let heard = Settle.Heard(now: clock.now), one = ContextElement(attrs: ["AXTitle": "A"]), two = ContextElement(attrs: ["AXTitle": "A"])
         clock.time += 1; heard.note(Settle.titleChanged, element: one.ref); XCTAssertEqual(heard.quietFor(), 0)
         clock.time += 1; heard.note(Settle.titleChanged, element: one.ref); XCTAssertEqual(heard.quietFor(), 1)
         one.attrs["AXTitle"] = "B"; heard.note(Settle.titleChanged, element: one.ref); XCTAssertEqual(heard.quietFor(), 0)
         clock.time += 1; heard.note(Settle.titleChanged, element: two.ref); XCTAssertEqual(heard.quietFor(), 0)
     }
     func testNonTextAndFailedTitleDoNotCount() {
-        let heard = Settle.Heard(now: { self.clock.time }), e = ContextElement(attrs: ["AXTitle": 5])
+        let heard = Settle.Heard(now: clock.now), e = ContextElement(attrs: ["AXTitle": 5])
         clock.time += 1; heard.note(Settle.titleChanged, element: e.ref); XCTAssertEqual(heard.quietFor(), 1)
         ax.failGet = ["AXTitle"]; heard.note(Settle.titleChanged, element: e.ref); XCTAssertEqual(heard.quietFor(), 1)
     }
@@ -70,7 +70,7 @@ final class SettleTests: ContextTestCase {
     }
     func testOtherWindowErrorAndReadFailurePropagateWithCleanup() {
         for failRead in [false, true] {
-            XCTAssertThrowsError(try Settle.wait(target: target, kind: .init(), read: { _ in throw Errors.make("front_not_back") }, now: { self.clock.time }, sleep: { self.clock.sleep($0) }, keyWindow: { _ in if failRead { return fixtureWindow() }; throw Errors.make("front_not_back") }))
+            XCTAssertThrowsError(try Settle.wait(target: target, kind: .init(), read: { _ in throw Errors.make("front_not_back") }, now: clock.now, sleep: { self.clock.sleep($0) }, keyWindow: { _ in if failRead { return fixtureWindow() }; throw Errors.make("front_not_back") }))
             XCTAssertTrue(ax.observations.last!.stopped)
         }
     }

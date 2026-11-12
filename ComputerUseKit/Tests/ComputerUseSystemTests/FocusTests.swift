@@ -1,11 +1,17 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 @testable import ComputerUseSystem
 
 final class FocusTests: ContextTestCase {
     var focus: Focus!, window: ComputerUseCore.WindowRef!, element: ContextElement!
-    var front: pid_t = 88, posted: [(pid_t, CGEvent)] = [], background: [() -> Void] = [], screen: [String] = []
+    private let frontState = OSAllocatedUnfairLock<pid_t>(initialState: 88)
+    var front: pid_t {
+        get { frontState.withLock { $0 } }
+        set { frontState.withLock { $0 = newValue } }
+    }
+    var posted: [(pid_t, CGEvent)] = [], background: [() -> Void] = [], screen: [String] = []
     var react = true, personWent = false
     override func setUp() {
         super.setUp(); front = 88; posted = []; background = []; screen = []; react = true; personWent = false
@@ -56,7 +62,7 @@ final class FocusTests: ContextTestCase {
         _ = try focus.enforcer(target).enforce(window); XCTAssertEqual(clock.time, 1000.05, accuracy: 0.011)
     }
     func testImmediateLeakRestoredAndWorkErrorStillRestores() {
-        ax.onSet = { _, name, _ in if name == "AXFrontmost" { self.front = 88 } }
+        ax.onSet = { [frontState] _, name, _ in if name == "AXFrontmost" { frontState.withLock { $0 = 88 } } }
         XCTAssertThrowsError(try focus.enforcer(target).active(window: window) { self.front = 77; throw Errors.make("no_windows") })
         XCTAssertEqual(front, 88); XCTAssertEqual(ax.sets.count, 1)
     }
@@ -67,7 +73,7 @@ final class FocusTests: ContextTestCase {
     }
     func testDelayedLeakWatchRestoresOnlyWithinThreeSeconds() throws {
         try focus.enforcer(target).active(window: window) {}; XCTAssertEqual(background.count, 1)
-        front = 77; clock.time += 1.9; ax.onSet = { _, _, _ in self.front = 88 }; background.removeFirst()()
+        front = 77; clock.time += 1.9; ax.onSet = { [frontState] _, _, _ in frontState.withLock { $0 = 88 } }; background.removeFirst()()
         XCTAssertEqual(front, 88); XCTAssertEqual(ax.sets.count, 1)
         focus.release(target); try focus.enforcer(target).active(window: window) {}; clock.time += 3.1; front = 77; background.removeFirst()()
         XCTAssertEqual(ax.sets.count, 1)

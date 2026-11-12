@@ -1,11 +1,18 @@
 import CoreGraphics
 import Foundation
+import os
 
-// The accessibility seam (macos-harness ax.py). Every module reaches the AX API
-// through `AX.backend`: the helper installs the real one (ComputerUseSystem's
-// `SystemAX`), tests install fakes. Any thread may call it.
+// The accessibility seam (macos-harness ax.py). Backends are shared dependencies:
+// calls may overlap on arbitrary worker threads. Implementations must synchronize
+// mutable state; injected dependencies must themselves support concurrent calls.
+// This does NOT make Any results Sendable. Arguments/results belong to the
+// synchronous calling operation: do not retain mutable inputs, share mutable
+// results, or move heterogeneous values into a task/callback. Make typed snapshots
+// at an actual concurrency boundary. UIElementRef is a handle, not its object graph.
 //
-// Values crossing the seam are plain Swift/Foundation values, never CF types:
+// Known values are normalized to Swift/Foundation forms below. Opaque SDK values
+// (e.g. text markers) may remain Any for synchronous parameterized round trips;
+// neither those nor Foundation reference values acquire a Sendable guarantee:
 //   AXUIElement            -> UIElementRef
 //   CFString               -> String
 //   CFBoolean              -> Bool        (never NSNumber)
@@ -18,7 +25,7 @@ import Foundation
 //   CFAttributedString     -> NSAttributedString
 // Parameterized attribute arguments go in the same forms (NSRange, CGPoint, ...).
 
-public protocol AXBackend: AnyObject {
+public protocol AXBackend: AnyObject, Sendable {
     /// The application element of a process.
     func app(pid: pid_t) -> UIElementRef
     /// One attribute. nil when the element has no such attribute or no value
@@ -54,28 +61,41 @@ public protocol AXBackend: AnyObject {
     /// Hear `names` on `element` of process `pid`, delivered on the main run loop.
     /// The callback gets (notification name, element) and must only store.
     func observe(pid: pid_t, element: UIElementRef, names: [String],
-                 callback: @escaping (String, UIElementRef) -> Void) throws -> AXObservation
+                 callback: @escaping @Sendable (String, UIElementRef) -> Void) throws -> AXObservation
 }
 
 public extension AXBackend {
     func subtree(_ element: UIElementRef, _ names: [String], maxChildren: Int) -> [(UIElementRef, [Any?])]? { nil }
 }
 
-public protocol AXObservation: AnyObject {
-    /// Remove every notification. A second stop does nothing.
+public protocol AXObservation: AnyObject, Sendable {
+    /// Close delivery before removing notifications. Idempotent and reentrant.
+    /// The delivery gate never waits for an already claimed callback, which may
+    /// finish after stop returns. SDK source uninstall may synchronously wait
+    /// behind an in-flight main-run-loop callback; reentrant stop must not wait
+    /// for itself. Concurrent subsequent stops may return before the cleanup
+    /// claimant finishes uninstalling the source and removing notifications.
     func stop()
 }
 
 public enum AX {
-    /// The backend every module uses. Set once by the helper at start, or by a test.
-    public static var backend: AXBackend {
-        get { backendLock.lock(); defer { backendLock.unlock() }; return installed }
-        set { backendLock.lock(); defer { backendLock.unlock() }; installed = newValue }
+    /// The shared backend. Install at helper startup, before accepting requests.
+    /// Replacement is safe for reference ownership, not a transaction spanning
+    /// several AX operations: an operation needing that must retain one snapshot.
+    public static var backend: any AXBackend {
+        get { (scopedRegistry ?? registry).backend }
+        set { (scopedRegistry ?? registry).backend = newValue }
     }
-    // Guards replacement of the reference, not a backend's internal state. The
-    // AXBackend callback/value contract still needs a separate Sendable audit.
-    private static let backendLock = NSLock()
-    private static var installed: AXBackend = UnavailableAX()
+    private static let registry = AXBackendRegistry(UnavailableAX())
+    @TaskLocal private static var scopedRegistry: AXBackendRegistry?
+
+    /// A synchronous dependency scope, primarily for tests. Installs/replacements
+    /// inside body affect only this scope, never the production registry or another
+    /// test. Structured tasks inherit the scope; arbitrary GCD work does not. Pass
+    /// a captured backend explicitly to such workers. Do not escape unjoined work.
+    public static func withBackend<R>(_ backend: any AXBackend, _ body: () throws -> R) rethrows -> R {
+        try $scopedRegistry.withValue(AXBackendRegistry(backend), operation: body)
+    }
 
     public static let errorNames: [Int32: String] = [
         -25200: "failure",
@@ -135,5 +155,39 @@ final class UnavailableAX: AXBackend {
     func at(_ app: UIElementRef?, x: Double, y: Double) -> UIElementRef? { nil }
     func alive(_ element: UIElementRef) -> Bool { false }
     func observe(pid: pid_t, element: UIElementRef, names: [String],
-                 callback: @escaping (String, UIElementRef) -> Void) throws -> AXObservation { throw fail() }
+                 callback: @escaping @Sendable (String, UIElementRef) -> Void) throws -> AXObservation { throw fail() }
+}
+
+/// Compiler-visible shared ownership of a genuinely Sendable backend, not a box
+/// that asserts an arbitrary backend graph safe. Never call or release a backend
+/// under this registry lock: its deinit may reenter the registry or wait on main.
+final class AXBackendRegistry: Sendable {
+    private let state: OSAllocatedUnfairLock<any AXBackend>
+    init(_ backend: any AXBackend) { state = OSAllocatedUnfairLock(initialState: backend) }
+    var backend: any AXBackend {
+        get { state.withLock { $0 } }
+        set {
+            let old = state.withLock { backend in
+                let old = backend
+                backend = newValue
+                return old
+            }
+            withExtendedLifetime(old) {}
+        }
+    }
+}
+
+/// A nonblocking callback gate shared by real and fake observations. The claim is
+/// made under a lock, but client code is ALWAYS invoked outside it. Closing gates
+/// future claims, not callbacks already claimed. This permits reentrant stop and
+/// avoids worker/main-run-loop deadlocks. It does not impose callback serialization.
+public final class AXObservationDelivery: Sendable {
+    private let open = OSAllocatedUnfairLock(initialState: true)
+    private let callback: @Sendable (String, UIElementRef) -> Void
+    public init(_ callback: @escaping @Sendable (String, UIElementRef) -> Void) { self.callback = callback }
+    public func deliver(_ name: String, _ element: UIElementRef) {
+        guard open.withLock({ $0 }) else { return }
+        callback(name, element)
+    }
+    public func stop() { open.withLock { $0 = false } }
 }

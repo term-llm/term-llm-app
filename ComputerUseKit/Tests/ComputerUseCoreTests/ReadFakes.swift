@@ -1,53 +1,166 @@
 import Foundation
+import os
 import XCTest
 @testable import ComputerUseCore
 
 // El/FakeAx and the JSON loader port tests/fakes.py and fakes_b.py. Equality is
 // normally identity; tests can override NSObject equality to exercise CFEqual.
 class El: NSObject {
-    var role: String
-    var attrs: [String: Any]
-    var children: [El]
-    var acts: [(String, String)]
-    var settableNames: Set<String>
-    var ownerPID: pid_t = 100
-    var winID: UInt32 = 1
-    var rect: CGRect?
-    var dead = false
-    var performed: [String] = []
+    // Mutable fixture state is owned by this lock. Snapshots contain value data,
+    // immutable test values, synchronized nodes, or @Sendable callbacks. Hooks run
+    // outside locks; heterogeneous values never escape to asynchronous work.
+    // uncheckedState/withLockUnchecked are required for operation-local Any and
+    // NSObject equality-test nodes, not to declare them Sendable. Never put an
+    // unsynchronized mutable reference into attrs/copy or return one from a hook.
+    private struct State {
+        var role: String = "AXGroup"
+        var attrs: [String: Any] = [:]
+        var children: [El] = []
+        var acts: [(String, String)] = []
+        var settableNames: Set<String> = []
+        var ownerPID: pid_t = 100
+        var winID: UInt32 = 1
+        var rect: CGRect? = nil
+        var dead: Bool = false
+        var performed: [String] = []
+    }
+    private let state = OSAllocatedUnfairLock(uncheckedState: State())
+    var role: String {
+        get { state.withLockUnchecked { $0.role } }
+        set { state.withLockUnchecked { $0.role = newValue } }
+    }
+    var attrs: [String: Any] {
+        get { state.withLockUnchecked { $0.attrs } }
+        set { state.withLockUnchecked { $0.attrs = newValue } }
+    }
+    var children: [El] {
+        get { state.withLockUnchecked { $0.children } }
+        set { state.withLockUnchecked { $0.children = newValue } }
+    }
+    var acts: [(String, String)] {
+        get { state.withLockUnchecked { $0.acts } }
+        set { state.withLockUnchecked { $0.acts = newValue } }
+    }
+    var settableNames: Set<String> {
+        get { state.withLockUnchecked { $0.settableNames } }
+        set { state.withLockUnchecked { $0.settableNames = newValue } }
+    }
+    var ownerPID: pid_t {
+        get { state.withLockUnchecked { $0.ownerPID } }
+        set { state.withLockUnchecked { $0.ownerPID = newValue } }
+    }
+    var winID: UInt32 {
+        get { state.withLockUnchecked { $0.winID } }
+        set { state.withLockUnchecked { $0.winID = newValue } }
+    }
+    var rect: CGRect? {
+        get { state.withLockUnchecked { $0.rect } }
+        set { state.withLockUnchecked { $0.rect = newValue } }
+    }
+    var dead: Bool {
+        get { state.withLockUnchecked { $0.dead } }
+        set { state.withLockUnchecked { $0.dead = newValue } }
+    }
+    var performed: [String] {
+        get { state.withLockUnchecked { $0.performed } }
+        set { state.withLockUnchecked { $0.performed = newValue } }
+    }
+
     var ref: UIElementRef { UIElementRef(self) }
     init(_ role: String = "AXGroup", _ attrs: [String: Any] = [:], children: [El] = [],
          acts: [(String, String)] = [], settable: Set<String> = [], rect: CGRect? = nil) {
+        super.init()
         self.role = role; self.attrs = attrs; self.children = children; self.acts = acts
         self.settableNames = settable; self.rect = rect
     }
+    func recordSet(_ name: String, _ value: Any) {
+        state.withLockUnchecked { $0.attrs[name] = value; $0.performed.append("set " + name) }
+    }
+    func recordAction(_ action: String) { state.withLockUnchecked { $0.performed.append(action) } }
     func walk() -> [El] { [self] + children.flatMap { $0.walk() } }
     func at(_ path: [Int]) -> El { path.reduce(self) { $0.children[$1] } }
 }
 final class FakeObserver: AXObservation {
     let names: [String]
-    let callback: (String, UIElementRef) -> Void
-    var stopped = false
-    init(_ names: [String], _ callback: @escaping (String, UIElementRef) -> Void) { self.names = names; self.callback = callback }
-    func stop() { stopped = true }
-    func fire(_ name: String, _ el: El) { if !stopped && names.contains(name) { callback(name, el.ref) } }
+    private let delivery: AXObservationDelivery
+    private let closed = OSAllocatedUnfairLock(initialState: false)
+    var stopped: Bool { closed.withLock { $0 } }
+    init(_ names: [String], _ callback: @escaping @Sendable (String, UIElementRef) -> Void) {
+        self.names = names; self.delivery = AXObservationDelivery(callback)
+    }
+    func stop() { delivery.stop(); closed.withLock { $0 = true } }
+    func fire(_ name: String, _ el: El) { if names.contains(name) { delivery.deliver(name, el.ref) } }
 }
-class FakeAX: AXBackend {
-    var apps: [pid_t: El] = [:]
-    var observers: [FakeObserver] = []
-    var gets: [(El, String)] = []
-    var sets: [(El, String, Any)] = []
-    var setHook: ((El, String, Any) throws -> Void)?
-    var batches = 0
-    var copy: [(UIElementRef, [Any?])]?
-    var getHook: ((El, String) throws -> Any?)?
-    var paramHook: ((El, String, Any) -> Any?)?
-    var failObserve = false
-    init(_ apps: [pid_t: El] = [:]) { self.apps = apps }
+final class FakeAX: AXBackend {
+    // Mutable fixture state is owned by this lock. Snapshots contain value data,
+    // immutable test values, synchronized nodes, or @Sendable callbacks. Hooks run
+    // outside locks; heterogeneous values never escape to asynchronous work.
+    // uncheckedState/withLockUnchecked are required for operation-local Any and
+    // NSObject equality-test nodes, not to declare them Sendable. Never put an
+    // unsynchronized mutable reference into attrs/copy or return one from a hook.
+    private struct State {
+        var apps: [pid_t: El] = [:]
+        var observers: [FakeObserver] = []
+        var gets: [(El, String)] = []
+        var sets: [(El, String, Any)] = []
+        var setHook: (@Sendable (El, String, Any) throws -> Void)? = nil
+        var batches: Int = 0
+        var copy: [(UIElementRef, [Any?])]? = nil
+        var getHook: (@Sendable (El, String) throws -> Any?)? = nil
+        var paramHook: (@Sendable (El, String, Any) -> Any?)? = nil
+        var failObserve: Bool = false
+    }
+    private let state = OSAllocatedUnfairLock(uncheckedState: State())
+    var apps: [pid_t: El] {
+        get { state.withLockUnchecked { $0.apps } }
+        set { state.withLockUnchecked { $0.apps = newValue } }
+    }
+    var observers: [FakeObserver] {
+        get { state.withLockUnchecked { $0.observers } }
+        set { state.withLockUnchecked { $0.observers = newValue } }
+    }
+    var gets: [(El, String)] {
+        get { state.withLockUnchecked { $0.gets } }
+        set { state.withLockUnchecked { $0.gets = newValue } }
+    }
+    var sets: [(El, String, Any)] {
+        get { state.withLockUnchecked { $0.sets } }
+        set { state.withLockUnchecked { $0.sets = newValue } }
+    }
+    var setHook: (@Sendable (El, String, Any) throws -> Void)? {
+        get { state.withLockUnchecked { $0.setHook } }
+        set { state.withLockUnchecked { $0.setHook = newValue } }
+    }
+    var batches: Int {
+        get { state.withLockUnchecked { $0.batches } }
+        set { state.withLockUnchecked { $0.batches = newValue } }
+    }
+    var copy: [(UIElementRef, [Any?])]? {
+        get { state.withLockUnchecked { $0.copy } }
+        set { state.withLockUnchecked { $0.copy = newValue } }
+    }
+    var getHook: (@Sendable (El, String) throws -> Any?)? {
+        get { state.withLockUnchecked { $0.getHook } }
+        set { state.withLockUnchecked { $0.getHook = newValue } }
+    }
+    var paramHook: (@Sendable (El, String, Any) -> Any?)? {
+        get { state.withLockUnchecked { $0.paramHook } }
+        set { state.withLockUnchecked { $0.paramHook = newValue } }
+    }
+    var failObserve: Bool {
+        get { state.withLockUnchecked { $0.failObserve } }
+        set { state.withLockUnchecked { $0.failObserve = newValue } }
+    }
+
+    private let onDeinit: @Sendable () -> Void
+    init(_ apps: [pid_t: El] = [:], onDeinit: @escaping @Sendable () -> Void = {}) {
+        self.onDeinit = onDeinit; self.apps = apps
+    }
+    deinit { onDeinit() }
     func el(_ ref: UIElementRef) -> El { ref.object as! El }
     func app(pid: pid_t) -> UIElementRef { (apps[pid] ?? El("AXApplication")).ref }
     func get(_ element: UIElementRef, _ name: String) throws -> Any? {
-        let e = el(element); gets.append((e, name))
+        let e = el(element); state.withLockUnchecked { $0.gets.append((e, name)) }
         if let hook = getHook { return try hook(e, name) }
         return raw(e, name)
     }
@@ -61,20 +174,20 @@ class FakeAX: AXBackend {
         return ["AXRole"] + e.attrs.keys.filter { !unlisted.contains($0) }
     }
     func getMany(_ element: UIElementRef, _ names: [String]) throws -> [Any?] {
-        batches += 1
+        state.withLockUnchecked { $0.batches += 1 }
         if el(element).dead { throw AX.failure(AX.invalidElement) }
         return try names.map { try get(element, $0) }
     }
     func set(_ element: UIElementRef, _ name: String, _ value: Any) throws {
         let e = el(element)
-        sets.append((e, name, value))
+        state.withLockUnchecked { $0.sets.append((e, name, value)) }
         if let setHook { try setHook(e, name, value) }
-        e.attrs[name] = value; e.performed.append("set " + name)
+        e.recordSet(name, value)
     }
     func settable(_ element: UIElementRef, _ name: String) -> Bool { el(element).settableNames.contains(name) }
     func actionNames(_ element: UIElementRef) -> [String] { el(element).acts.map { $0.0 } }
     func actionDescription(_ element: UIElementRef, _ action: String) -> String { el(element).acts.first { $0.0 == action }?.1 ?? "" }
-    func perform(_ element: UIElementRef, _ action: String) throws { el(element).performed.append(action) }
+    func perform(_ element: UIElementRef, _ action: String) throws { el(element).recordAction(action) }
     func param(_ element: UIElementRef, _ name: String, _ argument: Any) -> Any? { paramHook?(el(element), name, argument) ?? el(element).attrs[name] }
     func pid(_ element: UIElementRef) throws -> pid_t { el(element).ownerPID }
     func windowID(_ element: UIElementRef) -> UInt32 { el(element).winID }
@@ -82,9 +195,9 @@ class FakeAX: AXBackend {
     func at(_ app: UIElementRef?, x: Double, y: Double) -> UIElementRef? { nil }
     func alive(_ element: UIElementRef) -> Bool { !el(element).dead }
     func subtree(_ element: UIElementRef, _ names: [String], maxChildren: Int) -> [(UIElementRef, [Any?])]? { copy }
-    func observe(pid: pid_t, element: UIElementRef, names: [String], callback: @escaping (String, UIElementRef) -> Void) throws -> AXObservation {
+    func observe(pid: pid_t, element: UIElementRef, names: [String], callback: @escaping @Sendable (String, UIElementRef) -> Void) throws -> AXObservation {
         if failObserve { throw AX.failure(-25202) }
-        let observer = FakeObserver(names, callback); observers.append(observer); return observer
+        let observer = FakeObserver(names, callback); state.withLockUnchecked { $0.observers.append(observer) }; return observer
     }
 }
 
@@ -155,12 +268,13 @@ final class FakeApp {
         return FakeApp(try JSONSerialization.jsonObject(with: Data(source.utf8)) as! [String: Any])
     }
     func read(menu: UIElementRef? = nil) throws -> Capture {
-        AX.backend = ax
-        let ref = WindowRef(element: window.ref, windowID: 7, pid: 100, title: title, frame: window.rect ?? CGRect(x: 0, y: 0, width: 800, height: 600))
-        let bar = (app.attrs["AXMenuBar"] as? UIElementRef).map { $0.object as! El }
-        let menu = menu ?? menuPath.flatMap { bar?.at($0).ref }
-        var target = demoTarget; target.name = name
-        return try Tree.read(target, ref, kind, menu: menu)
+        try AX.withBackend(ax) {
+            let ref = WindowRef(element: window.ref, windowID: 7, pid: 100, title: title, frame: window.rect ?? CGRect(x: 0, y: 0, width: 800, height: 600))
+            let bar = (app.attrs["AXMenuBar"] as? UIElementRef).map { $0.object as! El }
+            let menu = menu ?? menuPath.flatMap { bar?.at($0).ref }
+            var target = demoTarget; target.name = name
+            return try Tree.read(target, ref, kind, menu: menu)
+        }
     }
 }
 func captureText(_ capture: Capture) -> String {
@@ -211,4 +325,10 @@ func chain(_ name: String) throws -> [(Capture, Bool, String)] {
         XCTAssertEqual(text, want, name, file: file, line: line)
         return text
     }
+}
+
+/// Each XCTest invocation (including setUp/tearDown) gets a private registry.
+/// These fixtures are synchronous; no GCD worker implicitly inherits this scope.
+class AXTestCase: XCTestCase {
+    override func invokeTest() { AX.withBackend(UnavailableAX()) { super.invokeTest() } }
 }

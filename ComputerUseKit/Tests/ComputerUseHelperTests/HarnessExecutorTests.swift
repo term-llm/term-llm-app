@@ -2,23 +2,63 @@ import ComputerUseCore
 import ComputerUseSystem
 import CoreGraphics
 import Foundation
+import os
 import XCTest
 
 @testable import ComputerUseHelper
 
-private final class ExecutorElement: NSObject {
-    var attrs: [String: Any] = [:]
-    var pid: pid_t = 77
-    var id: UInt32 = 7
+private final class ExecutorElement: NSObject, Sendable {
+    // Mutable fixture state is owned by this lock. Snapshots contain value data,
+    // immutable test values, synchronized nodes, or @Sendable callbacks. Hooks run
+    // outside locks; heterogeneous values never escape to asynchronous work.
+    // uncheckedState/withLockUnchecked admit operation-local Any; attrs must
+    // contain immutable fixture values or separately synchronized handles.
+    private struct State {
+        var attrs: [String: Any] = [:]
+        var pid: pid_t = 77
+        var id: UInt32 = 7
+    }
+    private let state = OSAllocatedUnfairLock(uncheckedState: State())
+    var attrs: [String: Any] {
+        get { state.withLockUnchecked { $0.attrs } }
+        set { state.withLockUnchecked { $0.attrs = newValue } }
+    }
+    var pid: pid_t {
+        get { state.withLockUnchecked { $0.pid } }
+        set { state.withLockUnchecked { $0.pid = newValue } }
+    }
+    var id: UInt32 {
+        get { state.withLockUnchecked { $0.id } }
+        set { state.withLockUnchecked { $0.id = newValue } }
+    }
+
+    func set(_ name: String, _ value: Any) { state.withLockUnchecked { $0.attrs[name] = value } }
     var ref: UIElementRef { UIElementRef(self) }
 }
 private final class ExecutorObservation: AXObservation {
-    var stopped = false
-    func stop() { stopped = true }
+    private let closed = OSAllocatedUnfairLock(initialState: false)
+    var stopped: Bool { closed.withLock { $0 } }
+    func stop() { closed.withLock { $0 = true } }
 }
 private final class ExecutorAX: AXBackend {
+    // Mutable fixture state is owned by this lock. Snapshots contain value data,
+    // immutable test values, synchronized nodes, or @Sendable callbacks. Hooks run
+    // outside locks; heterogeneous values never escape to asynchronous work.
+    private struct State: Sendable {
+        var error: Error? = nil
+        var observations: [ExecutorObservation] = []
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    var error: Error? {
+        get { state.withLock { $0.error } }
+        set { state.withLock { $0.error = newValue } }
+    }
+    var observations: [ExecutorObservation] {
+        get { state.withLock { $0.observations } }
+        set { state.withLock { $0.observations = newValue } }
+    }
+
     let root = ExecutorElement(), window = ExecutorElement(), field = ExecutorElement()
-    var error: Error?, observations: [ExecutorObservation] = []
     init() {
         root.attrs = ["AXWindows": [window.ref], "AXFocusedWindow": window.ref]
         window.attrs = ["AXRole": "AXWindow", "AXTitle": "Demo", "AXMain": true]
@@ -33,7 +73,7 @@ private final class ExecutorAX: AXBackend {
     func names(_ e: UIElementRef) -> [String] { [] }
     func getMany(_ e: UIElementRef, _ n: [String]) throws -> [Any?] { try n.map { try get(e, $0) } }
     func set(_ e: UIElementRef, _ n: String, _ v: Any) throws {
-        (e.object as! ExecutorElement).attrs[n] = v
+        (e.object as! ExecutorElement).set(n, v)
     }
     func settable(_ e: UIElementRef, _ n: String) -> Bool { true }
     func actionNames(_ e: UIElementRef) -> [String] { [] }
@@ -49,15 +89,16 @@ private final class ExecutorAX: AXBackend {
     func alive(_ e: UIElementRef) -> Bool { true }
     func observe(
         pid: pid_t, element: UIElementRef, names: [String],
-        callback: @escaping (String, UIElementRef) -> Void
+        callback: @escaping @Sendable (String, UIElementRef) -> Void
     ) throws -> AXObservation {
         let o = ExecutorObservation()
-        observations.append(o)
+        state.withLock { $0.observations.append(o) }
         return o
     }
 }
 
 final class HarnessExecutorTests: XCTestCase {
+    override func invokeTest() { AX.withBackend(AX.backend) { super.invokeTest() } }
     private var ax: ExecutorAX!, oldAX: AXBackend!, home: URL!,
         dependencies: HarnessExecutor.Dependencies!
     private var executor: HarnessExecutor!, sessions: Sessions!, agent: AgentSession!

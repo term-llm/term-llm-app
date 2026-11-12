@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Numbers for one app as one agent saw it. Numbers belong to elements as long as
 /// they remain paired. New elements count after the largest number that stayed,
@@ -8,8 +9,9 @@ public final class Revisions {
     public private(set) var last: Capture?
     private var observer: AXObservation?
     private var pid: pid_t?
-    private let lock = NSLock()
-    private var destroyedElements: [UIElementRef] = []
+    // Only this recorder crosses onto the notification run loop. Capture/numbering
+    // and observer ownership remain confined to the session's FIFO worker.
+    private var destroyedElements = OSAllocatedUnfairLock(initialState: [UIElementRef]())
     public init() {}
     private struct Same: Equatable {
         var element: UIElementRef?
@@ -43,7 +45,7 @@ public final class Revisions {
         let footer = Render.footer(capture, true)
         let text = old.flatMap { Diff.text(Diff.pair($0.lines, lines, key: { $0.id }), capture.windowTitle, footer, lines.count) }
         last = capture
-        lock.lock(); destroyedElements.removeAll(); lock.unlock()
+        destroyedElements.withLock { $0.removeAll() }
         return text ?? full(capture, footer)
     }
     /// The line with this number, alive or refetched by its printed description.
@@ -65,21 +67,26 @@ public final class Revisions {
     public func watch(_ target: AppTarget) throws {
         if observer != nil && pid == target.pid { return }
         stop()
-        let app = AX.backend.app(pid: target.pid ?? 0)
-        observer = try AX.backend.observe(pid: target.pid ?? 0, element: app, names: [Self.destroyed]) { [weak self] in self?.mark($0, $1) }
+        let backend = AX.backend
+        let app = backend.app(pid: target.pid ?? 0)
+        observer = try backend.observe(pid: target.pid ?? 0, element: app, names: [Self.destroyed]) { [destroyedElements] _, element in
+            destroyedElements.withLock { $0.append(element) }
+        }
         pid = target.pid
     }
     public func reset() { stop(); last = nil }
     public func mark(_ name: String, _ element: UIElementRef) {
-        lock.lock(); destroyedElements.append(element); lock.unlock()
+        destroyedElements.withLock { $0.append(element) }
     }
     public func dead(_ element: UIElementRef) -> Bool {
-        lock.lock(); let destroyed = destroyedElements; lock.unlock()
+        let destroyed = destroyedElements.withLock { $0 }
         return destroyed.contains { AX.same(element, $0) } || !AX.backend.alive(element)
     }
     private func stop() {
         observer?.stop(); observer = nil; pid = nil
-        lock.lock(); destroyedElements.removeAll(); lock.unlock()
+        // A callback claimed before stop may finish later. Its old recorder must
+        // not invalidate a subsequent watch/reset generation.
+        destroyedElements = OSAllocatedUnfairLock(initialState: [])
     }
     deinit { observer?.stop() }
 }

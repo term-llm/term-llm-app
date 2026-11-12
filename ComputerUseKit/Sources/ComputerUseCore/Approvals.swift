@@ -48,7 +48,7 @@ public final class ApprovalStore {
                     ? SessionGrant(agent: row[0], bundleID: row[1]) : nil
             })
     }
-    public struct SessionGrant: Hashable {
+    public struct SessionGrant: Hashable, Sendable {
         public let agent: String, bundleID: String
         public init(agent: String, bundleID: String) {
             self.agent = agent

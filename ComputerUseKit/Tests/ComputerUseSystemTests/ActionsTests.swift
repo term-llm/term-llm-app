@@ -1,6 +1,7 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 
 @testable import ComputerUseSystem
 
@@ -200,15 +201,15 @@ final class ActionsTests: ContextTestCase {
         field.attrs["AXParent"] = area.ref
         field.rect = CGRect(x: 600, y: 0, width: 10, height: 10)
         ax.offered = ["AXScrollToVisible"]
-        var names: [String] = []
-        ax.onParam = { _, name, _ in
-            names.append(name)
-            self.field.rect = CGRect(x: 30, y: 30, width: 10, height: 10)
+        let names = OSAllocatedUnfairLock(initialState: [String]())
+        ax.onParam = { [field = field!] _, name, _ in
+            names.withLock { $0.append(name) }
+            field.rect = CGRect(x: 30, y: 30, width: 10, height: 10)
             return nil
         }
         XCTAssertTrue(try actions.position(field.ref, actions.system.windows.keyWindow(target)))
         XCTAssertEqual(ax.performed.map { $0.1 }, ["AXScrollToVisible"])
-        XCTAssertEqual(names, ["AXScrollToShowDescendant"])
+        XCTAssertEqual(names.withLock { $0 }, ["AXScrollToShowDescendant"])
     }
     func testMenuTitleReadNeverPressedAndItemPicksAndEscapeCancels() throws {
         let menu = ContextElement(

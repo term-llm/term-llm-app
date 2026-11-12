@@ -51,7 +51,7 @@ public enum PanelGeometry {
 
 /// A call running, or a call began/ended within the last three seconds. Clock is
 /// supplied so tests never create windows or install keyboard monitors.
-public struct ActivityWindow {
+public struct ActivityWindow: Sendable {
     public static let linger = 3.0
     public private(set) var working = false
     public private(set) var changed: TimeInterval?

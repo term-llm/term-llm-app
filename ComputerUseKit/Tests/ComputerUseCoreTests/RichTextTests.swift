@@ -1,7 +1,8 @@
 import XCTest
+import os
 @testable import ComputerUseCore
 
-final class RichTextTests: XCTestCase {
+final class RichTextTests: AXTestCase {
     func md(_ runs: RichText.Run...) throws -> String { try RichText.markdown(runs).0 }
     func testAttributedTextRenderedMarkdown() throws {
         let whole = "Line one\nLINE 2 is here\nline three"
@@ -38,12 +39,12 @@ final class RichTextTests: XCTestCase {
         let app = try FakeApp.load("controls"), area = app.window.at([15, 0])
         area.attrs["AXNumberOfCharacters"] = 1
         area.attrs["AXAttributedStringForRange"] = NSAttributedString(string: "x", attributes: [.init("AXFont"): ["AXFontName": "Bold"]])
-        var asked = 0
-        app.ax.paramHook = { _, name, _ in if name == "AXAttributedStringForRange" { asked += 1 }; return nil }
+        let asked = OSAllocatedUnfairLock(initialState: 0)
+        app.ax.paramHook = { _, name, _ in if name == "AXAttributedStringForRange" { asked.withLock { $0 += 1 } }; return nil }
         XCTAssertEqual(try app.read().lines[18].value, "**x**")
         area.attrs["AXTextualContext"] = Tree.sourceCode
         XCTAssertEqual(try app.read().lines[18].value, "Line 1\nLine 2")
-        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(asked.withLock { $0 }, 1)
     }
     func testBoldItalicFromFontName() throws {
         XCTAssertEqual(try Tree.style(["AXFont": ["AXFontName": "Helvetica-Bold", "AXVisibleName": "Helvetica Bold"]]) as NSDictionary, ["bold": true] as NSDictionary)
@@ -53,13 +54,13 @@ final class RichTextTests: XCTestCase {
     }
     func testAttributedRangeAndLinkElementURL() throws {
         let link = El("AXLink", ["AXURL": "https://example.org/d"]), area = El("AXTextArea", ["AXNumberOfCharacters": 13])
-        let text = NSMutableAttributedString(string: "see the docs.")
-        text.addAttribute(.init("AXLink"), value: link.ref, range: NSRange(location: 4, length: 8))
         let ax = FakeAX(); AX.backend = ax
-        ax.paramHook = { _, name, arg in
+        ax.paramHook = { [link = link.ref] _, name, arg in
             XCTAssertEqual(name, "AXAttributedStringForRange")
             XCTAssertEqual(arg as? NSRange, NSRange(location: 0, length: 13))
-            return text
+            let text = NSMutableAttributedString(string: "see the docs.")
+            text.addAttribute(.init("AXLink"), value: link, range: NSRange(location: 4, length: 8))
+            return NSAttributedString(attributedString: text)
         }
         let runs = try XCTUnwrap(Tree.runs(area.ref))
         XCTAssertEqual(runs.map { $0.text }, ["see ", "the docs", "."])

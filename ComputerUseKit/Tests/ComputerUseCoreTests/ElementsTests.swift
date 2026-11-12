@@ -1,7 +1,7 @@
 import XCTest
 @testable import ComputerUseCore
 
-final class ElementsTests: XCTestCase {
+final class ElementsTests: AXTestCase {
     let window = El("AXWindow")
     var ax: FakeAX!
     override func setUp() { super.setUp(); ax = FakeAX([100: El("AXApplication")]); AX.backend = ax }

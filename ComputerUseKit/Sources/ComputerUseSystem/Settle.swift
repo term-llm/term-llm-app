@@ -1,5 +1,6 @@
 import Foundation
 import ComputerUseCore
+import os
 
 /// Wait for the app's UI to go quiet and show no loading sign. The caller alone
 /// decides when to wait; this module never reads or sets needsSettle.
@@ -8,22 +9,38 @@ public enum Settle {
     public static let titleChanged = "AXTitleChanged"
     public static let notifications = [titleChanged, "AXLayoutChanged", "AXFocusedWindowChanged", "AXFocusedUIElementChanged", "AXElementBusyChanged", "AXMenuOpened", "AXSheetCreated", "AXWindowCreated", "AXCreated", "AXUIElementDestroyed"]
 
-    public final class Heard {
-        let now: () -> TimeInterval
-        let lock = NSLock()
-        var last: TimeInterval
-        var changes: [(TimeInterval, UIElementRef)] = []
-        var titles: [(UIElementRef, String)] = []
-        public init(now: @escaping () -> TimeInterval) { self.now = now; last = now() }
-        /// On the main run loop: only store. Quiet starts before observation exists.
-        public func note(_ name: String, element: UIElementRef) {
-            let time = now()
-            lock.lock(); defer { lock.unlock() }
-            if name == Settle.titleChanged { changes.append((time, element)) }
-            else { last = max(last, time) }
+    // Only this recorder crosses onto the notification run loop. Title de-duping
+    // and AX reads remain on the waiting FIFO worker, not inside a callback/lock.
+    fileprivate final class Notifications: Sendable {
+        struct State: Sendable {
+            var last: TimeInterval
+            var changes: [(TimeInterval, UIElementRef)] = []
         }
+        let now: @Sendable () -> TimeInterval
+        let state: OSAllocatedUnfairLock<State>
+        init(now: @escaping @Sendable () -> TimeInterval) {
+            self.now = now
+            state = OSAllocatedUnfairLock(initialState: State(last: now()))
+        }
+        func note(_ name: String, element: UIElementRef) {
+            let time = now()
+            state.withLock {
+                if name == Settle.titleChanged { $0.changes.append((time, element)) }
+                else { $0.last = max($0.last, time) }
+            }
+        }
+    }
+    public final class Heard {
+        fileprivate let notifications: Notifications
+        private var titles: [(UIElementRef, String)] = []
+        public init(now: @escaping @Sendable () -> TimeInterval) { notifications = Notifications(now: now) }
+        /// Only store. Quiet starts before observation exists. May overlap quietFor.
+        public func note(_ name: String, element: UIElementRef) { notifications.note(name, element: element) }
+        /// Owned by the waiting FIFO worker; never called concurrently with itself.
         public func quietFor() -> TimeInterval {
-            lock.lock(); let pending = changes; changes = []; lock.unlock()
+            let pending = notifications.state.withLock {
+                let pending = $0.changes; $0.changes.removeAll(); return pending
+            }
             // An app that sends the same title forever must still go quiet.
             var counted: [TimeInterval] = []
             for (time, element) in pending {
@@ -33,9 +50,12 @@ public enum Settle {
                     titles[index].1 = title
                 } else { titles.append((element, title)); counted.append(time) }
             }
-            lock.lock(); defer { lock.unlock() }
-            last = max(last, counted.max() ?? last)
-            return now() - last
+            let latest = counted.max()
+            let last = notifications.state.withLock {
+                $0.last = max($0.last, latest ?? $0.last)
+                return $0.last
+            }
+            return notifications.now() - last
         }
     }
 
@@ -43,13 +63,14 @@ public enum Settle {
     // waiting, and reuses the returned capture instead of walking twice.
     public static func wait(target: AppTarget, kind: AppKind, read: (WindowRef) throws -> Capture,
                             poll: TimeInterval? = nil, quiet: TimeInterval = quiet, limit: TimeInterval = limit,
-                            now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                            now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                             sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
                             abandoned: () -> Bool = { false },
                             keyWindow: (AppTarget) throws -> WindowRef = Windows.keyWindow) throws -> Capture? {
         guard let pid = target.pid else { throw Errors.make("app_not_running", ["identifier": target.path]) }
         let heard = Heard(now: now)
-        let observer = try AX.backend.observe(pid: pid, element: AX.backend.app(pid: pid), names: notifications) { heard.note($0, element: $1) }
+        let backend = AX.backend
+        let observer = try backend.observe(pid: pid, element: backend.app(pid: pid), names: notifications) { [recorder = heard.notifications] in recorder.note($0, element: $1) }
         defer { observer.stop() }
         let start = now(), interval = (poll == nil || poll == 0) ? (kind.webLike ? pollWebLike : pollNative) : poll!
         // Hard stop is checked before each sleep: one more poll and read may follow.

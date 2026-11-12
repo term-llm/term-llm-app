@@ -300,7 +300,8 @@ public final class Actions {
             return
         }
         let result = PendingPress()
-        system.background { result.run { try self.ax.perform(e, action) } }
+        let backend = self.ax // Task-local backend scopes do not follow GCD work.
+        system.background { result.run { try backend.perform(e, action) } }
         if try system.windows.waitForMenu(app.target, opener: e) != nil { return }
         result.wait(Self.pressJoin)
         if let error = result.error { throw error }
@@ -320,7 +321,8 @@ public final class Actions {
     private func fill(_ title: UIElementRef) {
         // The real menu owns the person's input while open: keep this interval tiny.
         let result = PendingPress()
-        system.background { result.run { try self.ax.perform(title, "AXPress") } }
+        let backend = self.ax // Capture before leaving the caller's dependency scope.
+        system.background { result.run { try backend.perform(title, "AXPress") } }
         let deadline = system.now() + Self.fillWait
         while !hasItems(title) && system.now() < deadline { system.sleep(Self.fillPoll) }
         for menu in children(title) { try? ax.perform(menu, "AXCancel") }

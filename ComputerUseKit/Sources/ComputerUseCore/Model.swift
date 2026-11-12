@@ -22,7 +22,10 @@ public enum Limits {
 /// A live accessibility element (an `AXUIElement`), or any object a test uses in
 /// its place. Two refs are the same element when `CFEqual` says so; never compare
 /// by pointer.
-// Unchecked: the wrapped AXUIElement is an immutable handle the AX API accepts on any thread.
+// Unchecked SDK handle interop, not Sendable for an arbitrary object graph.
+// Production wraps immutable AXUIElement handles accepted by AX on any thread.
+// A test object supplied here must synchronize all mutable state itself; wrapping
+// it does not provide that synchronization or make other captured objects safe.
 public struct UIElementRef: @unchecked Sendable {
     public let object: AnyObject
 

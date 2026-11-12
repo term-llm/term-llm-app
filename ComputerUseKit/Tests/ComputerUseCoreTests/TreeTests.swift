@@ -1,7 +1,7 @@
 import XCTest
 @testable import ComputerUseCore
 
-final class TreeTests: XCTestCase {
+final class TreeTests: AXTestCase {
     override func tearDown() { Tree.disableAll(); super.tearDown() }
     func big(_ count: Int, _ visible: String? = nil, onScreen: Range<Int> = 0..<0) -> FakeApp {
         let rows: [[String: Any]] = (0..<count).map { ["role": "AXButton", "AXRoleDescription": "button", "AXTitle": "r\($0)", "rect": [0, onScreen.contains($0) ? 1 : 9000, 5, 5]] }
@@ -259,7 +259,10 @@ final class TreeTests: XCTestCase {
     func testFooterFailureDoesNotLoseStateAndGoneElementsOmitted() throws {
         let app = try FakeApp.load("controls"), gone = app.window.children[2]
         gone.dead = true
-        app.ax.getHook = { e, name in if e === app.app && name == "AXFocusedUIElement" { throw AX.failure(-25202) }; return app.ax.raw(e, name) }
+        app.ax.getHook = { [root = app.app.ref, ax = app.ax] e, name in
+            if AX.same(e.ref, root) && name == "AXFocusedUIElement" { throw AX.failure(-25202) }
+            return ax.raw(e, name)
+        }
         let capture = try app.read()
         XCTAssertNil(capture.focused); XCTAssertFalse(capture.lines.contains { AX.same($0.element, gone.ref) })
     }

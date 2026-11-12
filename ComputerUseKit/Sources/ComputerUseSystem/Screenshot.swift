@@ -6,7 +6,7 @@ import os
 
 /// A window's own pixels at backing resolution, without its shadow. A covered
 /// window still gives its pixels; our pointer and halo never appear in it.
-public final class Screenshot {
+public final class Screenshot: Sendable {
     public static let jpegQuality = 0.8
     public static let randomCharacters = 6
     public static let maxAge: TimeInterval = 3600
@@ -17,21 +17,21 @@ public final class Screenshot {
     public static let phases = ["Capture Screenshot", "Write Screenshot File"]
     /// Called on a worker thread, which a hung capture may keep.
     public typealias Source = @Sendable (UInt32, [UInt32]) -> CGImage?
-    public typealias Runner = (String, [String], TimeInterval) throws -> Void
+    /// Dependencies may be called concurrently by capture workers.
+    public typealias Runner = @Sendable (String, [String], TimeInterval) throws -> Void
     private static let log = Logger(subsystem: "com.termllm.app.computeruse", category: "screenshot")
     private let folder: URL
-    private let stateDirectory: () -> URL
+    private let stateDirectory: @Sendable () -> URL
     private let runner: Runner
     private let tool: String
     private let sources: [Source]?
-    private let uptime: () -> TimeInterval
-    private let name: (pid_t) -> String
-    private let cooldownLock = NSLock()
-    private var silentUntil: [Int: TimeInterval] = [:]
-    public init(folder: URL = Paths.screenshotDirectory(), stateDirectory: @escaping () -> URL = { Paths.stateDirectory() },
-                captureTool: String = Screenshot.captureTool, runner: @escaping Runner = Screenshot.run,
-                sources: [Source]? = nil, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-                appName: @escaping (pid_t) -> String = { NSRunningApplication(processIdentifier: $0)?.localizedName ?? "Unknown" }) {
+    private let uptime: @Sendable () -> TimeInterval
+    private let name: @Sendable (pid_t) -> String
+    private let silentUntil = OSAllocatedUnfairLock<[Int: TimeInterval]>(initialState: [:])
+    public init(folder: URL = Paths.screenshotDirectory(), stateDirectory: @escaping @Sendable () -> URL = { Paths.stateDirectory() },
+                captureTool: String = Screenshot.captureTool, runner: @escaping Runner = { try Screenshot.run($0, arguments: $1, timeout: $2) },
+                sources: [Source]? = nil, uptime: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                appName: @escaping @Sendable (pid_t) -> String = { NSRunningApplication(processIdentifier: $0)?.localizedName ?? "Unknown" }) {
         self.folder = folder; self.stateDirectory = stateDirectory; self.tool = captureTool
         self.runner = runner; self.sources = sources; self.uptime = uptime; self.name = appName
     }
@@ -114,7 +114,7 @@ public final class Screenshot {
     public func firstImage(_ windowID: UInt32, extraIDs: [UInt32] = []) -> CGImage? {
         let sources = self.sources ?? [{ self.toolImage($0, extraIDs: $1) }]
         for (index, source) in sources.enumerated() {
-            cooldownLock.lock(); let until = silentUntil[index] ?? 0; cooldownLock.unlock()
+            let until = silentUntil.withLock { $0[index] ?? 0 }
             if uptime() < until { continue }
             let result = OSAllocatedUnfairLock<CGImage?>(initialState: nil)
             let done = DispatchSemaphore(value: 0)
@@ -129,7 +129,10 @@ public final class Screenshot {
             // An answered nil (e.g. a minimized window) is tried next time. Only
             // a still-hanging call is left alone for a while.
             if !answered {
-                cooldownLock.lock(); silentUntil[index] = uptime() + Self.retryAfter; cooldownLock.unlock()
+                // Injected code can reenter; no callback runs under the lock.
+                let until = uptime() + Self.retryAfter
+                // Concurrent timeouts can publish their clock samples out of order.
+                silentUntil.withLock { $0[index] = max($0[index] ?? 0, until) }
             }
         }
         return nil

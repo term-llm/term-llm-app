@@ -1,6 +1,7 @@
 import ApplicationServices
 import ComputerUseCore
 import Foundation
+import os
 
 /// Thin wrappers over accessibility. Any thread may call them. No messaging timeout
 /// is set by default: the system default applies to every call, as upstream.
@@ -10,49 +11,51 @@ public final class SystemAX: AXBackend {
     // The one-call hierarchy copy is deliberately off upstream: measured on Lab
     // (12 Oct) it took 11 ms against 30 ms for the walk, but left out a web view's
     // page (15 elements, the walk 53 lines). Use the ordinary batched walk instead.
-    public struct Calls {
-        public var get: (AXUIElement, String) -> (Int32, Any?) = { el, name in
+    // The installed copy is immutable. Builders may replace callbacks before init;
+    // @Sendable checks their captured graph rather than trusting a let closure.
+    public struct Calls: Sendable {
+        public var get: @Sendable (AXUIElement, String) -> (Int32, Any?) = { el, name in
             var value: CFTypeRef?
             let code = AXUIElementCopyAttributeValue(el, name as CFString, &value)
             return (code.rawValue, value)
         }
-        public var names: (AXUIElement) -> [String] = { el in
+        public var names: @Sendable (AXUIElement) -> [String] = { el in
             var value: CFArray?
             return AXUIElementCopyAttributeNames(el, &value) == .success ? value as? [String] ?? [] : []
         }
-        public var getMany: (AXUIElement, [String]) -> (Int32, [Any]) = { el, names in
+        public var getMany: @Sendable (AXUIElement, [String]) -> (Int32, [Any]) = { el, names in
             var values: CFArray?
             let code = AXUIElementCopyMultipleAttributeValues(el, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
             return (code.rawValue, values as? [Any] ?? [])
         }
-        public var set: (AXUIElement, String, CFTypeRef) -> Int32 = { AXUIElementSetAttributeValue($0, $1 as CFString, $2).rawValue }
-        public var settable: (AXUIElement, String) -> Bool = { el, name in
+        public var set: @Sendable (AXUIElement, String, CFTypeRef) -> Int32 = { AXUIElementSetAttributeValue($0, $1 as CFString, $2).rawValue }
+        public var settable: @Sendable (AXUIElement, String) -> Bool = { el, name in
             var flag = DarwinBoolean(false)
             return AXUIElementIsAttributeSettable(el, name as CFString, &flag) == .success && flag.boolValue
         }
-        public var actionNames: (AXUIElement) -> [String] = { el in
+        public var actionNames: @Sendable (AXUIElement) -> [String] = { el in
             var names: CFArray?
             return AXUIElementCopyActionNames(el, &names) == .success ? names as? [String] ?? [] : []
         }
-        public var actionDescription: (AXUIElement, String) -> String = { el, name in
+        public var actionDescription: @Sendable (AXUIElement, String) -> String = { el, name in
             var text: CFString?
             return AXUIElementCopyActionDescription(el, name as CFString, &text) == .success ? text as String? ?? "" : ""
         }
-        public var perform: (AXUIElement, String) -> Int32 = { AXUIElementPerformAction($0, $1 as CFString).rawValue }
-        public var param: (AXUIElement, String, CFTypeRef) -> Any? = { el, name, argument in
+        public var perform: @Sendable (AXUIElement, String) -> Int32 = { AXUIElementPerformAction($0, $1 as CFString).rawValue }
+        public var param: @Sendable (AXUIElement, String, CFTypeRef) -> Any? = { el, name, argument in
             var value: CFTypeRef?
             return AXUIElementCopyParameterizedAttributeValue(el, name as CFString, argument, &value) == .success ? value : nil
         }
-        public var pid: (AXUIElement) -> (Int32, pid_t) = { el in
+        public var pid: @Sendable (AXUIElement) -> (Int32, pid_t) = { el in
             var pid: pid_t = 0
             return (AXUIElementGetPid(el, &pid).rawValue, pid)
         }
-        public var at: (AXUIElement, Float, Float) -> AXUIElement? = { el, x, y in
+        public var at: @Sendable (AXUIElement, Float, Float) -> AXUIElement? = { el, x, y in
             var found: AXUIElement?
             return AXUIElementCopyElementAtPosition(el, x, y, &found) == .success ? found : nil
         }
-        public var timeout: (AXUIElement, Float) -> Void = { _ = AXUIElementSetMessagingTimeout($0, $1) }
-        public var windowID: (AXUIElement) -> UInt32 = { el in
+        public var timeout: @Sendable (AXUIElement, Float) -> Void = { _ = AXUIElementSetMessagingTimeout($0, $1) }
+        public var windowID: @Sendable (AXUIElement) -> UInt32 = { el in
             guard let call = windowCall else { return 0 }
             var number: UInt32 = 0
             return call(el, &number) == 0 ? number : 0
@@ -61,29 +64,41 @@ public final class SystemAX: AXBackend {
     }
 
     /// Observer operations are injectable without granting AX or observing real apps.
-    public struct ObserverCalls {
-        public var create: (pid_t, @escaping (String, UIElementRef) -> Void) throws -> AnyObject = { pid, callback in
-            let box = ObserverBox(callback)
+    // Tokens must have their own honest Sendable ownership (not arbitrary objects).
+    // This is an injection seam for SystemAX, not an independently scheduled SDK
+    // API: clients must not directly interleave lifecycle hooks for the same token.
+    // Create/add run on the caller before publication and source installation.
+    // Only source install/uninstall main-hop; add/remove can block on target IPC.
+    // Teardown is claimed once by Observation, with removal after source uninstall.
+    public struct ObserverCalls: Sendable {
+        public var create: @Sendable (pid_t, @escaping @Sendable (String, UIElementRef) -> Void) throws -> any Sendable = { pid, callback in
+            let context = ObserverCallback(callback)
             var observer: AXObserver?
-            try check(AXObserverCreate(pid, { _, element, name, context in
-                guard let context else { return }
-                Unmanaged<ObserverBox>.fromOpaque(context).takeUnretainedValue().callback(name as String, UIElementRef(element))
+            try check(AXObserverCreate(pid, { _, element, name, pointer in
+                guard let pointer else { return }
+                let context = Unmanaged<ObserverCallback>.fromOpaque(pointer).takeUnretainedValue()
+                context.callback(name as String, UIElementRef(element))
+                withExtendedLifetime(context) {}
             }, &observer).rawValue)
-            box.observer = observer!
-            return box
+            return ObserverToken(observer: observer!, context: context)
         }
-        public var add: (AnyObject, AXUIElement, String) -> Int32 = { object, el, name in
-            let box = object as! ObserverBox
-            return AXObserverAddNotification(box.observer!, el, name as CFString, Unmanaged.passUnretained(box).toOpaque()).rawValue
+        public var add: @Sendable (any Sendable, AXUIElement, String) -> Int32 = { token, el, name in
+            let token = token as! ObserverToken
+            return AXObserverAddNotification(token.observer, el, name as CFString, Unmanaged.passUnretained(token.context).toOpaque()).rawValue
         }
-        public var remove: (AnyObject, AXUIElement, String) -> Void = { object, el, name in
-            _ = AXObserverRemoveNotification((object as! ObserverBox).observer!, el, name as CFString)
+        public var remove: @Sendable (any Sendable, AXUIElement, String) -> Void = { token, el, name in
+            _ = AXObserverRemoveNotification((token as! ObserverToken).observer, el, name as CFString)
         }
-        public var install: (AnyObject) -> Void = { object in
-            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource((object as! ObserverBox).observer!), .defaultMode)
+        public var install: @Sendable (any Sendable) -> Void = { token in
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource((token as! ObserverToken).observer), .defaultMode)
         }
-        public var uninstall: (AnyObject) -> Void = { object in
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource((object as! ObserverBox).observer!), .defaultMode)
+        public var uninstall: @Sendable (any Sendable) -> Void = { token in
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource((token as! ObserverToken).observer), .defaultMode)
+        }
+        /// Synchronous hop used only for source install/uninstall. The default
+        /// runs inline when no helper run loop is running, including in tests.
+        public var mainHop: @Sendable (@Sendable () -> Void) -> Void = { work in
+            MainThread.callOnMain(work)
         }
         public init() {}
     }
@@ -132,20 +147,32 @@ public final class SystemAX: AXBackend {
         calls.at(raw(app ?? UIElementRef(AXUIElementCreateSystemWide())), Float(x), Float(y)).map(UIElementRef.init)
     }
     public func alive(_ element: UIElementRef) -> Bool { calls.get(raw(element), "AXRole").0 != AX.invalidElement }
-    public func observe(pid: pid_t, element: UIElementRef, names: [String], callback: @escaping (String, UIElementRef) -> Void) throws -> AXObservation {
-        let token = try observerCalls.create(pid, callback)
-        let observation = Observation(token: token, calls: observerCalls)
+    public func observe(pid: pid_t, element: UIElementRef, names: [String], callback: @escaping @Sendable (String, UIElementRef) -> Void) throws -> AXObservation {
+        // The creator owns the unpublished token until all registration completes.
+        // AX notification registration is synchronous target IPC: keep it on the
+        // calling worker, never inside the main run-loop source hop.
+        let delivery = AXObservationDelivery(callback)
+        let token: any Sendable
+        do { token = try observerCalls.create(pid) { delivery.deliver($0, $1) } }
+        catch { delivery.stop(); throw error }
+        var registered: [(UIElementRef, String)] = []
         do {
             for name in names {
                 let code = observerCalls.add(token, raw(element), name)
-                if code == AX.cannotComplete { continue } // This app does not send that one.
+                if code == AX.cannotComplete { continue }
                 try Self.check(code)
-                observation.registered.append((raw(element), name))
+                registered.append((element, name))
             }
-            MainThread.callOnMain { self.observerCalls.install(token) }
-            return observation
-        } catch { observation.stop(); throw error }
+        } catch {
+            delivery.stop()
+            // No source was installed, so cleanup needs no main hop.
+            for (element, name) in registered { observerCalls.remove(token, raw(element), name) }
+            throw error
+        }
+        observerCalls.mainHop { observerCalls.install(token) }
+        return Observation(token: token, registered: registered, calls: observerCalls, delivery: delivery)
     }
+
     static func check(_ code: Int32) throws { if code != 0 { throw AX.failure(code) } }
 
     /// Normalize every value crossing the AX seam, including nested collections.
@@ -190,10 +217,15 @@ public final class SystemAX: AXBackend {
         return input as CFTypeRef
     }
     private typealias WindowCall = @convention(c) (AXUIElement, UnsafeMutablePointer<UInt32>) -> Int32
-    private static let symbols = PrivateSymbols(path: "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices") { name in
-        NSLog("private accessibility call %@ is missing: its step is off", name)
-    }
-    private static let windowCall: WindowCall? = symbols.lookup("_AXUIElementGetWindow").map { unsafeBitCast($0, to: WindowCall.self) }
+    // Only the immutable function pointer is shared. PrivateSymbols is a local
+    // lookup owner, not a non-Sendable global reachable through Calls.windowID.
+    // It intentionally leaves the library loaded for the pointer's lifetime.
+    private static let windowCall: WindowCall? = {
+        let symbols = PrivateSymbols(path: "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices") { name in
+            NSLog("private accessibility call %@ is missing: its step is off", name)
+        }
+        return symbols.lookup("_AXUIElementGetWindow").map { unsafeBitCast($0, to: WindowCall.self) }
+    }()
 
 }
 
@@ -210,25 +242,51 @@ public final class AXActions {
         let value = read(name); cache[name] = value; return value
     }
 }
-private final class ObserverBox {
-    let callback: (String, UIElementRef) -> Void
-    var observer: AXObserver?
-    init(_ callback: @escaping (String, UIElementRef) -> Void) { self.callback = callback }
+private final class ObserverCallback: Sendable {
+    let callback: @Sendable (String, UIElementRef) -> Void
+    init(_ callback: @escaping @Sendable (String, UIElementRef) -> Void) { self.callback = callback }
 }
+
+/// Narrow SDK interop: AXObserver lacks Sendable. The creator exclusively owns
+/// this immutable handle and retained refcon until registration and installation
+/// finish. Only source install/uninstall main-hop (or use the no-run-loop inline
+/// fallback); one cleanup claimant removes registrations after source uninstall.
+/// Callbacks may reenter stop: Observation retains its token for its full lifetime,
+/// and the SDK callback retains its context through invocation. No SDK mutable
+/// object is exposed to clients. This is NOT a conformance for arbitrary injected
+/// token graphs: injected tokens must themselves be Sendable.
+private struct ObserverToken: @unchecked Sendable {
+    let observer: AXObserver
+    let context: ObserverCallback
+}
+
 private final class Observation: AXObservation {
-    let token: AnyObject
-    let calls: SystemAX.ObserverCalls
-    var registered: [(AXUIElement, String)] = []
-    private let lock = NSLock()
-    private var stopped = false
-    init(token: AnyObject, calls: SystemAX.ObserverCalls) { self.token = token; self.calls = calls }
+    // Keep the SDK observer alive even when stop is reentered by its own callback.
+    private let token: any Sendable
+    private let registered: OSAllocatedUnfairLock<[(UIElementRef, String)]?>
+    private let calls: SystemAX.ObserverCalls
+    private let delivery: AXObservationDelivery
+    init(token: any Sendable, registered: [(UIElementRef, String)], calls: SystemAX.ObserverCalls, delivery: AXObservationDelivery) {
+        self.token = token
+        self.registered = OSAllocatedUnfairLock(initialState: registered)
+        self.calls = calls
+        self.delivery = delivery
+    }
     func stop() {
-        lock.lock()
-        guard !stopped else { lock.unlock(); return }; stopped = true
-        lock.unlock()
-        let calls = calls, token = token
-        for (el, name) in registered { calls.remove(token, el, name) }
-        MainThread.callOnMain { calls.uninstall(token) }
+        delivery.stop()
+        let owned = registered.withLock { registered in
+            let owned = registered
+            registered = nil
+            return owned
+        }
+        guard let owned else { return }
+        // Never hold the claim lock across injected code or a main-thread wait.
+        // Uninstall first, waiting behind any main callback; target IPC removal
+        // then stays on this claiming caller. Reentrant/subsequent stops return.
+        calls.mainHop { calls.uninstall(token) }
+        for (el, name) in owned {
+            calls.remove(token, unsafeDowncast(el.object, to: AXUIElement.self), name)
+        }
     }
     deinit { stop() }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 @testable import ComputerUseSystem
 
 final class WindowsTests: ContextTestCase {
@@ -126,10 +127,10 @@ final class WindowsTests: ContextTestCase {
         var other = target; other.pid = 99; XCTAssertNil(try windows.openMenu(other))
     }
     func testWatchCountNewWindowAttentionAndUnwind() throws {
-        var attention: [pid_t] = []; windows.system.noAttention = { attention.append($0) }
+        let attention = OSAllocatedUnfairLock(initialState: [pid_t]()); windows.system.noAttention = { pid in attention.withLock { $0.append(pid) } }
         try windows.watch(target); try windows.watch(target); XCTAssertEqual(ax.observations.count, 1)
         for name in Windows.newWindows { ax.observations[0].fire(name, a.ref) }
-        XCTAssertEqual(attention, [77, 77]); windows.unwatch(target); XCTAssertFalse(ax.observations[0].stopped)
+        XCTAssertEqual(attention.withLock { $0 }, [77, 77]); windows.unwatch(target); XCTAssertFalse(ax.observations[0].stopped)
         windows.unwatch(target); XCTAssertTrue(ax.observations[0].stopped); windows.unwatch(target)
         ax.failObserve = true; XCTAssertThrowsError(try windows.watch(target)); ax.failObserve = false
         try windows.watch(target); XCTAssertEqual(ax.observations.count, 2)

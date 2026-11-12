@@ -3,7 +3,7 @@ import XCTest
 
 /// Swift String normalizes equality and counts graphemes. Python does neither;
 /// these cases deliberately go beyond the ASCII-heavy upstream goldens.
-final class ReadUnicodeTests: XCTestCase {
+final class ReadUnicodeTests: AXTestCase {
     let composed = "é"
     let decomposed = "e\u{301}"
     func testDuplicateFieldsAndRepeatedTextsCompareLiteralScalars() {

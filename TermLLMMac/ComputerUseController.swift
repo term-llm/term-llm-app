@@ -1,6 +1,6 @@
 import AppKit
 import Combine
-@preconcurrency import ComputerUseCore
+import ComputerUseCore
 import Darwin
 import Foundation
 
@@ -496,10 +496,12 @@ final class ComputerUseController: NSObject, ObservableObject {
     /// approvals.json is the helper's file; it reads it on every check, so a
     /// removal here takes effect at the agent's next first use of that app.
     func refreshApprovals() {
-        let store = ApprovalStore(directory: installation.state)
+        // Transfer the URL, not a main-actor-created non-Sendable store.
+        let directory = installation.state
         Task {
             alwaysAllowed = await Task.detached(priority: .utility) { () -> [ComputerUseApprovedApp] in
-                store.always().keys.map { bundleID in
+                let store = ApprovalStore(directory: directory)
+                return store.always().keys.map { bundleID in
                     var name = bundleID
                     if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
                         name = FileManager.default.displayName(atPath: url.path)
@@ -512,13 +514,13 @@ final class ComputerUseController: NSObject, ObservableObject {
     }
     func forgetApproval(_ bundleID: String) {
         guard !suppressed, !quitting else { return }
-        let store = ApprovalStore(directory: installation.state)
+        let directory = installation.state
         activeMutations += 1
         Task {
             defer { activeMutations -= 1 }
             error = await Task.detached(priority: .userInitiated) { () -> String? in
                 do {
-                    try store.remove(bundleID: bundleID)
+                    try ApprovalStore(directory: directory).remove(bundleID: bundleID)
                     return nil
                 } catch { return error.localizedDescription }
             }.value

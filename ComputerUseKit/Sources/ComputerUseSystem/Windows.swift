@@ -1,5 +1,6 @@
 import AppKit
 import ComputerUseCore
+import os
 
 /// Fresh window and menu context. Global points, top-left origin; never clamp to zero.
 public final class Windows {
@@ -20,7 +21,7 @@ public final class Windows {
         public var associated: (UInt32) -> Set<UInt32> = Windows.systemAssociated
         public var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         public var sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
-        public var noAttention: (pid_t) -> Void = Focus.noAttention
+        public var noAttention: @Sendable (pid_t) -> Void = { Focus.noAttention($0) }
         public init() {}
     }
     public var system: System
@@ -122,7 +123,7 @@ public final class Windows {
 
     final class Menus {
         var watchers = 0; var observer: AXObservation?
-        var heard: [(String, UIElementRef)] = []
+        let heard = OSAllocatedUnfairLock(initialState: [(String, UIElementRef)]())
         var menu: UIElementRef?; var root: UIElementRef?; var kept: UIElementRef?
     }
     let lock = NSRecursiveLock()
@@ -141,7 +142,9 @@ public final class Windows {
         return true
     }
     func catchUp(_ state: Menus) throws -> Bool {
-        lock.lock(); let heard = state.heard; state.heard = []; lock.unlock()
+        let heard = state.heard.withLock { pending in
+            let heard = pending; pending.removeAll(); return heard
+        }
         var opened = false
         for (name, menu) in heard {
             if let kept = state.kept {
@@ -181,16 +184,21 @@ public final class Windows {
     public func keepMenu(_ target: AppTarget, title: UIElementRef) { let s = state(target); s.menu = nil; s.root = title; s.kept = title }
     public func closeMenu(_ target: AppTarget) {
         let s = state(target); lock.lock(); defer { lock.unlock() }
-        s.heard = []; s.menu = nil; s.root = nil; s.kept = nil
+        s.heard.withLock { $0.removeAll() }; s.menu = nil; s.root = nil; s.kept = nil
     }
     public func watch(_ target: AppTarget) throws {
         let s = state(target); lock.lock(); s.watchers += 1; let count = s.watchers; lock.unlock()
         if count > 1 { return }
         do {
-            s.observer = try AX.backend.observe(pid: target.pid ?? 0, element: app(target), names: [Self.menuOpened, Self.menuClosed] + Self.newWindows) { [weak self, weak s] name, element in
-                guard let self, let s else { return }
-                if Self.newWindows.contains(name) { self.system.noAttention(target.pid ?? 0); return }
-                self.lock.lock(); s.heard.append((name, element)); self.lock.unlock()
+            // Snapshot only the callback's dependencies. Never capture the mutable
+            // Windows/System/Menus graph on the notification run loop. Changes to
+            // system.noAttention take effect on the next watch, not mid-observation.
+            let backend = AX.backend, heard = s.heard, noAttention = system.noAttention
+            guard let pid = target.pid else { throw Errors.make("app_not_running", ["identifier": target.path]) }
+            let element = backend.app(pid: pid)
+            s.observer = try backend.observe(pid: pid, element: element, names: [Self.menuOpened, Self.menuClosed] + Self.newWindows) { name, element in
+                if Self.newWindows.contains(name) { noAttention(pid); return }
+                heard.withLock { $0.append((name, element)) }
             }
         } catch { lock.lock(); s.watchers -= 1; lock.unlock(); throw error }
     }

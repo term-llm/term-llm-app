@@ -7,10 +7,14 @@ import os
 
 final class ScreenshotTests: XCTestCase {
     private var folder: URL!
-    override func setUpWithError() throws { folder = try temporaryFolder() }
+    override func setUpWithError() throws {
+        folder = URL(fileURLWithPath: "/tmp").appendingPathComponent("cu-screenshot-\(UUID().uuidString)")
+        try UnixSocket.makeOwnFolder(folder.path)
+    }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: folder) }
     private func screenshot(sources: [Screenshot.Source] = [{ _, _ in fakeImage() }]) -> Screenshot {
-        Screenshot(folder: folder.appendingPathComponent("shots"), stateDirectory: { self.folder.appendingPathComponent("state") }, sources: sources, appName: { _ in "Font Book" })
+        let state = folder.appendingPathComponent("state")
+        return Screenshot(folder: folder.appendingPathComponent("shots"), stateDirectory: { state }, sources: sources, appName: { _ in "Font Book" })
     }
     func testCaptureJPEGAndMapping() throws {
         let shot = try screenshot().capture(fixtureWindow())
@@ -91,7 +95,8 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.last!))
     }
     func testSpaceInStateUsesRenamedHomeFallback() {
-        let screenshot = Screenshot(folder: folder, stateDirectory: { self.folder.appendingPathComponent("Application Support") }, sources: [])
+        let state = folder.appendingPathComponent("Application Support")
+        let screenshot = Screenshot(folder: folder, stateDirectory: { state }, sources: [])
         XCTAssertEqual(screenshot.proofFolder(), Paths.homeDirectory().appendingPathComponent(".term-llm-computer/proof", isDirectory: true))
     }
     func testCleanupOnlyOldScreenshotsAndDeadCapturePNGs() throws {
@@ -124,11 +129,17 @@ final class ScreenshotTests: XCTestCase {
         assertHarnessError("The screenshot has an unusable size: (64, 48)") { _ = try screenshot().capture(fixtureWindow(frame: .zero)) }
     }
     func testHungSourceTimesOutAndIsLeftAloneWhileFallbackWorks() throws {
-        let release = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
         let calls = OSAllocatedUnfairLock(initialState: 0)
-        let screenshot = screenshot(sources: [{ _, _ in calls.withLock { $0 += 1 }; release.wait(); return nil }, { _, _ in fakeImage() }])
+        let screenshot = screenshot(sources: [{ _, _ in
+            defer { finished.signal() }
+            calls.withLock { $0 += 1 }; release.wait(); return nil
+        }, { _, _ in fakeImage() }])
         let start = ProcessInfo.processInfo.systemUptime
-        defer { release.signal() }
+        defer {
+            release.signal()
+            XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        }
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 3)
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
@@ -146,10 +157,162 @@ final class ScreenshotTests: XCTestCase {
         assertHarnessError("Taking the screenshot failed.") { _ = try screenshot.capture(fixtureWindow()) }
         XCTAssertEqual(try screenshot.capture(fixtureWindow()).width, 64)
     }
+    func testSharedInstanceUsesInjectedDependenciesAcrossCaptureWorkers() throws {
+        let shots = folder.appendingPathComponent("shots"), state = folder.appendingPathComponent("state")
+        let image = fakeImage()
+        let arguments = OSAllocatedUnfairLock<[[String]]>(initialState: [])
+        let names = OSAllocatedUnfairLock<[pid_t]>(initialState: [])
+        let ticks = OSAllocatedUnfairLock(initialState: 0)
+        // No sources override: exercise the default source -> toolImage path,
+        // but the runner writes fixture pixels and never launches a capture tool.
+        let screenshot = Screenshot(folder: shots, stateDirectory: { state }, captureTool: "fixture-capture", runner: { tool, args, timeout in
+            XCTAssertEqual(tool, "fixture-capture"); XCTAssertEqual(timeout, Screenshot.toolTimeout)
+            arguments.withLock { $0.append(args) }
+            let writer = CGImageDestinationCreateWithURL(URL(fileURLWithPath: args.last!) as CFURL, "public.png" as CFString, 1, nil)!
+            CGImageDestinationAddImage(writer, image, nil); XCTAssertTrue(CGImageDestinationFinalize(writer))
+        }, uptime: {
+            ticks.withLock { $0 += 1; return Double($0) }
+        }, appName: { pid in
+            names.withLock { $0.append(pid) }; return "Fixture"
+        })
+        let paths = OSAllocatedUnfairLock<[String]>(initialState: [])
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            do {
+                XCTAssertEqual(screenshot.proofFolder(), state.appendingPathComponent("proof", isDirectory: true))
+                let shot = try screenshot.capture(fixtureWindow())
+                XCTAssertEqual(shot.width, 64); XCTAssertEqual(shot.height, 48)
+                paths.withLock { $0.append(shot.path) }
+            } catch { XCTFail("Fixture capture failed: \(error)") }
+        }
+        let captured = paths.withLock { $0 }, ran = arguments.withLock { $0 }
+        XCTAssertEqual(captured.count, 16); XCTAssertEqual(Set(captured).count, 16)
+        XCTAssertEqual(names.withLock { $0 }, Array(repeating: 77, count: 16))
+        XCTAssertEqual(ticks.withLock { $0 }, 16 * 5)
+        XCTAssertEqual(ran.count, 16); XCTAssertEqual(Set(ran.compactMap(\.last)).count, 16)
+        XCTAssertTrue(ran.allSatisfy { Array($0.prefix(4)) == ["-x", "-o", "-l", "7"] })
+        for path in captured {
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil))
+            XCTAssertEqual(CGImageSourceCreateImageAtIndex(source, 0, nil)?.width, 64)
+        }
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: shots.path)), Set(captured.map { URL(fileURLWithPath: $0).lastPathComponent }))
+    }
+    func testCooldownIsSharedAcrossWorkersAndRetriesAtDeadline() {
+        let release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let clock = OSAllocatedUnfairLock<TimeInterval>(initialState: 100)
+        let asked = OSAllocatedUnfairLock<[UInt32]>(initialState: [])
+        let screenshot = Screenshot(folder: folder, sources: [{ id, _ in
+            let first = asked.withLock { $0.append(id); return $0.count == 1 }
+            if first {
+                defer { finished.signal() }
+                release.wait()
+                return nil
+            }
+            return fakeImage()
+        }, { _, _ in fakeImage(32, 24) }], uptime: { clock.withLock { $0 } })
+        defer {
+            release.signal()
+            XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        }
+        XCTAssertEqual(screenshot.firstImage(7)?.width, 32) // Hang cools only the first source.
+        clock.withLock { $0 = 159 }
+        DispatchQueue.concurrentPerform(iterations: 32) { id in
+            XCTAssertEqual(screenshot.firstImage(UInt32(id + 100))?.width, 32)
+        }
+        XCTAssertEqual(asked.withLock { $0 }, [7])
+        clock.withLock { $0 = 160 } // Exact deadline is eligible, not one tick later.
+        XCTAssertEqual(screenshot.firstImage(9)?.width, 64)
+        XCTAssertEqual(asked.withLock { $0 }, [7, 9])
+    }
+    func testConcurrentTimeoutCannotShortenANewerCooldown() {
+        let release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let sampled = DispatchSemaphore(value: 0), publish = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        let clock = OSAllocatedUnfairLock(initialState: (time: TimeInterval(100), reads: 0))
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let screenshot = Screenshot(folder: folder, sources: [{ _, _ in
+            if calls.withLock({ $0 += 1; return $0 <= 2 }) {
+                defer { finished.signal() }
+                release.wait()
+                return nil
+            }
+            return fakeImage()
+        }, { _, _ in fakeImage(32, 24) }], uptime: {
+            let sample = clock.withLock { state in
+                state.reads += 1
+                let sample = (state.time, state.reads)
+                if state.reads == 3 { state.time = 110 }
+                return sample
+            }
+            if sample.1 == 3 {
+                sampled.signal() // The first timeout sampled 100 but has not published.
+                XCTAssertEqual(publish.wait(timeout: .now() + 10), .success)
+            }
+            return sample.0
+        })
+        defer {
+            publish.signal()
+            for _ in 0..<2 { release.signal() }
+            for _ in 0..<2 { XCTAssertEqual(finished.wait(timeout: .now() + 5), .success) }
+        }
+        for _ in 0..<2 {
+            DispatchQueue.global().async {
+                XCTAssertEqual(screenshot.firstImage(7)?.width, 32)
+                done.signal()
+            }
+        }
+        XCTAssertEqual(sampled.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success) // The newer timeout published 170.
+        publish.signal() // Now allow the stale 160 deadline to publish last.
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+        clock.withLock { $0.time = 165 }
+        XCTAssertEqual(screenshot.firstImage(7)?.width, 32)
+        XCTAssertEqual(calls.withLock { $0 }, 2)
+    }
+    func testTimeoutClockCanReenterWithoutCooldownLock() {
+        let release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let slot = OSAllocatedUnfairLock<Screenshot?>(initialState: nil)
+        let reads = OSAllocatedUnfairLock(initialState: 0), calls = OSAllocatedUnfairLock(initialState: 0)
+        let screenshot = Screenshot(folder: folder, sources: [{ _, _ in
+            if calls.withLock({ $0 += 1; return $0 == 1 }) {
+                defer { finished.signal() }
+                release.wait()
+                return nil
+            }
+            return fakeImage()
+        }], uptime: {
+            let read = reads.withLock { $0 += 1; return $0 }
+            if read == 2 { // The timestamp used to write the timeout cooldown.
+                let nested = DispatchSemaphore(value: 0)
+                let owner = slot.withLock { $0! }
+                DispatchQueue.global().async {
+                    XCTAssertEqual(owner.firstImage(9)?.width, 64)
+                    nested.signal()
+                }
+                // A bounded wait detects a held cooldown lock without wedging
+                // the suite: the nested worker can finish when this returns.
+                XCTAssertEqual(nested.wait(timeout: .now() + 5), .success)
+            }
+            return 100
+        })
+        slot.withLock { $0 = screenshot }
+        defer {
+            slot.withLock { $0 = nil }
+            release.signal()
+            XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        }
+        XCTAssertNil(screenshot.firstImage(7))
+        XCTAssertNil(screenshot.firstImage(7)) // The completed timeout still cools the source.
+        XCTAssertEqual(calls.withLock { $0 }, 2)
+        XCTAssertEqual(reads.withLock { $0 }, 4)
+    }
     func testChildArgumentsNonhiddenPathAndExitZeroWithoutFile() {
-        var ran: [String] = []
-        let screenshot = Screenshot(folder: folder, runner: { executable, args, timeout in ran = [executable] + args; XCTAssertEqual(timeout, 1.8) })
-        XCTAssertNil(screenshot.toolImage(7)); XCTAssertEqual(Array(ran.prefix(5)), ["/usr/sbin/screencapture", "-x", "-o", "-l", "7"])
+        let arguments = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let screenshot = Screenshot(folder: folder, runner: { executable, args, timeout in
+            arguments.withLock { $0 = [executable] + args }; XCTAssertEqual(timeout, 1.8)
+        })
+        XCTAssertNil(screenshot.toolImage(7))
+        let ran = arguments.withLock { $0 }
+        XCTAssertEqual(Array(ran.prefix(5)), ["/usr/sbin/screencapture", "-x", "-o", "-l", "7"])
         XCTAssertFalse(URL(fileURLWithPath: ran.last!).lastPathComponent.hasPrefix(".")); XCTAssertFalse(FileManager.default.fileExists(atPath: ran.last!))
     }
     func testToolImageDecodedBeforeScratchFileIsRemoved() throws {
