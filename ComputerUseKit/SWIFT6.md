@@ -120,6 +120,33 @@ also pass isolated Swift 6 typechecks with warnings as errors, even though the
 rest of their System module still explicitly uses Swift 5. No unchecked
 conformance, unsafe isolation annotation or actor was added for this round.
 
+## Fourth incremental round: Presence and Permissions
+
+Both adapters now have checked Sendable conformance, immutable `@Sendable`
+dependencies and typed lock-owned state. Presence samples its clock outside the
+pause lock; older samples cannot shorten a newer human-input pause. Permission
+preflights and capture checks remain on their caller; only request/open uses the
+synchronous main-thread handoff. No callback, main-thread hop or wait runs under
+the state lock.
+
+Required-grant and capture probes have explicit owner/completion tokens. Passive
+gates distinguish pending from denied and wait with cancellation/deadline checks,
+so an initially successful concurrent probe cannot cause a false permission
+refusal. A gate reentered by its own unfinished probe reports pending rather than
+self-waiting; a directly reentrant Boolean capture query uses the last published
+cache value. The synchronous SDK probe itself remains non-preemptible, as before.
+Relaunch-intent revisions prevent stale preflight or Settings samples from
+consuming newer Allow intent. Waiting gates poll at 0.25 seconds; unlike the old
+lock wait they can observe cancellation/deadlines during another worker's probe.
+
+Opus reviewed this milestone with no merge blockers. Its test-strength findings
+were addressed with negative completion checks and concurrent denied passive-gate
+coverage. The audited subset is now 277 tests, including 14 Presence and 36
+Permissions tests. Normal and TSan runs pass, both adapters/tests pass isolated
+Swift 6 checks with warnings as errors, and Mac app/test compilation passes.
+Permissions tests use explicit fail-fast fakes; no real grant query, prompt,
+Settings launch, capture or UI is exercised. No unsafe annotation was added.
+
 ## Next bounded rounds
 
 1. Make System adapter dependencies immutable where possible and give their
@@ -143,7 +170,7 @@ adapters and helper server. That would promise more than their APIs guarantee:
   properties. Their callback captures are not `@Sendable`; locking a cache does
   not make those captures safe. `Person` additionally owns a main-run-loop event
   tap and worker-visible state whose lifecycle needs explicit isolation.
-- `Presence` and `Approvals` still have non-Sendable injected callbacks.
+- `Approvals` still has non-Sendable injected callbacks.
   A `let` closure is not proof that the objects it captures are synchronized.
 - `HelperServer` captures a `ToolExecutor`, configuration callbacks, and
   `Sessions` on socket workers. Its condition protects server bookkeeping, not
@@ -177,13 +204,14 @@ Use private build directories, for example:
 ```sh
 swift build --package-path ComputerUseKit --scratch-path /tmp/cu-build --build-tests
 swift test --package-path ComputerUseKit --scratch-path /tmp/cu-build --skip-build \
-  --filter 'ComputerUseCoreTests|ComputerUseClientTests|ComputerUseSystemTests.AXTests|ComputerUseSystemTests.ActionsBackendCaptureTests|ComputerUseSystemTests.ScreenshotTests'
+  --filter 'ComputerUseCoreTests|ComputerUseClientTests|ComputerUseSystemTests.AXTests|ComputerUseSystemTests.ActionsBackendCaptureTests|ComputerUseSystemTests.ScreenshotTests|ComputerUseSystemTests.PresenceTests|ComputerUseSystemTests.PermissionsTests'
 ```
 
-AXTests, ActionsBackendCaptureTests and ScreenshotTests are specifically audited:
+AXTests, ActionsBackendCaptureTests, ScreenshotTests, PresenceTests and
+PermissionsTests are specifically audited:
 their reads/actions/observer/capture hooks are injected fakes, not live
-accessibility or capture operations. The allowlisted subset contains 227 tests
-(175 Core, 3 Client, 25 AX, 2 Actions, 22 Screenshot). Inspect tests before expanding
+accessibility or capture operations. The allowlisted subset contains 277 tests
+(175 Core, 3 Client, 25 AX, 2 Actions, 22 Screenshot, 14 Presence, 36 Permissions). Inspect tests before expanding
 that allowlist. In particular, do **not** run the
 whole package merely because most system tests have fakes. `PasteboardTests`
 uses the system pasteboard service (even though it creates a unique board),
