@@ -147,6 +147,31 @@ Swift 6 checks with warnings as errors, and Mac app/test compilation passes.
 Permissions tests use explicit fail-fast fakes; no real grant query, prompt,
 Settings launch, capture or UI is exercised. No unsafe annotation was added.
 
+## Fifth incremental round: shared SDK and main-loop infrastructure
+
+The single HID event source is retained with its existing identity and nil-source
+behavior, behind a private synchronized owner that serializes source-backed event
+construction. `PrivateSymbols` is checked Sendable with immutable library ownership
+and a typed hit/miss cache. A missing symbol is published before logging outside
+the cache lock, so a logger can reenter without repeated lookup or warning. The
+injected resolver must not reenter the cache; the default is synchronous `dlsym`.
+Libraries remain loaded because returned function pointers can outlive the cache.
+
+Two narrow SDK exceptions remain explicit: the private HID source owner, and an
+immutable opaque library/code address wrapper. Neither exposes mutable Swift
+storage or introduces a blanket adapter conformance. `MainThread.run` now requires
+an explicitly Sendable main-actor startup callback; run-loop scheduling, inline
+fallback and shutdown are unchanged.
+
+Opus found no defects. Its optional singleflight-test strengthening was applied.
+The 285-test allowlist passes normally and under TSan, scoped sources/tests pass
+isolated Swift 6 warnings-as-errors checking, and Mac app/test compilation passes.
+Seven new symbol-cache tests use fabricated addresses and fake resolvers only.
+Existing event-building tests compile but are not executed; the inline MainThread
+test starts no AppKit loop. No events are posted and no UI/tap/permission operation
+is exercised. Actual SDK event-source concurrency remains a documented boundary,
+not something the fabricated-address tests establish.
+
 ## Next bounded rounds
 
 1. Make System adapter dependencies immutable where possible and give their
@@ -204,14 +229,15 @@ Use private build directories, for example:
 ```sh
 swift build --package-path ComputerUseKit --scratch-path /tmp/cu-build --build-tests
 swift test --package-path ComputerUseKit --scratch-path /tmp/cu-build --skip-build \
-  --filter 'ComputerUseCoreTests|ComputerUseClientTests|ComputerUseSystemTests.AXTests|ComputerUseSystemTests.ActionsBackendCaptureTests|ComputerUseSystemTests.ScreenshotTests|ComputerUseSystemTests.PresenceTests|ComputerUseSystemTests.PermissionsTests'
+  --filter 'ComputerUseCoreTests|ComputerUseClientTests|ComputerUseSystemTests.AXTests|ComputerUseSystemTests.ActionsBackendCaptureTests|ComputerUseSystemTests.ScreenshotTests|ComputerUseSystemTests.PresenceTests|ComputerUseSystemTests.PermissionsTests|ComputerUseSystemTests.PrivateSymbolsTests|ComputerUseSystemTests.SystemTests'
 ```
 
 AXTests, ActionsBackendCaptureTests, ScreenshotTests, PresenceTests and
-PermissionsTests are specifically audited:
+PermissionsTests, PrivateSymbolsTests and the inline SystemTests are specifically audited:
 their reads/actions/observer/capture hooks are injected fakes, not live
-accessibility or capture operations. The allowlisted subset contains 277 tests
-(175 Core, 3 Client, 25 AX, 2 Actions, 22 Screenshot, 14 Presence, 36 Permissions). Inspect tests before expanding
+accessibility or capture operations. The allowlisted subset contains 285 tests
+(175 Core, 3 Client, 25 AX, 2 Actions, 22 Screenshot, 14 Presence, 36 Permissions,
+7 PrivateSymbols and 1 inline MainThread). Inspect tests before expanding
 that allowlist. In particular, do **not** run the
 whole package merely because most system tests have fakes. `PasteboardTests`
 uses the system pasteboard service (even though it creates a unique board),

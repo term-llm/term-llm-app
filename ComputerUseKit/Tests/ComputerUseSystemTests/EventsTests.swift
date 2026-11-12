@@ -1,6 +1,7 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 @testable import ComputerUseSystem
 
 final class EventsTests: XCTestCase {
@@ -59,9 +60,9 @@ final class EventsTests: XCTestCase {
         XCTAssertEqual(sent, [77, 77]); XCTAssertEqual(slept, [0.01]); XCTAssertEqual(field(event, Events.userDataField), Events.ownTag); XCTAssertEqual(event.timestamp, 12345)
     }
     func testMissingPrivateSymbolIsLoggedOnceAndDisablesOnlyItsStep() {
-        var logs: [String] = []
-        let symbols = PrivateSymbols(path: "/not/a/framework", log: { logs.append($0) })
-        XCTAssertNil(symbols.lookup("Missing")); XCTAssertNil(symbols.lookup("Missing")); XCTAssertEqual(logs, ["Missing"])
+        let logs = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let symbols = PrivateSymbols(path: "/not/a/framework", log: { name in logs.withLock { $0.append(name) } })
+        XCTAssertNil(symbols.lookup("Missing")); XCTAssertNil(symbols.lookup("Missing")); XCTAssertEqual(logs.withLock { $0 }, ["Missing"])
     }
     func testNoSystemStreamOrPointerMutation() throws {
         let sourceFolder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/ComputerUseSystem")

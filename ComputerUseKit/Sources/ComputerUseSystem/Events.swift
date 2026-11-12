@@ -12,7 +12,7 @@ public enum Events {
     public static let userDataField: UInt32 = 42
     public static let modifiers: UInt64 = 0x1E0000
     public static let clickHold: TimeInterval = 0.05
-    private static let source = CGEventSource(stateID: .hidSystemState)
+    private static let source = HIDEventSource()
     private static let numbers = EventNumbers()
     private static let types: [String: [UInt]] = ["down": [1, 3, 25], "up": [2, 4, 26], "dragged": [6, 7, 27], "moved": [5, 5, 5]]
     private typealias Place = @convention(c) (CGEvent, CGPoint) -> Void
@@ -36,11 +36,11 @@ public enum Events {
         return inWindow(event, point: point, window: window)
     }
     public static func wheel(_ point: CGPoint, dx: Int, dy: Int, window: ComputerUseCore.WindowRef) -> CGEvent {
-        let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)!
+        let event = source.wheel(dx: dx, dy: dy)
         return inWindow(event, point: point, window: window)
     }
     public static func key(_ code: Int, flags: UInt64, text: String? = nil, down: Bool = true) -> CGEvent {
-        let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(code), keyDown: down)!
+        let event = source.key(code: code, down: down)
         event.flags = CGEventFlags(rawValue: flags)
         if let text, !text.isEmpty {
             let units = Array(text.utf16)
@@ -49,7 +49,7 @@ public enum Events {
         return event
     }
     public static func flagsChanged(_ flags: UInt64) -> CGEvent {
-        let event = CGEvent(source: source)!; event.type = .flagsChanged; event.flags = CGEventFlags(rawValue: flags); return event
+        let event = source.event(); event.type = .flagsChanged; event.flags = CGEventFlags(rawValue: flags); return event
     }
     public static func heldFlags() -> UInt64 { CGEventSource.flagsState(.combinedSessionState).rawValue }
     public static func notice(_ kind: UInt, subtype: Int, windowID: UInt32 = 0, flags: UInt64 = 0) -> CGEvent {
@@ -71,21 +71,74 @@ private final class EventNumbers: Sendable {
     func next() -> Int { number.withLock { $0 += 1; return $0 } }
 }
 
+/// The SDK does not mark CGEventSource Sendable. This private owner keeps the
+/// original, single HID source (including a possible nil source) for all builders.
+/// Only event creation touches it, always under the lock; the handle never escapes.
+/// Each returned CGEvent is newly created and belongs exclusively to its caller.
+private final class HIDEventSource: @unchecked Sendable {
+    private let source = CGEventSource(stateID: .hidSystemState)
+    private let lock = NSLock()
+
+    func wheel(dx: Int, dy: Int) -> CGEvent {
+        lock.lock(); defer { lock.unlock() }
+        return CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
+                       wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)!
+    }
+    func key(code: Int, down: Bool) -> CGEvent {
+        lock.lock(); defer { lock.unlock() }
+        return CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(code), keyDown: down)!
+    }
+    func event() -> CGEvent {
+        lock.lock(); defer { lock.unlock() }
+        return CGEvent(source: source)!
+    }
+}
+
 /// One lookup and one warning per missing private call. A missing call disables
 /// only its step; private symbols must never make the entire backend unavailable.
-final class PrivateSymbols {
-    private let handle: UnsafeMutableRawPointer?
-    private let log: (String) -> Void
-    private var found: [String: UnsafeMutableRawPointer] = [:]
-    private var missing: Set<String> = []
-    private let lock = NSLock()
-    init(path: String, log: @escaping (String) -> Void) { handle = dlopen(path, RTLD_LAZY); self.log = log }
-    func lookup(_ name: String) -> UnsafeMutableRawPointer? {
-        lock.lock(); defer { lock.unlock() }
-        if let value = found[name] { return value }
-        if missing.contains(name) { return nil }
-        if let handle, let value = dlsym(handle, name) { found[name] = value; return value }
-        missing.insert(name); log(name); return nil
+final class PrivateSymbols: Sendable {
+    /// These opaque addresses identify a permanently loaded library or its code,
+    /// never mutable Swift storage. We do not dereference them. The library is
+    /// intentionally never dlclosed: returned function pointers outlive this owner.
+    /// Injected open/resolve implementations must preserve the same lifetime.
+    private struct Address: @unchecked Sendable {
+        let pointer: UnsafeMutableRawPointer
     }
-    // Keep the library loaded: callers retain function pointers, not this object.
+    private enum Resolution: Sendable {
+        case found(Address)
+        case missing
+    }
+    private let handle: Address?
+    private let resolve: @Sendable (UnsafeMutableRawPointer, String) -> UnsafeMutableRawPointer?
+    private let log: @Sendable (String) -> Void
+    private let cache = OSAllocatedUnfairLock<[String: Resolution]>(initialState: [:])
+
+    /// `open` runs once during initialization. `resolve` runs under the cache lock
+    /// and must not reenter this cache. `log` runs outside that lock and may reenter,
+    /// including looking up the missing name again. All callbacks may run off main.
+    init(path: String,
+         open: @Sendable (String) -> UnsafeMutableRawPointer? = { dlopen($0, RTLD_LAZY) },
+         resolve: @escaping @Sendable (UnsafeMutableRawPointer, String) -> UnsafeMutableRawPointer? = { dlsym($0, $1) },
+         log: @escaping @Sendable (String) -> Void) {
+        handle = open(path).map { Address(pointer: $0) }
+        self.resolve = resolve
+        self.log = log
+    }
+    func lookup(_ name: String) -> UnsafeMutableRawPointer? {
+        let (resolution, warn) = cache.withLock { cache -> (Resolution, Bool) in
+            if let cached = cache[name] { return (cached, false) }
+            if let handle, let value = resolve(handle.pointer, name) {
+                let found = Resolution.found(Address(pointer: value))
+                cache[name] = found
+                return (found, false)
+            }
+            cache[name] = .missing
+            return (.missing, true)
+        }
+        // Publish the miss before calling user code: recursive and concurrent
+        // lookups neither repeat the resolver nor warn a second time.
+        if warn { log(name) }
+        if case .found(let address) = resolution { return address.pointer }
+        return nil
+    }
 }

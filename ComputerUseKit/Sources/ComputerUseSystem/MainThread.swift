@@ -28,10 +28,10 @@ public enum MainThread {
     }
 
     /// Run the AppKit loop as an accessory app (no Dock icon) until `stop()`. `then`
-    /// runs on the main thread once the loop runs: start there every thread that may
-    /// call `onMain`.
+    /// is Sendable and runs on the main actor once the loop runs: start there every
+    /// thread that may call `onMain`.
     @MainActor
-    public static func run(then: @escaping @MainActor () -> Void) {
+    public static func run(then: @escaping @Sendable @MainActor () -> Void) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         OperationQueue.main.addOperation {
