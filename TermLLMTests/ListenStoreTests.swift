@@ -183,22 +183,22 @@ final class ListenBufferCallbackCoalescerTests: XCTestCase {
 
     func testDeliveryReadsLatestStateAndEachWindowRemainsBounded() {
         let scheduler = BufferCallbackTestScheduler()
-        var latest = 0
+        let latest = BufferCallbackTestValue()
         var delivered: [Int] = []
-        let callbacks = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { delivered.append(latest) }
+        let callbacks = ListenBufferCallbackCoalescer(schedule: scheduler.schedule) { delivered.append(latest.value) }
 
         for value in 1...500 {
-            latest = value
+            latest.value = value
             callbacks.request()
         }
         // Changes after the last KVO notification are visible too: delivery
         // samples current engine state, never an old captured KVO snapshot.
-        latest = 501
+        latest.value = 501
         scheduler.runNext()
         XCTAssertEqual(delivered, [501])
 
         for value in 502...1_000 {
-            latest = value
+            latest.value = value
             callbacks.request()
         }
         XCTAssertEqual(scheduler.pendingCount, 1)
@@ -241,6 +241,11 @@ final class ListenBufferCallbackCoalescerTests: XCTestCase {
         scheduler.runNext()
         XCTAssertEqual(delivered, ["new", "new"], "the new lifetime remains usable")
     }
+}
+
+@MainActor
+private final class BufferCallbackTestValue {
+    var value = 0
 }
 
 private final class BufferCallbackTestScheduler: @unchecked Sendable {

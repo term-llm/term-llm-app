@@ -1953,6 +1953,7 @@
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1978,6 +1979,7 @@
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -2000,6 +2002,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -2017,6 +2020,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.termllm.app.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -2101,6 +2105,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -2128,6 +2133,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMNotificationService/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -2188,6 +2194,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMComputerUse/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -2211,6 +2218,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TermLLMComputerUse/Info.plist;
+				LM_SKIP_METADATA_EXTRACTION = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

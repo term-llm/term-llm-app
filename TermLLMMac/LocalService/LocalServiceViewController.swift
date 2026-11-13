@@ -1,6 +1,6 @@
 import AppKit
 import Combine
-@preconcurrency import TermLLMMacKit
+import TermLLMMacKit
 
 /// AppKit service management.
 ///

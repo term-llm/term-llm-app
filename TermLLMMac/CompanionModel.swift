@@ -1,9 +1,7 @@
 import AppKit
 import Combine
 import Foundation
-// TermLLMMacKit is a Swift 5 language-mode package; its value types are
-// used across this model's background tasks.
-@preconcurrency import TermLLMMacKit
+import TermLLMMacKit
 
 /// Main-actor UI state. All observable mutation happens here; filesystem and
 /// CLI work is performed on a background task and returned as a value.

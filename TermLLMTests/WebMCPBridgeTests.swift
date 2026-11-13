@@ -205,7 +205,8 @@ final class WebMCPBridgeTests: XCTestCase {
         bridge.onCallsSettled = { settled += 1 }
         let webView = makeWebView(bridge: bridge)
         try await load(webView, baseURL: server)
-        webView.evaluateJavaScript("document.modelContext.executeTool('slow', {}).then(r => window.slow = r); void 0;", completionHandler: nil)
+        // Await evaluation only, not the tool's promise: observe it while running.
+        _ = try await webView.evaluateJavaScript("document.modelContext.executeTool('slow', {}).then(r => window.slow = r); null;")
         for _ in 0..<50 where bridge.activeCalls == 0 { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(bridge.activeCalls, 1)
         XCTAssertEqual(settled, 0)

@@ -595,7 +595,7 @@ final class ListenAudioSessionTests: XCTestCase {
         #else
         var engine: AVListenEngine? = AVListenEngine(player: player)
         #endif
-        weak var released = engine
+        weak let released = engine
         XCTAssertNotNil(released)
         XCTAssertEqual(player.observerRemovals, 0)
         engine = nil

@@ -53,7 +53,7 @@ final class AXTests: XCTestCase {
         calls.set = { _, name, value in XCTAssertEqual(name, "AXValue"); saved.value = value as? String; return 0 }
         calls.settable = { _, name in name == "AXValue" }
         calls.perform = { _, name in performed.value = name; return 0 }
-        calls.param = { _, name, value in XCTAssertEqual(name, "AXStringForRange"); XCTAssertEqual(AXValueGetType(unsafeBitCast(value, to: AXValue.self)), .cfRange); return "xy" }
+        calls.param = { _, name, value in XCTAssertEqual(name, "AXStringForRange"); XCTAssertEqual(AXValueGetType(unsafeDowncast(value, to: AXValue.self)), .cfRange); return "xy" }
         let ax = SystemAX(calls: calls), el = ax.app(pid: 7)
         try ax.set(el, "AXValue", "x"); try ax.perform(el, "AXPress")
         XCTAssertEqual(saved.value, "x"); XCTAssertEqual(performed.value, "AXPress"); XCTAssertTrue(ax.settable(el, "AXValue")); XCTAssertFalse(ax.settable(el, "AXTitle"))

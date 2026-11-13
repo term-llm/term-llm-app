@@ -11,6 +11,11 @@ xcodebuild build -project TermLLM.xcodeproj -scheme TermLLMMac \
 
 That unsigned build is a compile check only. Without its Keychain entitlements every credential read and write fails (`-34018`), so no connection, This Mac included, can sign in. To actually use the app, run it from Xcode or build without `CODE_SIGNING_ALLOWED=NO` so it is team-signed. It keeps the iPhone app's bundle ID (`com.termllm.app`), app group and shared Keychain group, so settings, saved connections and credentials from an earlier Mac Catalyst build carry over. Credentials use the data-protection Keychain, as on iPhone, not the legacy login keychain.
 
+The Computer Use helper, both notification extensions and the UI-test runner set
+`LM_SKIP_METADATA_EXTRACTION = YES`: they contain no App Intents, so there is no
+metadata to extract. The main iOS and Mac apps keep extraction enabled for
+`VoiceShortcut.swift`; do not apply this setting globally.
+
 Native AppKit is the point of this target: Mac Catalyst's WebKit has no `navigator.mediaDevices`, `MediaRecorder` or WebRTC (WebKit [bug 234953](https://bugs.webkit.org/show_bug.cgi?id=234953)), and no entitlement can enable them. AppKit's WebKit provides them, so Chat's voice recording and Live voice work as in a browser, and so does the native voice shortcut. The app is signed with the hardened runtime and the microphone/camera entitlements; macOS asks for microphone access the first time a page uses it.
 
 The Mac app uses the desktop workspace, native window controls, a minimum 820 × 560 window, a menu bar and keyboard navigation. It opens on Agents and supports existing remote Hub/Direct Node connections without installing a local service. The client retains the same per-connection credential and WebKit isolation and the same retained Chat document across destination switches. Multiple client windows remain disabled pending the ownership work below; a separate local-service settings window is not a second client scene.

@@ -16,7 +16,7 @@ final class SupportDirectoryMigrationTests: XCTestCase {
 
     /// An install made by an earlier build: old location, old paths recorded inside.
     private func makeEarlierInstall() throws -> CLIProvisioner {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = home.appendingPathComponent("payload/term-llm")
         try FileManager.default.createDirectory(at: payload.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "#!/bin/sh\necho test\n".write(to: payload, atomically: true, encoding: .utf8)

@@ -300,7 +300,7 @@ SIGUSR2 delivery, graceful replacement after active work, or production health p
 - Login-item firing after reboot/login is not established by registering it, and Open at Login registration from an unsigned development build is not verified.
 - Non-GUI SSH sessions may not be able to read the core's login-Keychain token. A logged-in GUI session is required when Keychain interaction is needed.
 - The Mac service integration is not sandboxed: it must execute the CLI and manage the user's service. It is not a computer-use permission host.
-- `TermLLMMacKit` uses Swift 5 language mode; the app, including the local-service UI, is Swift 6 and imports the kit with `@preconcurrency`.
+- `TermLLMMacKit` and the local-service UI use Swift 6 with normal imports (no `@preconcurrency` compatibility import). `CLIProvisioner` is a checked-Sendable value retaining its home URL, Sendable runner and value-only test hook. It resolves Foundation's documented thread-safe `FileManager.default` per operation rather than retaining an arbitrary manager/delegate; custom `FileManager` injection is no longer part of its initializer. Configure value copies before sending them to workers. Construct non-Sendable orchestration helpers, such as `MigrationManager`, inside the worker rather than capturing them from the main actor.
 - Live push delivery, media authorization/playback, camera permissions and linked-device connectivity require platform-specific verification. Shared source/build coverage is not a parity claim for those external capabilities.
 
 

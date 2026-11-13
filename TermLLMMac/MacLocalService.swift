@@ -1,6 +1,6 @@
 import AppKit
 import Combine
-@preconcurrency import TermLLMMacKit
+import TermLLMMacKit
 
 /// The optional local term-llm service, managed from the native Mac app.
 ///
@@ -140,9 +140,10 @@ final class MacLocalServiceController: NSObject, NSWindowDelegate, NSMenuDelegat
         }
         if managed && !developerMode {
             model.startUpdateSchedule()
-            let manager = MigrationManager(provisioner: provisioner)
             Task { [weak self] in
-                let journal = try? await Task.detached(priority: .utility) { try manager.loadJournal() }.value
+                let journal = try? await Task.detached(priority: .utility) {
+                    try MigrationManager(provisioner: provisioner).loadJournal()
+                }.value
                 guard let self, let journal, !journal.complete && !journal.rolledBack else { return }
                 self.offerMigrationRecovery(journal)
             }

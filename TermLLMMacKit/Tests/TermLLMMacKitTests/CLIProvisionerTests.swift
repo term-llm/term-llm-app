@@ -23,8 +23,30 @@ final class CLIProvisionerTests: XCTestCase {
         return url
     }
 
+    func testProvisionerValueCopiesCanBeSharedByBackgroundReaders() throws {
+        let home = home!
+        let provisioner = CLIProvisioner(home: home)
+        var configuredCopy = provisioner
+        configuredCopy.failurePoint = .afterReplace
+        let failingCopy = configuredCopy
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            XCTAssertEqual(provisioner.home, home)
+            XCTAssertEqual(provisioner.managedBinary, failingCopy.managedBinary)
+            XCTAssertNil(provisioner.failurePoint)
+            XCTAssertEqual(failingCopy.failurePoint, .afterReplace)
+            do {
+                let selection = try provisioner.loadSelection().get()
+                let copySelection = try failingCopy.loadSelection().get()
+                XCTAssertNil(selection)
+                XCTAssertNil(copySelection)
+            } catch {
+                XCTFail("Unexpected manifest read failure: \(error)")
+            }
+        }
+    }
+
     func testVerifiedReleaseInstallWritesManifestAndBinaryOutsideApp() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         let selection = try provisioner.installFixture(binary: payload, version: "1.2.3")
 
@@ -41,7 +63,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testVerifiedReleaseInstallWritesManagedOwnershipMarker() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         _ = try provisioner.installFixture(binary: payload, version: "1")
         XCTAssertTrue(provisioner.managedMarkerPresent)
@@ -54,7 +76,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testOlderMarkerWordingIsRefreshedWithoutChangingOwnership() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         _ = try provisioner.installFixture(binary: try makePayload("#!/bin/sh\necho test\n"), version: "1")
         let older = #"{"schema_version":1,"owner":"TermLLM.app","app_bundle_id":"com.termllm.app","update_hint":"Update it from TermLLM.app."}"#
         try Data(older.utf8).write(to: provisioner.managedMarkerURL)
@@ -77,7 +99,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testRemoveManagedInstallRemovesMarker() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         _ = try provisioner.installFixture(binary: payload, version: "1")
         XCTAssertTrue(provisioner.managedMarkerPresent)
@@ -86,7 +108,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testChecksumMismatchKeepsPreviousInstallation() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let first = try makePayload("#!/bin/sh\necho one\n")
         let selection = try provisioner.installFixture(binary: first, version: "1")
         let second = try makePayload("#!/bin/sh\necho two\n")
@@ -103,7 +125,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testEmptyPayloadRejected() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("")
         XCTAssertThrowsError(try provisioner.installFixture(binary: payload, version: "x")) { error in
             guard case CLIProvisionerError.candidateInvalid = error else {
@@ -114,7 +136,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testReinstallCopiesBackupAndReplacesBinary() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let first = try makePayload("#!/bin/sh\necho one\n")
         let second = try makePayload("#!/bin/sh\necho two\n")
         let firstSelection = try provisioner.installFixture(binary: first, version: "1")
@@ -174,7 +196,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testBackupPruningKeepsNewestThree() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         for index in 1...5 {
             let payload = try makePayload("#!/bin/sh\necho version-#{index}\n")
             _ = try provisioner.installFixture(binary: payload, version: "\(index)")
@@ -213,7 +235,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testPATHLinkIsCreatedAndRefreshIsIdempotent() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         let selection = try provisioner.installFixture(binary: payload, version: "1")
         if case .notLinked = provisioner.inspectPATHLink(for: selection) {
@@ -236,7 +258,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testForeignPATHFileIsNeverReplaced() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         let selection = try provisioner.installFixture(binary: payload, version: "1")
         try FileManager.default.createDirectory(at: provisioner.pathLink.deletingLastPathComponent(),
@@ -328,7 +350,7 @@ final class CLIProvisionerTests: XCTestCase {
     }
 
     func testRemoveManagedInstallClearsOwnedFiles() throws {
-        var provisioner = CLIProvisioner(home: home)
+        let provisioner = CLIProvisioner(home: home)
         let payload = try makePayload("#!/bin/sh\necho test\n")
         _ = try provisioner.installFixture(binary: payload, version: "1")
         XCTAssertTrue(try provisioner.removeManagedInstall())

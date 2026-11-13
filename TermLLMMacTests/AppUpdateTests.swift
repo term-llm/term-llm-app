@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import XCTest
-@preconcurrency import TermLLMMacKit
+import TermLLMMacKit
 
 @testable import TermLLM
 

@@ -109,18 +109,19 @@ public enum CLIProblem: Equatable, Sendable {
 ///       bin/term-llm          managed executable (signed releases)
 ///       backups/<stamp>/...   previous managed executable during an update
 ///       logs/                 optional provisioning logs
-public struct CLIProvisioner {
+public struct CLIProvisioner: Sendable {
     public static let executableName = "term-llm"
 
     public let home: URL
-    public let fileManager: FileManager
+    /// Foundation documents the shared manager as thread-safe. Resolve it at the
+    /// operation boundary rather than storing an arbitrary manager whose delegate
+    /// or subclass may have unsynchronized state.
+    public var fileManager: FileManager { .default }
     public let runner: CommandRunning
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                fileManager: FileManager = .default,
                 runner: CommandRunning = ProcessCommandRunner()) {
         self.home = home
-        self.fileManager = fileManager
         self.runner = runner
     }
 
@@ -208,7 +209,7 @@ public struct CLIProvisioner {
     }
 
     /// Test-only transaction seam. Production never sets this.
-    enum InstallFailurePoint {
+    enum InstallFailurePoint: Sendable {
         case beforeReplace
         case afterReplace
         case afterMarker
