@@ -7,7 +7,7 @@ final class InstructionsTests: XCTestCase {
     var folder: URL!, notes: Instructions!
     let slack = "com.tinyspeck.slackmacgap"
     override func setUpWithError() throws {
-        folder = try temporaryFolder(); notes = Instructions(stateDirectory: { self.folder })
+        folder = try temporaryFolder(); notes = Instructions(stateDirectory: { [folder = folder!] in folder })
         try FileManager.default.createDirectory(at: notes.personalDirectory(), withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: folder) }

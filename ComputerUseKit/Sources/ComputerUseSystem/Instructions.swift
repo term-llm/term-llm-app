@@ -2,15 +2,15 @@ import Foundation
 import ComputerUseCore
 
 /// Notes printed before the first state of an app, once per agent session.
-public struct Instructions {
+public struct Instructions: Sendable {
     public static let tag = "app_notes"
     public static let browserNote = "browser"
     // The Numbers file ships and is never printed.
     public static let never: Set<String> = ["com.apple.iwork.numbers"]
     // Each prefix also covers beta, nightly and test builds.
     public static let browsers = ["ai.perplexity.comet", "app.floorp.floorp", "app.zen-browser.zen", "com.apple.safari", "com.brave.browser", "com.google.chrome", "com.microsoft.edgemac", "com.operasoftware.opera", "com.vivaldi.vivaldi", "company.thebrowser.browser", "company.thebrowser.dia", "io.gitlab.librewolf-community.librewolf", "net.imput.helium", "net.librewolf.librewolf", "net.waterfox.", "org.chromium.chromium", "org.mozilla.firefox", "org.mozilla.nightly"]
-    public var stateDirectory: () -> URL
-    public init(stateDirectory: @escaping () -> URL = { Paths.stateDirectory() }) {
+    public var stateDirectory: @Sendable () -> URL
+    public init(stateDirectory: @escaping @Sendable () -> URL = { Paths.stateDirectory() }) {
         self.stateDirectory = stateDirectory
     }
     public func personalDirectory() -> URL { stateDirectory().appendingPathComponent("instructions") }
@@ -32,7 +32,14 @@ public struct Instructions {
     public func prefix(agent: AgentSession, bundleID: String) -> String? {
         let key = bundleID.lowercased()
         guard !Self.never.contains(key), !agent.instructed.contains(key), let text = note(key) else { return nil }
-        agent.instructed.insert(key)
+        // Filesystem work and the injected directory callback stay outside the
+        // agent lock. Another app worker may claim this note while it is read.
+        let claimed = agent.withState {
+            guard !agent.instructed.contains(key) else { return false }
+            agent.instructed.insert(key)
+            return true
+        }
+        guard claimed else { return nil }
         return "<\(Self.tag)>\n\(text)\n</\(Self.tag)>\n"
     }
     public static let builtIn: [String: String] = [

@@ -1,26 +1,50 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 @testable import ComputerUseSystem
 
 private typealias Pasteboard = ComputerUseSystem.Pasteboard
 
-final class PasteboardTests: XCTestCase {
-    private var board: NSPasteboard!
-    private var folder: URL!
-    private var pasteboard: Pasteboard!
-    override func setUpWithError() throws {
+// Live-service suite: compile only in the ownership milestone. XCTest enters
+// these synchronous lifecycle methods on main; no worker captures the test case.
+// Only the actor-owned fixture crosses XCTest's nonisolated lifecycle bridge;
+// XCTestCase itself is not Sendable.
+@MainActor
+private final class LivePasteboardFixture {
+    var board: NSPasteboard!
+    var folder: URL!
+    var pasteboard: Pasteboard!
+    nonisolated init() {}
+    func setUp() throws {
         folder = try temporaryFolder()
         board = NSPasteboard.withUniqueName() // Never the person's real clipboard.
         let item = NSPasteboardItem()
         item.setString("the person's text", forType: .init(Pasteboard.plain))
         item.setString("<b>the person's text</b>", forType: .init(Pasteboard.html))
         board.clearContents(); XCTAssertTrue(board.writeObjects([item]))
-        pasteboard = Pasteboard(board: { Pasteboard.Backend(board: self.board) }, stateDirectory: { self.folder })
+        let backend = Pasteboard.Backend(board: board), state = folder!
+        pasteboard = Pasteboard(board: { backend }, stateDirectory: { state })
     }
-    override func tearDownWithError() throws {
+    func tearDown() throws {
         board.releaseGlobally(); try FileManager.default.removeItem(at: folder)
         board = nil; pasteboard = nil
+    }
+}
+
+@MainActor
+final class PasteboardTests: XCTestCase {
+    private nonisolated let fixture = LivePasteboardFixture()
+    private var board: NSPasteboard! { fixture.board }
+    private var folder: URL! { fixture.folder }
+    private var pasteboard: Pasteboard! { fixture.pasteboard }
+    nonisolated override func setUpWithError() throws {
+        let fixture = fixture
+        try MainActor.assumeIsolated { try fixture.setUp() }
+    }
+    nonisolated override func tearDownWithError() throws {
+        let fixture = fixture
+        try MainActor.assumeIsolated { try fixture.tearDown() }
     }
     private var path: URL { folder.appendingPathComponent(Pasteboard.restoreFile) }
     private func read(_ kind: String = Pasteboard.plain) -> Data? { board.data(forType: .init(kind)) }
@@ -73,7 +97,8 @@ final class PasteboardTests: XCTestCase {
     }
     func testWriteFailure() {
         let backend = Pasteboard.Backend(snapshot: { [] }, write: { _ in nil }, restore: { _, _ in XCTFail("Never wrote"); return false })
-        let paste = Pasteboard(board: { backend }, stateDirectory: { self.folder })
+        let state = folder!
+        let paste = Pasteboard(board: { backend }, stateDirectory: { state })
         assertHarnessError("The text could not be put on the clipboard") { try paste.paste("x", format: "text", sendPasteKey: { XCTFail("Never wrote") }) }
     }
     func testPromisedProviderIsNotReadOnWrite() {
@@ -90,9 +115,14 @@ final class PasteboardTests: XCTestCase {
         XCTAssertEqual(asked, ["x", "x", "x"]); XCTAssertEqual(Pasteboard.landTimeout, 2); XCTAssertEqual(Pasteboard.landPoll, 0.025)
     }
     func testLandingTimeoutIsNonfatalAndUsesExactPoll() throws {
-        var calls: [(Double, Double)] = []
-        let paste = Pasteboard(board: { .init(board: self.board) }, stateDirectory: { self.folder }, wait: { done, timeout, poll in calls.append((timeout, poll)); return calls.count == 1 ? done() : false })
+        let recorded = OSAllocatedUnfairLock(initialState: [(Double, Double)]())
+        let backend = Pasteboard.Backend(board: board), state = folder!
+        let paste = Pasteboard(board: { backend }, stateDirectory: { state }, wait: { done, timeout, poll in
+            let first = recorded.withLock { $0.append((timeout, poll)); return $0.count == 1 }
+            return first ? done() : false
+        })
         try paste.paste("x", format: "text", sendPasteKey: { _ = read() }, landed: { false })
+        let calls = recorded.withLock { $0 }
         XCTAssertEqual(calls.map { $0.0 }, [2, 2]); XCTAssertEqual(calls.map { $0.1 }, [0.01, 0.025])
     }
     func testRecoveryFileExistsOnlyDuringPasteAndIs0600() throws {
@@ -154,10 +184,10 @@ final class PasteboardTests: XCTestCase {
     }
 }
 
-private final class PasteConcurrencyCounter {
-    private let lock = NSLock()
-    private var active = 0, peak = 0
-    var maximum: Int { lock.lock(); defer { lock.unlock() }; return peak }
-    func begin() { lock.lock(); active += 1; peak = max(peak, active); lock.unlock() }
-    func end() { lock.lock(); active -= 1; lock.unlock() }
+private final class PasteConcurrencyCounter: Sendable {
+    private struct State: Sendable { var active = 0, peak = 0 }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    var maximum: Int { state.withLock { $0.peak } }
+    func begin() { state.withLock { $0.active += 1; $0.peak = max($0.peak, $0.active) } }
+    func end() { state.withLock { $0.active -= 1 } }
 }

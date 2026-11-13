@@ -52,10 +52,22 @@ final class ContextObservation: AXObservation {
     var stopped: Bool { closed.withLock { $0 } }
     let names: [String]
     private let delivery: AXObservationDelivery
-    init(_ names: [String], _ callback: @escaping @Sendable (String, UIElementRef) -> Void) {
-        self.names = names; self.delivery = AXObservationDelivery(callback)
+    private let callback: @Sendable (String, UIElementRef) -> Void
+    private let stopHook = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    var onStop: (@Sendable () -> Void)? {
+        get { stopHook.withLock { $0 } }
+        set { stopHook.withLock { $0 = newValue } }
     }
-    func stop() { delivery.stop(); closed.withLock { $0 = true } }
+    init(_ names: [String], _ callback: @escaping @Sendable (String, UIElementRef) -> Void) {
+        self.names = names; self.callback = callback; self.delivery = AXObservationDelivery(callback)
+    }
+    func stop() {
+        let first = closed.withLock { closed in if closed { return false }; closed = true; return true }
+        guard first else { return }
+        delivery.stop(); onStop?()
+    }
+    // Models a delivery already claimed before stop closed the real gate.
+    func fireClaimed(_ name: String, _ element: UIElementRef) { callback(name, element) }
     func fire(_ name: String, _ element: UIElementRef) { if names.contains(name) { delivery.deliver(name, element) } }
 }
 final class ContextAX: AXBackend {
@@ -80,6 +92,8 @@ final class ContextAX: AXBackend {
         var unsettable: Set<String> = []
         var onPerform: (@Sendable (UIElementRef, String) throws -> Void)? = nil
         var onParam: (@Sendable (UIElementRef, String, Any) -> Any?)? = nil
+        var onGet: (@Sendable (UIElementRef, String) throws -> Any?)? = nil
+        var onObserve: (@Sendable (ContextObservation) throws -> Void)? = nil
     }
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
     var apps: [pid_t: ContextElement] {
@@ -143,6 +157,15 @@ final class ContextAX: AXBackend {
         set { state.withLockUnchecked { $0.onParam = newValue } }
     }
 
+    var onGet: (@Sendable (UIElementRef, String) throws -> Any?)? {
+        get { state.withLockUnchecked { $0.onGet } }
+        set { state.withLockUnchecked { $0.onGet = newValue } }
+    }
+    var onObserve: (@Sendable (ContextObservation) throws -> Void)? {
+        get { state.withLockUnchecked { $0.onObserve } }
+        set { state.withLockUnchecked { $0.onObserve = newValue } }
+    }
+
     func el(_ e: UIElementRef) -> ContextElement { e.object as! ContextElement }
     func app(pid: pid_t) -> UIElementRef {
         state.withLockUnchecked {
@@ -153,7 +176,7 @@ final class ContextAX: AXBackend {
         }
     }
     func get(_ element: UIElementRef, _ name: String) throws -> Any? {
-        state.withLockUnchecked { $0.gets.append((element, name)) }; if failGet.contains(name) { throw Errors.make("no_windows") }; return el(element).attrs[name]
+        state.withLockUnchecked { $0.gets.append((element, name)) }; if failGet.contains(name) { throw Errors.make("no_windows") }; if let onGet { return try onGet(element, name) }; return el(element).attrs[name]
     }
     func names(_ element: UIElementRef) -> [String] { Array(el(element).attrs.keys) }
     func getMany(_ element: UIElementRef, _ names: [String]) throws -> [Any?] { try names.map { try get(element, $0) } }
@@ -171,19 +194,43 @@ final class ContextAX: AXBackend {
     func at(_ app: UIElementRef?, x: Double, y: Double) -> UIElementRef? { hit }
     func alive(_ element: UIElementRef) -> Bool { el(element).alive }
     func observe(pid: pid_t, element: UIElementRef, names: [String], callback: @escaping @Sendable (String, UIElementRef) -> Void) throws -> AXObservation {
-        if failObserve { throw Errors.make("no_windows") }; let o = ContextObservation(names, callback); state.withLockUnchecked { $0.observations.append(o) }; return o
+        if failObserve { throw Errors.make("no_windows") }; let o = ContextObservation(names, callback); state.withLockUnchecked { $0.observations.append(o) }; try onObserve?(o); return o
     }
 }
-final class ContextClock {
-    private let timeState = OSAllocatedUnfairLock(initialState: 1000.0)
-    var time: Double {
-        get { timeState.withLock { $0 } }
-        set { timeState.withLock { $0 = newValue } }
+// Typed fake state shared by ownership tests. No callbacks run under its lock.
+final class ContextBox<Value: Sendable>: Sendable {
+    private let state: OSAllocatedUnfairLock<Value>
+    init(_ value: Value) { state = OSAllocatedUnfairLock(initialState: value) }
+    var value: Value {
+        get { state.withLock { $0 } }
+        set { state.withLock { $0 = newValue } }
     }
-    var now: @Sendable () -> TimeInterval { { [timeState] in timeState.withLock { $0 } } }
-    var sleeps: [Double] = []
-    var onSleep: (() -> Void)?
-    func sleep(_ seconds: Double) { time += seconds; sleeps.append(seconds); onSleep?() }
+    @discardableResult func withValue<T: Sendable>(_ work: @Sendable (inout Value) -> T) -> T { state.withLock(work) }
+}
+final class ContextClock: Sendable {
+    private struct State: Sendable {
+        var time = 1000.0
+        var sleeps: [Double] = []
+        var onSleep: (@Sendable () -> Void)?
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    var time: Double {
+        get { state.withLock { $0.time } }
+        set { state.withLock { $0.time = newValue } }
+    }
+    var now: @Sendable () -> TimeInterval { { [self] in time } }
+    var sleeps: [Double] {
+        get { state.withLock { $0.sleeps } }
+        set { state.withLock { $0.sleeps = newValue } }
+    }
+    var onSleep: (@Sendable () -> Void)? {
+        get { state.withLock { $0.onSleep } }
+        set { state.withLock { $0.onSleep = newValue } }
+    }
+    func sleep(_ seconds: Double) {
+        let callback = state.withLock { $0.time += seconds; $0.sleeps.append(seconds); return $0.onSleep }
+        callback?()
+    }
 }
 class ContextTestCase: XCTestCase {
     override func invokeTest() { AX.withBackend(AX.backend) { super.invokeTest() } }
@@ -192,7 +239,56 @@ class ContextTestCase: XCTestCase {
     override func setUp() { super.setUp(); previous = AX.backend; ax = ContextAX(); AX.backend = ax; clock = ContextClock() }
     override func tearDown() { AX.backend = previous; ax = nil; clock = nil; super.tearDown() }
     func windowSystem() -> Windows.System {
-        var s = Windows.System(); s.rows = { _, _ in [] }; s.associated = { _ in [] }; s.noAttention = { _ in }
-        s.now = { self.clock.time }; s.sleep = { self.clock.sleep($0) }; return s
+        var s = isolatedWindowsSystem(); s.rows = { _, _ in [] }; s.associated = { _ in [] }; s.noAttention = { _ in }
+        let clock = clock!
+        s.now = { clock.time }; s.sleep = { clock.sleep($0) }; return s
     }
+}
+
+// Fail-fast seams for pure ownership regressions. No unoverridden dependency can
+// reach apps, WindowServer, AX SDK, input posting, Person, power or pasteboard.
+func isolatedAppsSystem() -> Apps.System {
+    var s = Apps.System()
+    s.running = { XCTFail("Unexpected process listing"); return [] }
+    s.executable = { _ in XCTFail("Unexpected executable lookup"); return "" }
+    s.regular = { _ in XCTFail("Unexpected app policy lookup"); return false }
+    s.bundlePaths = { _ in XCTFail("Unexpected bundle lookup"); return [] }
+    s.named = { _ in XCTFail("Unexpected LaunchServices lookup"); return nil }
+    s.open = { _ in XCTFail("Unexpected app launch"); return nil }
+    s.frontPIDs = { XCTFail("Unexpected WindowServer query"); return [] }
+    s.used = { XCTFail("Unexpected metadata query"); return [] }
+    s.info = { _ in XCTFail("Unexpected plist read"); return nil }
+    s.entries = { _ in XCTFail("Unexpected directory read"); return [] }
+    s.realPath = { _ in XCTFail("Unexpected filesystem lookup"); return "" }
+    s.expandUser = { _ in XCTFail("Unexpected home lookup"); return "" }
+    s.ownPID = { XCTFail("Unexpected own-PID lookup"); return 0 }
+    s.panelServices = { XCTFail("Unexpected service lookup"); return [:] }
+    s.processBundleID = { _ in XCTFail("Unexpected process lookup"); return "" }
+    s.now = { XCTFail("Unexpected clock sample"); return 0 }
+    s.wallTime = { XCTFail("Unexpected wall clock sample"); return 0 }
+    s.sleep = { _ in XCTFail("Unexpected wait") }
+    s.keyWindow = { _ in XCTFail("Unexpected window lookup"); throw Errors.make("no_windows") }
+    return s
+}
+func isolatedFocusSystem() -> Focus.System {
+    var s = Focus.System()
+    s.frontPID = { XCTFail("Unexpected front-PID lookup"); return 0 }
+    s.noAttention = { _ in XCTFail("Unexpected private attention call") }
+    s.post = { _, _ in XCTFail("Unexpected input post") }
+    s.freeze = { XCTFail("Unexpected screen freeze") }
+    s.thaw = { XCTFail("Unexpected screen thaw") }
+    s.now = { XCTFail("Unexpected clock sample"); return 0 }
+    s.sleep = { _ in XCTFail("Unexpected focus wait") }
+    s.background = { _ in XCTFail("Unexpected background scheduling") }
+    s.personWent = { _, _ in XCTFail("Unexpected Person lookup"); return false }
+    return s
+}
+func isolatedWindowsSystem() -> Windows.System {
+    var s = Windows.System()
+    s.rows = { _, _ in XCTFail("Unexpected WindowServer rows"); return [] }
+    s.associated = { _ in XCTFail("Unexpected private associated-windows query"); return [] }
+    s.noAttention = { _ in XCTFail("Unexpected private attention call") }
+    s.now = { XCTFail("Unexpected clock sample"); return 0 }
+    s.sleep = { _ in XCTFail("Unexpected menu wait") }
+    return s
 }

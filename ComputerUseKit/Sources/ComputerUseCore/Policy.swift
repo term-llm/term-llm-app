@@ -170,7 +170,7 @@ public enum PolicyTOML {
     }
 }
 
-public final class Policy {
+public final class Policy: Sendable {
     public static let terminals: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "org.alacritty", "dev.warp.Warp-Stable",
         "net.kovidgoyal.kitty", "co.zeit.hyper", "com.github.wez.wezterm", "org.tabby",
@@ -195,7 +195,7 @@ public final class Policy {
         "An app that \(product) drives can show it text written by someone else, and that text may try to steer it: data could be stolen or lost. Watch \(product) while it works in this app."
     public static let managedFile = URL(
         fileURLWithPath: "/Library/Application Support/term-llm/computer-use/policy.toml")
-    public struct Layer {
+    public struct Layer: Sendable {
         public var enabled = true, askBeforeFirstUse = true, strict = true
         public var allowPersistentApproval = true, allowForbiddenTargets = false
         public var defaultAppAccess = "allow", bundleIDs: [String: String] = [:],
@@ -218,7 +218,7 @@ public final class Policy {
             bundleIDs = document.bundleIDs
         }
     }
-    public struct Configuration {
+    public struct Configuration: Sendable {
         public var layers: [Layer]
         public var enabled: Bool { layers.allSatisfy(\.enabled) }
         public var askBeforeFirstUse: Bool { layers.contains(where: \.askBeforeFirstUse) }
@@ -229,11 +229,11 @@ public final class Policy {
         public init(layers: [Layer]) { self.layers = layers }
     }
     private let files: [URL]
-    private let appKind: (AppTarget) -> AppKind
+    private let appKind: @Sendable (AppTarget) -> AppKind
     public init(
         managedFile: URL = Policy.managedFile,
         userFile: URL = Paths.stateDirectory().appendingPathComponent("policy.toml"),
-        appKind: @escaping (AppTarget) -> AppKind = { _ in AppKind() }
+        appKind: @escaping @Sendable (AppTarget) -> AppKind = { _ in AppKind() }
     ) {
         files = [managedFile, userFile]
         self.appKind = appKind

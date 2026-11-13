@@ -21,21 +21,21 @@ let package = Package(
     targets: [
         .target(name: "ComputerUseCore", swiftSettings: [.swiftLanguageMode(.v6)]),
         .target(name: "ComputerUseSystem", dependencies: ["ComputerUseCore"],
-                swiftSettings: [.swiftLanguageMode(.v5)]),
+                swiftSettings: [.swiftLanguageMode(.v6)]),
         .target(name: "ComputerUseHelper", dependencies: ["ComputerUseCore", "ComputerUseSystem"],
-                swiftSettings: [.swiftLanguageMode(.v5)]),
+                swiftSettings: [.swiftLanguageMode(.v6)]),
         .target(name: "ComputerUseClient", dependencies: ["ComputerUseCore"],
                 swiftSettings: [.swiftLanguageMode(.v6)]),
         .testTarget(name: "ComputerUseCoreTests", dependencies: ["ComputerUseCore"],
                     resources: [.copy("Fixtures")], swiftSettings: [.swiftLanguageMode(.v6)]),
         .testTarget(name: "ComputerUseSystemTests", dependencies: ["ComputerUseSystem"],
-                    resources: [.copy("Fixtures")], swiftSettings: [.swiftLanguageMode(.v5)]),
+                    resources: [.copy("Fixtures")], swiftSettings: [.swiftLanguageMode(.v6)]),
         .testTarget(name: "ComputerUseHelperTests", dependencies: ["ComputerUseHelper"],
-                    swiftSettings: [.swiftLanguageMode(.v5)]),
+                    swiftSettings: [.swiftLanguageMode(.v6)]),
         .testTarget(name: "ComputerUseClientTests", dependencies: ["ComputerUseClient"],
                     swiftSettings: [.swiftLanguageMode(.v6)]),
     ],
-    // New targets default to Swift 6. Only the explicitly listed legacy targets
-    // retain Swift 5 while their ownership boundaries are migrated. See SWIFT6.md.
+    // All library and test targets are checked in Swift 6. Keep the explicit
+    // settings as well as the default so regressions remain visible. See SWIFT6.md.
     swiftLanguageModes: [.v6]
 )

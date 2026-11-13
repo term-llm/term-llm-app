@@ -27,9 +27,9 @@ final class HelperTests: XCTestCase {
     }
     @discardableResult private func start(
         _ executor: ToolExecutor = StubToolExecutor(),
-        sessions: Sessions = Sessions(), grants: @escaping () -> [String: Bool] = { [:] },
-        allow: @escaping (String) throws -> Void = { _ in },
-        onWorking: @escaping (Bool) -> Void = { _ in }
+        sessions: Sessions = Sessions(), grants: @escaping @Sendable () -> [String: Bool] = { [:] },
+        allow: @escaping @Sendable (String) throws -> Void = { _ in },
+        onWorking: @escaping @Sendable (Bool) -> Void = { _ in }
     ) throws -> HelperServer {
         var configuration = HelperConfiguration(environment: env, grants: grants, allow: allow)
         configuration.onWorking = onWorking
@@ -64,12 +64,12 @@ final class HelperTests: XCTestCase {
 
     func testWorkingCallbackAggregatesConcurrentCallsAndStopUsesSharedPath() throws {
         let began = DispatchSemaphore(value: 0), first = DispatchSemaphore(value: 0), second = DispatchSemaphore(value: 0)
-        let lock = NSLock(); var updates: [Bool] = []
+        let updates = HelperFixtureBox<[Bool]>([])
         let server = try start(ClosureExecutor { call in
             began.signal()
             _ = (call.agent.key == "one" ? first : second).wait(timeout: .now() + 3)
             return ToolOutcome()
-        }, onWorking: { value in lock.lock(); updates.append(value); lock.unlock() })
+        }, onWorking: { value in updates.update { $0.append(value) } })
         let one = try connect(), two = try connect()
         defer { close(one); close(two); first.signal(); second.signal() }
         try Wire.write(request(["click", "Demo", "0"], session: "one"), to: one)
@@ -77,10 +77,10 @@ final class HelperTests: XCTestCase {
         XCTAssertEqual(began.wait(timeout: .now() + 2), .success); XCTAssertEqual(began.wait(timeout: .now() + 2), .success)
         first.signal(); _ = try Wire.read(from: one, deadline: Date().addingTimeInterval(2))
         XCTAssertEqual(server.status["running"] as? Int, 1)
-        lock.lock(); let afterOne = updates; lock.unlock(); XCTAssertEqual(afterOne, [true, true, true])
+        let afterOne = updates.value; XCTAssertEqual(afterOne, [true, true, true])
         server.stopCurrentTurn() // exactly the banner callback's shared control path
         second.signal(); _ = try Wire.read(from: two, deadline: Date().addingTimeInterval(2))
-        lock.lock(); let afterBoth = updates; lock.unlock(); XCTAssertEqual(afterBoth, [true, true, true, false])
+        let afterBoth = updates.value; XCTAssertEqual(afterBoth, [true, true, true, false])
         XCTAssertEqual(server.status["working"] as? Bool, true) // three-second grace
     }
 
@@ -315,14 +315,18 @@ final class HelperTests: XCTestCase {
 }
 
 private struct ClosureExecutor: ToolExecutor {
-    var work: (ToolCallRequest) throws -> ToolOutcome
-    init(_ work: @escaping (ToolCallRequest) throws -> ToolOutcome) { self.work = work }
+    let work: @Sendable (ToolCallRequest) throws -> ToolOutcome
+    init(_ work: @escaping @Sendable (ToolCallRequest) throws -> ToolOutcome) { self.work = work }
     func execute(_ call: ToolCallRequest) throws -> ToolOutcome { try work(call) }
 }
-private final class ProcessTable {
-    var records: [pid_t: ProcessIdentity]
-    init(_ records: [pid_t: ProcessIdentity]) { self.records = records }
-    func get(_ pid: pid_t) -> ProcessIdentity? { records[pid] }
+private final class ProcessTable: Sendable {
+    private let stored: OSAllocatedUnfairLock<[pid_t: ProcessIdentity]>
+    var records: [pid_t: ProcessIdentity] {
+        get { stored.withLock { $0 } }
+        set { stored.withLock { $0 = newValue } }
+    }
+    init(_ records: [pid_t: ProcessIdentity]) { stored = OSAllocatedUnfairLock(initialState: records) }
+    var get: Sessions.ProcessProvider { { [self] pid in stored.withLock { $0[pid] } } }
 }
 private final class LockedBool: Sendable {
     private let stored: OSAllocatedUnfairLock<Bool>

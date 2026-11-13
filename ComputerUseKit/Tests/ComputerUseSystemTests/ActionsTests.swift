@@ -5,14 +5,73 @@ import os
 
 @testable import ComputerUseSystem
 
+// Events are inspected synchronously at the injected sink. Only value snapshots
+// cross the fixture lock; no CGEvent or heterogeneous AX value is retained/shared.
+private struct ActionsEvent: Sendable {
+    let type: UInt32
+    let flags: UInt64
+    let location: CGPoint
+    let clickState: Int64
+    let wheelDelta: Int64
+    init(_ event: CGEvent) {
+        type = event.type.rawValue
+        flags = event.flags.rawValue
+        location = event.location
+        clickState = event.getIntegerValueField(.mouseEventClickState)
+        wheelDelta = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+    }
+}
+private final class ActionsFixture: Sendable {
+    struct State: Sendable {
+        var posted: [(pid_t, ActionsEvent, Double)] = []
+        var overlay: [OverlayCommand] = []
+        var activation: [ActionsEvent] = []
+        var front: pid_t = 88
+        var held: UInt64 = 0
+        var kind = AppKind()
+        var blocked = false
+    }
+    let state = OSAllocatedUnfairLock(initialState: State())
+    func record(_ pid: pid_t, _ event: CGEvent, _ delay: Double) {
+        let snapshot = ActionsEvent(event)
+        state.withLock { $0.posted.append((pid, snapshot, delay)) }
+    }
+}
+
 /// Logic tests of actions.py. Every AX read, window, clock, event sink and
 /// activation is fake: constructing a CGEvent does not post it.
 final class ActionsTests: ContextTestCase {
     var actions: Actions!, app: AppSession!, window: ContextElement!, root: ContextElement!,
         field: ContextElement!
-    var posted: [(pid_t, CGEvent, Double)] = [], overlay: [OverlayCommand] = [],
-        activation: [CGEvent] = []
-    var front: pid_t = 88, held: UInt64 = 0, kind = AppKind(), blocked = false
+    private let fixture = ActionsFixture()
+    private var posted: [(pid_t, ActionsEvent, Double)] {
+        get { fixture.state.withLock { $0.posted } }
+        set { fixture.state.withLock { $0.posted = newValue } }
+    }
+    private var overlay: [OverlayCommand] {
+        get { fixture.state.withLock { $0.overlay } }
+        set { fixture.state.withLock { $0.overlay = newValue } }
+    }
+    private var activation: [ActionsEvent] {
+        get { fixture.state.withLock { $0.activation } }
+        set { fixture.state.withLock { $0.activation = newValue } }
+    }
+    private var front: pid_t {
+        get { fixture.state.withLock { $0.front } }
+        set { fixture.state.withLock { $0.front = newValue } }
+    }
+    private var held: UInt64 {
+        get { fixture.state.withLock { $0.held } }
+        set { fixture.state.withLock { $0.held = newValue } }
+    }
+    private var kind: AppKind {
+        get { fixture.state.withLock { $0.kind } }
+        set { fixture.state.withLock { $0.kind = newValue } }
+    }
+    private var blocked: Bool {
+        get { fixture.state.withLock { $0.blocked } }
+        set { fixture.state.withLock { $0.blocked = newValue } }
+    }
     override func setUp() {
         super.setUp()
         posted = []
@@ -31,39 +90,45 @@ final class ActionsTests: ContextTestCase {
             "AXButton", id: 0, rect: CGRect(x: 20, y: 20, width: 60, height: 30),
             attrs: ["AXWindow": window.ref, "AXParent": window.ref])
         ax.hit = field.ref
+        let fixture = fixture, clock = clock!, root = root!, window = window!
         var apps = Apps.System()
         apps.info = { _ in [:] }
         apps.panelServices = { [:] }
         apps.processBundleID = { _ in "dev.other" }
         var focus = Focus.System()
-        focus.frontPID = { self.front }
+        focus.frontPID = { fixture.state.withLock { $0.front } }
         focus.noAttention = { _ in }
         focus.personWent = { _, _ in false }
         focus.freeze = {}
         focus.thaw = {}
-        focus.now = { self.clock.time }
-        focus.sleep = { self.clock.sleep($0) }
+        focus.now = { clock.time }
+        focus.sleep = { clock.sleep($0) }
         focus.background = { _ in }
         focus.post = { _, event in
-            self.activation.append(event)
-            self.root.attrs["AXFrontmost"] = true
+            let snapshot = ActionsEvent(event)
+            fixture.state.withLock { $0.activation.append(snapshot) }
+            root.set("AXFrontmost", true)
         }
         var system = Actions.System()
         system.apps = Apps(system: apps)
-        system.windows = Windows(system: windowSystem())
-        system.windows.system.rows = { _, _ in
-            [.init(id: self.window.id, pid: 77, frame: self.window.rect!)]
+        var windows = windowSystem()
+        windows.rows = { _, _ in
+            [.init(id: window.id, pid: 77, frame: window.rect!)]
         }
+        system.windows = Windows(system: windows)
         system.focus = Focus(system: focus)
         system.presence = Presence(
-            enabled: { true }, now: { self.clock.time }, send: { self.overlay.append($0) },
+            enabled: { true }, now: { clock.time },
+            send: { command in fixture.state.withLock { $0.overlay.append(command) } },
             schedule: { $0() }, ask: { _ in }, withdraw: { _ in })
-        system.post = { self.posted.append(($0, $1, $2)) }
-        system.heldFlags = { self.held }
-        system.now = { self.clock.time }
-        system.sleep = { self.clock.sleep($0) }
+        system.post = { fixture.record($0, $1, $2) }
+        system.heldFlags = { fixture.state.withLock { $0.held } }
+        system.now = { clock.time }
+        system.sleep = { clock.sleep($0) }
         system.background = { $0() }
-        system.checkRecipient = { _ in if self.blocked { throw Errors.make("forbidden") } }
+        system.checkRecipient = { _ in
+            if fixture.state.withLock({ $0.blocked }) { throw Errors.make("forbidden") }
+        }
         system.focusElement = { _ in true }
         system.presses = { $0.unicodeScalars.map { Keys.KeyPress(0, 0, String($0)) } }
         actions = Actions(system: system)
@@ -76,7 +141,12 @@ final class ActionsTests: ContextTestCase {
             depth: 0, text: "button", element: field.ref, role: role, name: "OK", actions: actions,
             id: 1)
     }
-    var types: [UInt32] { posted.map { $0.1.type.rawValue } }
+    private func configureActions(_ configure: (inout Actions.System) -> Void) {
+        var system = actions.system
+        configure(&system)
+        actions = Actions(system: system)
+    }
+    var types: [UInt32] { posted.map { $0.1.type } }
     func testAXFirstAndRefusalFallsBackButTimeoutNeverRepeats() throws {
         ax.offered = ["AXPress"]
         try actions.click(app, .line(line()))
@@ -124,17 +194,17 @@ final class ActionsTests: ContextTestCase {
     }
     func testCommandClickInBackgroundPlainClickInFrontAndSelectionActivates() throws {
         try actions.click(app, .line(line("AXTextField")))
-        XCTAssertEqual(posted[0].1.flags.rawValue, UInt64(Keys.command))
+        XCTAssertEqual(posted[0].1.flags, UInt64(Keys.command))
         XCTAssertTrue(activation.isEmpty)
         posted = []
         front = 77
         try actions.click(app, .line(line()))
-        XCTAssertEqual(posted[0].1.flags.rawValue, 0)
+        XCTAssertEqual(posted[0].1.flags, 0)
         front = 88
         posted = []
         try actions.click(app, .line(line("AXRow")))
         XCTAssertFalse(activation.isEmpty)
-        XCTAssertEqual(posted[0].1.flags.rawValue, 0)
+        XCTAssertEqual(posted[0].1.flags, 0)
     }
     func testPointRightClickHasLeadAndAppScopedHitTest() throws {
         try actions.click(app, .point(CGPoint(x: 30, y: 30)), button: 1)
@@ -153,16 +223,19 @@ final class ActionsTests: ContextTestCase {
         XCTAssertTrue(posted.isEmpty)
     }
     func testHeldClickReleasesOnCancellationAndRestoresModifiers() throws {
-        var cancelled = false
-        app.cancel = { cancelled }
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        app.cancel = { cancelled.withLock { $0 } }
+        let fixture = fixture
         held = UInt64(Keys.control)
-        actions.system.post = { pid, event, delay in
-            self.posted.append((pid, event, delay))
-            if event.type == .leftMouseDown { cancelled = true }
+        configureActions { system in
+            system.post = { pid, event, delay in
+                fixture.record(pid, event, delay)
+                if event.type == .leftMouseDown { cancelled.withLock { $0 = true } }
+            }
         }
         XCTAssertThrowsError(try actions.click(app, .line(line()), key: "shift", hold: 20))
         XCTAssertEqual(types, [12, 1, 2, 12])
-        XCTAssertEqual(posted.last?.1.flags.rawValue, held)
+        XCTAssertEqual(posted.last?.1.flags, held)
         XCTAssertLessThan(clock.time, 1001)
     }
     func testDoubleClickCountsAndGap() throws {
@@ -170,7 +243,7 @@ final class ActionsTests: ContextTestCase {
         try actions.click(app, .line(line()), count: 2)
         XCTAssertEqual(types, [1, 2, 1, 2])
         XCTAssertEqual(
-            posted.map { $0.1.getIntegerValueField(.mouseEventClickState) }, [1, 1, 2, 2])
+            posted.map { $0.1.clickState }, [1, 1, 2, 2])
         XCTAssertEqual(
             clock.sleeps.reduce(0, +), 2 * Events.clickHold + Actions.clickGap, accuracy: 0.0001)
     }
@@ -259,7 +332,7 @@ final class ActionsTests: ContextTestCase {
         }
         try actions.scroll(app, .point(CGPoint(x: 30, y: 30)), direction: "down", pages: 0.5)
         XCTAssertEqual(types, [5, 22])
-        XCTAssertEqual(posted[1].1.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), -200)
+        XCTAssertEqual(posted[1].1.wheelDelta, -200)
         XCTAssertEqual(posted.map { $0.2 }, [Actions.scrollLead, Actions.scrollRest])
         XCTAssertTrue(activation.isEmpty)
     }
@@ -274,11 +347,14 @@ final class ActionsTests: ContextTestCase {
         try actions.drag(app, start: .init(x: 30, y: 30), end: .init(x: 20_000, y: 30))
         XCTAssertEqual(types.filter { $0 == 6 }.count, 61)
         posted = []
-        var cancelled = false
-        app.cancel = { cancelled }
-        actions.system.post = { pid, event, delay in
-            self.posted.append((pid, event, delay))
-            if event.type == .leftMouseDragged { cancelled = true }
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        app.cancel = { cancelled.withLock { $0 } }
+        let fixture = fixture
+        configureActions { system in
+            system.post = { pid, event, delay in
+                fixture.record(pid, event, delay)
+                if event.type == .leftMouseDragged { cancelled.withLock { $0 = true } }
+            }
         }
         XCTAssertThrowsError(
             try actions.drag(app, start: .init(x: 30, y: 30), end: .init(x: 200, y: 30)))
@@ -307,11 +383,14 @@ final class ActionsTests: ContextTestCase {
         try actions.typeText(app, "x")
         XCTAssertEqual(posted.map { $0.2 }, [0.005, 0.005])
         posted = []
-        var cancelled = false
-        app.cancel = { cancelled }
-        actions.system.post = { pid, event, delay in
-            self.posted.append((pid, event, delay))
-            cancelled = true
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        app.cancel = { cancelled.withLock { $0 } }
+        let fixture = fixture
+        configureActions { system in
+            system.post = { pid, event, delay in
+                fixture.record(pid, event, delay)
+                cancelled.withLock { $0 = true }
+            }
         }
         XCTAssertThrowsError(try actions.typeText(app, "abc"))
         XCTAssertEqual(types, [10, 11])
@@ -332,7 +411,9 @@ final class ActionsTests: ContextTestCase {
         window.attrs["AXIdentifier"] = "save-panel"
         root.attrs["AXFocusedWindow"] = window.ref
         root.attrs["AXFocusedUIElement"] = field.ref
-        actions.system.apps.system.panelServices = { [99: 77] }
+        var apps = actions.system.apps.system
+        apps.panelServices = { [99: 77] }
+        configureActions { $0.apps = Apps(system: apps) }
         try actions.pressKey(app, "Return")
         XCTAssertTrue(posted.allSatisfy { $0.0 == 99 })
     }
@@ -365,7 +446,7 @@ final class ActionsTests: ContextTestCase {
         XCTAssertEqual(types, [1, 2])
         posted = []
         field.attrs["AXFocused"] = false
-        actions.system.focusElement = { _ in false }
+        configureActions { $0.focusElement = { _ in false } }
         try actions.setValue(app, line("AXTextField"), "new")
         XCTAssertEqual(types, [1, 2])
         ax.unsettable.insert("AXValue")
@@ -437,28 +518,31 @@ final class ActionsTests: ContextTestCase {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(
             "paste-action-\(UUID())")
         defer { try? FileManager.default.removeItem(at: home) }
-        var restore = false
-        var waits = 0
+        let restore = OSAllocatedUnfairLock(initialState: false)
+        let waits = OSAllocatedUnfairLock(initialState: 0)
+        let field = field!
         let backend = ComputerUseSystem.Pasteboard.Backend(
             snapshot: { [["old": Data("old".utf8)]] }, write: { _ in 42 },
             restore: { _, count in
-                restore = count == 42
+                restore.withLock { $0 = count == 42 }
                 return true
             })
-        actions.system.pasteboard = ComputerUseSystem.Pasteboard(
-            board: { backend }, stateDirectory: { home },
-            wait: { predicate, _, _ in
-                waits += 1
-                if waits == 1 { return true }
-                self.field.attrs["AXValue"] = "after"
-                return predicate()
-            })
+        configureActions { system in
+            system.pasteboard = ComputerUseSystem.Pasteboard(
+                board: { backend }, stateDirectory: { home },
+                wait: { predicate, _, _ in
+                    let count = waits.withLock { $0 += 1; return $0 }
+                    if count == 1 { return true }
+                    field.set("AXValue", "after")
+                    return predicate()
+                })
+        }
         try actions.paste(app, "hello", format: "text")
         XCTAssertEqual(types, [12, 10, 11, 12])
         XCTAssertTrue(posted.allSatisfy { $0.0 == 77 })
-        XCTAssertTrue(restore)
-        XCTAssertEqual(waits, 2)
-        XCTAssertEqual(posted[1].1.flags.rawValue, UInt64(Keys.command))
+        XCTAssertTrue(restore.withLock { $0 })
+        XCTAssertEqual(waits.withLock { $0 }, 2)
+        XCTAssertEqual(posted[1].1.flags, UInt64(Keys.command))
     }
     func testOnlySinglePlainEscapeCancelsAndSecondaryCancelAlwaysCloses() throws {
         front = 77
@@ -481,9 +565,9 @@ final class ActionsTests: ContextTestCase {
             "AXButton", pid: 99, id: 9, rect: CGRect(x: 20, y: 20, width: 60, height: 30),
             attrs: ["AXWindow": window.ref])
         ax.hit = foreign.ref
-        actions.system.windows.system.rows = { _, _ in
-            [.init(id: 9, pid: 99, frame: self.window.rect!)]
-        }
+        var windows = actions.system.windows.system
+        windows.rows = { [window = window!] _, _ in [.init(id: 9, pid: 99, frame: window.rect!)] }
+        configureActions { $0.windows = Windows(system: windows) }
         try actions.click(app, .point(CGPoint(x: 30, y: 30)))
         XCTAssertTrue(posted.allSatisfy { $0.0 == 99 })
         posted = []
@@ -495,15 +579,15 @@ final class ActionsTests: ContextTestCase {
         for catalyst in [false, true] {
             var system = actions.system.apps.system
             system.info = { _ in catalyst ? [:] : ["NSPrincipalClass": Apps.chromiumClass] }
-            actions.system.apps = Apps(system: system)
+            configureActions { $0.apps = Apps(system: system) }
             root.attrs[Apps.catalyst] = catalyst
             root.attrs["AXFrontmost"] = false
-            actions.system.focus = Focus(system: actions.system.focus.system)
+            configureActions { $0.focus = Focus(system: $0.focus.system) }
             posted = []
             activation = []
             try actions.click(app, .line(line(catalyst ? "AXMenuButton" : "AXButton")))
             XCTAssertFalse(activation.isEmpty)
-            XCTAssertEqual(posted[0].1.flags.rawValue, 0)
+            XCTAssertEqual(posted[0].1.flags, 0)
         }
     }
     func testMissingElementRefusesSafelyAndLargeWheelDoesNotTrap() throws {
@@ -521,7 +605,8 @@ final class ActionsTests: ContextTestCase {
             ("a link", ["link": "x.org"]),
             (".", [:]),
         ]
-        actions.system.printedText = { _ in try RichText.markdown(runs) }
+        let printed = try RichText.markdown(runs)
+        configureActions { $0.printedText = { _ in printed } }
         for (text, prefix, expected) in [
             ("bold part", "", NSRange(location: 6, length: 9)),
             ("a link", "", NSRange(location: 20, length: 6)),

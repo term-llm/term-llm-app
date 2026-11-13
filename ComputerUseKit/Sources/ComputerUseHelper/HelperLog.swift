@@ -4,7 +4,7 @@ import Foundation
 
 /// Operational metadata only. Never pass argv, environment, app names, text,
 /// screenshots, exception descriptions, or accessibility content to this logger.
-final class HelperLog {
+final class HelperLog: Sendable {
     private let lock = NSLock()
     private let path: String
     init(environment: [String: String]) { path = Paths.logPath(env: environment) }

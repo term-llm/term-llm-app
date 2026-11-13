@@ -97,19 +97,209 @@ private final class ExecutorAX: AXBackend {
     }
 }
 
+/// All mutable callback-visible fixture state is typed and checked Sendable.
+/// Dependencies retain callbacks that retain this world; tearDown explicitly
+/// retires executor/dependencies before releasing the world.
+private final class ExecutorWorld: Sendable {
+    private let axState = HelperFixtureBox<ExecutorAX?>(nil)
+    var ax: ExecutorAX! {
+        get { axState.value }
+        set { axState.value = newValue }
+    }
+    private let oldAXState = HelperFixtureBox<AXBackend?>(nil)
+    var oldAX: AXBackend! {
+        get { oldAXState.value }
+        set { oldAXState.value = newValue }
+    }
+    private let homeState = HelperFixtureBox<URL?>(nil)
+    var home: URL! {
+        get { homeState.value }
+        set { homeState.value = newValue }
+    }
+    private let dependenciesState = HelperFixtureBox<HarnessExecutor.Dependencies?>(nil)
+    var dependencies: HarnessExecutor.Dependencies! {
+        get { dependenciesState.value }
+        set { dependenciesState.value = newValue }
+    }
+    private let executorState = HelperFixtureBox<HarnessExecutor?>(nil)
+    var executor: HarnessExecutor! {
+        get { executorState.value }
+        set { executorState.value = newValue }
+    }
+    private let sessionsState = HelperFixtureBox<Sessions?>(nil)
+    var sessions: Sessions! {
+        get { sessionsState.value }
+        set { sessionsState.value = newValue }
+    }
+    private let agentState = HelperFixtureBox<AgentSession?>(nil)
+    var agent: AgentSession! {
+        get { agentState.value }
+        set { agentState.value = newValue }
+    }
+    private let logState = HelperFixtureBox<[String]>([])
+    var log: [String] {
+        get { logState.value }
+        set { logState.value = newValue }
+    }
+    private let targetsState = HelperFixtureBox<[Actions.Target]>([])
+    var targets: [Actions.Target] {
+        get { targetsState.value }
+        set { targetsState.value = newValue }
+    }
+    private let abandonedState = HelperFixtureBox<Bool>(false)
+    var abandoned: Bool {
+        get { abandonedState.value }
+        set { abandonedState.value = newValue }
+    }
+    private let nowState = HelperFixtureBox<Double>(1000)
+    var now: Double {
+        get { nowState.value }
+        set { nowState.value = newValue }
+    }
+    private let captureState = HelperFixtureBox<Capture?>(nil)
+    var capture: Capture! {
+        get { captureState.value }
+        set { captureState.value = newValue }
+    }
+    private let screenshotErrorState = HelperFixtureBox<HarnessError?>(nil)
+    var screenshotError: HarnessError? {
+        get { screenshotErrorState.value }
+        set { screenshotErrorState.value = newValue }
+    }
+    private let readErrorState = HelperFixtureBox<Error?>(nil)
+    var readError: Error? {
+        get { readErrorState.value }
+        set { readErrorState.value = newValue }
+    }
+    private let sendErrorState = HelperFixtureBox<Error?>(nil)
+    var sendError: Error? {
+        get { sendErrorState.value }
+        set { sendErrorState.value = newValue }
+    }
+    private let runningState = HelperFixtureBox<Bool>(true)
+    var running: Bool {
+        get { runningState.value }
+        set { runningState.value = newValue }
+    }
+    private let switchedOnState = HelperFixtureBox<Bool>(false)
+    var switchedOn: Bool {
+        get { switchedOnState.value }
+        set { switchedOnState.value = newValue }
+    }
+    private let settledState = HelperFixtureBox<Capture?>(nil)
+    var settled: Capture? {
+        get { settledState.value }
+        set { settledState.value = newValue }
+    }
+    private let queuePathState = HelperFixtureBox<String>("")
+    var queuePath: String {
+        get { queuePathState.value }
+        set { queuePathState.value = newValue }
+    }
+    private let seenIgnoreState = HelperFixtureBox<[Bool]>([])
+    var seenIgnore: [Bool] {
+        get { seenIgnoreState.value }
+        set { seenIgnoreState.value = newValue }
+    }
+    let target = AppTarget(
+        path: "/Applications/Demo.app", bundleID: "dev.demo", name: "Demo", pid: 77)
+    func record(_ entry: String) { logState.update { $0.append(entry) } }
+    func recordIgnore(_ value: Bool) { seenIgnoreState.update { $0.append(value) } }
+    func advance(_ seconds: Double) { nowState.update { $0 += seconds } }
+    func makeCapture(_ value: String = "OK") -> Capture {
+        Capture(
+            windowTitle: "Demo", appName: "Demo", windowID: 7,
+            lines: [Line(depth: 0, text: "button \(value)", element: ax.field.ref,
+                         role: "AXButton", name: "OK", value: value)])
+    }
+}
+
 final class HarnessExecutorTests: XCTestCase {
     override func invokeTest() { AX.withBackend(AX.backend) { super.invokeTest() } }
-    private var ax: ExecutorAX!, oldAX: AXBackend!, home: URL!,
-        dependencies: HarnessExecutor.Dependencies!
-    private var executor: HarnessExecutor!, sessions: Sessions!, agent: AgentSession!
-    private var log: [String] = [], targets: [Actions.Target] = [], now = 1000.0, abandoned = false
-    private var capture: Capture!, screenshotError: HarnessError?, readError: Error?,
-        sendError: Error?
-    private var running = true, switchedOn = false, settled: Capture?, queuePath = "",
-        seenIgnore: [Bool] = []
-    private let target = AppTarget(
-        path: "/Applications/Demo.app", bundleID: "dev.demo", name: "Demo", pid: 77)
+    private let world = ExecutorWorld()
+    private var ax: ExecutorAX! {
+        get { world.ax }
+        set { world.ax = newValue }
+    }
+    private var oldAX: AXBackend! {
+        get { world.oldAX }
+        set { world.oldAX = newValue }
+    }
+    private var home: URL! {
+        get { world.home }
+        set { world.home = newValue }
+    }
+    private var dependencies: HarnessExecutor.Dependencies! {
+        get { world.dependencies }
+        set { world.dependencies = newValue }
+    }
+    private var executor: HarnessExecutor! {
+        get { world.executor }
+        set { world.executor = newValue }
+    }
+    private var sessions: Sessions! {
+        get { world.sessions }
+        set { world.sessions = newValue }
+    }
+    private var agent: AgentSession! {
+        get { world.agent }
+        set { world.agent = newValue }
+    }
+    private var log: [String] {
+        get { world.log }
+        set { world.log = newValue }
+    }
+    private var targets: [Actions.Target] {
+        get { world.targets }
+        set { world.targets = newValue }
+    }
+    private var abandoned: Bool {
+        get { world.abandoned }
+        set { world.abandoned = newValue }
+    }
+    private var now: Double {
+        get { world.now }
+        set { world.now = newValue }
+    }
+    private var capture: Capture! {
+        get { world.capture }
+        set { world.capture = newValue }
+    }
+    private var screenshotError: HarnessError? {
+        get { world.screenshotError }
+        set { world.screenshotError = newValue }
+    }
+    private var readError: Error? {
+        get { world.readError }
+        set { world.readError = newValue }
+    }
+    private var sendError: Error? {
+        get { world.sendError }
+        set { world.sendError = newValue }
+    }
+    private var running: Bool {
+        get { world.running }
+        set { world.running = newValue }
+    }
+    private var switchedOn: Bool {
+        get { world.switchedOn }
+        set { world.switchedOn = newValue }
+    }
+    private var settled: Capture? {
+        get { world.settled }
+        set { world.settled = newValue }
+    }
+    private var queuePath: String {
+        get { world.queuePath }
+        set { world.queuePath = newValue }
+    }
+    private var seenIgnore: [Bool] {
+        get { world.seenIgnore }
+        set { world.seenIgnore = newValue }
+    }
+    private var target: AppTarget { world.target }
     override func setUpWithError() throws {
+        let world = world
         oldAX = AX.backend
         ax = ExecutorAX()
         AX.backend = ax
@@ -131,7 +321,7 @@ final class HarnessExecutorTests: XCTestCase {
         agent = sessions.agent(peerPID: 1, env: ["TERM_LLM_SESSION_ID": "test"])
         capture = makeCapture()
         var apps = Apps.System()
-        apps.executable = { _ in self.running ? self.target.path + "/Contents/MacOS/Demo" : "" }
+        apps.executable = { _ in world.running ? world.target.path + "/Contents/MacOS/Demo" : "" }
         apps.running = { [] }
         apps.realPath = { $0 }
         apps.expandUser = { $0 }
@@ -145,27 +335,26 @@ final class HarnessExecutorTests: XCTestCase {
         apps.bundlePaths = { _ in [] }
         apps.named = { _ in nil }
         apps.open = { _ in
-            self.log.append("launch")
-            self.running = true
+            world.record("launch")
+            world.running = true
             return 77
         }
         apps.keyWindow = { _ in
             .init(
-                element: self.ax.window.ref, windowID: 7, pid: 77, title: "Demo",
-                frame: self.ax.frame(self.ax.window.ref)!)
+                element: world.ax.window.ref, windowID: 7, pid: 77, title: "Demo",
+                frame: world.ax.frame(world.ax.window.ref)!)
         }
         var windows = Windows.System()
         windows.rows = { _, _ in [] }
         windows.associated = { _ in [] }
         windows.noAttention = { _ in }
-        windows.now = { self.now }
-        windows.sleep = { self.now += $0 }
-        var person = Person.System()
-        person.frontmostPID = { 88 }
-        person.secureInputPID = { nil }
-        person.now = { self.now }
-        person.sleep = { self.now += $0 }
-        person.hidIdle = { _ in .infinity }
+        windows.now = { world.now }
+        windows.sleep = { world.advance($0) }
+        let person = Person.System(
+            now: { world.now },
+            sleep: { world.advance($0) },
+            frontmostPID: { 88 }, bundleOf: { _ in "" }, hidIdle: { _ in .infinity },
+            secureInputPID: { nil }, windowPID: { _ in 0 }, canListen: { false })
         var focus = Focus.System()
         focus.frontPID = { 88 }
         focus.noAttention = { _ in }
@@ -190,87 +379,95 @@ final class HarnessExecutorTests: XCTestCase {
                 XCTFail("No real approval")
                 return false
             }, withdraw: { _ in })
-        dependencies.instructions = Instructions(stateDirectory: { self.home })
+        dependencies.instructions = Instructions(stateDirectory: { [home = home!] in home })
         dependencies.screenshot = Screenshot(
-            folder: home.appendingPathComponent("cache"), stateDirectory: { self.home })
-        dependencies.actions.system.pasteboard = ComputerUseSystem.Pasteboard(
+            folder: home.appendingPathComponent("cache"), stateDirectory: { [home = home!] in home })
+        var actionsSystem = dependencies.actions.system
+        actionsSystem.pasteboard = ComputerUseSystem.Pasteboard(
             board: {
                 XCTFail("No real clipboard")
                 return .init(snapshot: { [] }, write: { _ in nil }, restore: { _, _ in false })
-            }, stateDirectory: { self.home })
+            }, stateDirectory: { [home = home!] in home })
+        dependencies.actions = Actions(system: actionsSystem)
         dependencies.resolve = { _ in
-            self.log.append("resolve")
-            return self.target
+            world.record("resolve")
+            return world.target
         }
         dependencies.decide = { _, _ in
-            self.log.append("policy")
+            world.record("policy")
             return PolicyDecision(
                 decision: .allowed, risk: .low, allowPersistent: false, warning: nil)
         }
-        dependencies.ensureApproval = { _, _, _, _, _ in self.log.append("approval") }
-        dependencies.permissionsGate = { _, _ in self.log.append("permissions") }
-        dependencies.lockGate = { _ in self.log.append("lock") }
-        dependencies.personGate = { _, _, _, _ in self.log.append("person") }
+        dependencies.ensureApproval = { _, _, _, _, _ in world.record("approval") }
+        dependencies.permissionsGate = { _, _ in world.record("permissions") }
+        dependencies.lockGate = { _ in world.record("lock") }
+        dependencies.personGate = { _, _, _, _ in world.record("person") }
         dependencies.read = { _, _, _, _ in
-            self.log.append("read")
-            if let error = self.readError { throw error }
-            return self.capture
+            world.record("read")
+            if let error = world.readError { throw error }
+            return world.capture
         }
         dependencies.enable = { _, _ in
-            self.log.append("enable")
-            return self.switchedOn
+            world.record("enable")
+            return world.switchedOn
         }
-        dependencies.disable = { _ in self.log.append("disable") }
-        dependencies.askOnce = { _ in self.log.append("askOnce") }
+        dependencies.disable = { _ in world.record("disable") }
+        dependencies.askOnce = { _ in world.record("askOnce") }
         dependencies.watchRevisions = { revisions, target in
-            self.log.append("watch")
+            world.record("watch")
             try revisions.watch(target)
         }
         dependencies.settle = { _, _, _, poll, _ in
-            self.log.append(poll == 0.05 ? "settleFresh" : "settle")
-            XCTAssertFalse(self.executor.appSessions(self.agent).first?.needsSettle ?? false)
-            return self.settled
+            world.record(poll == 0.05 ? "settleFresh" : "settle")
+            XCTAssertFalse(world.executor.appSessions(world.agent).first?.needsSettle ?? false)
+            return world.settled
         }
         dependencies.picture = { _, _ in
-            self.log.append("picture")
-            if let e = self.screenshotError { throw e }
+            world.record("picture")
+            if let e = world.screenshotError { throw e }
             return Shot(
                 path: "/tmp/demo.jpg", scale: 2, origin: CGPoint(x: 100, y: 50), width: 800,
                 height: 600)
         }
         dependencies.send = { call, _, targets in
-            self.log.append("send:\(call.name)")
-            self.targets = targets
-            if let e = self.sendError { throw e }
+            world.record("send:\(call.name)")
+            world.targets = targets
+            if let e = world.sendError { throw e }
         }
-        dependencies.now = { self.now }
-        dependencies.uptime = { self.now }
+        dependencies.now = { world.now }
+        dependencies.uptime = { world.now }
         executor = HarnessExecutor(dependencies: dependencies)
     }
     override func tearDownWithError() throws {
+        defer {
+            AX.backend = oldAX
+            // Break world -> executor/dependencies -> callback -> world cycles,
+            // including callbacks retained by app sessions after a failed cleanup.
+            executor = nil
+            dependencies = nil
+            capture = nil
+            settled = nil
+            targets = []
+            agent = nil
+            sessions = nil
+            ax = nil
+            oldAX = nil
+            try? FileManager.default.removeItem(at: home)
+        }
         // Only the fake app sessions are cleaned, never the real default primitives.
-        try executor.letGo(agent, withAppQueue: { _, work in try work() })
-        AX.backend = oldAX
-        executor = nil
-        dependencies = nil
-        ax = nil
-        try? FileManager.default.removeItem(at: home)
+        if let executor, let agent {
+            try executor.letGo(agent, withAppQueue: { _, work in try work() })
+        }
     }
     private func makeCapture(_ value: String = "OK") -> Capture {
-        Capture(
-            windowTitle: "Demo", appName: "Demo", windowID: 7,
-            lines: [
-                Line(
-                    depth: 0, text: "button \(value)", element: ax.field.ref, role: "AXButton",
-                    name: "OK",
-                    value: value)
-            ])
+        world.makeCapture(value)
     }
     private func rebuild() { executor = HarnessExecutor(dependencies: dependencies) }
     private func call(
         _ name: String = "get_app_state", _ args: [String: Any] = [:], deadline: Double = 1120,
         env: [String: String] = [:], other: AgentSession? = nil
     ) -> ToolCallRequest {
+        let world = world
         let parsed = try! ToolParser.parse([name])
         var a = parsed.arguments
         a["app"] = "Demo"
@@ -278,14 +475,14 @@ final class HarnessExecutorTests: XCTestCase {
         return ToolCallRequest(
             name: name, arguments: a, stdin: nil, environment: env, agent: other ?? agent,
             sessions: sessions, cwd: "/", deadline: Date(timeIntervalSince1970: deadline),
-            abandoned: { self.abandoned },
+            abandoned: { world.abandoned },
             withCleanupQueue: { path, work in
-                self.log.append("cleanupQueue")
+                world.record("cleanupQueue")
                 return try work()
             },
             withAppQueue: { path, work in
-                self.queuePath = path
-                self.log.append("queue")
+                world.queuePath = path
+                world.record("queue")
                 return try work()
             })
     }
@@ -330,6 +527,7 @@ final class HarnessExecutorTests: XCTestCase {
         }
     }
     func testGateFailuresStopAtThatStepAndSecondPersonGateIsNotSkipped() {
+        let world = world
         for name in ["policy", "approval", "permissions", "lock", "person"] {
             log = []
             var d = dependencies!
@@ -337,27 +535,27 @@ final class HarnessExecutorTests: XCTestCase {
             switch name {
             case "policy":
                 d.decide = { _, _ in
-                    self.log.append(name)
+                    world.record(name)
                     throw error
                 }
             case "approval":
                 d.ensureApproval = { _, _, _, _, _ in
-                    self.log.append(name)
+                    world.record(name)
                     throw error
                 }
             case "permissions":
                 d.permissionsGate = { _, _ in
-                    self.log.append(name)
+                    world.record(name)
                     throw error
                 }
             case "lock":
                 d.lockGate = { _ in
-                    self.log.append(name)
+                    world.record(name)
                     throw error
                 }
             default:
                 d.personGate = { _, _, _, _ in
-                    self.log.append(name)
+                    world.record(name)
                     throw error
                 }
             }
@@ -367,14 +565,14 @@ final class HarnessExecutorTests: XCTestCase {
             XCTAssertTrue(executor.appSessions(agent).isEmpty)
         }
         log = []
-        var count = 0
+        let count = HelperFixtureBox(0)
         dependencies.personGate = { _, _, _, _ in
-            count += 1
-            if count == 2 { throw Errors.make("paused") }
+            let current = count.update { $0 += 1; return $0 }
+            if current == 2 { throw Errors.make("paused") }
         }
         rebuild()
         fail("paused") { _ = try self.executor.execute(self.call()) }
-        XCTAssertEqual(count, 2)
+        XCTAssertEqual(count.value, 2)
         XCTAssertTrue(executor.appSessions(agent).isEmpty)
     }
     func testCannotCompleteMapsToNotRespondingButOtherAXErrorsSurvive() {
@@ -423,7 +621,7 @@ final class HarnessExecutorTests: XCTestCase {
             Shot(path: source.path, scale: 1, origin: .zero, width: 20, height: 10)
         }
         dependencies.screenshot = Screenshot(
-            folder: home.appendingPathComponent("cache"), stateDirectory: { self.home })
+            folder: home.appendingPathComponent("cache"), stateDirectory: { [home = home!] in home })
         rebuild()
         let outcome = try executor.execute(call("get_app_state", ["keep": true, "json": true]))
         let value = try XCTUnwrap(
@@ -511,8 +709,9 @@ final class HarnessExecutorTests: XCTestCase {
             try XCTUnwrap(log.firstIndex(of: "settle")))
     }
     func testRefetchIgnoresValueOnlyForSetValue() throws {
+        let world = world
         dependencies.resolveElement = { revisions, index, reread, ignore in
-            self.seenIgnore.append(ignore)
+            world.recordIgnore(ignore)
             return try revisions.resolve(index, reread: reread, ignoreValue: ignore)
         }
         rebuild()
@@ -560,8 +759,9 @@ final class HarnessExecutorTests: XCTestCase {
         }
     }
     func testStillWantedIsRepeatedAfterSettleAndLookup() throws {
+        let world = world
         dependencies.resolveElement = { revisions, index, reread, ignore in
-            self.now = 1119
+            world.now = 1119
             return try revisions.resolve(index, reread: reread, ignoreValue: ignore)
         }
         rebuild()
@@ -603,8 +803,9 @@ final class HarnessExecutorTests: XCTestCase {
         XCTAssertEqual(try HarnessExecutor.hold(["duration": "2", "duration_ms": "1500"]), 2)
     }
     func testSlowTypingLimitAndUnicodeScalarCount() throws {
+        let world = world
         dependencies.resolve = { _ in
-            var t = self.target
+            var t = world.target
             t.bundleID = "com.apple.ScreenContinuity"
             return t
         }
@@ -688,14 +889,15 @@ final class HarnessExecutorTests: XCTestCase {
         XCTAssertFalse(log.contains("lock"))
     }
     func testPanelServiceUsesOnlyThisAgentsWatchedAppsBeforePolicy() throws {
+        let world = world
         try read()
         ax.window.attrs["AXIdentifier"] = "save-panel"
         dependencies.resolve = { _ in
             AppTarget(path: "/System/Panel.xpc", bundleID: Limits.panelService, name: "Panel")
         }
         dependencies.decide = { _, target in
-            XCTAssertEqual(target.path, self.target.path)
-            self.log.append("ownerPolicy")
+            XCTAssertEqual(target.path, world.target.path)
+            world.record("ownerPolicy")
             return PolicyDecision(
                 decision: .allowed, risk: .low, allowPersistent: false, warning: nil)
         }
@@ -742,13 +944,14 @@ final class HarnessExecutorTests: XCTestCase {
         XCTAssertFalse(log.contains("settle") || log.contains("read"))
     }
     func testListAppsFailuresHaveNativePrefixAndEmitFalseStillReturnsRowsAsJSON() throws {
+        let world = world
         dependencies.listApps = { _ in throw Errors.serverError("catalog unavailable") }
         rebuild()
         XCTAssertThrowsError(try executor.execute(call("list_apps"))) {
             XCTAssertTrue(String(describing: $0).hasPrefix("Native apps: "))
         }
         dependencies.listApps = { hosts in
-            XCTAssertEqual(hosts, self.agent.hosts)
+            XCTAssertEqual(hosts, world.agent.hosts)
             return [["name": "Demo"]]
         }
         rebuild()
@@ -758,6 +961,7 @@ final class HarnessExecutorTests: XCTestCase {
             "[{\"name\":\"Demo\"}]\n")
     }
     func testFreshMissingWindowSettlesThenFailsWithoutTreeReadAndLateWindowUsesCapture() throws {
+        let world = world
         ax.root.attrs = [:]
         XCTAssertThrowsError(try read()) {
             XCTAssertEqual(($0 as? HarnessError)?.message, Errors.make("no_windows").message)
@@ -766,8 +970,8 @@ final class HarnessExecutorTests: XCTestCase {
         XCTAssertFalse(log.contains("read"))
         dependencies.settle = { _, _, _, poll, _ in
             XCTAssertEqual(poll, HarnessExecutor.freshWindowPoll)
-            self.ax.root.attrs["AXWindows"] = [self.ax.window.ref]
-            return self.makeCapture("Late")
+            world.ax.root.attrs["AXWindows"] = [world.ax.window.ref]
+            return world.makeCapture("Late")
         }
         rebuild()
         log = []
@@ -791,11 +995,11 @@ final class HarnessExecutorTests: XCTestCase {
         ) { XCTAssertEqual(($0 as? HarnessError)?.name, "no_such_app") }
     }
     func testDeadProcessReapingCallsExecutorLetGoUnderCleanupFIFO() throws {
-        var alive = true
+        let alive = HelperFixtureBox(true)
         let process = ProcessIdentity(pid: 10, parent: 1, path: "/bin/term-llm", started: 12)
         let registry = Sessions(process: { pid in
             if pid == 11 { return .init(pid: 11, parent: 10, path: "/bin/client", started: 14) }
-            return alive && pid == 10 ? process : nil
+            return alive.value && pid == 10 ? process : nil
         })
         let dead = registry.agent(peerPID: 11, env: [:])
         let request = ToolCallRequest(
@@ -809,7 +1013,7 @@ final class HarnessExecutorTests: XCTestCase {
             executor: executor,
             configuration: HelperConfiguration(environment: ["TERM_LLM_COMPUTER_HOME": home.path]),
             sessions: registry)
-        alive = false
+        alive.value = false
         server.reapSessions()
         XCTAssertTrue(executor.appSessions(dead).isEmpty)
         XCTAssertTrue(ax.observations.allSatisfy(\.stopped))
@@ -817,10 +1021,12 @@ final class HarnessExecutorTests: XCTestCase {
     }
 
     func testAppSessionInsertionOrderAndCancelClosureArePreserved() throws {
+        let world = world
         var second = target
         second.path = "/Applications/Second.app"
         second.bundleID = "dev.second"
-        dependencies.resolve = { name in name == "Second" ? second : self.target }
+        let secondTarget = second
+        dependencies.resolve = { name in name == "Second" ? secondTarget : world.target }
         rebuild()
         try read()
         XCTAssertThrowsError(

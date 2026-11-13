@@ -3,12 +3,13 @@ import XCTest
 @testable import ComputerUseSystem
 
 final class SettleTests: ContextTestCase {
-    var reads = 0, loading = false, hasWindow = true
+    var reads = 0
+    let loading = ContextBox(false), hasWindow = ContextBox(true)
     func wait(_ kind: AppKind = .init(), poll: Double? = nil, quiet: Double = Settle.quiet, limit: Double = Settle.limit, abandoned: () -> Bool = { false }) throws -> Capture? {
         try Settle.wait(target: target, kind: kind, read: { _ in
-            self.reads += 1; return Capture(windowTitle: "Test", appName: "Test", windowID: 7, lines: [], loading: self.loading)
+            self.reads += 1; return Capture(windowTitle: "Test", appName: "Test", windowID: 7, lines: [], loading: self.loading.value)
         }, poll: poll, quiet: quiet, limit: limit, now: clock.now, sleep: { self.clock.sleep($0) }, abandoned: abandoned, keyWindow: { _ in
-            if !self.hasWindow { throw Errors.make("no_windows") }; return fixtureWindow()
+            if !self.hasWindow.value { throw Errors.make("no_windows") }; return fixtureWindow()
         })
     }
     func testNativeFloorThreePollsOneCapture() throws {
@@ -25,9 +26,14 @@ final class SettleTests: ContextTestCase {
         clock.sleeps = []; _ = try wait(poll: 0.05, quiet: 0.1); XCTAssertEqual(clock.sleeps.count, 3) // binary floating-point at uptime 1000
     }
     func testNotificationDelaysQuietRead() throws {
-        var fired = false
-        clock.onSleep = {
-            if !fired && self.clock.time >= 1000.1 { fired = true; self.ax.observations[0].fire("AXLayoutChanged", self.ax.app(pid: 77)) }
+        defer { clock.onSleep = nil }
+        let fired = ContextBox(false)
+        clock.onSleep = { [clock = clock!, ax = ax!] in
+            guard clock.time >= 1000.1 else { return }
+            let first = fired.withValue { fired in
+                if fired { return false }; fired = true; return true
+            }
+            if first { ax.observations[0].fire("AXLayoutChanged", ax.app(pid: 77)) }
         }
         _ = try wait(); XCTAssertEqual(clock.time, 1000.4, accuracy: 0.0001); XCTAssertEqual(reads, 1)
     }
@@ -51,20 +57,21 @@ final class SettleTests: ContextTestCase {
         ax.failGet = ["AXTitle"]; heard.note(Settle.titleChanged, element: e.ref); XCTAssertEqual(heard.quietFor(), 1)
     }
     func testNoWindowAndLoadingReachFiveSecondLimit() throws {
-        hasWindow = false; XCTAssertNil(try wait()); XCTAssertEqual(reads, 0); XCTAssertEqual(clock.time, 1005, accuracy: 0.11)
-        hasWindow = true; loading = true; clock.time = 1000; XCTAssertNil(try wait()); XCTAssertGreaterThan(reads, 45)
+        hasWindow.value = false; XCTAssertNil(try wait()); XCTAssertEqual(reads, 0); XCTAssertEqual(clock.time, 1005, accuracy: 0.11)
+        hasWindow.value = true; loading.value = true; clock.time = 1000; XCTAssertNil(try wait()); XCTAssertGreaterThan(reads, 45)
     }
     func testLimitCheckedBeforeSleepOnly() throws {
-        hasWindow = false; XCTAssertNil(try wait(poll: 0.25, limit: 0.3)); XCTAssertEqual(clock.sleeps, [0.25, 0.25])
+        hasWindow.value = false; XCTAssertNil(try wait(poll: 0.25, limit: 0.3)); XCTAssertEqual(clock.sleeps, [0.25, 0.25])
     }
     func testWindowAppearsAndLoadingEnds() throws {
-        hasWindow = false; clock.onSleep = { if self.clock.time >= 1002 { self.hasWindow = true } }
+        defer { clock.onSleep = nil }
+        hasWindow.value = false; clock.onSleep = { [clock = clock!, hasWindow] in if clock.time >= 1002 { hasWindow.value = true } }
         XCTAssertNotNil(try wait(poll: 0.05)); XCTAssertEqual(clock.time, 1002, accuracy: 0.06)
-        loading = true; clock.onSleep = { self.loading = self.clock.time < 1003 }
+        loading.value = true; clock.onSleep = { [clock = clock!, loading] in loading.value = clock.time < 1003 }
         XCTAssertNotNil(try wait()); XCTAssertEqual(clock.time, 1003, accuracy: 0.11)
     }
     func testAbandonmentStopsObserver() {
-        loading = true
+        loading.value = true
         assertHarnessError(name: "request_timed_out") { _ = try self.wait(abandoned: { self.clock.time >= 1000.5 }) }
         XCTAssertTrue(ax.observations[0].stopped)
     }

@@ -1,9 +1,13 @@
 import ComputerUseCore
 import Foundation
 import IOKit.pwr_mgt
+import os
 
-/// One immutable request envelope. Session turn marks must be accessed through
-/// `sessions`; UI state is the integration executor's responsibility.
+/// Operation-local request envelope, deliberately NOT Sendable: `arguments` can
+/// contain heterogeneous values owned by this synchronous call. Construct and
+/// execute it on the receiving worker; never transfer it to another worker.
+/// Session turn marks must be accessed through `sessions`; UI state belongs to
+/// the integration executor.
 public struct ToolCallRequest {
     public let name: String
     public let arguments: [String: Any]
@@ -13,17 +17,20 @@ public struct ToolCallRequest {
     public let sessions: Sessions
     public let cwd: String
     public let deadline: Date
-    public let abandoned: () -> Bool
+    public let abandoned: @Sendable () -> Bool
     /// Same FIFO, but turn cancellation must not prevent releasing its resources.
-    public let withCleanupQueue: (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
+    public let withCleanupQueue: @Sendable (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
     /// The executor resolves the app first, then uses its canonical bundle path.
-    /// This queue is shared across ALL agents, not just this session.
-    public let withAppQueue: (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
+    /// This queue is shared across ALL agents, not just this session. The outer
+    /// callback may be retained; `work` is nonescaping and intentionally not
+    /// @Sendable: it executes synchronously on the caller, with operation-local
+    /// request arguments. Queue implementations must not dispatch it elsewhere.
+    public let withAppQueue: @Sendable (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome
     public init(name: String, arguments: [String: Any], stdin: String?, environment: [String: String],
                 agent: AgentSession, sessions: Sessions, cwd: String, deadline: Date,
-                abandoned: @escaping () -> Bool,
-                withCleanupQueue: ((_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome)? = nil,
-                withAppQueue: @escaping (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome) {
+                abandoned: @escaping @Sendable () -> Bool,
+                withCleanupQueue: (@Sendable (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome)? = nil,
+                withAppQueue: @escaping @Sendable (_ path: String, _ work: () throws -> ToolOutcome) throws -> ToolOutcome) {
         self.name = name; self.arguments = arguments; self.stdin = stdin; self.environment = environment
         self.agent = agent; self.sessions = sessions; self.cwd = cwd; self.deadline = deadline
         self.abandoned = abandoned; self.withAppQueue = withAppQueue
@@ -33,7 +40,7 @@ public struct ToolCallRequest {
 
 public struct NeedStdin: Error { public init() {} }
 
-public struct ToolOutcome {
+public struct ToolOutcome: Sendable {
     public var exit: Int32
     public var stdout: String
     public var stderr: String
@@ -62,16 +69,20 @@ public struct ToolOutcome {
     }
 }
 
-public protocol ToolExecutor {
+public protocol ToolExecutor: Sendable {
     /// Called off the main thread. May throw NeedStdin; the client will reconnect
     /// with stdin. No effects may precede that throw. Other errors become failures.
     func execute(_ call: ToolCallRequest) throws -> ToolOutcome
     /// Called after socket workers finish, with the AppKit loop still available.
     func shutdown()
+    /// Cancellation marks are already published. Called outside the helper's
+    /// condition; UI implementations must enqueue work, never wait for the UI.
+    func cancel(agentKeys: Set<String>)
     func agentExited(_ agent: AgentSession, withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome)
 }
 extension ToolExecutor {
     public func shutdown() {}
+    public func cancel(agentKeys: Set<String>) {}
     public func agentExited(_ agent: AgentSession, withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome) {}
 }
 
@@ -94,8 +105,11 @@ public struct StubToolExecutor: ToolExecutor {
     }
 }
 
-/// Arrival-ordered lock with cancellable waiters. A cancelled ticket is removed,
-/// not left at the head of the queue where it would stall every later caller.
+/// Arrival-ordered execution gate with cancellable waiters. A cancelled ticket
+/// is removed, not left at the head where it would stall every later caller.
+/// The condition protects bookkeeping only; `busy` reserves execution after
+/// unlocking. Predicates and synchronous caller-owned work never hold that lock.
+/// Nested execution on the same FIFO still waits behind its own outstanding work.
 // Unchecked: `tickets` and `busy` are only read or written while holding `condition`.
 public final class AppFIFO: @unchecked Sendable {
     private let condition = NSCondition()
@@ -107,13 +121,23 @@ public final class AppFIFO: @unchecked Sendable {
         condition.lock()
         tickets.append(ticket)
         while busy || tickets.first != ticket {
-            if abandoned() {
+            // The predicate is injected code: it may reenter queue bookkeeping
+            // or wait for an independent app. Never call it under the condition.
+            condition.unlock()
+            let cancelled = abandoned()
+            condition.lock()
+            if cancelled {
                 tickets.removeAll { $0 == ticket }
                 condition.broadcast()
                 condition.unlock()
                 throw Errors.make("request_timed_out")
             }
-            _ = condition.wait(until: Date().addingTimeInterval(0.05))
+            // Work may have finished while the predicate ran. Recheck before
+            // sleeping so its broadcast cannot be lost. Keep the original ticket
+            // throughout polling, preserving arrival order even across reentry.
+            if busy || tickets.first != ticket {
+                _ = condition.wait(until: Date().addingTimeInterval(0.05))
+            }
         }
         tickets.removeFirst()
         busy = true
@@ -129,19 +153,30 @@ public final class AppFIFO: @unchecked Sendable {
     }
 }
 
+
 /// One display-idle assertion for all calls; release exactly when the last exits.
-final class DisplayAwake {
-    private let lock = NSLock()
-    private var count = 0
-    private var token: IOPMAssertionID = 0
+final class DisplayAwake: Sendable {
+    private struct State: Sendable {
+        var count = 0
+        var token: IOPMAssertionID = 0
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    // Intentional SDK execution gate: a create/release transaction cannot be
+    // overtaken by another begin/end. SDK calls never hold the short state lock.
+    private let execution = NSLock()
     func begin() {
-        lock.lock()
-        defer { lock.unlock() }
-        count += 1
-        if count == 1 {
+        execution.lock()
+        defer { execution.unlock() }
+        let first = state.withLock { state in
+            state.count += 1
+            return state.count == 1
+        }
+        if first {
+            var token: IOPMAssertionID = 0
             _ = IOPMAssertionCreateWithName(
                 "PreventUserIdleDisplaySleep" as CFString,
                 IOPMAssertionLevel(kIOPMAssertionLevelOn), "term-llm Computer Use at work" as CFString, &token)
+            state.withLock { [token] in $0.token = token }
         }
         var activity: IOPMAssertionID = 0
         _ = IOPMAssertionDeclareUserActivity(
@@ -149,12 +184,16 @@ final class DisplayAwake {
             kIOPMUserActiveLocal, &activity)
     }
     func end() {
-        lock.lock()
-        defer { lock.unlock() }
-        count -= 1
-        if count == 0, token != 0 {
-            IOPMAssertionRelease(token)
-            token = 0
+        execution.lock()
+        defer { execution.unlock() }
+        let token = state.withLock { state -> IOPMAssertionID in
+            precondition(state.count > 0, "Unbalanced DisplayAwake.end")
+            state.count -= 1
+            guard state.count == 0 else { return 0 }
+            let token = state.token
+            state.token = 0
+            return token
         }
+        if token != 0 { IOPMAssertionRelease(token) }
     }
 }

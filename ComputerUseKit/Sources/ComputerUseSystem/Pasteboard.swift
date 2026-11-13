@@ -1,10 +1,11 @@
 import AppKit
 import ComputerUseCore
 import Foundation
+import os
 
 /// Paste through a promised item, then give the person their clipboard back unless
 /// they copied something meanwhile. The app's request for data is our read receipt.
-public final class Pasteboard {
+public final class Pasteboard: Sendable {
     public static let readTimeout = 2.0
     public static let landTimeout = 2.0, landPoll = 0.025
     public static let currentHostOnly = 1 // Never travel to the person's other devices.
@@ -13,25 +14,56 @@ public final class Pasteboard {
     private static let pasteLock = NSLock() // One paste at a time in the whole helper.
     public typealias Snapshot = [[String: Data]]
 
-    public struct Backend {
-        public var snapshot: () -> Snapshot
-        public var write: (LazyPasteData) -> Int?
-        public var restore: (Snapshot, Int) -> Bool
-        public init(snapshot: @escaping () -> Snapshot, write: @escaping (LazyPasteData) -> Int?, restore: @escaping (Snapshot, Int) -> Bool) {
+    /// Immutable concurrent dependencies. Fake hooks run synchronously on their
+    /// caller (including the no-main-loop worker fallback). Native hooks alone
+    /// cross the main-thread boundary; no SDK object is captured by a worker.
+    public struct Backend: Sendable {
+        public let snapshot: @Sendable () -> Snapshot
+        public let write: @Sendable (LazyPasteData) -> Int?
+        public let restore: @Sendable (Snapshot, Int) -> Bool
+        public init(snapshot: @escaping @Sendable () -> Snapshot,
+                    write: @escaping @Sendable (LazyPasteData) -> Int?,
+                    restore: @escaping @Sendable (Snapshot, Int) -> Bool) {
             self.snapshot = snapshot; self.write = write; self.restore = restore
         }
+        @MainActor
         public init(board: NSPasteboard) {
-            snapshot = { Pasteboard.snapshot(board) }
-            write = { Pasteboard.write(board, provider: $0) }
-            restore = { Pasteboard.restore(board, saved: $0, ours: $1) }
+            let owner = NativeBoard(board)
+            snapshot = { Self.onMain { Pasteboard.snapshot(owner.board) } ?? [] }
+            write = { provider in Self.onMain { Pasteboard.write(owner.board, provider: provider) } ?? nil }
+            restore = { saved, ours in Self.onMain { Pasteboard.restore(owner.board, saved: saved, ours: ours) } ?? false }
+        }
+        /// Factory remains callable from a helper worker. Without a running main
+        /// loop it fails closed, rather than evaluating `.general` off main.
+        public static func general() -> Backend {
+            onMain { Backend(board: .general) } ?? Backend(snapshot: { [] }, write: { _ in nil }, restore: { _, _ in false })
+        }
+        // Shared native-only boundary, internal so fake-only tests can verify
+        // fail-closed fallback without constructing a pasteboard or importing HTML.
+        static func onMain<T: Sendable>(_ work: @MainActor () throws -> T) rethrows -> T? {
+            try MainThread.callOnMain {
+                guard Thread.isMainThread else { return nil }
+                return try MainActor.assumeIsolated { try work() }
+            }
         }
     }
-    private let board: () -> Backend
-    private let stateDirectory: () -> URL
-    private let wait: (@escaping () -> Bool, TimeInterval, TimeInterval) -> Bool
-    public init(board: @escaping () -> Backend = { Backend(board: .general) },
-                stateDirectory: @escaping () -> URL = { Paths.stateDirectory() },
-                wait: @escaping (@escaping () -> Bool, TimeInterval, TimeInterval) -> Bool = Pasteboard.wait) {
+    /// The SDK handle never leaves this actor-owned container. There is no
+    /// unchecked Sendable promise for NSPasteboard or its item graph.
+    @MainActor
+    private final class NativeBoard {
+        let board: NSPasteboard
+        init(_ board: NSPasteboard) { self.board = board }
+    }
+    /// A wait must evaluate its predicate synchronously and must not store or
+    /// reschedule it. `landed` can therefore remain operation-local, non-Sendable
+    /// Actions state. The wait itself may be called by concurrent workers.
+    public typealias Wait = @Sendable (() -> Bool, TimeInterval, TimeInterval) -> Bool
+    private let board: @Sendable () -> Backend
+    private let stateDirectory: @Sendable () -> URL
+    private let wait: Wait
+    public init(board: @escaping @Sendable () -> Backend = { Backend.general() },
+                stateDirectory: @escaping @Sendable () -> URL = { Paths.stateDirectory() },
+                wait: @escaping Wait = { Pasteboard.wait($0, timeout: $1, poll: $2) }) {
         self.board = board; self.stateDirectory = stateDirectory; self.wait = wait
     }
     public static func markdownHTML(_ text: String) -> String {
@@ -67,12 +99,22 @@ public final class Pasteboard {
     /// source as written, while HTML's plain representation is its rendered text.
     public static func representations(_ text: String, format: String) throws -> [String: Data] {
         guard format == "md" || format == "html" else { return [plain: Data(text.utf8)] }
+        // Unlike MainThread's intentional fake/test fallback, AppKit HTML
+        // importing must never run inline on a worker without a main loop.
+        guard let made = try Backend.onMain({ try richRepresentations(text, format: format) }) else {
+            throw Errors.make("paste_write_failed")
+        }
+        return made
+    }
+    @MainActor
+    private static func richRepresentations(_ text: String, format: String) throws -> [String: Data] {
         let page = "<meta charset=\"utf-8\">" + (format == "md" ? markdownHTML(text) : text)
         let data = Data(page.utf8)
         guard let rich = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil),
               let rtfData = rich.rtf(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]) else { throw Errors.make("paste_write_failed") }
         return [html: data, rtf: rtfData, plain: Data((format == "md" ? text : rich.string).utf8)]
     }
+    @MainActor
     public static func snapshot(_ board: NSPasteboard) -> Snapshot {
         (board.pasteboardItems ?? []).map { item in
             var kinds: [String: Data] = [:]
@@ -80,12 +122,14 @@ public final class Pasteboard {
             return kinds
         }
     }
+    @MainActor
     public static func write(_ board: NSPasteboard, provider: LazyPasteData) -> Int? {
         let item = NSPasteboardItem()
         guard item.setDataProvider(provider, forTypes: provider.payload.keys.map { NSPasteboard.PasteboardType($0) }) else { return nil }
         board.prepareForNewContents(with: .currentHostOnly)
         return board.writeObjects([item]) ? board.changeCount : nil
     }
+    @MainActor
     public static func restore(_ board: NSPasteboard, saved: Snapshot, ours: Int) -> Bool {
         guard board.changeCount == ours else { return false } // That change is the person's.
         board.clearContents()
@@ -97,7 +141,7 @@ public final class Pasteboard {
         if !items.isEmpty { _ = board.writeObjects(items) }
         return true
     }
-    public static func wait(_ done: @escaping () -> Bool, timeout: TimeInterval, poll: TimeInterval = 0.01) -> Bool {
+    public static func wait(_ done: () -> Bool, timeout: TimeInterval, poll: TimeInterval = 0.01) -> Bool {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while !done() {
             if ProcessInfo.processInfo.systemUptime >= deadline { return false }
@@ -110,13 +154,27 @@ public final class Pasteboard {
     }
     // Actions supplies pid-targeted Command-V and watches the focused field for
     // the optional landed predicate. No focus is changed by this primitive.
+    // The global execution lock intentionally spans the entire transaction,
+    // including native main hops. Hooks may inspect payload/receipt state, but
+    // MUST NOT reenter paste/restoreSaved (even from a main-thread callback), or
+    // wait for another paste: that would wait on this transaction's own lock.
+    // Native helper transactions run on workers. Main must keep servicing their
+    // hops, not block acquiring this lock behind an active worker transaction;
+    // direct main-thread transactions require an otherwise idle paste executor.
+    // The native main loop must not start/stop during paste or restoreSaved:
+    // existing startup/shutdown ordering starts it before transactions and drains
+    // transactions before stopping it. An unavailable native restore currently
+    // maps to false (like a copy conflict), so cleanup deletes the recovery file.
+    // Follow-up: distinguish unavailable from conflict with a restore status API;
+    // lifecycle ordering must keep that unavailable-during-restore case unreachable.
+    // No other lock spans a hook, a main hop, a sleep or filesystem work.
     public func paste(_ text: String, format: String, sendPasteKey: () throws -> Void,
                       timeout: TimeInterval = Pasteboard.readTimeout, landed: (() -> Bool)? = nil) throws {
         Self.pasteLock.lock(); defer { Self.pasteLock.unlock() }
         let backend = board()
-        let provider = LazyPasteData(payload: try MainThread.callOnMain { try Self.representations(text, format: format) })
-        let saved = MainThread.callOnMain { backend.snapshot() }
-        guard let ours = MainThread.callOnMain({ backend.write(provider) }) else { throw Errors.make("paste_write_failed") }
+        let provider = LazyPasteData(payload: try Self.representations(text, format: format))
+        let saved = backend.snapshot()
+        guard let ours = backend.write(provider) else { throw Errors.make("paste_write_failed") }
         let path = stateDirectory().appendingPathComponent(Self.restoreFile)
         var restored = false
         var failure: HarnessError?
@@ -128,11 +186,11 @@ public final class Pasteboard {
             if !wait({ provider.wasRead }, timeout, 0.01) { failure = Errors.make("paste_not_read") }
             else if let landed { _ = wait(landed, Self.landTimeout, Self.landPoll) }
         } catch {
-            _ = MainThread.callOnMain { backend.restore(saved, ours) }
+            _ = backend.restore(saved, ours)
             try? FileManager.default.removeItem(at: path)
             throw error
         }
-        restored = MainThread.callOnMain { backend.restore(saved, ours) }
+        restored = backend.restore(saved, ours)
         try? FileManager.default.removeItem(at: path)
         if !restored { throw Errors.make("paste_conflict") }
         if let failure { throw failure }
@@ -160,18 +218,23 @@ public final class Pasteboard {
               let left = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let items = left["items"] as? Snapshot, let count = left["count"] as? Int else { return }
         let backend = board()
-        _ = MainThread.callOnMain { backend.restore(items, count) }
+        _ = backend.restore(items, count)
     }
 }
 
-public final class LazyPasteData: NSObject, NSPasteboardItemDataProvider {
+public final class LazyPasteData: NSObject, NSPasteboardItemDataProvider, Sendable {
     public let payload: [String: Data]
-    private let lock = NSLock()
-    private var read = false
-    public var wasRead: Bool { lock.lock(); defer { lock.unlock() }; return read }
+    private let read = OSAllocatedUnfairLock(initialState: false)
+    public var wasRead: Bool { read.withLock { $0 } }
     public init(payload: [String: Data]) { self.payload = payload }
+    /// Internal fake-backend receipt seam. Production marks only after setData;
+    /// constructing a provider, inspecting payload or writing a promise is not a read.
+    func markRead() { read.withLock { $0 = true } }
     public func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        // SDK provider callbacks deliver a caller-local item on the main thread.
+        // Do not dispatch or transfer that non-Sendable item to another owner.
+        assert(Thread.isMainThread, "NSPasteboard provider callback is expected on main")
         item.setData(payload[type.rawValue] ?? Data(), forType: type)
-        lock.lock(); read = true; lock.unlock()
+        markRead()
     }
 }

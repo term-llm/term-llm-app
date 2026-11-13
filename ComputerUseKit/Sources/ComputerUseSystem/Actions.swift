@@ -1,12 +1,13 @@
 import ComputerUseCore
 import CoreGraphics
 import Foundation
+import os
 
 /// How each tool reaches the app. Top rung first: AX action/attribute, events to
 /// the window's pid, then keys after a made-up activation. No rung moves the real
 /// pointer or brings the app forward. Only an explicitly requested Raise changes
 /// window order. Nothing here waits for the app afterwards or reads state.
-public final class Actions {
+public final class Actions: Sendable {
     // A hidden centre lands on the centre of the part that shows. Off also refuses
     // elements that are mostly in view.
     public static let clickVisiblePart = true
@@ -43,34 +44,38 @@ public final class Actions {
         "Scroll Right": ("AXHorizontalScrollBar", "AXIncrementPage"),
     ]
 
-    public enum Target {
+    public enum Target: Sendable {
         case line(Line)
         case point(CGPoint)
     }
     /// All event posting, app/window resolution and clocks can be replaced without
     /// granting permissions, displaying windows or touching a live application.
-    public struct System {
+    /// Configure a value copy before construction. An Actions instance retains an
+    /// immutable snapshot; callbacks may be called concurrently by app workers.
+    /// CGEvent and heterogeneous AX values remain synchronous operation-local
+    /// arguments/results, never payloads for `background` or other workers.
+    public struct System: Sendable {
         public var apps = Apps.shared
         public var windows = Windows.shared
         public var focus = Focus.shared
         public var presence = Presence.shared
         public var pasteboard = Pasteboard()
-        public var checkRecipient: (String) throws -> Void = { try Policy().checkRecipient($0) }
-        public var post: (pid_t, CGEvent, TimeInterval) -> Void = {
+        public var checkRecipient: @Sendable (String) throws -> Void = { try Policy().checkRecipient($0) }
+        public var post: @Sendable (pid_t, CGEvent, TimeInterval) -> Void = {
             Events.post($0, event: $1, delay: $2)
         }
-        public var heldFlags: () -> UInt64 = Events.heldFlags
-        public var presses: (String) throws -> [Keys.KeyPress] = { try Keys.presses($0) }
-        public var printedText: (UIElementRef) throws -> (String, [Int]?) = Tree.printedText
-        public var focusElement: (UIElementRef) -> Bool = Focus.focusElement
-        public var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
-        public var sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
-        public var background: (@escaping () -> Void) -> Void = {
-            DispatchQueue.global().async(execute: DispatchWorkItem(block: $0))
+        public var heldFlags: @Sendable () -> UInt64 = { Events.heldFlags() }
+        public var presses: @Sendable (String) throws -> [Keys.KeyPress] = { try Keys.presses($0) }
+        public var printedText: @Sendable (UIElementRef) throws -> (String, [Int]?) = { try Tree.printedText($0) }
+        public var focusElement: @Sendable (UIElementRef) -> Bool = { Focus.focusElement($0) }
+        public var now: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        public var sleep: @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+        public var background: @Sendable (@escaping @Sendable () -> Void) -> Void = {
+            DispatchQueue.global().async(execute: $0)
         }
         public init() {}
     }
-    public var system: System
+    public let system: System
     public init(system: System = .init()) { self.system = system }
     private var ax: AXBackend { AX.backend }
     private func get(_ e: UIElementRef, _ name: String) -> Any? { try? ax.get(e, name) }
@@ -304,9 +309,12 @@ public final class Actions {
         system.background { result.run { try backend.perform(e, action) } }
         if try system.windows.waitForMenu(app.target, opener: e) != nil { return }
         result.wait(Self.pressJoin)
-        if let error = result.error { throw error }
+        // Sample completion and failure together: a late failure must not turn
+        // into a successful press between separate error/finished reads.
+        let outcome = result.outcome
+        if let outcome { try outcome.get() }
         let menus = children(e).filter { get($0, "AXRole") as? String == "AXMenu" }
-        if !result.finished || !menus.isEmpty {
+        if outcome == nil || !menus.isEmpty {
             for menu in menus { try? ax.perform(menu, "AXCancel") }
             throw Errors.make("menu_click_failed")
         }
@@ -643,26 +651,17 @@ public final class Actions {
 }
 
 /// State shared with the AX menu worker. A timeout never reads unsynchronized data.
-private final class PendingPress {
+private final class PendingPress: Sendable {
+    // The condition coordinates notification/wait, while typed storage owns all
+    // mutations. Acquire condition before state when both are needed. Work and
+    // error construction run outside both locks, including after caller timeout.
     private let condition = NSCondition()
-    private var done = false
-    private var failure: Error?
-    var finished: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return done
-    }
-    var error: Error? {
-        condition.lock()
-        defer { condition.unlock() }
-        return failure
-    }
+    private let state = OSAllocatedUnfairLock<Result<Void, Error>?>(initialState: nil)
+    var outcome: Result<Void, Error>? { state.withLock { $0 } }
     func run(_ work: () throws -> Void) {
-        var caught: Error?
-        do { try work() } catch { caught = error }
+        let outcome = Result(catching: work)
         condition.lock()
-        failure = caught
-        done = true
+        state.withLock { $0 = outcome }
         condition.broadcast()
         condition.unlock()
     }
@@ -670,6 +669,6 @@ private final class PendingPress {
         let deadline = Date().addingTimeInterval(seconds)
         condition.lock()
         defer { condition.unlock() }
-        while !done && Date() < deadline { _ = condition.wait(until: deadline) }
+        while outcome == nil && Date() < deadline { _ = condition.wait(until: deadline) }
     }
 }

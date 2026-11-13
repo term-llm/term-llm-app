@@ -1,6 +1,7 @@
 import CoreFoundation
 import CoreGraphics
 import Foundation
+import os
 
 // Shared data shapes (macos-harness model.py). Nothing here imports AppKit.
 
@@ -72,7 +73,7 @@ public struct AppKind: Equatable, Sendable {
 }
 
 /// Global screen points, origin top left, signed. Nothing is clamped to zero.
-public struct WindowRef {
+public struct WindowRef: Sendable {
     /// The window's accessibility element.
     public var element: UIElementRef
     /// Window server id, 0 when unknown.
@@ -91,82 +92,197 @@ public struct WindowRef {
     }
 }
 
+// Typed replacement is restricted to Sendable storage and fields. Keeping the
+// displaced value alive until after unlocking also permits reentrant deinit of a
+// handle, observation, or a capture owned by an @Sendable cancellation closure.
+extension OSAllocatedUnfairLock where State: Sendable {
+    func exchangeModelValue<Value: Sendable>(_ key: WritableKeyPath<State, Value> & Sendable, with value: Value) -> Value {
+        withLock { state in
+            let old = state[keyPath: key]
+            state[keyPath: key] = value
+            return old
+        }
+    }
+
+    func replaceModelValue<Value: Sendable>(_ key: WritableKeyPath<State, Value> & Sendable, with value: Value) {
+        let old = exchangeModelValue(key, with: value)
+        withExtendedLifetime(old) {}
+    }
+}
+
 /// One printed element line, before it has a number.
-public final class Line {
-    public var depth: Int
+/// Accessors are synchronized, not a multi-field or read-modify-write transaction.
+/// The canonical app FIFO still owns edits, numbering, and rendering as a whole.
+public final class Line: Sendable {
+    // A snapshot copies value fields and retains only checked, synchronized model
+    // references (or the narrow SDK handle). It does not deep-copy Line identity.
+    struct Snapshot: Sendable {
+        var depth: Int
+        var text: String
+        var element: UIElementRef?
+        var role: String
+        var detail: String
+        var name: String
+        var value: String
+        var match: [String]
+        var settable: Bool
+        var actions: [(label: String, action: String)]
+        var id: Int?
+    }
+    private let state: OSAllocatedUnfairLock<Snapshot>
+    func snapshot() -> Snapshot { state.withLock { $0 } }
+    // Used by Revisions' validated commit. Return the displaced handle so it is
+    // retained beyond BOTH the Line lock and the enclosing Revisions state lock.
+    func exchangeElement(_ element: UIElementRef?) -> UIElementRef? {
+        state.exchangeModelValue(\.element, with: element)
+    }
+
+    public var depth: Int {
+        get { state.withLock { $0.depth } }
+        set { state.replaceModelValue(\.depth, with: newValue) }
+    }
     /// Everything after "<id> ": role, state group, fields.
-    public var text: String
+    public var text: String {
+        get { state.withLock { $0.text } }
+        set { state.replaceModelValue(\.text, with: newValue) }
+    }
     /// Live accessibility element. Compare with `isSame`, never by hash.
-    public var element: UIElementRef?
+    public var element: UIElementRef? {
+        get { state.withLock { $0.element } }
+        set { state.replaceModelValue(\.element, with: newValue) }
+    }
     /// Raw accessibility role, used for pairing and refetch.
-    public var role: String
+    public var role: String {
+        get { state.withLock { $0.role } }
+        set { state.replaceModelValue(\.role, with: newValue) }
+    }
     /// Printed after the text with one space. Ignored when two states are compared.
-    public var detail: String
+    public var detail: String {
+        get { state.withLock { $0.detail } }
+        set { state.replaceModelValue(\.detail, with: newValue) }
+    }
     /// Title, else description, used for refetch.
-    public var name: String
+    public var name: String {
+        get { state.withLock { $0.name } }
+        set { state.replaceModelValue(\.name, with: newValue) }
+    }
     /// Printed value. Refetch may ignore it.
-    public var value: String
+    public var value: String {
+        get { state.withLock { $0.value } }
+        set { state.replaceModelValue(\.value, with: newValue) }
+    }
     /// Refetch key, filled by the tree read, compared as one tuple:
     /// (role, subrole, title, description, identifier, help, placeholder, url).
     /// The value is compared apart.
-    public var match: [String]
-    public var settable: Bool
+    public var match: [String] {
+        get { state.withLock { $0.match } }
+        set { state.replaceModelValue(\.match, with: newValue) }
+    }
+    public var settable: Bool {
+        get { state.withLock { $0.settable } }
+        set { state.replaceModelValue(\.settable, with: newValue) }
+    }
     /// Printed label -> accessibility action name, in printed order.
-    public var actions: [(label: String, action: String)]
+    public var actions: [(label: String, action: String)] {
+        get { state.withLock { $0.actions } }
+        set { state.replaceModelValue(\.actions, with: newValue) }
+    }
     /// Set by the numbering (elements).
-    public var id: Int?
+    public var id: Int? {
+        get { state.withLock { $0.id } }
+        set { state.replaceModelValue(\.id, with: newValue) }
+    }
 
     public init(depth: Int, text: String, element: UIElementRef?, role: String, detail: String = "",
                 name: String = "", value: String = "", match: [String] = [], settable: Bool = false,
                 actions: [(label: String, action: String)] = [], id: Int? = nil) {
-        self.depth = depth
-        self.text = text
-        self.element = element
-        self.role = role
-        self.detail = detail
-        self.name = name
-        self.value = value
-        self.match = match
-        self.settable = settable
-        self.actions = actions
-        self.id = id
+        state = OSAllocatedUnfairLock(initialState: Snapshot(
+            depth: depth, text: text, element: element,
+            role: role, detail: detail, name: name,
+            value: value, match: match, settable: settable,
+            actions: actions, id: id))
     }
 }
 
 /// What one state read saw, before numbering and diffing.
-public final class Capture {
+/// Accessors synchronize ownership; the app FIFO owns logical multi-field changes.
+/// Referenced Lines remain the very same synchronized objects in all three blocks.
+public final class Capture: Sendable {
+    // A shallow read of this Capture's value fields and synchronized Line
+    // references, not a frozen tree or a multi-object transaction. The app FIFO
+    // still owns coordinated field changes; no Line identity is copied/replaced.
+    struct Snapshot: Sendable {
+        var windowTitle: String
+        var appName: String
+        var windowID: UInt32
+        var lines: [Line]
+        var focused: Line?
+        var selectedText: String?
+        var selected: [Line]
+        var menuOpen: Bool
+        var loading: Bool
+        var url: String?
+    }
+    private let state: OSAllocatedUnfairLock<Snapshot>
+    func snapshot() -> Snapshot { state.withLock { $0 } }
+
     /// Header title. "" and "Unknown" are real values.
-    public var windowTitle: String
-    public var appName: String
-    public var windowID: UInt32
+    public var windowTitle: String {
+        get { state.withLock { $0.windowTitle } }
+        set { state.replaceModelValue(\.windowTitle, with: newValue) }
+    }
+    public var appName: String {
+        get { state.withLock { $0.appName } }
+        set { state.replaceModelValue(\.appName, with: newValue) }
+    }
+    public var windowID: UInt32 {
+        get { state.withLock { $0.windowID } }
+        set { state.replaceModelValue(\.windowID, with: newValue) }
+    }
     /// The main tree in depth-first order. Parent and child come from depth.
-    public var lines: [Line]
+    public var lines: [Line] {
+        get { state.withLock { $0.lines } }
+        set { state.replaceModelValue(\.lines, with: newValue) }
+    }
     /// The focused element's line. Usually one of `lines` (same element); it may be
     /// one that is not, which the numbering then numbers after the main tree.
-    public var focused: Line?
-    public var selectedText: String?
+    public var focused: Line? {
+        get { state.withLock { $0.focused } }
+        set { state.replaceModelValue(\.focused, with: newValue) }
+    }
+    public var selectedText: String? {
+        get { state.withLock { $0.selectedText } }
+        set { state.replaceModelValue(\.selectedText, with: newValue) }
+    }
     /// The selection block. Same rule as `focused`.
-    public var selected: [Line]
+    public var selected: [Line] {
+        get { state.withLock { $0.selected } }
+        set { state.replaceModelValue(\.selected, with: newValue) }
+    }
     /// `lines` hold only the open menu.
-    public var menuOpen: Bool
+    public var menuOpen: Bool {
+        get { state.withLock { $0.menuOpen } }
+        set { state.replaceModelValue(\.menuOpen, with: newValue) }
+    }
     /// A loading sign was found. Settle reads this.
-    public var loading: Bool
+    public var loading: Bool {
+        get { state.withLock { $0.loading } }
+        set { state.replaceModelValue(\.loading, with: newValue) }
+    }
     /// The window's page URL when the app is a browser. The URL policy reads it.
-    public var url: String?
+    public var url: String? {
+        get { state.withLock { $0.url } }
+        set { state.replaceModelValue(\.url, with: newValue) }
+    }
 
     public init(windowTitle: String, appName: String, windowID: UInt32, lines: [Line],
                 focused: Line? = nil, selectedText: String? = nil, selected: [Line] = [],
                 menuOpen: Bool = false, loading: Bool = false, url: String? = nil) {
-        self.windowTitle = windowTitle
-        self.appName = appName
-        self.windowID = windowID
-        self.lines = lines
-        self.focused = focused
-        self.selectedText = selectedText
-        self.selected = selected
-        self.menuOpen = menuOpen
-        self.loading = loading
-        self.url = url
+        state = OSAllocatedUnfairLock(initialState: Snapshot(
+            windowTitle: windowTitle, appName: appName, windowID: windowID,
+            lines: lines, focused: focused, selectedText: selectedText,
+            selected: selected, menuOpen: menuOpen, loading: loading,
+            url: url))
     }
 }
 

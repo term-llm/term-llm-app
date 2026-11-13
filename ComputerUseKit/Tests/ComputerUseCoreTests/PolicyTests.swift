@@ -1,3 +1,4 @@
+import os
 import XCTest
 
 @testable import ComputerUseCore
@@ -61,6 +62,81 @@ final class PolicyTests: XCTestCase {
         for bundle in Policy.terminals {
             XCTAssertEqual(try policy.evaluate(agent: agent, target: target(bundle)).risk, .high)
         }
+    }
+    func testConfiguredPolicyCanBeCapturedByConcurrentSendableCallbacks() throws {
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let configuredPolicy = Policy(
+            managedFile: managed, userFile: user,
+            appKind: { target in
+                calls.withLock { $0 += 1 }
+                return AppKind(http: target.bundleID == "custom.browser")
+            })
+        let agent = AgentSession(key: "concurrent-policy")
+        let target = target("custom.browser")
+        let configuredActions: @Sendable () throws -> PolicyDecision = {
+            try configuredPolicy.checkRecipient("recipient")
+            return try configuredPolicy.decide(agent: agent, target: target)
+        }
+        let decisions = OSAllocatedUnfairLock<[PolicyDecision]>(initialState: [])
+        let failures = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let snapshots = OSAllocatedUnfairLock<[Policy.Configuration]>(initialState: [])
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in
+            do {
+                let decision = try configuredActions()
+                let config = try configuredPolicy.load()
+                decisions.withLock { $0.append(decision) }
+                snapshots.withLock { $0.append(config) }
+            } catch { failures.withLock { $0.append(String(describing: error)) } }
+        }
+        XCTAssertTrue(failures.withLock { $0 }.isEmpty)
+        XCTAssertEqual(calls.withLock { $0 }, 32)
+        XCTAssertEqual(decisions.withLock { $0 }.count, 32)
+        for decision in decisions.withLock({ $0 }) {
+            XCTAssertEqual(decision.decision, .allowed)
+            XCTAssertEqual(decision.risk, .high)
+            XCTAssertEqual(decision.warning, Policy.warning)
+        }
+        XCTAssertEqual(snapshots.withLock { $0 }.count, 32)
+        XCTAssertTrue(snapshots.withLock { $0.allSatisfy(\.strict) })
+
+        // The captured object still reloads both files, rather than caching a
+        // configuration or substituting a default Policy without custom appKind.
+        try write("[bundle_ids]\n'custom.browser' = 'deny'")
+        error("denied_by_policy") { _ = try configuredActions() }
+        XCTAssertEqual(calls.withLock { $0 }, 33)
+        try write("[bundle_ids]\n'recipient' = 'deny'")
+        error("denied_by_policy") { _ = try configuredActions() }
+        XCTAssertEqual(calls.withLock { $0 }, 33)
+        try write("strict = 1", managed)
+        error("policy_unreadable") { _ = try configuredActions() }
+    }
+    func testAppKindCanReenterPolicyLoadAndRecipientChecks() throws {
+        let callback = OSAllocatedUnfairLock<(@Sendable () throws -> Void)?>(initialState: nil)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let failures = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let configuredPolicy = Policy(
+            managedFile: managed, userFile: user,
+            appKind: { _ in
+                do { try callback.withLock { $0 }?() }
+                catch { failures.withLock { $0.append(String(describing: error)) } }
+                return AppKind(http: true)
+            })
+        callback.withLock {
+            $0 = {
+                _ = try configuredPolicy.load()
+                try configuredPolicy.checkRecipient("recipient")
+                calls.withLock { $0 += 1 }
+            }
+        }
+        defer { callback.withLock { $0 = nil } }
+        let agent = AgentSession(key: "reentrant-policy")
+        let target = target("custom.browser")
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            do { _ = try configuredPolicy.decide(agent: agent, target: target) }
+            catch { failures.withLock { $0.append(String(describing: error)) } }
+        }
+        XCTAssertTrue(failures.withLock { $0 }.isEmpty)
+        XCTAssertEqual(calls.withLock { $0 }, 16)
     }
     func testHostAndHelperForbidden() throws {
         XCTAssertEqual(

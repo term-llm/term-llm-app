@@ -6,7 +6,12 @@ import Foundation
 /// "modified": "2026-11-10T08:00:00Z"}. Keys are bundle IDs, values UTC ISO-8601
 /// dates. Removing a key removes that persistent grant. Read on every check so
 /// edits take effect immediately. Atomic replacement, directory 0700/file 0600.
-public final class ApprovalStore {
+/// Sendable describes only this immutable URL owner: operations have local
+/// buffers/formatters and no shared mutable memory. Atomic replacement prevents
+/// partial JSON publication, but read/modify/write is NOT a transaction, even
+/// between instances in one process. Concurrent writers (including the main app
+/// and helper) can lose updates; callers must not treat this as a grant ledger.
+public final class ApprovalStore: Sendable {
     public let file: URL
     public init(directory: URL = Paths.stateDirectory()) {
         file = directory.appendingPathComponent("approvals.json")

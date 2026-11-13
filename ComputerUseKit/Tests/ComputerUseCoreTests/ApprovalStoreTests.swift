@@ -79,4 +79,48 @@ final class ApprovalStoreTests: XCTestCase {
             try FileManager.default.attributesOfItem(atPath: store.file.path)[.type]
                 as? FileAttributeType, .typeRegular)
     }
+    // One writer deliberately: Sendable does not promise transactional merging
+    // of concurrent read/modify/write operations, in this process or another.
+    func testSharedStoreSingleWriterPublishesCompleteFilesToConcurrentReaders() throws {
+        let store = store!
+        try store.save(bundleID: "app")
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            defer { group.leave() }
+            do {
+                for index in 0..<40 {
+                    try store.save(bundleID: "app", now: Date(timeIntervalSince1970: Double(index)))
+                }
+            } catch { XCTFail("Private store write failed: \(error)") }
+        }
+        for _ in 0..<4 {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                for _ in 0..<80 {
+                    XCTAssertEqual(Set(store.always().keys), ["app"])
+                }
+            }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(store.always(), ["app": "1970-01-01T00:00:39Z"])
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: store.file.path)[.posixPermissions]
+                as? NSNumber, NSNumber(value: 0o600))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["approvals.json"])
+    }
+    func testSessionLivenessCallbackCanReenterImmutableStore() throws {
+        let store = store!
+        try store.save(bundleID: "app")
+        try store.saveSession(agent: "named", bundleID: "app", alive: { _ in true })
+        try store.saveSession(agent: "second", bundleID: "app", alive: { _ in
+            XCTAssertNotNil(store.always()["app"])
+            return true
+        })
+        XCTAssertEqual(store.sessions(alive: { _ in true }), [
+            .init(agent: "named", bundleID: "app"), .init(agent: "second", bundleID: "app"),
+        ])
+    }
+
 }

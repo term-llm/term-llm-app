@@ -3,28 +3,32 @@ import ComputerUseSystem
 import CoreFoundation
 import Darwin
 import Foundation
+import os
 
 public enum ComputerUseHelperInfo { public static let version = ComputerUseVersion.current }
 
 /// Pluggable permission hooks keep the shell and main app free of TCC requests.
 /// `allow` runs on a worker: use MainThread for any permission UI it needs.
-public struct HelperConfiguration {
+public struct HelperConfiguration: Sendable {
     public var environment: [String: String]
-    public var grants: () -> [String: Bool]
-    public var onStarted: () -> Void = {}
-    public var onMaintenance: () -> Void = {}
+    public var grants: @Sendable () -> [String: Bool]
+    public var onStarted: @Sendable () -> Void = {}
+    public var onMaintenance: @Sendable () -> Void = {}
     /// Asked every maintenance tick while no call runs: true makes this helper exit
     /// so its owning app starts a fresh one (a grant macOS reads only at launch).
-    public var wantsRelaunch: () -> Bool = { false }
+    public var wantsRelaunch: @Sendable () -> Bool = { false }
     /// Running count is aggregated here; ActivityBanner owns the same 3 s grace.
-    /// Called under the state lock: enqueue UI work, never wait or reenter server.
-    public var onWorking: (Bool) -> Void = { _ in }
-    public var installStop: (@escaping @Sendable () -> Void) -> Void = { _ in }
-    public var allow: (String) throws -> Void
+    /// Ordered outside bookkeeping locks. May reenter status/Stop; enqueue shutdown
+    /// rather than synchronously waiting for calls or UI work.
+    public var onWorking: @Sendable (Bool) -> Void = { _ in }
+    /// Installs a Sendable, enqueue-only person/host Stop hook. The callback
+    /// supplied by HelperMain never synchronously joins server or UI workers.
+    public var installStop: @Sendable (@escaping @Sendable () -> Void) -> Void = { _ in }
+    public var allow: @Sendable (String) throws -> Void
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        grants: @escaping () -> [String: Bool] = { [:] },
-        allow: @escaping (String) throws -> Void = { _ in
+        grants: @escaping @Sendable () -> [String: Bool] = { [:] },
+        allow: @escaping @Sendable (String) throws -> Void = { _ in
             throw Errors.serverError("Permission requests are not implemented yet in this Computer Use shell.")
         }
     ) {
@@ -35,32 +39,67 @@ public struct HelperConfiguration {
 }
 
 /// One helper per socket. `start`/`stop` also work without AppKit for socket tests.
-public final class HelperServer {
+public final class HelperServer: Sendable {
     public let sessions: Sessions
+    /// A value-builder snapshot: later mutations of the caller's builder cannot
+    /// change the dependency graph used by workers.
     public let configuration: HelperConfiguration
     private let executor: ToolExecutor
     private let condition = NSCondition()
     private let workers = DispatchGroup()
+    // Covers startup from enrollment through either rollback or accept-loop exit.
     private let accepting = DispatchGroup()
+    private let startupExecution = NSLock()
+    private let persistenceExecution = NSLock()
+    private let connectionExecution = NSLock()
     private let awake = DisplayAwake()
     private let log: HelperLog
-    private var listener: Int32 = -1
-    private var lockFD: Int32 = -1
-    private var connections: Set<Int32> = []
-    private var queues: [String: AppFIFO] = [:]
-    private var running = 0
-    private var active: [String: Int] = [:]
-    private var recentAgents: [String: Date] = [:]
-    private var lastCall = Date.distantPast
+    private struct State: Sendable {
+        var listener: Int32 = -1
+        var lockFD: Int32 = -1
+        var connections: Set<Int32> = []
+        var queues: [String: AppFIFO] = [:]
+        var running = 0
+        var active: [String: Int] = [:]
+        var recentAgents: [String: Date] = [:]
+        var lastCall = Date.distantPast
+        var stopping = false
+        var paused = false
+        var pauseGeneration = 0
+        var stopGeneration = 0
+        var started = false
+        var finished = false
+        var onShutdown: (@Sendable () -> Void)?
+        var workingEffects: [Bool] = []
+        var drainingWorking = false
+    }
+    // Checked storage protects the entire typed graph. The condition coordinates
+    // waiters; always take it BEFORE storage, and never wait with storage locked.
+    private let storage: OSAllocatedUnfairLock<State>
     private let created = Date()
-    private var stopping = false
-    private var paused: Bool
-    private var pauseGeneration = 0
-    private var started = false
-    private var finished = false
-    private let state: URL
+    private let stateDirectory: URL
     private let socketPath: String
-    public var onShutdown: (() -> Void)?
+    private let contextKey = "ComputerUseHelper.worker." + UUID().uuidString
+
+    private func withState<T: Sendable>(_ body: @Sendable (inout State) throws -> T) rethrows -> T {
+        condition.lock()
+        defer { condition.unlock() }
+        return try storage.withLock(body)
+    }
+
+    /// Replacing or retiring a closure releases its captured graph outside both
+    /// locks. Assignments after shutdown are retired, not invoked a second time.
+    public var onShutdown: (@Sendable () -> Void)? {
+        get { withState { $0.onShutdown } }
+        set {
+            let previous = withState { state in
+                let previous = state.onShutdown
+                if !state.finished { state.onShutdown = newValue }
+                return previous
+            }
+            withExtendedLifetime(previous) {}
+        }
+    }
 
     public init(
         executor: ToolExecutor = StubToolExecutor(), configuration: HelperConfiguration = HelperConfiguration(),
@@ -70,129 +109,177 @@ public final class HelperServer {
         self.configuration = configuration
         self.sessions = sessions
         log = HelperLog(environment: configuration.environment)
-        state = Paths.stateDirectory(env: configuration.environment)
+        stateDirectory = Paths.stateDirectory(env: configuration.environment)
         socketPath = Paths.socketPath(env: configuration.environment)
-        paused = FileManager.default.fileExists(atPath: state.appendingPathComponent("paused").path)
+        storage = OSAllocatedUnfairLock(initialState: State(
+            paused: FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("paused").path)))
     }
-    deinit { if lockFD >= 0 { close(lockFD) } }
+    deinit {
+        let fd = storage.withLock { $0.lockFD }
+        if fd >= 0 { close(fd) }
+    }
 
     /// Throws EWOULDBLOCK if a helper already owns this socket. Never steals its lock.
     public func start() throws {
-        condition.lock()
-        defer { condition.unlock() }
-        guard !started else { return }
-        guard !stopping else { throw WireError.closed }
-        try UnixSocket.makeOwnFolder(state.path)
+        // Concurrent starts are idempotent, but flock/filesystem waits never hold
+        // the bookkeeping condition used by Stop and status.
+        startupExecution.lock()
+        defer { startupExecution.unlock() }
+        let begin = try withState { state in
+            guard !state.started else { return false }
+            guard !state.stopping else { throw WireError.closed }
+            accepting.enter()
+            return true
+        }
+        guard begin else { return }
+        var handedOff = false
+        defer { if !handedOff { accepting.leave() } }
+        // Core allocates before validating a socket address, including probes.
+        // Reject invalid configuration before any allocation or filesystem work.
+        let address = sockaddr_un()
+        guard socketPath.utf8.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw WireError.system("socket path too long", ENAMETOOLONG)
+        }
+        try UnixSocket.makeOwnFolder(stateDirectory.path)
         try UnixSocket.makeOwnFolder((socketPath as NSString).deletingLastPathComponent)
         let lockPath = Paths.lockPath(env: configuration.environment)
-        lockFD = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let lockFD = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard lockFD >= 0 else { throw WireError.system("open lock", errno) }
+        var ownsLock = false
+        var listener: Int32 = -1
+        defer {
+            if !handedOff {
+                if listener >= 0 { close(listener); unlink(socketPath) }
+                if ownsLock { flock(lockFD, LOCK_UN) }
+                close(lockFD)
+            }
+        }
         var info = stat()
         guard fstat(lockFD, &info) == 0, info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFREG else {
-            close(lockFD)
-            lockFD = -1
             throw WireError.system("lock ownership", EPERM)
         }
         let until = Date().addingTimeInterval(5)
         while flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
+            if isStopping { throw WireError.closed }
             if let probe = try? UnixSocket.connect(socketPath, timeout: 0.1) {
                 close(probe)
-                close(lockFD)
-                lockFD = -1
                 throw WireError.system("helper already running", EWOULDBLOCK)
             }
-            if Date() >= until {
-                close(lockFD)
-                lockFD = -1
-                throw WireError.system("flock", EWOULDBLOCK)
-            }
+            if Date() >= until { throw WireError.system("flock", EWOULDBLOCK) }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        do { listener = try UnixSocket.listen(socketPath) } catch {
-            close(lockFD)
-            lockFD = -1
+        ownsLock = true
+        guard !isStopping else { throw WireError.closed }
+        do {
+            listener = try UnixSocket.listen(socketPath)
+        } catch {
+            // Only this error occurs after a successful bind. Core has already
+            // closed its fd, but the newly bound path still needs rollback while
+            // we own flock. Never unlink on lock, address, socket or bind failure.
+            if case WireError.system("listen", _) = error { unlink(socketPath) }
             throw error
         }
-        started = true
+        try withState { [listener] state in
+            guard !state.stopping else { throw WireError.closed }
+            state.listener = listener
+            state.lockFD = lockFD
+            state.started = true
+        }
         log.write("helper started pid=\(getpid())")
-        accepting.enter()
-        Thread.detachNewThread { [self] in acceptLoop() }
+        handedOff = true
+        let fd = listener
+        Thread.detachNewThread { [self] in acceptLoop(fd) }
     }
 
     public var status: [String: Any] {
-        condition.lock()
-        let value: [String: Any] = [
-            "running": running, "working": running > 0 || lastCall.timeIntervalSinceNow > -3,
-            "paused": paused,
-        ]
-        condition.unlock()
-        return value.merging(["grants": configuration.grants()]) { _, new in new }
+        let snapshot = withState { state in
+            (state.running, state.running > 0 || state.lastCall.timeIntervalSinceNow > -3, state.paused)
+        }
+        return ["running": snapshot.0, "working": snapshot.1, "paused": snapshot.2,
+                "grants": configuration.grants()]
     }
     func note(_ line: String) { log.write(line) }
-    public var hasRunningCalls: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return running > 0
-    }
-    public var isStopping: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return stopping
-    }
+    public var hasRunningCalls: Bool { withState { $0.running > 0 } }
+    public var isStopping: Bool { withState { $0.stopping } }
     /// Standalone development helpers may idle out; an app-owned helper remains
     /// available while the feature is enabled and its owning app is alive.
     public var isIdle: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return running == 0 && max(lastCall, created).timeIntervalSinceNow < -15 * 60
+        withState { $0.running == 0 && max($0.lastCall, created).timeIntervalSinceNow < -15 * 60 }
     }
 
-    /// Stops accepting, cancels calls, drains workers, cleans executor state, then
-    /// removes the socket and releases flock. Keep AppKit running until this returns.
+    /// Synchronous executor/effect callbacks must enqueue shutdown, not self-join.
+    /// This guard also makes an accidental direct stop on a worker safe.
+    private func inWorkerContext<T>(_ work: () throws -> T) rethrows -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[contextKey]
+        dictionary[contextKey] = true
+        defer {
+            if let previous { dictionary[contextKey] = previous }
+            else { dictionary.removeObject(forKey: contextKey) }
+        }
+        return try work()
+    }
+
+    /// Stops accepting, cancels calls, drains workers/reaping, cleans executor
+    /// state, then releases socket/flock. Keep AppKit servicing until it returns.
     public func stop() {
+        if Thread.current.threadDictionary[contextKey] != nil {
+            if !withState({ $0.finished }) { Thread.detachNewThread { [self] in stop() } }
+            return
+        }
         condition.lock()
-        if stopping {
-            while !finished { condition.wait() }
+        if storage.withLock({ $0.stopping }) {
+            while !storage.withLock({ $0.finished }) { condition.wait() }
             condition.unlock()
             return
         }
-        stopping = true
-        let fd = listener
+        let cancellation = storage.withLock { state in
+            state.stopping = true
+            state.stopGeneration += 1
+            state.recentAgents = state.recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
+            return (state.listener, Set(state.active.keys).union(state.recentAgents.keys))
+        }
         condition.unlock()
-        // A listener shutdown wakes accept; no fd is closed/reused under a worker.
-        if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
+        inWorkerContext {
+            sessions.stop(cancellation.1)
+            executor.cancel(agentKeys: cancellation.1)
+        }
+        if cancellation.0 >= 0 { Darwin.shutdown(cancellation.0, SHUT_RDWR) }
         accepting.wait()
         condition.lock()
-        // Frame readers are not executing a tool. Wake them now; running executors
-        // see abandoned() and may still send a final cancellation reply.
-        while running > 0 { condition.wait() }
-        let idle = connections
+        while storage.withLock({ $0.running > 0 }) { condition.wait() }
         condition.unlock()
+        // Closing workers and this shutdown snapshot share an execution gate, so
+        // an fd cannot be closed/reused between the snapshot and shutdown().
+        connectionExecution.lock()
+        let idle = withState { $0.connections }
         for fd in idle { Darwin.shutdown(fd, SHUT_RDWR) }
+        connectionExecution.unlock()
         workers.wait()
-        executor.shutdown()
-        if started { log.write("helper stopped") }
-        condition.lock()
-        if listener >= 0 {
-            close(listener)
-            listener = -1
+        inWorkerContext { executor.shutdown() }
+        let resources = withState { state in
+            let result = (state.listener, state.lockFD, state.started)
+            state.listener = -1
+            state.lockFD = -1
+            return result
         }
-        if started { unlink(socketPath) }
-        if lockFD >= 0 {
-            flock(lockFD, LOCK_UN)
-            close(lockFD)
-            lockFD = -1
+        if resources.2 { log.write("helper stopped") }
+        if resources.0 >= 0 { close(resources.0) }
+        if resources.2 { unlink(socketPath) }
+        if resources.1 >= 0 { flock(resources.1, LOCK_UN); close(resources.1) }
+        let callback = withState { state in
+            state.finished = true
+            let callback = state.onShutdown
+            state.onShutdown = nil
+            condition.broadcast()
+            return callback
         }
-        finished = true
-        condition.broadcast()
-        condition.unlock()
-        onShutdown?()
+        callback?()
     }
 
-    private func acceptLoop() {
+    private func acceptLoop(_ listener: Int32) {
         defer { accepting.leave() }
         while !isStopping {
-            // Poll also handles a shutdown on platforms where accept is not woken.
             var poller = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
             guard poll(&poller, 1, 200) > 0 else { continue }
             if isStopping { return }
@@ -208,20 +295,23 @@ public final class HelperServer {
             var timeout = timeval(tv_sec: 1, tv_usec: 0)
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-            condition.lock()
-            connections.insert(fd)
-            workers.enter()
-            condition.unlock()
-            Thread.detachNewThread { [self] in handle(fd) }
+            let enrolled = withState { state in
+                guard !state.stopping else { return false }
+                state.connections.insert(fd)
+                workers.enter()
+                return true
+            }
+            guard enrolled else { close(fd); return }
+            Thread.detachNewThread { [self] in inWorkerContext { handle(fd) } }
         }
     }
 
     private func handle(_ fd: Int32) {
         defer {
-            condition.lock()
-            connections.remove(fd)
+            connectionExecution.lock()
+            _ = withState { $0.connections.remove(fd) }
             close(fd)
-            condition.unlock()
+            connectionExecution.unlock()
             workers.leave()
         }
         do {
@@ -250,9 +340,7 @@ public final class HelperServer {
         // A stuck executor must not hold the single-instance lock forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + Limits.callTimeout + 10) { [weak self] in
             guard let self else { return }
-            self.condition.lock()
-            let stuck = !self.finished
-            self.condition.unlock()
+            let stuck = self.withState { !$0.finished }
             if stuck { _exit(1) }
         }
         Thread.detachNewThread { [self] in stop() }
@@ -260,9 +348,20 @@ public final class HelperServer {
 
     /// Public for deterministic authentication/ancestry tests; real callers enter
     /// through the socket, whose kernel supplies pid and uid (never request params).
+    /// Direct control-method callers are not socket-worker enrollments; this seam
+    /// does not make arbitrary control callbacks part of the shutdown drain.
     public func answer(
         _ message: [String: Any], peerPID: pid_t, peerUID: uid_t,
-        abandoned: @escaping () -> Bool = { false }
+        abandoned: @escaping @Sendable () -> Bool = { false }
+    ) -> [String: Any] {
+        inWorkerContext {
+            answerOnWorker(message, peerPID: peerPID, peerUID: peerUID, abandoned: abandoned)
+        }
+    }
+
+    private func answerOnWorker(
+        _ message: [String: Any], peerPID: pid_t, peerUID: uid_t,
+        abandoned: @escaping @Sendable () -> Bool
     ) -> [String: Any] {
         let id = message["id"] ?? NSNull()
         guard peerUID == getuid() else { return Wire.error(id: id, name: "notAuthenticated") }
@@ -317,7 +416,7 @@ public final class HelperServer {
         // Control methods are for the main app/person; only TOOL requests require
         // term-llm ancestry. A same-uid process may always Stop/Pause the helper.
         guard
-            FileManager.default.fileExists(atPath: state.appendingPathComponent("allow-any-caller").path)
+            FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("allow-any-caller").path)
                 || sessions.callerAllowed(peerPID)
         else { return failed(Errors.make("caller_refused")) }
         guard params["callerApi"] as? String == Limits.apiVersion,
@@ -341,46 +440,31 @@ public final class HelperServer {
             // `parsed.name` comes from the static table, never from user content.
             defer { log.write("call \(parsed.name) durationMs=\(Int(Date().timeIntervalSince(began) * 1000))") }
             let env = Wire.passed(params["env"] as? [String: String] ?? [:])
-            condition.lock()
-            if stopping {
-                condition.unlock()
-                return Wire.error(id: id, name: "stopping")
+            let kind = AdmissionKind(name: parsed.name)
+            let lifecycle = kind == .lifecycle
+            let admission: Admission
+            do {
+                admission = try admit(peerPID: peerPID, environment: env, kind: kind)
+            } catch let refusal as AdmissionRefusal {
+                // Only a refused admission certifies that no call effects ran.
+                // Running-call cancellation must remain a non-retryable result.
+                return refusal.wireReply(id: id)
             }
-            let agent = sessions.agent(peerPID: peerPID, env: env)
-            let pauseAtStart = pauseGeneration
-            let cancelledAtStart = sessions.cancellationGeneration(agent)
-            running += 1
-            active[agent.key, default: 0] += 1
-            lastCall = Date()
-            configuration.onWorking(true)
-            condition.unlock()
+            let agent = admission.agent
             awake.begin()
             defer {
                 awake.end()
-                condition.lock()
-                running -= 1
-                active[agent.key, default: 1] -= 1
-                if active[agent.key] == 0 { active.removeValue(forKey: agent.key) }
-                if ToolParser.tools.contains(where: { $0.name == parsed.name }) {
-                    recentAgents = recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
-                    recentAgents[agent.key] = Date()
-                }
-                lastCall = Date()
-                configuration.onWorking(running > 0)
-                condition.broadcast()
-                condition.unlock()
+                finish(admission, remember: ToolParser.tools.contains { $0.name == parsed.name })
             }
             let isTool = ToolParser.tools.contains { $0.name == parsed.name }
-            let lifecycle = ["help", "skill", "turn-started", "turn-ended"].contains(parsed.name)
-            func cancellation() -> HarnessError? {
-                self.condition.lock()
-                let stop = self.stopping
-                let pause = self.paused || self.pauseGeneration != pauseAtStart
-                self.condition.unlock()
+            @Sendable func cancellation() -> HarnessError? {
+                let (stop, pause) = self.withState {
+                    ($0.stopping, $0.paused || $0.pauseGeneration != admission.pauseGeneration)
+                }
                 if stop { return Errors.make("helper_stopped") }
                 if self.sessions.isStopped(agent) { return Errors.make("stopped_by_user") }
                 if isTool && pause { return Errors.make("paused") }
-                if self.sessions.hostGone(agent) || self.sessions.cancellationGeneration(agent) != cancelledAtStart {
+                if self.sessions.hostGone(agent) || self.sessions.cancellationGeneration(agent) != admission.cancellationGeneration {
                     return Errors.make("agent_left")
                 }
                 if abandoned() || Date() >= deadline { return Errors.make("request_timed_out") }
@@ -401,10 +485,7 @@ public final class HelperServer {
                 cwd: params["cwd"] as? String ?? "/", deadline: deadline, abandoned: { cancellation() != nil },
                 withCleanupQueue: { path, work in try self.appQueue(path).run(work) },
                 withAppQueue: { path, work in
-                    self.condition.lock()
-                    let queue = self.queues[path] ?? AppFIFO()
-                    self.queues[path] = queue
-                    self.condition.unlock()
+                    let queue = self.appQueue(path)
                     return try queue.run(abandoned: { cancellation() != nil }, work)
                 })
             let outcome: ToolOutcome
@@ -421,42 +502,154 @@ public final class HelperServer {
         } catch { return failed(Errors.serverError("Tool execution failed.")) }
     }
 
+    /// Pure production admission seam: no socket, power, tool or UI effects.
+    /// Sampling is outside bookkeeping. Revalidate all server baselines before
+    /// enrollment so Stop/shutdown cannot miss a late, blocked provider result.
+    enum AdmissionKind: Sendable, Equatable {
+        case ordinary, lifecycle
+        init(name: String) {
+            self = ["help", "skill", "turn-started", "turn-ended"].contains(name) ? .lifecycle : .ordinary
+        }
+    }
+    /// Distinct from cancellation of an admitted call: only this no-effects
+    /// refusal may be mapped to a retryable transport error.
+    enum AdmissionRefusal: Error, Equatable, Sendable {
+        case stopping
+        func wireReply(id: Any) -> [String: Any] {
+            switch self {
+            case .stopping: return Wire.error(id: id, name: "stopping")
+            }
+        }
+    }
+    struct Admission: Sendable {
+        let agent: AgentSession
+        let pauseGeneration: Int
+        let cancellationGeneration: Int
+    }
+    func admit(peerPID: pid_t, environment: [String: String], kind: AdmissionKind = .ordinary) throws -> Admission {
+        let baseline = try withState { state in
+            guard !state.stopping else { throw AdmissionRefusal.stopping }
+            return (state.pauseGeneration, state.stopGeneration)
+        }
+        let agent = sessions.agent(peerPID: peerPID, env: environment)
+        let cancelled = sessions.cancellationGeneration(agent)
+        let drain = try withState { state in
+            guard !state.stopping else { throw AdmissionRefusal.stopping }
+            guard kind == .lifecycle || state.stopGeneration == baseline.1 else { throw Errors.make("stopped_by_user") }
+            workers.enter() // also covers direct callers and the working-effect drain
+            state.running += 1
+            state.active[agent.key, default: 0] += 1
+            state.lastCall = Date()
+            return enqueueWorking(true, state: &state)
+        }
+        if drain { drainWorking() }
+        return Admission(agent: agent, pauseGeneration: baseline.0, cancellationGeneration: cancelled)
+    }
+
+    func finish(_ admission: Admission, remember: Bool) {
+        defer { workers.leave() }
+        let drain = withState { state in
+            state.running -= 1
+            state.active[admission.agent.key, default: 1] -= 1
+            if state.active[admission.agent.key] == 0 { state.active.removeValue(forKey: admission.agent.key) }
+            if remember {
+                state.recentAgents = state.recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
+                state.recentAgents[admission.agent.key] = Date()
+            }
+            state.lastCall = Date()
+            let drain = enqueueWorking(state.running > 0, state: &state)
+            condition.broadcast()
+            return drain
+        }
+        if drain { drainWorking() }
+    }
+
+    private func enqueueWorking(_ working: Bool, state: inout State) -> Bool {
+        state.workingEffects.append(working)
+        guard !state.drainingWorking else { return false }
+        state.drainingWorking = true
+        return true
+    }
+    private func drainWorking() {
+        inWorkerContext {
+            while let effect = withState({ state -> Bool? in
+                guard !state.workingEffects.isEmpty else {
+                    state.drainingWorking = false
+                    return nil
+                }
+                return state.workingEffects.removeFirst()
+            }) {
+                configuration.onWorking(effect)
+            }
+        }
+    }
+
     private func appQueue(_ path: String) -> AppFIFO {
-        condition.lock(); defer { condition.unlock() }
-        let queue = queues[path] ?? AppFIFO(); queues[path] = queue; return queue
+        withState { state in
+            let queue = state.queues[path] ?? AppFIFO()
+            state.queues[path] = queue
+            return queue
+        }
     }
     /// Esc and the same-uid stop control deliberately use exactly one code path.
     public func stopCurrentTurn() {
-        condition.lock(); defer { condition.unlock() }
-        recentAgents = recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
-        sessions.stop(Set(active.keys).union(recentAgents.keys))
+        condition.lock()
+        let keys: Set<String>? = storage.withLock { state in
+            guard !state.stopping else { return nil }
+            state.stopGeneration += 1
+            state.recentAgents = state.recentAgents.filter { $0.value.timeIntervalSinceNow > -3 }
+            workers.enter() // cancellation callbacks must also drain before shutdown
+            return Set(state.active.keys).union(state.recentAgents.keys)
+        }
+        // Lock order: condition -> (storage, then released) -> Sessions -> Agent.
+        // Sessions.stop is provider/callback-free. Publish its marks before a new
+        // admission can read the advanced baseline, but never hold storage here.
+        if let keys { sessions.stop(keys) }
+        condition.unlock()
+        guard let keys else { return }
+        defer { workers.leave() }
+        inWorkerContext {
+            // Pending questions retire even after the original call returned.
+            executor.cancel(agentKeys: keys)
+        }
     }
     public func reapSessions() {
-        // Reaping also uses AX/menu resources. Drain it with socket workers before
-        // executor.shutdown, and never start new cleanup after stopping begins.
-        condition.lock()
-        guard !stopping else { condition.unlock(); return }
-        workers.enter()
-        condition.unlock()
+        let enrolled = withState { state in
+            guard !state.stopping else { return false }
+            workers.enter()
+            return true
+        }
+        guard enrolled else { return }
         defer { workers.leave() }
-        for agent in sessions.reap() {
-            executor.agentExited(agent, withAppQueue: { path, work in try self.appQueue(path).run(work) })
+        inWorkerContext {
+            for agent in sessions.reap() {
+                executor.agentExited(agent, withAppQueue: { path, work in try self.appQueue(path).run(work) })
+            }
         }
     }
     private func setPaused(_ value: Bool) throws {
-        condition.lock()
-        defer { condition.unlock() }
-        let flag = state.appendingPathComponent("paused")
+        // Preserve persistence/commit order without making status or Stop wait
+        // for filesystem operations. Failed writes leave memory/generation intact.
+        persistenceExecution.lock()
+        defer { persistenceExecution.unlock() }
+        let flag = stateDirectory.appendingPathComponent("paused")
         if value {
-            try UnixSocket.makeOwnFolder(state.path)
+            try UnixSocket.makeOwnFolder(stateDirectory.path)
             try Data().write(to: flag, options: .atomic)
             chmod(flag.path, 0o600)
-            pauseGeneration += 1
         } else if FileManager.default.fileExists(atPath: flag.path) {
             try FileManager.default.removeItem(at: flag)
         }
-        paused = value
+        withState { state in
+            if value { state.pauseGeneration += 1 }
+            state.paused = value
+        }
     }
+}
+
+@MainActor
+private final class HelperMainResources {
+    var hostTimer: DispatchSourceTimer?
 }
 
 public enum HelperMain {
@@ -469,7 +662,9 @@ public enum HelperMain {
     public static func run(executor: ToolExecutor, configuration: HelperConfiguration) -> Never {
         let server = HelperServer(executor: executor, configuration: configuration)
         server.onShutdown = { MainThread.stop() }
-        configuration.installStop { server.stopCurrentTurn() }
+        configuration.installStop {
+            DispatchQueue.global().async { server.stopCurrentTurn() }
+        }
         var signals: [DispatchSourceSignal] = []
         for number in [SIGTERM, SIGINT] {
             signal(number, SIG_IGN)
@@ -478,11 +673,16 @@ public enum HelperMain {
             source.resume()
             signals.append(source)
         }
-        var hostTimer: DispatchSourceTimer?
+        let resources = HelperMainResources()
         MainThread.run {
             configuration.onStarted()
             do { try server.start() } catch {
-                MainThread.stop()
+                // Startup rollback has completed, but executor/UI teardown (or a
+                // concurrent Stop) still needs a servicing AppKit loop to drain.
+                Thread.detachNewThread {
+                    server.stop()
+                    MainThread.stop()
+                }
                 return
             }
             let pid = configuration.environment["TERM_LLM_COMPUTER_HOST_PID"].flatMap(Int32.init)
@@ -504,9 +704,9 @@ public enum HelperMain {
                 }
             }
             timer.resume()
-            hostTimer = timer
+            resources.hostTimer = timer
         }
-        hostTimer?.cancel()
+        resources.hostTimer?.cancel()
         // A startup failure never bound/unlinked another helper's socket.
         server.stop()
         for source in signals { source.cancel() }

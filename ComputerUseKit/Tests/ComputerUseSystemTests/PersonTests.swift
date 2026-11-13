@@ -1,17 +1,71 @@
 import AppKit
 import ComputerUseCore
 import XCTest
+import os
 @testable import ComputerUseSystem
 
-final class PersonTests: ContextTestCase {
-    var person: Person!, agent: AgentSession!, timers: [(Double, () -> Void)] = [], activity: [String] = [], posted: [CGEvent] = []
-    var front: pid_t = 77, idle = Double.infinity, secure: pid_t?, bundles: [pid_t: String] = [:], owner: pid_t = 0
+// Every Person dependency is explicitly fake. CGEvents below are only constructed
+// and inspected; they are never posted. No live tap, HID query, AX, or prompt.
+final class PersonFixture: Sendable {
+    static let inertWatch = Person.Watch(
+        isRunning: { false }, schedule: { _ in XCTFail("No lifecycle work expected") },
+        create: { _ in XCTFail("Worker-only tests must never create a tap"); return nil })
+    struct Post: Sendable { let type: UInt32, key: Int64 }
+    struct State: Sendable {
+        var time = 1000.0, sleeps: [Double] = []
+        var onSleep: (@Sendable () -> Void)?
+        var timers: [(Double, @Sendable () -> Void)] = [], activity: [String] = [], posted: [Post] = []
+        var front: pid_t = 77, idle = Double.infinity, secure: pid_t?, bundles: [pid_t: String] = [:], owner: pid_t = 0
+        var menu: UIElementRef?
+    }
+    let state = OSAllocatedUnfairLock(initialState: State())
+    var time: Double { get { state.withLock { $0.time } } set { state.withLock { $0.time = newValue } } }
+    var sleeps: [Double] { state.withLock { $0.sleeps } }
+    var onSleep: (@Sendable () -> Void)? { get { state.withLock { $0.onSleep } } set { state.withLock { $0.onSleep = newValue } } }
+    func sleep(_ seconds: Double) {
+        let callback = state.withLock { state in state.time += seconds; state.sleeps.append(seconds); return state.onSleep }
+        callback?()
+    }
+    var system: Person.System {
+        .init(now: { self.time }, sleep: { self.sleep($0) },
+              frontmostPID: { self.state.withLock { $0.front } },
+              bundleOf: { pid in self.state.withLock { $0.bundles[pid] ?? "" } },
+              hidIdle: { _ in self.state.withLock { $0.idle } },
+              secureInputPID: { self.state.withLock { $0.secure } },
+              windowPID: { _ in self.state.withLock { $0.owner } }, canListen: { false })
+    }
+    var hooks: Person.Hooks {
+        .init(pointerActivity: { value in self.state.withLock { $0.activity.append(value) } },
+              shownMenu: { _ in self.state.withLock { $0.menu } },
+              post: { _, event in
+                  let value = Post(type: event.type.rawValue, key: event.getIntegerValueField(.keyboardEventKeycode))
+                  self.state.withLock { $0.posted.append(value) }
+              }, later: { delay, work in self.state.withLock { $0.timers.append((delay, work)) } })
+    }
+}
+
+final class PersonTests: XCTestCase {
+    override func invokeTest() { AX.withBackend(AX.backend) { super.invokeTest() } }
+    private var fixture: PersonFixture!
+    var person: Person!, agent: AgentSession!, ax: ContextAX!, previous: (any AXBackend)!
+    let target = AppTarget(path: "/A/Test.app", bundleID: "dev.test", name: "Test", pid: 77)
+    private var clock: PersonFixture { fixture }
+    private var timers: [(Double, @Sendable () -> Void)] { get { fixture.state.withLock { $0.timers } } set { fixture.state.withLock { $0.timers = newValue } } }
+    private var activity: [String] { fixture.state.withLock { $0.activity } }
+    private var posted: [PersonFixture.Post] { get { fixture.state.withLock { $0.posted } } set { fixture.state.withLock { $0.posted = newValue } } }
+    var front: pid_t { get { fixture.state.withLock { $0.front } } set { fixture.state.withLock { $0.front = newValue } } }
+    var idle: Double { get { fixture.state.withLock { $0.idle } } set { fixture.state.withLock { $0.idle = newValue } } }
+    var secure: pid_t? { get { fixture.state.withLock { $0.secure } } set { fixture.state.withLock { $0.secure = newValue } } }
+    var bundles: [pid_t: String] { get { fixture.state.withLock { $0.bundles } } set { fixture.state.withLock { $0.bundles = newValue } } }
+    var owner: pid_t { get { fixture.state.withLock { $0.owner } } set { fixture.state.withLock { $0.owner = newValue } } }
     override func setUp() {
-        super.setUp(); timers = []; activity = []; posted = []; front = 77; idle = .infinity; secure = nil; bundles = [:]; owner = 0
-        var s = Person.System(); s.now = { self.clock.time }; s.sleep = { self.clock.sleep($0) }; s.frontmostPID = { self.front }
-        s.bundleOf = { self.bundles[$0] ?? "" }; s.hidIdle = { _ in self.idle }; s.secureInputPID = { self.secure }; s.windowPID = { _ in self.owner }; s.canListen = { false }
-        var h = Person.Hooks(); h.pointerActivity = { self.activity.append($0) }; h.later = { self.timers.append(($0, $1)) }; h.shownMenu = { _ in nil }; h.post = { _, event in self.posted.append(event) }
-        person = Person(system: s, hooks: h); person.ownPID = 4242; person.simulatedTapAvailable = true; agent = AgentSession(key: "one")
+        super.setUp(); fixture = PersonFixture(); previous = AX.backend; ax = ContextAX(); AX.backend = ax
+        person = Person(system: fixture.system, hooks: fixture.hooks, watch: PersonFixture.inertWatch)
+        person.startWatch(ownPID: 4242); person.simulatedTapAvailable = true; agent = AgentSession(key: "one")
+    }
+    override func tearDown() {
+        clock.onSleep = nil; person = nil; agent = nil; AX.backend = previous; ax = nil; fixture = nil; previous = nil
+        super.tearDown()
     }
     func gate(_ read: Bool = false, abandoned: () -> Bool = { false }) throws { try person.gate(agent: agent, target: target, stateRead: read, abandoned: abandoned) }
     func event(_ kind: UInt32 = 1, pid: pid_t = 77, source: pid_t = 0, tag: Int64 = 0, key: Int = 0, stray: Bool = false, command: Bool = false) { person.saw(kind: kind, sourcePID: source, tag: tag, pid: pid, keycode: key, stray: stray, command: command) }
@@ -31,13 +85,13 @@ final class PersonTests: ContextTestCase {
     }
     func testContinuousInteractionCapsAt100SecondsForActionAndRead() throws {
         for stateRead in [false, true] {
-            try gate(true); event(); let start = clock.time; clock.onSleep = { self.event(22) }
+            try gate(true); event(); let start = clock.time; clock.onSleep = { [person] in person!.saw(kind: 22, sourcePID: 0, tag: 0, pid: 77) }
             assertHarnessError(Errors.make("still_interacting", ["app_path": target.path]).message) { try self.gate(stateRead) }
             XCTAssertEqual(clock.time - start, 100, accuracy: 0.25); clock.onSleep = nil; clock.sleep(6); person.afterStateRead(target)
         }
     }
     func testAbandonmentReleasesWait() throws {
-        try gate(); event(); clock.onSleep = { self.event() }
+        try gate(); event(); clock.onSleep = { [person] in person!.saw(kind: 1, sourcePID: 0, tag: 0, pid: 77) }
         assertHarnessError(name: "request_timed_out") { try self.gate(abandoned: { self.clock.time >= 1002 }) }; XCTAssertEqual(clock.time, 1002)
     }
     func testEventVocabularyAndOwnEventsIgnored() throws {
@@ -53,14 +107,14 @@ final class PersonTests: ContextTestCase {
         bundles[99] = target.bundleID; event(pid: 99); XCTAssertTrue(person.interrupted(target, since: 1000))
     }
     func testStrayClosesCancelWithoutCounting() throws {
-        let menu = ContextElement("AXMenu"); person.hooks.shownMenu = { _ in menu.ref }
+        let menu = ContextElement("AXMenu"); fixture.state.withLock { $0.menu = menu.ref }
         try gate(); event(stray: true); XCTAssertFalse(person.interrupted(target, since: 1000)); XCTAssertEqual(timers.first?.0, 0)
         timers.removeFirst().1(); XCTAssertEqual(ax.performed.first?.1, "AXCancel"); XCTAssertTrue(posted.isEmpty)
     }
     func testStrayWithoutMenuOrCancelFailureSendsEscapePair() throws {
         try gate(); event(stray: true); timers.removeFirst().1()
-        XCTAssertEqual(posted.map { $0.type.rawValue }, [10, 11]); XCTAssertTrue(posted.allSatisfy { $0.getIntegerValueField(.keyboardEventKeycode) == 53 })
-        let menu = ContextElement("AXMenu"); person.hooks.shownMenu = { _ in menu.ref }; ax.failPerform = true; posted = []
+        XCTAssertEqual(posted.map { $0.type }, [10, 11]); XCTAssertTrue(posted.allSatisfy { $0.key == 53 })
+        let menu = ContextElement("AXMenu"); fixture.state.withLock { $0.menu = menu.ref }; ax.failPerform = true; posted = []
         person.closeMenu(target); XCTAssertEqual(posted.count, 2)
     }
     func testWentToOnlyOwnClickCommandTabOrDockNotTypingElsewhere() {
@@ -113,7 +167,9 @@ final class PersonTests: ContextTestCase {
         owner = 0; XCTAssertEqual(person.targetPID(event), 77); XCTAssertFalse(person.stray(event, kind: 1, pid: 77))
         XCTAssertTrue(person.stray(event, kind: 10, pid: 88)); XCTAssertFalse(person.stray(event, kind: 10, pid: 77))
     }
-    func testNoGrantInstallsNothingAndDoesNotPrompt() {
+    func testNoRunLoopInstallsNothing() {
+        // The inert watch tests the no-loop guard. Running-loop grant denial is
+        // covered by PersonOwnershipTests.testNoGrantAndFailedCreationAreRetryable.
         person.simulatedTapAvailable = false; person.startWatch(ownPID: 4242); XCTAssertFalse(person.tapAvailable)
         XCTAssertEqual(person.ownPID, 4242)
     }

@@ -3,30 +3,42 @@ import ComputerUseCore
 import os
 
 /// Fresh window and menu context. Global points, top-left origin; never clamp to zero.
-public final class Windows {
+public final class Windows: Sendable {
     public static let maxParents = 300, menuWait = 0.25, menuPoll = 0.01
     public static let menuOpened = "AXMenuOpened", menuClosed = "AXMenuClosed"
     public static let newWindows = ["AXWindowCreated", "AXSheetCreated"]
     public static let keyWindowAttributes = ["AXFocusedWindow", "AXMainWindow", "AXWindows"]
     public static let windowListAll: UInt32 = 0 // on screen or not
     public static let desktop = "AXDesktop", menuButtons = ["AXPopUpButton", "AXMenuButton"]
-    public struct Row: Equatable {
+    public struct Row: Equatable, Sendable {
         public var id: UInt32; public var pid: pid_t; public var title: String?; public var layer: Int; public var frame: CGRect
         public init(id: UInt32, pid: pid_t, title: String? = nil, layer: Int = 0, frame: CGRect) {
             self.id = id; self.pid = pid; self.title = title; self.layer = layer; self.frame = frame
         }
     }
-    public struct System {
-        public var rows: (UInt32, UInt32) -> [Row] = Windows.systemRows
-        public var associated: (UInt32) -> Set<UInt32> = Windows.systemAssociated
-        public var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
-        public var sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
+    public struct System: Sendable {
+        public var rows: @Sendable (UInt32, UInt32) -> [Row] = { Windows.systemRows($0, $1) }
+        public var associated: @Sendable (UInt32) -> Set<UInt32> = { Windows.systemAssociated($0) }
+        public var now: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        public var sleep: @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
         public var noAttention: @Sendable (pid_t) -> Void = { Focus.noAttention($0) }
         public init() {}
     }
-    public var system: System
+    public let system: System
     public static let shared = Windows()
     public init(system: System = .init()) { self.system = system }
+    deinit {
+        let removed = watches.withLock { watches in
+            let removed = Array(watches.values); watches.removeAll(); return removed
+        }
+        for watch in removed {
+            watch.menus.close(retiring: true)
+            watch.observer?.stop()
+            // Keep attention delivery open through source uninstall/in-flight SDK
+            // callbacks. Menu publication has already been retired independently.
+            if !watch.starting { watch.notifications?.stop() }
+        }
+    }
     public static func keyWindow(_ target: AppTarget) throws -> ComputerUseCore.WindowRef { try shared.keyWindow(target) }
     public static func systemRows(_ option: UInt32, _ id: UInt32) -> [Row] {
         let rows = CGWindowListCopyWindowInfo(CGWindowListOption(rawValue: option), id) as? [[String: Any]] ?? []
@@ -121,91 +133,255 @@ public final class Windows {
         throw Errors.make("element_outside_app")
     }
 
-    final class Menus {
-        var watchers = 0; var observer: AXObservation?
-        let heard = OSAllocatedUnfairLock(initialState: [(String, UIElementRef)]())
-        var menu: UIElementRef?; var root: UIElementRef?; var kept: UIElementRef?
+    private struct MenuView: Sendable {
+        var menu: UIElementRef?, root: UIElementRef?, kept: UIElementRef?
     }
-    let lock = NSRecursiveLock()
-    var menus: [pid_t: Menus] = [:]
-    func state(_ target: AppTarget) -> Menus {
-        lock.lock(); defer { lock.unlock() }
-        let pid = target.pid ?? 0
-        if let found = menus[pid] { return found }
-        let found = Menus(); menus[pid] = found; return found
+    private final class Menus: Sendable {
+        struct Record: Sendable {
+            var live = true
+            var revision: UInt64 = 0
+            var heard: [(String, UIElementRef)] = []
+            var view = MenuView()
+        }
+        // Per-PID execution only: target AX reads may block. Notification delivery
+        // never acquires this lock, and watch/stop never hold it across a main hop.
+        let execution = NSRecursiveLock()
+        let record: OSAllocatedUnfairLock<Record>
+        init(view: MenuView = MenuView()) { record = OSAllocatedUnfairLock(initialState: Record(view: view)) }
+        @discardableResult func close(retiring: Bool = false) -> MenuView {
+            let previous = record.withLock {
+                let previous = $0.view
+                $0.revision &+= 1; $0.view = MenuView()
+                $0.heard.removeAll()
+                if retiring { $0.live = false }
+                return previous
+            }
+            return previous
+        }
     }
-    func keep(_ state: Menus, _ menu: UIElementRef) throws -> Bool {
+    private final class Notifications: Sendable {
+        private struct AttentionEffect: Sendable {
+            let pid: pid_t
+            let noAttention: @Sendable (pid_t) -> Void
+            let backend: any AXBackend
+            func run(_ count: Int) {
+                AX.withBackend(backend) { for _ in 0..<count { noAttention(pid) } }
+            }
+        }
+        private struct Attention: Sendable {
+            var accepting = true
+            var pending = 0
+            var effect: AttentionEffect?
+        }
+        let record: OSAllocatedUnfairLock<Menus.Record>
+        private let pending: OSAllocatedUnfairLock<Attention>
+        private let attention: any DispatchSourceUserDataAdd
+        init(record: OSAllocatedUnfairLock<Menus.Record>, pid: pid_t,
+             noAttention: @escaping @Sendable (pid_t) -> Void, backend: any AXBackend) {
+            self.record = record
+            let effect = AttentionEffect(pid: pid, noAttention: noAttention, backend: backend)
+            let pending = OSAllocatedUnfairLock(initialState: Attention(effect: effect))
+            self.pending = pending
+            let attention = DispatchSource.makeUserDataAddSource(queue: .global())
+            self.attention = attention
+            // Attention delivery is independent of the menu recorder's lifetime.
+            // Capture the watch caller's backend BEFORE either worker hop.
+            attention.setEventHandler {
+                let count = pending.withLock { state in
+                    let count = state.pending; state.pending = 0; return count
+                }
+                effect.run(count)
+            }
+            attention.resume()
+        }
+        deinit { attention.cancel() }
+        func stop() {
+            // Called only after observe failed or observer.stop completed. Retiring
+            // menus earlier must not drop callbacks delivered during SDK uninstall.
+            let (count, effect) = pending.withLock { state in
+                state.accepting = false
+                let flush = (state.pending, state.effect)
+                state.pending = 0; state.effect = nil; return flush
+            }
+            attention.cancel()
+            // Move dependency ownership out of the recorder as well: a backend may
+            // retain its stopped callback context. Release it outside the lock.
+            guard count > 0, let effect else { return }
+            // Cancellation may discard an enqueued source handler. Claim its work
+            // exactly once and flush off-main, outside locks and the AX callback.
+            DispatchQueue.global().async { effect.run(count) }
+        }
+        func hear(_ name: String, _ element: UIElementRef) {
+            if Windows.newWindows.contains(name) {
+                let wake = pending.withLock { state in
+                    guard state.accepting else { return false }
+                    state.pending += 1; return true
+                }
+                if wake { attention.add(data: 1) }
+                return
+            }
+            record.withLock { if $0.live { $0.heard.append((name, element)) } }
+        }
+    }
+    private struct Watch: Sendable {
+        let menus: Menus
+        var watchers = 0
+        var starting = false
+        var observer: (any AXObservation)?
+        var notifications: Notifications?
+    }
+    private let watches = OSAllocatedUnfairLock(initialState: [pid_t: Watch]())
+    private func state(_ target: AppTarget) -> Menus {
+        watches.withLock { watches in
+            let pid = target.pid ?? 0
+            if let found = watches[pid] { return found.menus }
+            let found = Menus(); watches[pid] = Watch(menus: found); return found
+        }
+    }
+    private func keep(_ view: inout MenuView, _ menu: UIElementRef) throws -> Bool {
         let parent = try AX.backend.get(menu, "AXParent") as? UIElementRef
         let role = try parent.flatMap { try AX.backend.get($0, "AXRole") as? String }
         if role == "AXMenuItem" { return false } // A submenu belongs to the kept menu.
-        state.menu = menu; state.root = role == "AXMenuBarItem" ? parent : nil
+        view.menu = menu; view.root = role == "AXMenuBarItem" ? parent : nil
         return true
     }
-    func catchUp(_ state: Menus) throws -> Bool {
-        let heard = state.heard.withLock { pending in
-            let heard = pending; pending.removeAll(); return heard
-        }
+    private func catchUp(_ view: inout MenuView, heard: [(String, UIElementRef)]) throws -> Bool {
         var opened = false
         for (name, menu) in heard {
-            if let kept = state.kept {
+            if let kept = view.kept {
                 if try name == Self.menuClosed || AX.same(AX.backend.get(menu, "AXParent") as? UIElementRef, kept) { continue }
-                state.kept = nil // Another menu really opened and takes over.
+                view.kept = nil // Another menu really opened and takes over.
             }
-            if name == Self.menuOpened { opened = try keep(state, menu) || opened }
-            else if state.menu == nil || AX.same(menu, state.menu) { state.menu = nil; state.root = nil; opened = false }
+            if name == Self.menuOpened { opened = try keep(&view, menu) || opened }
+            else if view.menu == nil || AX.same(menu, view.menu) { view.menu = nil; view.root = nil; opened = false }
         }
         return opened
     }
-    func shownBy(_ state: Menus, _ opener: UIElementRef) throws -> Bool {
+    private func shownBy(_ view: inout MenuView, _ opener: UIElementRef) throws -> Bool {
         let values = try AX.backend.getMany(opener, ["AXShownMenuUIElement", "AXRole", "AXSelected", "AXChildren"])
         var shown = values[0] as? UIElementRef
         let role = values[1] as? String
         if shown == nil, Self.menuButtons.contains(role ?? "") {
             shown = try (values[3] as? [UIElementRef] ?? []).first { try AX.backend.get($0, "AXRole") as? String == "AXMenu" }
         }
-        if let shown { return try keep(state, shown) }
-        if role == "AXMenuBarItem", values[2] as? Bool == true { state.menu = nil; state.root = opener; return true }
+        if let shown { return try keep(&view, shown) }
+        if role == "AXMenuBarItem", values[2] as? Bool == true { view.menu = nil; view.root = opener; return true }
         return false
     }
-    func open(_ target: AppTarget) throws -> Menus {
-        let s = state(target); _ = try catchUp(s)
-        if [s.root, s.menu].compactMap({ $0 }).contains(where: { !AX.backend.alive($0) }) { s.menu = nil; s.root = nil }
-        return s
+    private func update(_ s: Menus, _ work: (inout MenuView, [(String, UIElementRef)]) throws -> Bool) rethrows -> (MenuView, Bool) {
+        s.execution.lock(); defer { s.execution.unlock() }
+        let snapshot = s.record.withLock { record in
+            let snapshot = record
+            record.heard.removeAll()
+            return snapshot
+        }
+        guard snapshot.live else { return (MenuView(), false) }
+        var view = snapshot.view
+        let opened = try work(&view, snapshot.heard)
+        let sampled = view
+        return s.record.withLock { record in
+            // close/unwatch or same-thread reentry can invalidate an AX sample.
+            guard record.live, record.revision == snapshot.revision else { return (record.view, false) }
+            record.view = sampled; record.revision &+= 1
+            return (sampled, opened)
+        }
+    }
+    private func open(_ target: AppTarget) throws -> MenuView {
+        try update(state(target)) { view, heard in
+            _ = try catchUp(&view, heard: heard)
+            if [view.root, view.menu].compactMap({ $0 }).contains(where: { !AX.backend.alive($0) }) { view.menu = nil; view.root = nil }
+            return false
+        }.0
     }
     public func openMenu(_ target: AppTarget) throws -> UIElementRef? { try open(target).root }
     public func shownMenu(_ target: AppTarget) throws -> UIElementRef? { let s = try open(target); return s.root ?? s.menu }
     public func waitForMenu(_ target: AppTarget, opener: UIElementRef) throws -> UIElementRef? {
-        let s = state(target), end = system.now() + Self.menuWait
-        while try !(catchUp(s) || shownBy(s, opener)) {
+        let end = system.now() + Self.menuWait
+        while true {
+            // A callback can unwatch/rewatch during AX or sleep. Follow the live
+            // generation instead of polling a permanently retired recorder.
+            let (view, opened) = try update(state(target)) { view, heard in
+                try catchUp(&view, heard: heard) || shownBy(&view, opener)
+            }
+            if opened { return view.root ?? view.menu }
             if system.now() >= end { return nil }; system.sleep(Self.menuPoll)
         }
-        return s.root ?? s.menu
     }
-    public func keepMenu(_ target: AppTarget, title: UIElementRef) { let s = state(target); s.menu = nil; s.root = title; s.kept = title }
-    public func closeMenu(_ target: AppTarget) {
-        let s = state(target); lock.lock(); defer { lock.unlock() }
-        s.heard.withLock { $0.removeAll() }; s.menu = nil; s.root = nil; s.kept = nil
+    public func keepMenu(_ target: AppTarget, title: UIElementRef) {
+        let s = state(target)
+        s.record.withLock { $0.revision &+= 1; $0.view = MenuView(root: title, kept: title) }
     }
+    public func closeMenu(_ target: AppTarget) { state(target).close() }
     public func watch(_ target: AppTarget) throws {
-        let s = state(target); lock.lock(); s.watchers += 1; let count = s.watchers; lock.unlock()
-        if count > 1 { return }
+        // Joining a pending registration is nonblocking, as before: in particular
+        // main must stay available to install its run-loop source. A failed first
+        // registration retires its recorder but retains successful joiners' counts;
+        // the next watch can retry registration even with those claims outstanding.
+        let s = watches.withLock { watches -> Menus? in
+            let pid = target.pid ?? 0
+            var watch = watches[pid] ?? Watch(menus: Menus())
+            watch.watchers += 1
+            let start = !watch.starting && watch.observer == nil
+            if start { watch.starting = true }
+            watches[pid] = watch
+            return start ? watch.menus : nil
+        }
+        guard let s else { return }
         do {
-            // Snapshot only the callback's dependencies. Never capture the mutable
-            // Windows/System/Menus graph on the notification run loop. Changes to
-            // system.noAttention take effect on the next watch, not mid-observation.
-            let backend = AX.backend, heard = s.heard, noAttention = system.noAttention
+            let backend = AX.backend
             guard let pid = target.pid else { throw Errors.make("app_not_running", ["identifier": target.path]) }
-            let element = backend.app(pid: pid)
-            s.observer = try backend.observe(pid: pid, element: element, names: [Self.menuOpened, Self.menuClosed] + Self.newWindows) { name, element in
-                if Self.newWindows.contains(name) { noAttention(pid); return }
-                heard.withLock { $0.append((name, element)) }
+            let notifications = Notifications(record: s.record, pid: pid, noAttention: system.noAttention, backend: backend)
+            let starting = watches.withLock { watches in
+                guard var watch = watches[pid], watch.menus === s else { return false }
+                watch.notifications = notifications; watches[pid] = watch; return true
             }
-        } catch { lock.lock(); s.watchers -= 1; lock.unlock(); throw error }
+            guard starting else { notifications.stop(); return }
+            let observer: any AXObservation
+            do {
+                observer = try backend.observe(pid: pid, element: backend.app(pid: pid), names: [Self.menuOpened, Self.menuClosed] + Self.newWindows) { name, element in
+                    notifications.hear(name, element)
+                }
+            } catch {
+                // Pending teardown may already have removed this generation. A
+                // failed creation still owns closing/flushing its notification seam.
+                notifications.stop()
+                throw error
+            }
+            let published = watches.withLock { watches in
+                guard var watch = watches[pid], watch.menus === s else { return false }
+                watch.starting = false; watch.observer = observer; watches[pid] = watch
+                return true
+            }
+            if !published { observer.stop(); notifications.stop() }
+        } catch {
+            let removed = watches.withLock { watches -> Watch? in
+                let pid = target.pid ?? 0
+                guard let watch = watches[pid], watch.menus === s else { return nil }
+                let view = s.close(retiring: true)
+                if watch.watchers > 1 {
+                    watches[pid] = Watch(menus: Menus(view: view), watchers: watch.watchers - 1)
+                } else { watches.removeValue(forKey: pid) }
+                return watch
+            }
+            removed?.notifications?.stop()
+            throw error
+        }
     }
     public func unwatch(_ target: AppTarget) {
-        lock.lock(); guard let s = menus[target.pid ?? 0] else { lock.unlock(); return }
-        s.watchers -= 1
-        if s.watchers > 0 { lock.unlock(); return }
-        menus.removeValue(forKey: target.pid ?? 0); lock.unlock(); s.observer?.stop()
+        let removed = watches.withLock { watches -> Watch? in
+            let pid = target.pid ?? 0
+            guard var watch = watches[pid], watch.watchers > 0 else { return nil }
+            watch.watchers -= 1
+            if watch.watchers > 0 { watches[pid] = watch; return nil }
+            return watches.removeValue(forKey: pid)
+        }
+        // No registry/state/execution lock spans stop (which may hop to main or
+        // reenter watch). In-flight menu callbacks only reach the retired recorder;
+        // attention acceptance remains open until source uninstall finishes.
+        removed?.menus.close(retiring: true)
+        removed?.observer?.stop()
+        // A pending observe still owns cleanup: once it returns, it will stop the
+        // stale observer and then flush attention accepted through that stop.
+        if removed?.starting == false { removed?.notifications?.stop() }
     }
 }

@@ -14,14 +14,17 @@ public enum ComputerUseRuntime {
     @MainActor
     public static func run() -> Never {
         AX.backend = SystemAX()
-        let dependencies = HarnessExecutor.Dependencies()
+        var dependencies = HarnessExecutor.Dependencies()
         let permissions = dependencies.permissions
         let screenshot = dependencies.screenshot
         let pasteboard = dependencies.actions.system.pasteboard
         pasteboard.restoreSaved()  // crash recovery must precede serving requests
         let policy = dependencies.policy
-        dependencies.actions.system.checkRecipient = { try policy.checkRecipient($0) }
-        Person.shared.hooks.pointerActivity = { _ = Presence.shared.pointerActivity($0) }
+        var actionsSystem = dependencies.actions.system
+        actionsSystem.checkRecipient = { try policy.checkRecipient($0) }
+        dependencies.actions = Actions(system: actionsSystem)
+        // Person.shared composes its immutable Presence hook at construction;
+        // Focus and the executor must continue to observe the same Person.
         let executor = HarnessExecutor(dependencies: dependencies)
         var configuration = HelperConfiguration(
             grants: {

@@ -5,7 +5,7 @@ import os
 
 /// Resolve, launch in the background, and list apps. Every system look goes
 /// through System, including paths and the clock, so tests can replace the Mac.
-public final class Apps {
+public final class Apps: Sendable {
     public static let launchLimit = 5.0, launchPoll = 0.05, recentDays = 14, recentSeconds = 1_209_600.0
     public static let catalogLimit = 2.0, queryLimit = 10.0
     public static let openOptions = ["activates": false, "allowsRunningApplicationSubstitution": true]
@@ -29,34 +29,41 @@ public final class Apps {
             self.path = path; self.lastUsed = lastUsed; self.useCount = useCount; self.name = name; self.bundleID = bundleID
         }
     }
-    public struct System {
-        public var running: () -> [Proc] = { RealApps.shared.running() }
-        public var executable: (pid_t) -> String = Apps.executable
-        public var regular: (pid_t) -> Bool = { NSRunningApplication(processIdentifier: $0)?.activationPolicy == .regular }
-        public var bundlePaths: (String) -> [String] = { id in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id).map(\.path) }
-        public var named: (String) -> String? = { (NSWorkspace.shared as LaunchServicesName).fullPath(forApplication: $0) }
-        public var open: (String) -> pid_t? = Apps.openBackground
-        public var frontPIDs: () -> [pid_t] = { Windows.shared.serverWindows().filter { $0.layer == 0 }.map(\.pid) }
-        public var used: () -> [Used] = Apps.queryUsed
-        public var info: (String) -> [String: Any]? = Apps.readInfo
-        public var entries: (String) -> [String] = { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }
-        public var realPath: (String) -> String = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
-        public var expandUser: (String) -> String = { ($0 as NSString).expandingTildeInPath }
-        public var ownPID: () -> pid_t = { getpid() }
-        public var panelServices: () -> [pid_t: pid_t] = Apps.systemPanelServices
-        public var processBundleID: (pid_t) -> String = { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier ?? "" }
-        public var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
-        public var wallTime: () -> TimeInterval = { Date().timeIntervalSince1970 }
-        public var sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
-        public var keyWindow: (AppTarget) throws -> ComputerUseCore.WindowRef = Windows.keyWindow
+    /// Builder value copied at initialization. Callbacks must synchronize their
+    /// own captures; the adapter never mutates its dependency snapshot.
+    public struct System: Sendable {
+        public var running: @Sendable () -> [Proc] = { RealApps.shared.running() }
+        public var executable: @Sendable (pid_t) -> String = { Apps.executable($0) }
+        public var regular: @Sendable (pid_t) -> Bool = { NSRunningApplication(processIdentifier: $0)?.activationPolicy == .regular }
+        public var bundlePaths: @Sendable (String) -> [String] = { id in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id).map(\.path) }
+        public var named: @Sendable (String) -> String? = { (NSWorkspace.shared as LaunchServicesName).fullPath(forApplication: $0) }
+        public var open: @Sendable (String) -> pid_t? = { Apps.openBackground($0) }
+        public var frontPIDs: @Sendable () -> [pid_t] = { Windows.shared.serverWindows().filter { $0.layer == 0 }.map(\.pid) }
+        public var used: @Sendable () -> [Used] = { Apps.queryUsed() }
+        // Heterogeneous plist results stay synchronous and operation-local; only
+        // the extracted AppKind value is cached or shared across workers.
+        public var info: @Sendable (String) -> [String: Any]? = { Apps.readInfo($0) }
+        public var entries: @Sendable (String) -> [String] = { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }
+        public var realPath: @Sendable (String) -> String = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        public var expandUser: @Sendable (String) -> String = { ($0 as NSString).expandingTildeInPath }
+        public var ownPID: @Sendable () -> pid_t = { getpid() }
+        public var panelServices: @Sendable () -> [pid_t: pid_t] = { Apps.systemPanelServices() }
+        public var processBundleID: @Sendable (pid_t) -> String = { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier ?? "" }
+        public var now: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        public var wallTime: @Sendable () -> TimeInterval = { Date().timeIntervalSince1970 }
+        public var sleep: @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+        public var keyWindow: @Sendable (AppTarget) throws -> ComputerUseCore.WindowRef = { try Windows.keyWindow($0) }
         public init() {}
     }
     public static let shared = Apps()
-    public var system: System
-    private let lock = NSLock()
-    private var kinds: [String: AppKind] = [:], catalystPIDs: [pid_t: Bool] = [:]
-    private var kindOrder: [String] = [], catalystOrder: [pid_t] = []
-    private var catalogRows: [Used]?, catalogGroup: DispatchGroup?
+    public let system: System
+    private struct State: Sendable {
+        var kinds: [String: AppKind] = [:], catalystPIDs: [pid_t: Bool] = [:]
+        var kindOrder: [String] = [], catalystOrder: [pid_t] = []
+        var catalogRows: [Used]?, catalogGroup: DispatchGroup?
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private static let catalogOwner = TaskLocal<Apps?>(wrappedValue: nil)
     public init(system: System = .init()) { self.system = system }
     public static func clean(_ path: String) -> String {
         // Lexical POSIX normpath, not NSString.standardizingPath: that also expands
@@ -200,31 +207,35 @@ public final class Apps {
         }
     }
     public func kind(_ target: AppTarget) -> AppKind {
-        lock.lock()
-        var found = kinds[target.path]
-        if found != nil { kindOrder.removeAll { $0 == target.path }; kindOrder.append(target.path) }
-        lock.unlock()
+        var found = state.withLock { state in
+            let found = state.kinds[target.path]
+            if found != nil { state.kindOrder.removeAll { $0 == target.path }; state.kindOrder.append(target.path) }
+            return found
+        }
         if found == nil {
             let info = system.info(target.path) ?? [:]
             let types = info["CFBundleURLTypes"] as? [Any] ?? []
             let schemes = types.compactMap { $0 as? [String: Any] }.flatMap { $0["CFBundleURLSchemes"] as? [Any] ?? [] }
             found = AppKind(electron: info["NSPrincipalClass"] as? String == Self.electronClass, chromium: info["NSPrincipalClass"] as? String == Self.chromiumClass, http: schemes.contains { $0 as? String == Self.webScheme })
-            lock.lock()
-            kindOrder.removeAll { $0 == target.path }; kindOrder.append(target.path); kinds[target.path] = found
-            if kindOrder.count > 256 { kinds.removeValue(forKey: kindOrder.removeFirst()) }
-            lock.unlock()
+            let classified = found
+            state.withLock { state in
+                state.kindOrder.removeAll { $0 == target.path }; state.kindOrder.append(target.path); state.kinds[target.path] = classified
+                if state.kindOrder.count > 256 { state.kinds.removeValue(forKey: state.kindOrder.removeFirst()) }
+            }
         }
         if let pid = target.pid {
-            lock.lock()
-            var isCatalyst = catalystPIDs[pid]
-            if isCatalyst != nil { catalystOrder.removeAll { $0 == pid }; catalystOrder.append(pid) }
-            lock.unlock()
+            var isCatalyst = state.withLock { state in
+                let found = state.catalystPIDs[pid]
+                if found != nil { state.catalystOrder.removeAll { $0 == pid }; state.catalystOrder.append(pid) }
+                return found
+            }
             if isCatalyst == nil {
                 isCatalyst = (try? AX.backend.get(AX.backend.app(pid: pid), Self.catalyst)) as? Bool == true
-                lock.lock()
-                catalystOrder.removeAll { $0 == pid }; catalystOrder.append(pid); catalystPIDs[pid] = isCatalyst
-                if catalystOrder.count > 256 { catalystPIDs.removeValue(forKey: catalystOrder.removeFirst()) }
-                lock.unlock()
+                let classified = isCatalyst
+                state.withLock { state in
+                    state.catalystOrder.removeAll { $0 == pid }; state.catalystOrder.append(pid); state.catalystPIDs[pid] = classified
+                    if state.catalystOrder.count > 256 { state.catalystPIDs.removeValue(forKey: state.catalystOrder.removeFirst()) }
+                }
             }
             found!.catalyst = isCatalyst!
         }
@@ -259,19 +270,30 @@ public final class Apps {
         return nil
     }
     public func prewarm() {
-        lock.lock(); defer { lock.unlock() }
-        if let group = catalogGroup, group.wait(timeout: .now()) == .timedOut { return }
-        let group = DispatchGroup(); group.enter(); catalogGroup = group
-        let system = self.system
+        let group = state.withLock { state -> DispatchGroup? in
+            guard state.catalogGroup == nil else { return nil }
+            let group = DispatchGroup(); group.enter(); state.catalogGroup = group
+            return group
+        }
+        guard let group else { return }
+        // Task-local AX scopes do not follow GCD. Capture before leaving caller.
+        let backend = AX.backend
         DispatchQueue.global().async { [self] in
-            _ = system.running() // First process listing is the slow one (~60 vs 4 ms).
-            let rows = system.used(); lock.lock(); catalogRows = rows; lock.unlock(); group.leave()
+            AX.withBackend(backend) {
+                Self.catalogOwner.withValue(self) {
+                    _ = system.running() // First process listing is the slow one (~60 vs 4 ms).
+                    let rows = system.used()
+                    state.withLock { state in state.catalogRows = rows; state.catalogGroup = nil }
+                    group.leave()
+                }
+            }
         }
     }
     public func catalog() -> [Used] {
-        prewarm(); lock.lock(); let group = catalogRows == nil ? catalogGroup : nil; lock.unlock()
-        _ = group?.wait(timeout: .now() + Self.catalogLimit)
-        lock.lock(); defer { lock.unlock() }; return catalogRows ?? []
+        prewarm()
+        let group = state.withLock { $0.catalogRows == nil ? $0.catalogGroup : nil }
+        if Self.catalogOwner.wrappedValue !== self { _ = group?.wait(timeout: .now() + Self.catalogLimit) }
+        return state.withLock { $0.catalogRows ?? [] }
     }
     public func listApps(hosts: Set<String> = []) -> [[String: Any]] {
         let cut = system.wallTime() - Self.recentSeconds

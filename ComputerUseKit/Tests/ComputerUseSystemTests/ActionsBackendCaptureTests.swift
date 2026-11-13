@@ -45,13 +45,13 @@ final class ActionsBackendCaptureTests: XCTestCase {
     }
 
     private func makeActions(caller: ContextAX, worker: ContextAX, clock: ContextClock) -> Actions {
-        var windows = Windows.System()
+        var windows = isolatedWindowsSystem()
         windows.rows = { _, _ in XCTFail("No window-server reads expected"); return [] }
         windows.associated = { _ in XCTFail("No associated-window reads expected"); return [] }
         windows.noAttention = { _ in XCTFail("No attention changes expected") }
         windows.now = { clock.time }
         windows.sleep = { clock.sleep($0) }
-        var focus = Focus.System()
+        var focus = isolatedFocusSystem()
         focus.frontPID = { 77 } // Already focused: never construct activation events.
         focus.now = { clock.time }
         focus.sleep = { _ in XCTFail("No focus wait expected") }
@@ -62,6 +62,7 @@ final class ActionsBackendCaptureTests: XCTestCase {
         focus.background = { _ in XCTFail("No focus watcher expected") }
         focus.personWent = { _, _ in XCTFail("No input monitor expected"); return false }
         var system = Actions.System()
+        system.apps = Apps(system: isolatedAppsSystem())
         system.windows = Windows(system: windows)
         system.focus = Focus(system: focus)
         system.presence = Presence(enabled: { false }, send: { _ in XCTFail("No overlay expected") },
@@ -71,20 +72,24 @@ final class ActionsBackendCaptureTests: XCTestCase {
             return Pasteboard.Backend(snapshot: { [] }, write: { _ in nil }, restore: { _, _ in false })
         })
         system.post = { _, _, _ in XCTFail("No events expected") }
+        system.heldFlags = { XCTFail("No HID query expected"); return 0 }
+        system.presses = { _ in XCTFail("No key mapping expected"); return [] }
+        system.printedText = { _ in XCTFail("No printed text expected"); return ("", nil) }
+        system.focusElement = { _ in XCTFail("No focus change expected"); return false }
         system.checkRecipient = { _ in XCTFail("All fixtures belong to the target") }
         system.now = { clock.time }
         system.sleep = { clock.sleep($0) }
         system.background = { work in
             XCTAssertTrue(AX.backend === caller)
             let done = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async(execute: DispatchWorkItem {
+            DispatchQueue.global().async {
                 // GCD does not inherit the caller's TaskLocal. Do not call that
                 // global backend: install a second fake scope before running work,
                 // so even the pre-fix regression cannot touch a real AX backend.
                 XCTAssertFalse(AX.backend === caller)
                 AX.withBackend(worker) { work() }
                 done.signal()
-            })
+            }
             XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
         }
         return Actions(system: system)

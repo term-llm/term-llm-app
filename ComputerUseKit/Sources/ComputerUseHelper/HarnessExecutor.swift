@@ -2,6 +2,7 @@ import ComputerUseCore
 import ComputerUseSystem
 import CoreGraphics
 import Foundation
+import os
 
 /// The only module that knows the order of a call. The other modules do their
 /// single step when asked; none of them chooses the tool execution order.
@@ -22,7 +23,10 @@ public final class HarnessExecutor: ToolExecutor {
 
     /// Execution seams, not alternate orchestration. Fakes replace effects while
     /// exercising exactly the same order, state machine and argument validation.
-    public struct Dependencies {
+    /// A value builder copied into immutable executor storage. Stored callbacks
+    /// may be called concurrently; nested work/read/cancellation arguments are
+    /// synchronous and nonescaping, not request transfers to another worker.
+    public struct Dependencies: Sendable {
         public var apps = Apps.shared
         public var windows = Windows.shared
         public var person = Person.shared
@@ -30,32 +34,32 @@ public final class HarnessExecutor: ToolExecutor {
         public var presence = Presence.shared
         public var permissions = Permissions()
         public var screenshot = Screenshot()
-        public var approvals = Approvals(alive: HarnessExecutor.sessionAlive)
+        public var approvals = Approvals(alive: { HarnessExecutor.sessionAlive($0) })
         public var policy = Policy(appKind: { Apps.shared.kind($0) })
         public var instructions = Instructions()
         public var actions = Actions()
-        public var listApps: ((Set<String>) throws -> [[String: Any]])?
-        public var send: ((ToolCallRequest, AppSession, [Actions.Target]) throws -> Void)?
-        public var resolveElement: (Revisions, Int, () throws -> Capture, Bool) throws -> Line = {
+        public var listApps: (@Sendable (Set<String>) throws -> [[String: Any]])?
+        public var send: (@Sendable (ToolCallRequest, AppSession, [Actions.Target]) throws -> Void)?
+        public var resolveElement: @Sendable (Revisions, Int, () throws -> Capture, Bool) throws -> Line = {
             try $0.resolve($1, reread: $2, ignoreValue: $3)
         }
-        public var resolve: ((String) throws -> AppTarget)?
-        public var decide: ((AgentSession, AppTarget) throws -> PolicyDecision)?
+        public var resolve: (@Sendable (String) throws -> AppTarget)?
+        public var decide: (@Sendable (AgentSession, AppTarget) throws -> PolicyDecision)?
         public var ensureApproval:
-            ((AgentSession, AppTarget, PolicyDecision, TimeInterval, () -> Bool) throws -> Void)?
-        public var permissionsGate: ((TimeInterval, () -> Bool) throws -> Void)?
-        public var lockGate: (Bool) throws -> Void = { try LockScreen.gate(stateRead: $0) }
-        public var personGate: ((AgentSession, AppTarget, Bool, () -> Bool) throws -> Void)?
+            (@Sendable (AgentSession, AppTarget, PolicyDecision, TimeInterval, () -> Bool) throws -> Void)?
+        public var permissionsGate: (@Sendable (TimeInterval, () -> Bool) throws -> Void)?
+        public var lockGate: @Sendable (Bool) throws -> Void = { try LockScreen.gate(stateRead: $0) }
+        public var personGate: (@Sendable (AgentSession, AppTarget, Bool, () -> Bool) throws -> Void)?
         public var read:
-            (AppTarget, ComputerUseCore.WindowRef, AppKind, UIElementRef?) throws -> Capture = {
+            @Sendable (AppTarget, ComputerUseCore.WindowRef, AppKind, UIElementRef?) throws -> Capture = {
                 try Tree.read($0, $1, $2, menu: $3)
             }
-        public var enable: (AppTarget, AppKind) -> Bool = Tree.enable
-        public var disable: (AppTarget) -> Void = Tree.disable
-        public var askOnce: (UIElementRef) throws -> Void = { try Tree.askOnce($0) }
-        public var watchRevisions: (Revisions, AppTarget) throws -> Void = { try $0.watch($1) }
+        public var enable: @Sendable (AppTarget, AppKind) -> Bool = { Tree.enable($0, $1) }
+        public var disable: @Sendable (AppTarget) -> Void = { Tree.disable($0) }
+        public var askOnce: @Sendable (UIElementRef) throws -> Void = { try Tree.askOnce($0) }
+        public var watchRevisions: @Sendable (Revisions, AppTarget) throws -> Void = { try $0.watch($1) }
         public var settle:
-            (
+            @Sendable (
                 AppTarget, AppKind, (ComputerUseCore.WindowRef) throws -> Capture, TimeInterval?,
                 () -> Bool
             )
@@ -63,17 +67,21 @@ public final class HarnessExecutor: ToolExecutor {
                     try Settle.wait(
                         target: target, kind: kind, read: read, poll: poll, abandoned: abandoned)
                 }
-        public var picture: ((AppTarget, ComputerUseCore.WindowRef) throws -> Shot)?
-        public var now: () -> TimeInterval = { Date().timeIntervalSince1970 }
-        public var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        public var picture: (@Sendable (AppTarget, ComputerUseCore.WindowRef) throws -> Shot)?
+        public var now: @Sendable () -> TimeInterval = { Date().timeIntervalSince1970 }
+        public var uptime: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         public init() {}
     }
     public let dependencies: Dependencies
-    private let lock = NSLock()
-    private var apps: [String: [String: AppSession]] = [:]
-    // Python dictionaries preserve insertion order. Panel ownership searches the
-    // apps already read newest-first, so Swift Dictionary.values is not enough.
-    private var appOrder: [String: [String]] = [:]
+    private struct State: Sendable {
+        var apps: [String: [String: AppSession]] = [:]
+        // Python dictionaries preserve insertion order. Panel ownership searches
+        // apps already read newest-first; Dictionary.values is not enough.
+        var appOrder: [String: [String]] = [:]
+    }
+    // Registry ownership only. App FIFOs, not this lock, coordinate multi-step
+    // execution. No injected callback, SDK operation or retirement runs here.
+    private let state = OSAllocatedUnfairLock(initialState: State())
     public init(dependencies: Dependencies = .init()) { self.dependencies = dependencies }
     private var d: Dependencies { dependencies }
     public static func sessionAlive(_ key: String) -> Bool {
@@ -86,19 +94,24 @@ public final class HarnessExecutor: ToolExecutor {
         return ProcessIdentity.lookup(pid)?.started == born
     }
     public func appSessions(_ agent: AgentSession) -> [AppSession] {
-        lock.lock()
-        defer { lock.unlock() }
-        return appOrder[agent.key, default: []].compactMap { apps[agent.key]?[$0] }
+        state.withLock { state in
+            state.appOrder[agent.key, default: []].compactMap { state.apps[agent.key]?[$0] }
+        }
     }
     private func session(_ agent: AgentSession, _ target: AppTarget) -> AppSession {
-        lock.lock()
-        defer { lock.unlock() }
-        if let found = apps[agent.key]?[target.path] { return found }
+        if let found = state.withLock({ $0.apps[agent.key]?[target.path] }) { return found }
         let app = AppSession(agent: agent, target: target)
         app.revisions = Revisions()
-        apps[agent.key, default: [:]][target.path] = app
-        appOrder[agent.key, default: []].append(target.path)
-        return app
+        // Construction and release of any unused candidate stay outside the
+        // registry lock, even if a future initializer/deinitializer does work.
+        return withExtendedLifetime(app) {
+            state.withLock { state in
+                if let found = state.apps[agent.key]?[target.path] { return found }
+                state.apps[agent.key, default: [:]][target.path] = app
+                state.appOrder[agent.key, default: []].append(target.path)
+                return app
+            }
+        }
     }
     public static func number(_ value: Any?) -> Double? {
         guard let value, CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID(),
@@ -216,7 +229,9 @@ public final class HarnessExecutor: ToolExecutor {
             let abandoned = call.abandoned
             let person = d.person
             // Retain only cancellation, not the request's argv/text/other effects.
-            app.cancel = { abandoned() || person.interrupted(target, since: began) }
+            app.cancel = { [abandoned, person, target, began] in
+                abandoned() || person.interrupted(target, since: began)
+            }
             do { return try work(app, target) } catch let error as HarnessError {
                 if error.message == AX.failure(AX.cannotComplete).message {
                     throw Errors.make("not_responding", ["app_name": target.name])
@@ -423,11 +438,12 @@ public final class HarnessExecutor: ToolExecutor {
             return try result(call, String(decoding: data, as: UTF8.self), report)
         case "turn-started":
             call.sessions.turnStarted(call.agent)
-            d.approvals.clearDenials(agent: call.agent)
+            d.approvals.beginTurn(agent: call.agent)
             return try result(call, "", NSNull())
         case "turn-ended":
-            call.sessions.letGo(call.agent, cancel: a["cancel"] as? Bool == true)
-            try letGo(call.agent, withAppQueue: call.withCleanupQueue)
+            let cancel = a["cancel"] as? Bool == true
+            call.sessions.letGo(call.agent, cancel: cancel)
+            try letGo(call.agent, cancelApprovals: cancel, withAppQueue: call.withCleanupQueue)
             return try result(call, "", NSNull())
         case "list_apps":
             let rows: [[String: Any]]
@@ -561,42 +577,55 @@ public final class HarnessExecutor: ToolExecutor {
     /// Turn end and dead-agent reaping share this path. Cleanup uses the same app
     /// FIFO but cannot be abandoned by the already-ended turn/dead client.
     public func letGo(
-        _ agent: AgentSession,
+        _ agent: AgentSession, cancelApprovals: Bool = false,
         withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome
     ) throws {
+        if cancelApprovals || agent.ended || agent.exited { d.approvals.cancel(keys: [agent.key]) }
         d.person.turnEnded(agent)
         for app in appSessions(agent) {
             _ = try withAppQueue(app.target.path) {
                 switchOff(app)
-                lock.lock()
-                apps[agent.key]?.removeValue(forKey: app.target.path)
-                appOrder[agent.key]?.removeAll { $0 == app.target.path }
-                lock.unlock()
+                let path = app.target.path
+                // Another cleanup may have retired this snapshot before our FIFO turn.
+                let retired: AppSession? = state.withLock { state in
+                    guard state.apps[agent.key]?[path] === app else { return nil }
+                    let removed = state.apps[agent.key]?.removeValue(forKey: path)
+                    state.appOrder[agent.key]?.removeAll { $0 == path }
+                    return removed
+                }
+                // The appSessions snapshot retains all apps through the loop.
+                // Keep this reference outside the registry lock too; final deinit
+                // and observer stop may run after the loop, outside the app FIFO.
+                withExtendedLifetime(retired) {}
                 return ToolOutcome()
             }
         }
-        lock.lock()
-        if apps[agent.key]?.isEmpty == true {
-            apps.removeValue(forKey: agent.key)
-            appOrder.removeValue(forKey: agent.key)
+        state.withLock { state in
+            if state.apps[agent.key]?.isEmpty == true {
+                state.apps.removeValue(forKey: agent.key)
+                state.appOrder.removeValue(forKey: agent.key)
+            }
         }
-        lock.unlock()
         if d.person.driven().isEmpty { d.presence.turnDone() }
         d.approvals.clearDenials(agent: agent)
+    }
+    public func cancel(agentKeys: Set<String>) {
+        d.approvals.cancel(keys: agentKeys)
     }
     public func agentExited(
         _ agent: AgentSession,
         withAppQueue: (String, () throws -> ToolOutcome) throws -> ToolOutcome
     ) {
-        try? letGo(agent, withAppQueue: withAppQueue)
+        try? letGo(agent, cancelApprovals: true, withAppQueue: withAppQueue)
     }
     public func shutdown() {
-        lock.lock()
-        let all = apps.values.flatMap { $0.values }
-        apps.removeAll()
-        appOrder.removeAll()
-        lock.unlock()
-        for app in all { switchOff(app) }
+        let retired = state.withLock { state in
+            let retired = state.apps
+            state.apps = [:]
+            state.appOrder = [:]
+            return retired
+        }
+        for app in retired.values.flatMap({ $0.values }) { switchOff(app) }
         d.focus.releaseAll()
         Tree.disableAll()
         d.actions.system.pasteboard.restoreSaved()
