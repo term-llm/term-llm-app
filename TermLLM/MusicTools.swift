@@ -8,8 +8,10 @@ final class MusicTools {
     private let store: PlaylistStore
     private let catalog: MusicCatalog
     private let player: MusicPlayer
+    private let platform: DeviceToolPlatform
 
-    init(store: PlaylistStore, catalog: MusicCatalog, player: MusicPlayer) {
+    init(store: PlaylistStore, catalog: MusicCatalog, player: MusicPlayer, platform: DeviceToolPlatform = .current) {
+        self.platform = platform
         self.store = store
         self.catalog = catalog
         self.player = player
@@ -21,12 +23,12 @@ final class MusicTools {
                  schema(["query": .string("Song, artist, or album to look for."),
                          "limit": .integer("Maximum songs, 1–25. Default 8.")], required: ["query"]),
                  readOnly: true) { try await $0.search($1) },
-            tool("playlist_list", "List the playlists saved on the user's iPhone.",
+            tool("playlist_list", "List the playlists saved on the user's \(platform.name).",
                  schema([:]), readOnly: true) { tools, _ in tools.list() },
             tool("playlist_get", "Show a playlist's songs, with the entry ids used to remove or reorder them.",
                  schema(["playlist": Self.playlistParameter], required: ["playlist"]),
                  readOnly: true) { try $0.get($1) },
-            tool("playlist_create", "Create a playlist on the user's iPhone, optionally with songs from music_search.",
+            tool("playlist_create", "Create a playlist on the user's \(platform.name), optionally with songs from music_search.",
                  schema(["name": .string("Playlist name; must be unique."), "song_ids": Self.songIDs],
                         required: ["name"])) { try await $0.create($1) },
             tool("playlist_create_demo", "Create a persistent local playlist with five fictional, nonplayable sample songs. No Apple Music access is needed. Repeated calls return the same playlist without resetting edits.",
@@ -44,16 +46,22 @@ final class MusicTools {
             tool("playlist_rename", "Rename a playlist.",
                  schema(["playlist": Self.playlistParameter, "name": .string("New unique name.")],
                         required: ["playlist", "name"])) { try $0.rename($1) },
-            tool("playlist_delete", "Delete a playlist from the user's iPhone. This cannot be undone.",
+            tool("playlist_delete", "Delete a playlist from the user's \(platform.name). This cannot be undone.",
                  schema(["playlist": Self.playlistParameter], required: ["playlist"]),
                  consequential: true) { try $0.delete($1) },
-            tool("music_play", "Play a playlist, or specific songs, on the user's iPhone through Apple Music. Give playlist or song_ids.",
+            tool("music_play", platform == .mac
+                 ? "Play a playlist, or specific songs, through term-llm's own Apple Music player on the Mac, not the system Music app. Give playlist or song_ids."
+                 : "Play a playlist, or specific songs, on the user's iPhone through Apple Music. Give playlist or song_ids.",
                  schema(["playlist": Self.playlistParameter, "song_ids": Self.songIDs,
                          "start_entry_id": .string("Playlist entry to start from."),
                          "shuffle": .boolean("Turn shuffle on or off.")])) { try await $0.play($1) },
-            tool("music_now_playing", "What the iPhone is playing, and whether it is paused.",
+            tool("music_now_playing", platform == .mac
+                 ? "What term-llm's own Apple Music player on the Mac is playing, and whether it is paused. Not the system Music app."
+                 : "What the iPhone is playing, and whether it is paused.",
                  schema([:]), readOnly: true) { tools, _ in tools.nowPlaying() },
-            tool("music_control", "Control playback on the iPhone.",
+            tool("music_control", platform == .mac
+                 ? "Control playback in term-llm's own Apple Music player on the Mac, not the system Music app."
+                 : "Control playback on the iPhone.",
                  schema(["action": .enumeration(["pause", "resume", "next", "previous", "shuffle_on", "shuffle_off"])],
                         required: ["action"])) { try await $0.control($1) },
         ]

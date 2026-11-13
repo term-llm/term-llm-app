@@ -21,55 +21,105 @@ struct ListenPlayerView: View {
     private var player: ListenPlayer { listen.player }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 22) {
-                if let item = player.current {
-                    ListenArtwork(item: item, size: 240, store: listen.artwork)
-                        .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
-                        .padding(.top, 12)
-                    VStack(spacing: 6) {
-                        Text(item.title)
-                            .font(.title3.weight(.semibold))
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                        if !item.subtitle.isEmpty {
-                            Text(item.subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    VStack(spacing: 10) {
-                        ListenPlaybackScrubber(player: player)
-                        ListenConnectionStatus(listen: listen, item: item)
-                    }
-                    transport
-                    options
-                    if case .failed(let message) = player.status {
-                        Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                    Spacer(minLength: 0)
-                } else {
-                    ContentUnavailableView("Nothing Playing", systemImage: "headphones",
-                                           description: Text("Pick something from Up Next."))
+        VStack(spacing: 0) {
+            #if os(macOS)
+            Text("Now Playing")
+                .font(.headline)
+                .padding()
+                .fixedSize(horizontal: false, vertical: true)
+            #endif
+            navigation
+            #if os(macOS)
+            // Outside the stack so Up Next retains the same sheet dismissal.
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("listenPlayerDone")
                 }
+                .padding()
             }
-            .padding(.horizontal, 24)
+            .fixedSize(horizontal: false, vertical: true)
+            #endif
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("listenExpandedPlayer")
+        .accessibilityAction(.escape) { dismiss() }
+        #if os(macOS)
+        .frame(idealWidth: 480, idealHeight: 620)
+        #else
+        .presentationDragIndicator(.visible)
+        #endif
+    }
+
+    private var navigation: some View {
+        NavigationStack {
+            ScrollView {
+                playerContent
+                    .padding(.bottom, 24)
+                    .frame(maxWidth: .infinity)
+            }
+            #if os(iOS)
+            .navigationTitle("Now Playing")
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .platformLeading) {
                     Button { dismiss() } label: { Image(systemName: "chevron.down") }
                         .accessibilityLabel("Close")
+                        .accessibilityIdentifier("listenPlayerClose")
                 }
+                #endif
                 ToolbarItem(placement: .platformTrailing) {
                     NavigationLink { ListenView(listen: listen, embedded: true) } label: {
                         Image(systemName: "list.bullet")
                     }
                     .accessibilityLabel("Up Next")
+                    .accessibilityIdentifier("listenPlayerUpNext")
                 }
             }
         }
+    }
+
+    private var playerContent: some View {
+        VStack(spacing: 22) {
+            if let item = player.current {
+                ListenArtwork(item: item, size: 240, store: listen.artwork)
+                    .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
+                    .padding(.top, 12)
+                VStack(spacing: 6) {
+                    Text(item.title)
+                        .font(.title3.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                    if !item.subtitle.isEmpty {
+                        Text(item.subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                VStack(spacing: 10) {
+                    ListenPlaybackScrubber(player: player)
+                    ListenConnectionStatus(listen: listen, item: item)
+                }
+                transport
+                options
+                if case .failed(let message) = player.status {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                Spacer(minLength: 0)
+            } else {
+                ContentUnavailableView("Nothing Playing", systemImage: "headphones",
+                                       description: Text("Pick something from Up Next."))
+            }
+        }
+        .padding(.horizontal, 24)
     }
 
     private var transport: some View {

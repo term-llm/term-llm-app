@@ -126,10 +126,11 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     private var resetTask: Task<Void, Never>?
     private let relay: SourceRevocationRelay?
 
-    init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(), dataStore: WKWebsiteDataStore? = nil, transport: (any HubTransport)? = nil) {
+    init(connection: HubConnection, bearerStorage: any HubBearerStorage = HubKeychainBearerStorage(), dataStore: WKWebsiteDataStore? = nil, transport: (any HubTransport)? = nil,
+         dataPurger: (@MainActor () async -> Void)? = nil) {
         self.connection = connection
         self.id = connection.id
-        let security = HubConnectionSecurity(connection: connection, bearerStorage: bearerStorage, dataStore: dataStore)
+        let security = HubConnectionSecurity(connection: connection, bearerStorage: bearerStorage, dataStore: dataStore, dataPurger: dataPurger)
         self.security = security
         let relay = SourceRevocationRelay()
         self.relay = relay
@@ -347,28 +348,74 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         return active && authenticationEpoch == current && !store.unauthorized
     }
 
-    func signInWithBearer(_ token: String) async {
-        guard let epoch = await prepareAuthentication(), let directClient, let security else { return }
+    @discardableResult
+    func signInWithBearer(_ token: String) async -> Bool {
+        guard !Task.isCancelled,
+              let epoch = await prepareAuthentication(), let directClient, let security else { return false }
         do {
             _ = try await directClient.validateBearer(token: token)
-            guard active, epoch == authenticationEpoch else { return }
+            guard active, epoch == authenticationEpoch, !Task.isCancelled else { return false }
             try security.setBearer(token)
-            await prepareBrowserAuthentication()
-            await authenticationSucceeded(epoch: epoch)
+            guard await prepareBrowserAuthentication(), !Task.isCancelled else { return false }
+            return await authenticationSucceeded(epoch: epoch)
         } catch {
-            guard active, epoch == authenticationEpoch else { return }
+            guard active, epoch == authenticationEpoch, !Task.isCancelled else { return false }
             authenticationError = error.localizedDescription
+            return false
         }
     }
 
-    func prepareBrowserAuthentication() async {
-        guard active, connection.kind == .directNode, let security, let token = security.bearer else { return }
+    /// A verified This Mac handoff is not an explicit identity change. Keep its
+    /// UUID-owned website preferences and retained document when the credential
+    /// is unchanged, but freshly validate it before making the browser ready.
+    @discardableResult
+    func authenticateManagedLocalService(_ token: String) async -> Bool {
+        guard active, !Task.isCancelled else { return false }
+        guard connection.isManagedLocalService, connection.kind == .directNode,
+              !browserRevoked, !store.unauthorized,
+              let security, security.active, security.cookiesReadable,
+              security.bearer == token, let directClient else {
+            let authenticated = await signInWithBearer(token)
+            return authenticated && !Task.isCancelled && active && browserReady && !browserRevoked &&
+                !store.unauthorized && authenticationError == nil
+        }
+        let expected = authenticationEpoch
+        let securityEpoch = security.epoch
+        func isCurrent() -> Bool {
+            active && !Task.isCancelled && authenticationEpoch == expected &&
+                security.active && security.epoch == securityEpoch && security.bearer == token &&
+                !browserRevoked && !store.unauthorized
+        }
+        do {
+            _ = try await directClient.validateBearer(token: token)
+            guard isCurrent(), await prepareBrowserAuthentication(), isCurrent() else { return false }
+            authenticationError = nil
+            browserReady = true
+            return true
+        } catch {
+            guard isCurrent() else { return false }
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return false }
+            // A definite rejection closes the protected document. An unavailable
+            // service is not evidence of an identity change: keep its credential,
+            // website preferences and previous readiness for a later retry.
+            if let error = error as? HubAPIError, error.status == 401 || error.status == 403 {
+                revokeAuthorization(expected: expected)
+            }
+            authenticationError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func prepareBrowserAuthentication() async -> Bool {
+        guard active, connection.kind == .directNode, let security, let token = security.bearer else { return false }
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
         if let cookie = HTTPCookie(properties: [.name: "term_llm_token", .value: token.addingPercentEncoding(withAllowedCharacters: allowed) ?? "",
                                                .domain: connection.url.host!, .path: connection.mountPath,
                                                .secure: connection.url.scheme == "https" ? "TRUE" : "FALSE"]) {
-            await security.saveCookies([cookie], epoch: security.epoch)
+            return await security.saveCookies([cookie], epoch: security.epoch)
         }
+        return false
     }
 
     func dispose(removeCredentials: Bool) {

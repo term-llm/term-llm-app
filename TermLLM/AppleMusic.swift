@@ -3,15 +3,40 @@ import Foundation
 @preconcurrency import MusicKit
 import os
 
-/// Music diagnostics: `log stream --predicate 'subsystem == "com.termllm.app"'`
-/// or Console.app with the device selected.
+/// Music diagnostics: see docs/MAC-SUPPORT.md for scoped music/device-tools
+/// log capture, or filter those categories in Console.app.
 let musicLog = Logger(subsystem: "com.termllm.app", category: "music")
 
 // The boundary between the app and MusicKit. Everything above these two
 // protocols (store, player, tools, views) is testable without Apple Music.
 
-enum MusicAccess: Equatable, Sendable {
+enum MusicAccess: String, Equatable, Sendable {
     case authorized, notDetermined, denied, restricted
+
+    /// Small inline guidance shared by the library and song search.
+    var guidance: String? {
+        switch self {
+        case .authorized: return nil
+        case .notDetermined:
+            return "Connect Apple Music, then choose Allow in the permission prompt to search and play songs. Playlists work without access."
+        case .denied:
+            #if os(macOS)
+            return "Apple Music access is off. In System Settings → Privacy & Security → Media & Apple Music, allow term-llm access. Playlists still work."
+            #else
+            return "Apple Music access is off. In Settings, allow Media & Apple Music for term-llm. Playlists still work."
+            #endif
+        case .restricted:
+            return "Apple Music access is restricted by this device's settings or management policy. Check with the device's parent or administrator. Playlists still work."
+        }
+    }
+
+    var actionTitle: String? {
+        switch self {
+        case .notDetermined: return "Connect Apple Music"
+        case .denied: return "Open Settings"
+        case .authorized, .restricted: return nil
+        }
+    }
 }
 
 protocol MusicCatalog: Sendable {
@@ -53,67 +78,123 @@ struct AppleMusicCatalog: MusicCatalog {
     func access() -> MusicAccess { Self.access(MusicAuthorization.currentStatus) }
 
     func requestAccess() async -> MusicAccess {
-        Self.access(await MusicAuthorization.request())
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.authorization.request")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) authorization=\(access().rawValue, privacy: .public)")
+        let result = Self.access(await MusicAuthorization.request())
+        musicLog.info("\(diagnostic.event("result"), privacy: .public) authorization=\(result.rawValue, privacy: .public)")
+        return result
     }
 
     func search(_ term: String, limit: Int) async throws -> [MusicTrack] {
-        try await ensureAccess()
-        let limit = max(1, min(25, limit))
-        var request = MusicCatalogSearchRequest(term: term, types: [Song.self])
-        request.limit = limit
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.search")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) limit=\(limit)")
         do {
-            return try await request.response().songs.map(MusicTrack.init(song:))
-        } catch where Self.isDecodingFailure(error) {
-            // One result MusicKit can't decode fails the whole page. Ask the
-            // Apple Music API directly and keep every song that parses.
-            musicLog.error("MusicKit search decode failed, using lenient parsing: \(CatalogParsing.describe(error), privacy: .public) — \(String(reflecting: error), privacy: .public)")
-            return try await CatalogParsing.searchSongs(apiData(path: "search", query: [
-                "term": term, "types": "songs", "limit": String(limit),
-            ]))
+            try await ensureAccess()
+            let limit = max(1, min(25, limit))
+            var request = MusicCatalogSearchRequest(term: term, types: [Song.self])
+            request.limit = limit
+            let result: [MusicTrack]
+            do {
+                result = try await request.response().songs.map(MusicTrack.init(song:))
+            } catch where Self.isDecodingFailure(error) {
+                // One result MusicKit can't decode fails the whole page. Ask the
+                // Apple Music API directly and keep every song that parses.
+                musicLog.error("\(diagnostic.event("decode_fallback.start"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                do {
+                    result = try await CatalogParsing.searchSongs(apiData(path: "search", query: [
+                        "term": term, "types": "songs", "limit": String(limit),
+                    ]))
+                    musicLog.info("\(diagnostic.event("decode_fallback.success"), privacy: .public) count=\(result.count)")
+                } catch {
+                    musicLog.error("\(diagnostic.event("decode_fallback.failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                    throw error
+                }
+            }
+            musicLog.info("\(diagnostic.event("success"), privacy: .public) count=\(result.count)")
+            return result
         } catch {
-            musicLog.error("MusicKit search failed: \(String(reflecting: error), privacy: .public)")
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
             throw error
         }
     }
 
     func tracks(ids: [String]) async throws -> [MusicTrack] {
-        try await ensureAccess()
-        var tracks: [String: MusicTrack] = [:]
-        for batch in Self.batches(of: ids) {
-            do {
-                let response = try await MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: batch.map { MusicItemID($0) }).response()
-                for song in response.items { tracks[song.id.rawValue] = MusicTrack(song: song) }
-            } catch where Self.isDecodingFailure(error) {
-                musicLog.error("MusicKit lookup decode failed, using lenient parsing: \(CatalogParsing.describe(error), privacy: .public)")
-                let data = try await apiData(path: "songs", query: ["ids": batch.joined(separator: ",")])
-                for track in CatalogParsing.resourceSongs(data) { tracks[track.id] = track }
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.tracks")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) count=\(ids.count)")
+        do {
+            try await ensureAccess()
+            var tracks: [String: MusicTrack] = [:]
+            for batch in Self.batches(of: ids) {
+                musicLog.info("\(diagnostic.event("batch.start"), privacy: .public) count=\(batch.count)")
+                do {
+                    let response = try await MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: batch.map { MusicItemID($0) }).response()
+                    for song in response.items { tracks[song.id.rawValue] = MusicTrack(song: song) }
+                    musicLog.info("\(diagnostic.event("batch.success"), privacy: .public) count=\(response.items.count)")
+                } catch where Self.isDecodingFailure(error) {
+                    musicLog.error("\(diagnostic.event("decode_fallback.start"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                    do {
+                        let data = try await apiData(path: "songs", query: ["ids": batch.joined(separator: ",")])
+                        let parsed = CatalogParsing.resourceSongs(data)
+                        for track in parsed { tracks[track.id] = track }
+                        musicLog.info("\(diagnostic.event("decode_fallback.success"), privacy: .public) count=\(parsed.count)")
+                    } catch {
+                        musicLog.error("\(diagnostic.event("decode_fallback.failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                        throw error
+                    }
+                }
             }
+            let result = ids.compactMap { tracks[$0] }
+            musicLog.info("\(diagnostic.event("success"), privacy: .public) count=\(result.count)")
+            return result
+        } catch {
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+            throw error
         }
-        return ids.compactMap { tracks[$0] }
     }
 
     /// Batched lookups (one request per 25 ids) so long playlists start fast;
     /// ids Apple Music doesn't know, or MusicKit can't decode, are dropped
     /// instead of failing the whole queue.
     func songs(ids: [String]) async throws -> [Song] {
-        try await ensureAccess()
-        var found: [String: Song] = [:]
-        for batch in Self.batches(of: ids) {
-            do {
-                for song in try await lookUp(batch) { found[song.id.rawValue] = song }
-            } catch where Self.isDecodingFailure(error) && batch.count > 1 {
-                // Isolate the song MusicKit can't decode; keep the rest.
-                musicLog.error("MusicKit batch decode failed, retrying songs one by one: \(CatalogParsing.describe(error), privacy: .public)")
-                for id in batch {
-                    if let song = try? await lookUp([id]).first { found[song.id.rawValue] = song }
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.songs")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) count=\(ids.count)")
+        do {
+            try await ensureAccess()
+            var found: [String: Song] = [:]
+            for batch in Self.batches(of: ids) {
+                do {
+                    for song in try await lookUp(batch) { found[song.id.rawValue] = song }
+                } catch where Self.isDecodingFailure(error) && batch.count > 1 {
+                    // Isolate the song MusicKit can't decode; keep the rest.
+                    musicLog.error("\(diagnostic.event("decode_fallback.start"), privacy: .public) count=\(batch.count) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                    let before = found.count
+                    for id in batch {
+                        // lookUp logs each ignored failure, without changing this fallback's tolerance.
+                        if let song = try? await lookUp([id]).first { found[song.id.rawValue] = song }
+                    }
+                    musicLog.info("\(diagnostic.event("decode_fallback.complete"), privacy: .public) resolved_count=\(found.count - before) requested_count=\(batch.count)")
                 }
             }
+            let result = ids.compactMap { found[$0] }
+            musicLog.info("\(diagnostic.event("success"), privacy: .public) count=\(result.count)")
+            return result
+        } catch {
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+            throw error
         }
-        return ids.compactMap { found[$0] }
     }
 
     private func lookUp(_ ids: [String]) async throws -> MusicItemCollection<Song> {
-        try await MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids.map { MusicItemID($0) }).response().items
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.lookup")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) count=\(ids.count)")
+        do {
+            let result = try await MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids.map { MusicItemID($0) }).response().items
+            musicLog.info("\(diagnostic.event("success"), privacy: .public) count=\(result.count)")
+            return result
+        } catch {
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+            throw error
+        }
     }
 
     /// A raw Apple Music API request in the user's storefront (MusicKit signs it).
@@ -144,9 +225,15 @@ struct AppleMusicCatalog: MusicCatalog {
     }
 
     private func ensureAccess() async throws {
+        let diagnostic = DeviceToolDiagnostics(operation: "catalog.authorization.ensure")
         var status = access()
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) authorization=\(status.rawValue, privacy: .public)")
         if status == .notDetermined { status = await requestAccess() }
-        guard status == .authorized else { throw MusicError.notAuthorized }
+        guard status == .authorized else {
+            musicLog.error("\(diagnostic.event("denied"), privacy: .public) authorization=\(status.rawValue, privacy: .public) \(DeviceToolDiagnostics.errorMetadata(MusicError.notAuthorized), privacy: .public)")
+            throw MusicError.notAuthorized
+        }
+        musicLog.info("\(diagnostic.event("success"), privacy: .public) authorization=\(status.rawValue, privacy: .public)")
     }
 
     private static func access(_ status: MusicAuthorization.Status) -> MusicAccess {
@@ -175,8 +262,10 @@ final class AppleMusicEngine: MusicPlaybackEngine {
     var onChange: (@MainActor () -> Void)?
     #if os(macOS)
     private let player = ApplicationMusicPlayer.shared
+    private let diagnosticEngine = "application"
     #else
     private let player = SystemMusicPlayer.shared
+    private let diagnosticEngine = "system"
     #endif
     private let catalog: AppleMusicCatalog
     private var observers: Set<AnyCancellable> = []
@@ -206,60 +295,97 @@ final class AppleMusicEngine: MusicPlaybackEngine {
 
     private var currentTrack: MusicTrack? {
         guard let entry = player.queue.currentEntry else { return nil }
-        var id = entry.id
-        if case .song(let song)? = entry.item { id = song.id.rawValue }
-        return MusicTrack(id: id, title: entry.title, artist: entry.subtitle, album: nil,
+        let song: MusicTrack?
+        if case .song(let item)? = entry.item { song = MusicTrack(song: item) } else { song = nil }
+        return MusicTrack(id: song?.id ?? entry.id, title: entry.title, artist: entry.subtitle, album: nil,
                           artworkURL: entry.artwork?.url(width: 300, height: 300))
+            .fillingMissingMetadata(from: song)
     }
 
     func load(_ tracks: [MusicTrack], startingAt index: Int, shuffle: Bool) async throws -> [MusicTrack] {
+        let diagnostic = DeviceToolDiagnostics(operation: "player.load")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) engine=\(self.diagnosticEngine, privacy: .public) count=\(tracks.count)")
         let request = UUID()
         playbackRequest = request
-        try checkRequest(request)
-        let songs = try await catalog.songs(ids: tracks.map(\.id))
-        try checkRequest(request)
-        guard !songs.isEmpty else { throw MusicError.noPlayableSongs }
-        let wanted = tracks.indices.contains(index) ? tracks[index].id : nil
-        let start = songs.first { $0.id.rawValue == wanted } ?? songs[0]
-        player.queue = .init(for: songs, startingAt: start)
-        player.state.shuffleMode = shuffle ? .songs : .off
-        return songs.map(MusicTrack.init(song:))
+        do {
+            try checkRequest(request)
+            let songs = try await catalog.songs(ids: tracks.map(\.id))
+            try checkRequest(request)
+            guard !songs.isEmpty else { throw MusicError.noPlayableSongs }
+            let wanted = tracks.indices.contains(index) ? tracks[index].id : nil
+            let start = songs.first { $0.id.rawValue == wanted } ?? songs[0]
+            musicLog.info("\(diagnostic.event("queue.assign"), privacy: .public) count=\(songs.count)")
+            player.queue = .init(for: songs, startingAt: start)
+            player.state.shuffleMode = shuffle ? .songs : .off
+            musicLog.info("\(diagnostic.event("success"), privacy: .public) count=\(songs.count)")
+            return songs.map(MusicTrack.init(song:))
+        } catch {
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+            throw error
+        }
     }
 
     func play() async throws {
+        let diagnostic = DeviceToolDiagnostics(operation: "player.play")
+        musicLog.info("\(diagnostic.event("start"), privacy: .public) engine=\(self.diagnosticEngine, privacy: .public)")
         let request = UUID()
         playbackRequest = request
-        try checkRequest(request)
-        let canPlay = try await MusicSubscription.current.canPlayCatalogContent
-        try checkRequest(request)
-        guard canPlay else {
-            musicLog.error("Apple Music subscription can't play catalog content")
-            throw MusicError.cannotPlayCatalog
-        }
-        // The system player sometimes refuses the first play() after a queue
-        // swap ("Failed to prepare to play"); prepare and retry briefly.
-        var lastError: Error?
-        for attempt in 1...3 {
+        do {
             try checkRequest(request)
-            try? await player.prepareToPlay()
-            try checkRequest(request)
+            musicLog.info("\(diagnostic.event("subscription.start"), privacy: .public)")
+            let canPlay: Bool
             do {
-                try await player.play()
-                // MusicKit cannot reliably revoke an already-submitted play().
-                // Do not compensate with pause here: it could stop a newer play
-                // (or intentional playback from Music/Control Center).
-                try checkRequest(request)
-                return
+                canPlay = try await MusicSubscription.current.canPlayCatalogContent
+                musicLog.info("\(diagnostic.event("subscription.result"), privacy: .public) can_play=\(canPlay)")
             } catch {
-                try checkRequest(request)
-                if error is CancellationError { throw error }
-                lastError = error
-                musicLog.error("Apple Music play attempt \(attempt) failed: \(String(reflecting: error), privacy: .public)")
-                try await Task.sleep(for: .milliseconds(attempt == 1 ? 200 : 500))
-                try checkRequest(request)
+                musicLog.error("\(diagnostic.event("subscription.failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                throw error
             }
+            try checkRequest(request)
+            guard canPlay else {
+                musicLog.error("\(diagnostic.event("subscription.denied"), privacy: .public)")
+                throw MusicError.cannotPlayCatalog
+            }
+            // The system player sometimes refuses the first play() after a queue
+            // swap ("Failed to prepare to play"); prepare and retry briefly.
+            var lastError: Error?
+            for attempt in 1...3 {
+                try checkRequest(request)
+                musicLog.info("\(diagnostic.event("prepare.start"), privacy: .public) attempt=\(attempt)")
+                do {
+                    try await player.prepareToPlay()
+                    musicLog.info("\(diagnostic.event("prepare.success"), privacy: .public) attempt=\(attempt)")
+                } catch {
+                    // Deliberately ignored, exactly as the previous try? path.
+                    musicLog.error("\(diagnostic.event("prepare.failure_ignored"), privacy: .public) attempt=\(attempt) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                }
+                try checkRequest(request)
+                do {
+                    musicLog.info("\(diagnostic.event("play.start"), privacy: .public) attempt=\(attempt)")
+                    try await player.play()
+                    // MusicKit cannot reliably revoke an already-submitted play().
+                    // Do not compensate with pause here: it could stop a newer play
+                    // (or intentional playback from Music/Control Center).
+                    try checkRequest(request)
+                    musicLog.info("\(diagnostic.event("success"), privacy: .public) attempt=\(attempt)")
+                    return
+                } catch {
+                    try checkRequest(request)
+                    if error is CancellationError { throw error }
+                    lastError = error
+                    musicLog.error("\(diagnostic.event("play.failure_retry"), privacy: .public) attempt=\(attempt) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+                    try await Task.sleep(for: .milliseconds(attempt == 1 ? 200 : 500))
+                    try checkRequest(request)
+                }
+            }
+            if let lastError {
+                musicLog.error("\(diagnostic.event("retries_exhausted"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(lastError), privacy: .public)")
+            }
+            throw MusicError.playbackFailed(lastError?.localizedDescription ?? "unknown error")
+        } catch {
+            musicLog.error("\(diagnostic.event("failure"), privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
+            throw error
         }
-        throw MusicError.playbackFailed(lastError?.localizedDescription ?? "unknown error")
     }
 
     private func checkRequest(_ request: UUID) throws {

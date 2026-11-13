@@ -79,6 +79,59 @@ final class MusicViewRenderingTests: XCTestCase {
         try await render(MusicSearchView(library: library, playlistID: playlist.id), named: "add-songs")
     }
 
+    func testPermissionHintsRenderWithoutPrompting() async throws {
+        for status: MusicAccess in [.notDetermined, .denied, .restricted] {
+            let catalog = FakeCatalog(access: status)
+            let library = MusicLibrary(catalog: catalog, engine: FakeEngine(),
+                                       store: PlaylistStore(fileURL: temporaryPlaylistFile()), defaults: isolatedDefaults())
+            try await render(MusicView(library: library), named: "music-access-\(status.rawValue)")
+            let playlist = try library.store.create(name: "Test")
+            try await render(MusicSearchView(library: library, playlistID: playlist.id),
+                             named: "music-search-access-\(status.rawValue)")
+            XCTAssertEqual(catalog.requestCount, 0, "showing guidance must not prompt")
+        }
+    }
+
+    func testRetainedMusicRefreshesPermissionOnActivationAndVisibleForeground() async throws {
+        let catalog = FakeCatalog(access: .notDetermined)
+        let library = MusicLibrary(catalog: catalog, engine: FakeEngine(),
+                                   store: PlaylistStore(fileURL: temporaryPlaylistFile()), defaults: isolatedDefaults())
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.screen.bounds
+        let host = UIHostingController(rootView: MusicView(library: library, embedded: true, isActive: false)
+            .environment(\.scenePhase, .active))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(300))
+
+        catalog.setAccess(.authorized)
+        host.rootView = MusicView(library: library, embedded: true, isActive: true)
+            .environment(\.scenePhase, .active)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(library.access, .authorized, "activating the retained tab refreshes permission")
+
+        host.rootView = MusicView(library: library, embedded: true, isActive: true)
+            .environment(\.scenePhase, .background)
+        try await Task.sleep(for: .milliseconds(300))
+        catalog.setAccess(.denied)
+        host.rootView = MusicView(library: library, embedded: true, isActive: true)
+            .environment(\.scenePhase, .active)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(library.access, .denied, "returning from Settings refreshes the visible Music tab")
+
+        host.rootView = MusicView(library: library, embedded: true, isActive: false)
+            .environment(\.scenePhase, .background)
+        try await Task.sleep(for: .milliseconds(300))
+        catalog.setAccess(.restricted)
+        host.rootView = MusicView(library: library, embedded: true, isActive: false)
+            .environment(\.scenePhase, .active)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(library.access, .denied, "inactive destinations do not refresh in the foreground")
+        XCTAssertEqual(catalog.requestCount, 0, "lifecycle refreshes never request permission")
+    }
+
     /// The tab accessory recreates the Music mini player whenever the root view
     /// updates. Its artwork must come back in the first frame from the copy on
     /// the phone, not flash a placeholder while it's fetched and decoded again.

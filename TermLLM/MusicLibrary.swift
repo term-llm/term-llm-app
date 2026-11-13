@@ -19,6 +19,7 @@ final class MusicLibrary {
     let catalog: MusicCatalog
     /// Whether this app may use Apple Music; playlists work either way.
     private(set) var access: MusicAccess
+    private(set) var isRequestingAccess = false
 
     @ObservationIgnored private let toolbox: MusicTools
 
@@ -38,7 +39,15 @@ final class MusicLibrary {
     }
 
     func requestAccess() async {
-        access = await catalog.requestAccess()
+        guard !isRequestingAccess else { return }
+        refreshAccess()
+        guard access == .notDetermined else { return }
+        isRequestingAccess = true
+        defer {
+            isRequestingAccess = false
+            refreshAccess()
+        }
+        _ = await catalog.requestAccess()
     }
 }
 

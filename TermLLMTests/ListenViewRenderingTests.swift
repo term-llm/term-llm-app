@@ -340,6 +340,43 @@ final class ListenViewRenderingTests: XCTestCase {
         try await render(ListenPlayerView(listen: listen), named: "listen-player")
     }
 
+    func testPresentedPlayerCloseKeepsPlaybackAndMiniPlayer() async throws {
+        let fixture = try await shelfFixture(.podcasts)
+        let presentation = PlayerSheetPresentation()
+        let previousKeyWindow = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        let window = try hostedWindow(PlayerSheetFixture(listen: fixture.listen, presentation: presentation))
+        defer { window.isHidden = true; previousKeyWindow?.makeKey() }
+        try await Task.sleep(for: .milliseconds(300))
+        presentation.isPresented = true
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertNotNil(window.rootViewController?.presentedViewController)
+        try capture(window, named: "listen-presented-player")
+        let currentID = fixture.listen.player.currentID
+        let stops = fixture.podcastEngine.stops
+        let rates = fixture.podcastEngine.rates
+        let showsBar = fixture.listen.player.showsBar
+        let close = accessibilityElements(in: window).first {
+            ($0 as? UIAccessibilityIdentification)?.accessibilityIdentifier == "listenPlayerClose"
+        }
+        guard let close else {
+            throw XCTSkip("This unit-test host does not expose the SwiftUI sheet accessibility tree; inspect the screenshot attachment")
+        }
+        XCTAssertTrue(close.accessibilityActivate())
+        for _ in 0..<40 where presentation.isPresented || window.rootViewController?.presentedViewController != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(presentation.isPresented)
+        XCTAssertNil(window.rootViewController?.presentedViewController)
+        XCTAssertEqual(fixture.listen.player.currentID, currentID)
+        XCTAssertTrue(fixture.listen.player.isPlaying)
+        XCTAssertTrue(fixture.podcastEngine.playing)
+        XCTAssertEqual(fixture.podcastEngine.stops, stops)
+        XCTAssertEqual(fixture.podcastEngine.rates, rates)
+        XCTAssertEqual(fixture.listen.player.showsBar, showsBar)
+        try capture(window, named: "listen-player-closed-keeps-playing")
+    }
+
     func testLibraryContextMenusForUpNextAndHistory() async throws {
         // Query the public UIKit menu delegate at visible row locations. This
         // verifies registration, not a real mouse gesture or the menu's actions.
@@ -464,6 +501,22 @@ private struct MediaShelfRenderingHarness: View {
         MediaPlaybackShelf(listen: listen, music: music, state: $shelfState,
                            usesSystemBackground: usesSystemBackground,
                            onOpenPodcastPlayer: {}, onOpenMusic: {})
+    }
+}
+
+@MainActor
+private final class PlayerSheetPresentation: ObservableObject {
+    @Published var isPresented = false
+}
+
+@MainActor
+private struct PlayerSheetFixture: View {
+    let listen: Listen
+    @ObservedObject var presentation: PlayerSheetPresentation
+
+    var body: some View {
+        MiniPlayerBar(listen: listen) { presentation.isPresented = true }
+            .sheet(isPresented: $presentation.isPresented) { ListenPlayerView(listen: listen) }
     }
 }
 

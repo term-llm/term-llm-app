@@ -11,6 +11,11 @@ final class FakeCatalog: MusicCatalog, @unchecked Sendable {
     private let lock = NSLock()
     private var known: [String: MusicTrack]
     private var accessValue: MusicAccess
+    private var requests = 0
+    var requestCount: Int { lock.withLock { requests } }
+    var beforeRequest: (@Sendable () async -> Void)?
+    /// Can differ from the current permission to exercise a stale request result.
+    var requestResult: MusicAccess?
     var searchResults: [MusicTrack] = []
     private(set) var searches: [String] = []
 
@@ -20,10 +25,13 @@ final class FakeCatalog: MusicCatalog, @unchecked Sendable {
     }
 
     func access() -> MusicAccess { lock.withLock { accessValue } }
+    func setAccess(_ access: MusicAccess) { lock.withLock { accessValue = access } }
     func requestAccess() async -> MusicAccess {
-        lock.withLock {
+        lock.withLock { requests += 1 }
+        await beforeRequest?()
+        return lock.withLock {
             if accessValue == .notDetermined { accessValue = .authorized }
-            return accessValue
+            return requestResult ?? accessValue
         }
     }
 

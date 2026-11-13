@@ -15,7 +15,7 @@ struct MusicView: View {
     var onToggleSidebar: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @State private var path: [UUID] = []
     @State private var creating = false
     @State private var newName = ""
@@ -43,8 +43,14 @@ struct MusicView: View {
             .animation(.snappy(duration: 0.25), value: player.nowPlaying)
             .musicNotices(player)
             .onAppear {
-                library.refreshAccess()
+                if isActive { library.refreshAccess() }
                 library.store.reloadIfReadOnly()
+            }
+            .onChange(of: isActive) { _, active in
+                if active { library.refreshAccess() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if isActive && phase == .active { library.refreshAccess() }
             }
         }
     }
@@ -116,25 +122,9 @@ struct MusicView: View {
         }
     }
 
-    @ViewBuilder private var accessSection: some View {
+    private var accessSection: some View {
         Section {
-            if library.access == .notDetermined {
-                Button {
-                    Task { await library.requestAccess() }
-                } label: {
-                    Label("Connect Apple Music", systemImage: "music.note")
-                }
-            } else {
-                Label("Apple Music access is off", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
-                Button("Open Settings") {
-                    if let url = NativeApp.appSettingsURL { openURL(url) }
-                }
-            }
-        } footer: {
-            Text(usesWorkspaceChrome
-                 ? (AppPlatform.isMac ? "Playlists are saved on this Mac. Searching and playing songs uses Apple Music." : "Playlists are saved on this device. Searching and playing songs uses Apple Music.")
-                 : "Playlists are saved on this iPhone. Searching and playing songs uses Apple Music.")
+            MusicAccessHint(library: library)
         }
     }
 
@@ -224,6 +214,35 @@ struct MusicView: View {
 
     private func play(_ playlist: Playlist, shuffle: Bool) {
         Task { try? await player.play(playlist, shuffle: shuffle) }
+    }
+}
+
+/// Appearing or refreshing this hint never prompts. Its explicit Connect action
+/// requests access; catalog operations can also request it when undetermined.
+/// Restricted devices have no misleading retry button.
+struct MusicAccessHint: View {
+    let library: MusicLibrary
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        if let guidance = library.access.guidance {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(guidance)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let title = library.access.actionTitle {
+                    Button(title) {
+                        if library.access == .notDetermined {
+                            Task { await library.requestAccess() }
+                        } else if library.access == .denied, let url = NativeApp.appSettingsURL {
+                            openURL(url)
+                        }
+                    }
+                    .disabled(library.isRequestingAccess)
+                }
+            }
+            .accessibilityIdentifier("musicAccessHint")
+        }
     }
 }
 

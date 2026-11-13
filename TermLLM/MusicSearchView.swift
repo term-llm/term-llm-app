@@ -6,6 +6,7 @@ struct MusicSearchView: View {
     let playlistID: UUID
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var query = ""
     @State private var results: [MusicTrack] = []
     @State private var searching = false
@@ -16,6 +17,9 @@ struct MusicSearchView: View {
     var body: some View {
         NavigationStack {
             List {
+                if library.access != .authorized {
+                    Section { MusicAccessHint(library: library) }
+                }
                 ForEach(results) { track in
                     Button { toggle(track) } label: {
                         HStack(spacing: 8) {
@@ -30,7 +34,11 @@ struct MusicSearchView: View {
                     .accessibilityHint(contains(track) ? "In the playlist. Tap to remove." : "Adds to the playlist.")
                 }
             }
-            .overlay { placeholder }
+            .overlay { if library.access == .authorized { placeholder } }
+            .onAppear { library.refreshAccess() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { library.refreshAccess() }
+            }
             .searchable(text: $query, placement: .platformAlwaysVisible, prompt: "Songs, artists, albums")
             .task(id: query) { await search() }
             .navigationTitle("Add to \(playlist?.name ?? "Playlist")")
@@ -85,7 +93,10 @@ struct MusicSearchView: View {
         try? await Task.sleep(for: .milliseconds(350)) // debounce typing
         guard !Task.isCancelled else { return }
         searching = true
-        defer { searching = false }
+        defer {
+            searching = false
+            library.refreshAccess()
+        }
         do {
             let found = try await library.catalog.search(term, limit: 25)
             guard !Task.isCancelled else { return }
@@ -93,7 +104,6 @@ struct MusicSearchView: View {
             failure = nil
         } catch {
             guard !Task.isCancelled else { return }
-            library.refreshAccess()
             failure = error.localizedDescription
         }
     }

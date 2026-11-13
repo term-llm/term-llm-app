@@ -58,6 +58,14 @@ not proof of live service behavior. See [the ownership guide](MACOS-COMPANION.md
 
 **Platform differences:** Apple Music plays in-app through `ApplicationMusicPlayer` (macOS has no system Music player for apps). Podcasts need no audio-session setup on Mac. Notifications use a sandboxed Mac notification service extension (`TermLLMMacNotificationService`) sharing the iPhone extension's code, app group and Keychain group; the APNs environment comes from the app's signed `aps-environment` entitlement.
 
+**Device tools:** **Settings → Device tools → Share device tools** defaults **on for Mac** only when there is no saved or migrated preference (iPhone/iPad default **off**). Existing on/off choices are preserved, you can disable the native switch, and **Try demo** never changes it. Each conversation must still enable the **Mac** entry labelled **WebMCP from this page** in its **MCP servers** dialog; the native default does not opt conversations in. Mac shares `ping`, `device_info`, the same music/playlist tools as iPhone/iPad, and all six Listen tools (`media_add`, `media_list`, `media_play`, `media_control`, `media_now_playing`, `media_manage`). They use the existing Hub/Direct Node chat-page WebMCP bridge, not a new transport or a local listener. The global switch still excludes Linked devices, and tools remain per-conversation opt-in with per-connection page/origin and media-source isolation.
+
+Music tools control term-llm's own `ApplicationMusicPlayer`, **not the system Music app**; playlist edits and podcast/audio queue changes appear in the same libraries used by the native screens. Music refreshes permission on tab activation and visible foreground return, without automatically prompting. **Connect Apple Music** explicitly requests access; after denial, **Open Settings** opens **Privacy & Security → Media & Apple Music** so you can allow term-llm. Restricted access has explanatory guidance, not a request button that implies restrictions can be bypassed. The same tip appears in song search; local playlists and the demo remain available without permission.
+
+Now Playing fills missing queue-entry metadata from its underlying MusicKit song and the last resolved queue, only for the same song ID. Supplied current metadata wins; unrelated songs and an empty current entry never inherit the previous cover. This reuses the existing artwork cache and does not perform background catalog lookups. It defensively covers sparse metadata; it is not proof of the cause of a particular live missing-cover report.
+
+Location and turn-by-turn navigation tools are **iPhone/iPad only**: Mac neither registers them nor initializes the navigation service for device tools, and **What's shared** omits Location & directions. WebKit's existing page geolocation support is separate and unchanged. The [guided demo](../README.md#guided-demo) can create a real local sample playlist on Mac without Apple Music authorization or playback.
+
 CI Developer ID signs, notarizes and publishes release builds ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); builds run from Xcode stay development-signed. Compiling the shared media, notification, voice and linked-device paths does not prove live Apple Music authorization/playback, APNs delivery, microphone/camera permissions or remote peer connectivity on Mac. Those require separate live checks; do not infer device-only parity from a build or fixtures.
 
 The iPhone/iPad target no longer runs on Mac: Mac Catalyst and Designed for iPad/iPhone are both turned off.
@@ -74,6 +82,21 @@ Mac-only controls:
 Commands act only while the client window is key, with no sheet or alert in front of it; plain text and system editing keys are not overridden. iPhone/iPad have no desktop menu commands.
 
 Multiple windows remain disabled. `NOTIFICATION-OWNERSHIP.md` gates them on proving scene-specific notification routing and the current voice/listen singleton ownership. Enabling another scene without that work is not a safe UI-only fix.
+
+## Music and device-tool diagnostics
+
+To investigate a generic tool error, collect the native stages while reproducing it (Console.app can filter the same subsystem/categories):
+
+```sh
+log stream --level info --style compact --predicate 'subsystem == "com.termllm.app" AND (category == "music" OR category == "device-tools")'
+log show --last 15m --info --style compact --predicate 'subsystem == "com.termllm.app" AND (category == "music" OR category == "device-tools")'
+```
+
+New stage entries include `operation`, `stage`, monotonic `elapsed_ms` since that operation began, and a native `call_id` shared across bridge dispatch and MusicKit work. `call_id=none` means there was no native WebMCP invocation (for example, native Music UI work). `bridge.dispatch` shows receipt, fixed rejection reasons with caller-check booleans, and registered-tool execution success/failure. `catalog.*` identifies authorization, search/lookups and decode fallbacks; `player.*` identifies queue loading, the application/system engine, subscription checks, prepare attempts (including deliberately ignored failures), play retries and final failure. Counts and authorization enum values help distinguish "connected" from catalog or playback access.
+
+Failure metadata contains only bounded NSError domain/code pairs (up to three underlying errors, with cycle protection), a truncation flag and a cancellation flag. Invalid/oversized domains are redacted. These entries do **not** include queries, song IDs/titles, arguments/results, URLs/origins, credentials, localized error messages or error userInfo; unknown caller-supplied tool names are not logged. These guarantees apply to the new stage entries; older non-stage log entries may have different contents, so review other lines before sharing. Info-level historical entries may not be retained; prefer `log stream` during reproduction.
+
+Logs establish which native stage was reached and what it reported—not audible playback or a live-service success. A MusicKit play success only means that call returned; it does not prove audio output. The existing page rejection behavior and agent-visible errors are unchanged. Build/fixture coverage cannot diagnose the live failure without a reproduction trace.
 
 ## Adaptive workspace
 

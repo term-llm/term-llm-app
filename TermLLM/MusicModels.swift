@@ -26,6 +26,19 @@ struct MusicTrack: Codable, Hashable, Identifiable, Sendable {
                    artist: "The Imaginary Demo Band", album: "Fictional Sample Songs")
     }
 
+    /// Queue entries can omit metadata already available on the song or the
+    /// resolved queue. Fill gaps only for the same catalog identity; never carry
+    /// artwork from the previously playing song onto an unrelated one.
+    func fillingMissingMetadata(from fallback: MusicTrack?) -> MusicTrack {
+        guard let fallback, fallback.id == id else { return self }
+        var result = self
+        if result.title.isEmpty { result.title = fallback.title }
+        if result.artist?.isEmpty != false { result.artist = fallback.artist }
+        if result.album?.isEmpty != false { result.album = fallback.album }
+        if result.artworkURL == nil { result.artworkURL = fallback.artworkURL }
+        return result
+    }
+
     var subtitle: String {
         [artist, album].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
     }
@@ -77,11 +90,19 @@ enum MusicError: LocalizedError, Equatable {
 
     // Messages are read by people and by the agent, so each one says what to
     // do next.
-    var errorDescription: String? {
+    var errorDescription: String? { message(on: .current) }
+
+    func message(on platform: DeviceToolPlatform) -> String {
         switch self {
         case .notAuthorized:
+            if platform == .mac {
+                return "Apple Music access isn't allowed. Open Music in the term-llm app on the Mac to connect it."
+            }
             return "Apple Music access isn't allowed. Open Music in the term-llm app on the iPhone to connect it."
         case .cannotPlayCatalog:
+            if platform == .mac {
+                return "This Apple ID can't play Apple Music songs. Check the Mac is signed in with an active Apple Music subscription."
+            }
             return "This Apple ID can't play Apple Music songs. Check the iPhone is signed in with an active Apple Music subscription."
         case .noPlayableSongs:
             return "None of those songs are available on Apple Music right now."
@@ -92,8 +113,14 @@ enum MusicError: LocalizedError, Equatable {
         case .nothingToResume:
             return "Nothing to resume: nothing has been played yet. Start something with music_play."
         case .playbackFailed(let detail):
+            if platform == .mac {
+                return "Apple Music couldn't start playback (\(detail)). Check Apple Music access in term-llm and the Mac's audio output, then retry in this app."
+            }
             return "Apple Music couldn't start playback (\(detail)). Try playing a song in the Music app once, then retry."
         case .didNotStart:
+            if platform == .mac {
+                return "Apple Music took the songs but didn't start playing in term-llm. Check the Mac's audio output and Music in this app, then try music_control with action \"resume\"."
+            }
             return "Apple Music took the songs but didn't start playing. Check the iPhone's Music app and audio output, then try music_control with action \"resume\"."
         case .playlistNotFound(let reference, let available):
             let listing = available.isEmpty

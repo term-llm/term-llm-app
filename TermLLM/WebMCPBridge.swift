@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os
+
+private let deviceToolsLog = Logger(subsystem: "com.termllm.app", category: "device-tools")
 
 /// Exposes device tools to the term-llm web UI as WebMCP tools
 /// (`document.modelContext.registerTool`). WebKit has no WebMCP yet, so the
@@ -30,7 +33,8 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     @MainActor fileprivate final class InvocationLifetime {
         var isCurrent = true
     }
-    @TaskLocal static var currentInvocation: Invocation?
+    // Sendable task-local context lets catalog diagnostics read IDs without actor hops.
+    @TaskLocal nonisolated static var currentInvocation: Invocation?
     private let bridgeID = UUID()
     @MainActor private var activeInvocations: [UUID: Invocation] = [:]
     /// Tool calls still running; their replies have not reached the page yet.
@@ -124,13 +128,19 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// rejections, which `executeTool` surfaces to the agent as tool errors.
     static func handle(body: Any, frameOrigin: String, isMainFrame: Bool, expectedOrigin: String,
                        registry: DeviceToolRegistry) async -> Result<String, BridgeError> {
-        guard isMainFrame, frameOrigin == expectedOrigin else {
+        let diagnostic = DeviceToolDiagnostics(operation: "bridge.dispatch")
+        let originMatches = frameOrigin == expectedOrigin
+        deviceToolsLog.info("\(diagnostic.event("received"), privacy: .public) main_frame=\(isMainFrame) origin_matches=\(originMatches)")
+        guard isMainFrame, originMatches else {
+            deviceToolsLog.error("\(diagnostic.event("rejected"), privacy: .public) reason=caller main_frame=\(isMainFrame) origin_matches=\(originMatches)")
             return .failure(BridgeError(message: "Device tools are not available to this page"))
         }
         guard let object = body as? [String: Any], let name = object["name"] as? String else {
+            deviceToolsLog.error("\(diagnostic.event("rejected"), privacy: .public) reason=malformed_body main_frame=\(isMainFrame) origin_matches=\(originMatches)")
             return .failure(BridgeError(message: "Malformed device tool call"))
         }
         guard let tool = registry.tool(named: name) else {
+            deviceToolsLog.error("\(diagnostic.event("rejected"), privacy: .public) reason=unknown_tool main_frame=\(isMainFrame) origin_matches=\(originMatches)")
             return .failure(BridgeError(message: "Unknown device tool: \(name)"))
         }
         var arguments: [String: JSONValue] = [:]
@@ -138,13 +148,22 @@ final class WebMCPBridge: NSObject, WKScriptMessageHandlerWithReply {
             switch try? JSONValue.decode(Data(raw.utf8)) {
             case .object(let value)?: arguments = value
             case .null?: break
-            default: return .failure(BridgeError(message: "Tool arguments must be an object"))
+            default:
+                deviceToolsLog.error("\(diagnostic.event("rejected"), privacy: .public) reason=arguments main_frame=\(isMainFrame) origin_matches=\(originMatches)")
+                return .failure(BridgeError(message: "Tool arguments must be an object"))
             }
         }
+        deviceToolsLog.info("\(diagnostic.event("execute.start"), privacy: .public) tool=\(tool.name, privacy: .public)")
         do {
             let result = try await tool.call(arguments)
+            if result.isError {
+                deviceToolsLog.error("\(diagnostic.event("execute.error_result"), privacy: .public) tool=\(tool.name, privacy: .public) cancelled=\(Task.isCancelled)")
+            } else {
+                deviceToolsLog.info("\(diagnostic.event("execute.success"), privacy: .public) tool=\(tool.name, privacy: .public)")
+            }
             return result.isError ? .failure(BridgeError(message: result.text)) : .success(result.text)
         } catch {
+            deviceToolsLog.error("\(diagnostic.event("execute.failure"), privacy: .public) tool=\(tool.name, privacy: .public) \(DeviceToolDiagnostics.errorMetadata(error), privacy: .public)")
             return .failure(BridgeError(message: error.localizedDescription))
         }
     }

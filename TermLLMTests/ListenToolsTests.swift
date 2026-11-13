@@ -57,6 +57,92 @@ final class ListenToolsTests: XCTestCase {
         XCTAssertNoThrow(DeviceToolRegistry(tools: BuiltInDeviceTools.standard + listen.tools))
     }
 
+    func testPlatformCopyIncludesNestedSchemasWithoutChangingToolContract() throws {
+        let listen = makeListen()
+        let phone = ListenTools(listen: listen, platform: .iPhone)
+        let mac = ListenTools(listen: listen, platform: .mac)
+        func structure(_ value: JSONValue) -> JSONValue {
+            switch value {
+            case .object(let object):
+                // Keep the item field named "description"; omit only schema prose.
+                return .object(object.filter { $0.key != "description" || $0.value.stringValue == nil }.mapValues(structure))
+            case .array(let values): return .array(values.map(structure))
+            default: return value
+            }
+        }
+        XCTAssertEqual(mac.tools.map(\.name), phone.tools.map(\.name))
+        for (macTool, phoneTool) in zip(mac.tools, phone.tools) {
+            XCTAssertEqual(macTool.title, phoneTool.title, macTool.name)
+            XCTAssertEqual(structure(macTool.inputSchema), structure(phoneTool.inputSchema), macTool.name)
+            XCTAssertEqual(macTool.readOnly, phoneTool.readOnly, macTool.name)
+            XCTAssertEqual(macTool.consequential, phoneTool.consequential, macTool.name)
+            let text = (macTool.description + String(decoding: macTool.inputSchema.encoded(), as: UTF8.self)).lowercased()
+            for forbidden in ["iphone", "phone", "lock screen", "carplay"] {
+                XCTAssertFalse(text.contains(forbidden), "\(macTool.name): \(text)")
+            }
+            XCTAssertTrue(macTool.description.contains("Mac"), macTool.name)
+        }
+        let phoneTools = Dictionary(uniqueKeysWithValues: phone.tools.map { ($0.name, $0) })
+        XCTAssertEqual(phoneTools["media_add"]?.description,
+                       "Add audio or video to the Listen queue on the iPhone (podcast episodes, audio term-llm generated, songs, "
+                       + "sound effects, videos played for their sound). Each url must point at the media file itself (mp3, m4a, "
+                       + "wav, mp4, …), not a web page: any http(s) URL, or a /media/… path on this term-llm server. Give a good "
+                       + "title and artist (show, voice, or author): they appear on the lock screen. position: now starts playing "
+                       + "it, next plays after the current item, end (default) adds to the bottom of Up Next. A URL already in the "
+                       + "library is moved instead of duplicated.")
+        XCTAssertEqual(phoneTools["media_list"]?.description,
+                       "List the Listen library on the iPhone: Up Next in play order (default), history (played or archived), "
+                       + "or all, with item ids, progress, and download state.")
+        XCTAssertEqual(phoneTools["media_play"]?.description,
+                       "Play an item from the Listen library on the iPhone, resuming where it was left. Without item, resumes "
+                       + "the current item or starts Up Next.")
+        XCTAssertEqual(phoneTools["media_control"]?.description,
+                       "Control Listen playback on the iPhone: pause, resume, stop, seek (to seconds), skip (by seconds, "
+                       + "negative goes back), next, previous, rate (speed 0.5–3), sleep (pause after minutes; 0 cancels), "
+                       + "sleep_at_end (pause when this item ends), cancel_sleep, hide_player/show_player (the mini player bar).")
+        XCTAssertEqual(phoneTools["media_now_playing"]?.description,
+                       "What Listen is playing on the iPhone: the item, position, duration, time left, speed, state, sleep "
+                       + "timer, and the next item. Use it to know what the user has heard.")
+        XCTAssertEqual(phoneTools["media_manage"]?.description,
+                       "Manage Listen items on the iPhone: remove, mark_played, mark_unplayed (back to Up Next), archive, "
+                       + "move (to Up Next position to_index, 0 = top), clear_history (remove all played/archived), "
+                       + "download (keep on the phone for offline play), cancel_download, delete_download.")
+        let phoneSchema = try XCTUnwrap(phoneTools["media_add"]?.inputSchema)
+        let macSchema = try XCTUnwrap(mac.tools.first { $0.name == "media_add" }?.inputSchema)
+        for properties in [phoneSchema["properties"], phoneSchema["properties"]?["items"]?["items"]?["properties"]] {
+            XCTAssertEqual(properties?["title"]?["description"], "Title for the lock screen and queue.")
+            XCTAssertEqual(properties?["artwork_url"]?["description"], "Image URL for the lock screen.")
+        }
+        for properties in [macSchema["properties"], macSchema["properties"]?["items"]?["items"]?["properties"]] {
+            XCTAssertEqual(properties?["title"]?["description"], "Title for Now Playing and queue.")
+            XCTAssertEqual(properties?["artwork_url"]?["description"], "Image URL for Now Playing.")
+        }
+        let current = DeviceToolPlatform.current == .mac ? mac : phone
+        XCTAssertEqual(listen.tools.map(\.description), current.tools.map(\.description))
+        XCTAssertEqual(listen.tools.map(\.inputSchema), current.tools.map(\.inputSchema))
+    }
+
+    func testMacSourceRegistryHasOneMediaProviderAndRejectsNavigation() async throws {
+        let listen = makeListen()
+        let media = ListenTools(listen: listen, platform: .mac)
+        let tools = DeviceToolsSettings.standardTools(platform: .mac, music: { [] },
+            navigation: { XCTFail("Mac must not initialize navigation"); return [] }, media: { media.tools })
+        let settings = DeviceToolsSettings(defaults: isolatedDefaults(), registry: DeviceToolRegistry(tools: tools), listen: listen)
+        let source = HubConnection(id: UUID(), name: "Fixture", kind: .hub, url: testServer.base)
+        let registry = settings.registry(for: source)
+        XCTAssertEqual(registry.tools.map(\.name), ["ping", "device_info", "media_add", "media_list", "media_play",
+                                                   "media_control", "media_now_playing", "media_manage"])
+        XCTAssertTrue(registry === settings.registry(for: source))
+        let origin = "https://hub.example"
+        let rejected = await WebMCPBridge.handle(body: ["name": "location_current"], frameOrigin: origin,
+            isMainFrame: true, expectedOrigin: origin, registry: registry)
+        XCTAssertEqual(rejected, .failure(.init(message: "Unknown device tool: location_current")))
+        let accepted = await WebMCPBridge.handle(body: ["name": "media_list"], frameOrigin: origin,
+            isMainFrame: true, expectedOrigin: origin, registry: registry)
+        let result = try accepted.get()
+        XCTAssertEqual(try JSONValue.decode(Data(result.utf8))["total"], 0)
+    }
+
     func testAddWithMetadataAndPlayNow() async throws {
         let engine = FakeListenEngine()
         let listen = makeListen(engine: engine)
@@ -95,7 +181,9 @@ final class ListenToolsTests: XCTestCase {
         let missing = await failure(listen, "media_add", ["title": "x"])
         XCTAssertEqual(missing?.contains("url is required"), true)
         let reference = await failure(listen, "media_add", ["url": "term-llm-media://0123456789abcdef0123456789abcdef"])
-        XCTAssertEqual(reference?.contains("/media/"), true)
+        let host = DeviceToolPlatform.current == .mac ? "in this app" : "on the iPhone"
+        XCTAssertEqual(reference, "url: term-llm-media:// references can't be resolved \(host) yet. Pass the published media URL "
+                       + "(a /media/… path on this server) or any direct http(s) audio/video URL.")
         let scheme = await failure(listen, "media_add", ["items": [["url": "ftp://x.example/a.mp3"]]])
         XCTAssertNotNil(scheme)
         let kind = await failure(listen, "media_add", ["url": "https://x.example/a.mp3", "kind": "podcastz"])

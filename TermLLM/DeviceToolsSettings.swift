@@ -9,8 +9,19 @@ import UIKit
 @MainActor
 final class DeviceToolsSettings: ObservableObject {
     static let shared = DeviceToolsSettings(
-        registry: DeviceToolRegistry(tools: BuiltInDeviceTools.standard + MusicLibrary.shared.tools + NavigationService.shared.tools
-                                    + Listen.shared.tools))
+        registry: DeviceToolRegistry(tools: standardTools()))
+
+    /// Keep providers lazy: Mac tools must never initialize the navigation
+    /// service (and its location manager). Preserve the phone's tool order.
+    static func standardTools(
+        platform: DeviceToolPlatform = .current,
+        builtIns: (DeviceToolPlatform) -> [DeviceTool] = { BuiltInDeviceTools.standardTools(platform: $0) },
+        music: () -> [DeviceTool] = { MusicLibrary.shared.tools },
+        navigation: () -> [DeviceTool] = { NavigationService.shared.tools },
+        media: () -> [DeviceTool] = { Listen.shared.tools }
+    ) -> [DeviceTool] {
+        builtIns(platform) + music() + (platform.offersNavigation ? navigation() : []) + media()
+    }
     static let enabledKey = "deviceTools.enabled"
     /// Former per-server opt-in; any entry migrates to the global switch.
     static let legacyServersKey = "deviceTools.webMCPServers"
@@ -24,7 +35,8 @@ final class DeviceToolsSettings: ObservableObject {
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard,
-         registry: DeviceToolRegistry = BuiltInDeviceTools.standardRegistry(), listen: Listen? = nil) {
+         registry: DeviceToolRegistry = BuiltInDeviceTools.standardRegistry(), listen: Listen? = nil,
+         platform: DeviceToolPlatform = .current) {
         self.defaults = defaults
         self.registry = registry
         self.listen = listen
@@ -33,7 +45,9 @@ final class DeviceToolsSettings: ObservableObject {
             defaults.set(!legacy.isEmpty, forKey: Self.enabledKey)
         }
         defaults.removeObject(forKey: Self.legacyServersKey)
-        self.isEnabled = defaults.bool(forKey: Self.enabledKey)
+        // Only an unsaved preference uses the host default; don't persist the fallback.
+        self.isEnabled = defaults.object(forKey: Self.enabledKey) == nil
+            ? platform == .mac : defaults.bool(forKey: Self.enabledKey)
     }
 
     func registry(for source: HubConnection) -> DeviceToolRegistry {
@@ -60,10 +74,13 @@ struct DeviceToolsInfoView: View {
         let summary: String
     }
 
+    var groupTitles: [String] { groups.map(\.id) }
+
     private var groups: [ToolGroup] {
-        [
-            ToolGroup(id: statusTitle, symbol: platform.symbol, summary: statusSummary),
+        [ToolGroup(id: statusTitle, symbol: platform.symbol, summary: statusSummary)]
+        + (platform.offersNavigation ? [
             ToolGroup(id: "Location & directions", symbol: "location", summary: "Your current location. Preview, start and stop turn-by-turn directions."),
+        ] : []) + [
             ToolGroup(id: "Music", symbol: "music.note", summary: "Search Apple Music, play and control playback, and edit your playlists."),
             ToolGroup(id: "Podcasts & audio", symbol: "dot.radiowaves.left.and.right", summary: "Add, play and manage episodes and audio."),
         ]

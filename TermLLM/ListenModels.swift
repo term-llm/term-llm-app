@@ -5,7 +5,7 @@ import os
 let listenLog = Logger(subsystem: "com.termllm.app", category: "listen")
 
 /// Something to listen to: a podcast episode, audio term-llm generated, a
-/// song file, or a video played for its sound. Kept on this phone in the
+/// song file, or a video played for its sound. Kept on this device in the
 /// Listen library; the order of unplayed items is the Up Next queue.
 struct ListenItem: Codable, Identifiable, Equatable, Sendable {
     enum Kind: String, Codable, CaseIterable, Sendable {
@@ -190,7 +190,7 @@ struct ListenServer: Equatable, Sendable {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.lowercased().hasPrefix("term-llm-media://") {
             throw ListenError.invalidURL(
-                "term-llm-media:// references can't be resolved on the iPhone yet. Pass the published media URL "
+                "term-llm-media:// references can't be resolved \(DeviceToolPlatform.current == .mac ? "in this app" : "on the iPhone") yet. Pass the published media URL "
                 + "(a /media/… path on this server) or any direct http(s) audio/video URL.")
         }
         if value.hasPrefix("/") && !value.hasPrefix("//") {

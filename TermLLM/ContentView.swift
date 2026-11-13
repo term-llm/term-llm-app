@@ -922,8 +922,9 @@ struct ContentView: View {
             else { return }
             aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
             guard !Task.isCancelled, let source = aggregate.source(connection.id), source.isActive else { return }
-            if source.security?.bearer == request.token, !source.store.unauthorized { return }
-            await source.signInWithBearer(request.token)
+            if source.security?.bearer == request.token, source.browserReady,
+               !source.browserRevoked, !source.store.unauthorized { return }
+            await source.authenticateManagedLocalService(request.token)
         }
         #endif
     }
@@ -937,11 +938,11 @@ struct ContentView: View {
                 let connection = try connections.saveManagedLocalService(address: request.baseURL.absoluteString)
                 aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
                 guard let source = aggregate.source(connection.id) else { return }
-                // Use the same isolated credential store, auth epochs and WebKit
-                // document lifecycle as any remote Direct Node. Never share jars.
-                await source.signInWithBearer(request.token)
+                // Reopening This Mac with the same verified identity must not
+                // erase its isolated website preferences or retained document.
+                let authenticated = await source.authenticateManagedLocalService(request.token)
                 guard !Task.isCancelled, source.isActive, aggregate.source(connection.id) === source else { return }
-                guard source.authenticationError == nil, source.browserReady, !source.browserRevoked else {
+                guard authenticated, source.authenticationError == nil, source.browserReady, !source.browserRevoked else {
                     macServices.error = "Could not authenticate the local service. Check Local Service diagnostics and try again."
                     return
                 }

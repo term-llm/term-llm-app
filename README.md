@@ -34,7 +34,7 @@ Chat uses the existing term-llm web UI and its own header; there is no duplicate
 - Before opening a conversation it offers **Choose an agent**. After an app restart, or after that connection is removed/replaced, no live browser workspace is assumed.
 - Switching tabs keeps the existing document, draft, and scroll position. Authentication revocation still closes the protected document.
 
-**Playback.** Music and Podcasts are native destinations; their players feed a shared playback shelf above the tabs. Browsing never starts or stops audio. Both playback panels have an **×** that hides the panel without stopping audio; selecting a new item or resuming playback can restore it. Tabs use the system appearance (Liquid Glass on iOS 26), with native playback accessories on iOS 26.1+ and an above-tab shelf on earlier systems. Agent rows use adaptive primary/secondary text instead of tint-colored content.
+**Playback.** Music and Podcasts are native destinations; their players feed a shared playback shelf above the tabs. Browsing never starts or stops audio. Music rechecks Apple Music permission when you select its tab or return to the app with Music visible, without prompting automatically. If access is missing, a small inline tip offers **Connect Apple Music** (choose Allow in the prompt), or **Open Settings** if access was denied; restricted devices explain the restriction instead. Creating and editing local playlists—including the fictional demo playlist—still works without access. Both playback panels have an **×** that hides the panel without stopping audio; selecting a new item or resuming playback can restore it. Tabs use the system appearance (Liquid Glass on iOS 26), with native playback accessories on iOS 26.1+ and an above-tab shelf on earlier systems. Agent rows use adaptive primary/secondary text instead of tint-colored content.
 
 ## Phone-owned Hub: two HTTP-only slices
 
@@ -132,9 +132,9 @@ The public demo uses scripted replies, not AI. Its chats reset on reload. Native
 
 To try the native playlist integration:
 
-1. Return to **Agents** and open **Settings**.
-2. Under **Device tools**, enable **Share device tools** and tap **Done**. The switch covers every saved connection and is never enabled automatically by **Try demo**.
-3. In the chat, tap **+ → MCP servers**, enable the **iPhone/iPad** entry labelled **WebMCP from this page**, and close the dialog.
+1. Return to **Agents** and open **Settings** (on Mac, **term-llm → Settings…** or **Command–comma**).
+2. Under **Device tools**, ensure **Share device tools** is on and tap **Done**. With no saved or migrated preference, it defaults on for Mac and off for iPhone/iPad; you can turn it off. The switch covers every saved connection except Linked devices, and **Try demo** never changes it.
+3. In the chat, tap **+ → MCP servers**, enable the **iPhone/iPad** entry (**Mac** in the Mac app) labelled **WebMCP from this page**, and close the dialog.
 4. Send **create playlist**. The scripted demo calls `playlist_create_demo` through the ordinary WebMCP flow. It creates a real local playlist with five fictional sample songs, without Apple Music authorization or playback. Repeating the command reuses the sample playlist without overwriting edits.
 5. Open the **Music** tab to inspect, rename, reorder, or delete the playlist. Sample songs are explicitly non-playable; use Apple Music search to add real songs.
 
@@ -288,15 +288,15 @@ WebKit behavior measured while building this: setting `isHidden` on a web view d
 
 ## Music
 
-The **Music** tab shows what's playing and the playlists saved on this phone.
+The **Music** tab shows what's playing and the playlists saved on this device.
 
 - Create, rename, reorder and delete playlists, and add songs by searching Apple Music. Tap Play or Shuffle, or tap any song to start from there.
-- Playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. On Mac, Apple Music plays in the app instead; see [Mac support](docs/MAC-SUPPORT.md).
+- On iPhone/iPad, playback goes through the system Music player, so the lock screen, Control Center and CarPlay controls work, and music keeps playing when the app is in the background. On Mac, Apple Music plays in the app instead; see [Mac support](docs/MAC-SUPPORT.md).
 - Playlists live in the app (Application Support), and work without Apple Music. Searching and playing need Apple Music access and an active subscription.
 
-The agent can do all of this too, through device tools (below): `music_search`, `playlist_list/get/create/add_songs/remove_songs/reorder/rename/delete`, `music_play`, `music_now_playing` and `music_control`. Playlists can be referred to by name or id, and the Music screen shows the agent's changes immediately.
+On iPhone/iPad and Mac, the agent can do all of this too, through device tools (below): `music_search`, `playlist_list/get/create/add_songs/remove_songs/reorder/rename/delete`, `music_play`, `music_now_playing` and `music_control`. Playlists can be referred to by name or id, and the Music screen shows the agent's changes immediately.
 
-Before shipping, enable the **MusicKit** App Service for the bundle ID in the Apple Developer portal, then refresh the provisioning profile. Playback can't be tested in the simulator; use a device signed in to Apple Music. If playback fails although the subscription is valid, play a song once in the Music app, then retry.
+Before shipping, enable the **MusicKit** App Service for the bundle ID in the Apple Developer portal, then refresh the provisioning profile. Playback can't be tested in the simulator; use a device signed in to Apple Music. On iPhone/iPad, if playback fails although the subscription is valid, play a song once in the Music app, then retry. On Mac, check Apple Music access in term-llm and the selected audio output, then retry in term-llm.
 
 ## Listen
 
@@ -330,14 +330,14 @@ While something is loaded, a mini player sits in the shared playback shelf. Tap 
 - Both health report formats include these counters, and high native-CPU events capture the recent byte count for correlation.
 - It covers managed Listen downloads/HTTPS audio playback, not direct AVPlayer HTTP/video streams, artwork, Apple Music, or protocol overhead; it is not a carrier data meter.
 
-**Agent tools.** The agent uses the same library through six device tools:
+**Agent tools.** On iPhone/iPad and Mac, the agent uses the same library through six device tools:
 
 - `media_add`: one or more URLs with title, artist, album, description, artwork, kind, duration and published date; `position` now/next/end; `download` auto/now/never.
 - `media_list`, `media_play` and `media_now_playing`.
 - `media_control`: pause, resume, stop, seek, skip, next, previous, rate, sleep, sleep_at_end, cancel_sleep, hide_player, show_player.
 - `media_manage`: remove, mark played/unplayed, archive, move, clear history, download, cancel or delete a download.
 
-Items can be referred to by id or exact title. `term-llm-media://` references from `show_media` can't be resolved on the phone yet; the agent needs the published `/media/…` URL or another direct URL.
+Items can be referred to by id or exact title. `term-llm-media://` references from `show_media` can't be resolved in this app yet; the agent needs the published `/media/…` URL or another direct URL.
 
 Starting music or a podcast (from the app or through a device tool) ends any live voice call in the app's web pages by pressing the page's own Stop control. When the agent started it with a tool, the initiating call's native reply is delivered first, then the page waits for a live tool-result upload (with a four-second fallback). Unrelated in-flight tools do not delay that handover, and deferred handovers are discarded when the document or device-tool bridge is replaced. Starting playback switches the app's audio session to playback.
 
@@ -346,6 +346,8 @@ For the playback CPU investigation, Apple efficiency guidance, reproduction chec
 Test lock-screen controls, interruptions (calls, Siri), headphone removal and background playback on a physical phone.
 
 ## Navigation
+
+Location and navigation device tools are available on iPhone/iPad only, not Mac.
 
 `location_current` gives the agent the phone's current position (latitude, longitude, accuracy, age, speed when known and an Apple Maps link) and, unless `include_address` is false, the street address or place there. A failed address lookup still returns the coordinates.
 
@@ -363,12 +365,12 @@ While navigating, the phone matches GPS fixes to the route, reports off route on
 
 ## Device tools (WebMCP)
 
-The app can share tools that run on the phone (`ping`, `device_info` and the music, navigation and Listen tools) with your term-llm agent. In **Settings → Device tools**, turn on **Share device tools**; **What's shared** lists the tool groups. One switch covers every saved connection except Linked devices, and each conversation can still turn the tools off in its **MCP servers** list.
+The app can share tools that run on your iPhone/iPad or Mac (`ping`, `device_info`, music and Listen tools) with your term-llm agent. Location and navigation tools are iPhone/iPad only; they are not registered or listed in **What's shared** on Mac. Mac music tools control term-llm's own in-app Apple Music player, not the system Music app, and use the same local playlist and Listen libraries as the native screens. In **Settings → Device tools**, **Share device tools** controls availability; **What's shared** lists the tool groups. With no saved or migrated preference, sharing defaults **on for Mac** and **off for iPhone/iPad**. Existing choices are preserved, and you can turn sharing off. One switch covers every saved connection except Linked devices. Each conversation must still enable the device-tools entry in its **MCP servers** list before using the tools; the native default does not opt conversations in. **Try demo** never changes the native switch.
 
 When sharing is on:
 
 - The app injects a small script into each connection's own pages (main frame, matching origin only). The script registers the tools through [WebMCP](https://github.com/webmachinelearning/webmcp) (`document.modelContext`), providing a minimal implementation because WebKit has none.
-- The term-llm web UI lists them in its **MCP servers** dialog as one more entry (for example "iPhone · 2 tools · WebMCP from this page"), switched on or off per conversation like configured servers.
+- The term-llm web UI lists them in its **MCP servers** dialog as one more entry (for example "Mac · … tools · WebMCP from this page" or the corresponding iPhone/iPad label), switched on or off per conversation like configured servers.
 - When the model calls one, the web page runs it through a native message handler and returns the result to the model. A native handler rejects calls from any other origin or frame.
 - Nothing listens on the network and there are no tokens to manage: the tools exist only while you chat in the app.
 

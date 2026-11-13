@@ -59,6 +59,56 @@ final class MusicToolsTests: XCTestCase {
         _ = DeviceToolRegistry(tools: BuiltInDeviceTools.standard + tools)
     }
 
+    func testPlatformCopyPreservesPhoneTextAndToolContract() throws {
+        let phone = MusicTools(store: library.store, catalog: catalog, player: library.player, platform: .iPhone)
+        let mac = MusicTools(store: library.store, catalog: catalog, player: library.player, platform: .mac)
+        XCTAssertEqual(mac.tools.map(\.name), phone.tools.map(\.name))
+        for (macTool, phoneTool) in zip(mac.tools, phone.tools) {
+            XCTAssertEqual(macTool.title, phoneTool.title, macTool.name)
+            XCTAssertEqual(macTool.inputSchema, phoneTool.inputSchema, macTool.name)
+            XCTAssertEqual(macTool.readOnly, phoneTool.readOnly, macTool.name)
+            XCTAssertEqual(macTool.consequential, phoneTool.consequential, macTool.name)
+            let text = (macTool.description + String(decoding: macTool.inputSchema.encoded(), as: UTF8.self)).lowercased()
+            for forbidden in ["iphone", "phone", "lock screen", "carplay"] {
+                XCTAssertFalse(text.contains(forbidden), "\(macTool.name): \(text)")
+            }
+        }
+        let phoneCopy = Dictionary(uniqueKeysWithValues: phone.tools.map { ($0.name, $0.description) })
+        XCTAssertEqual(phoneCopy["playlist_list"], "List the playlists saved on the user's iPhone.")
+        XCTAssertEqual(phoneCopy["playlist_create"], "Create a playlist on the user's iPhone, optionally with songs from music_search.")
+        XCTAssertEqual(phoneCopy["playlist_delete"], "Delete a playlist from the user's iPhone. This cannot be undone.")
+        XCTAssertEqual(phoneCopy["music_play"], "Play a playlist, or specific songs, on the user's iPhone through Apple Music. Give playlist or song_ids.")
+        XCTAssertEqual(phoneCopy["music_now_playing"], "What the iPhone is playing, and whether it is paused.")
+        XCTAssertEqual(phoneCopy["music_control"], "Control playback on the iPhone.")
+        for name in ["music_play", "music_now_playing", "music_control"] {
+            let tool = try XCTUnwrap(mac.tools.first { $0.name == name })
+            XCTAssertTrue(tool.description.contains("term-llm's own Apple Music player"))
+            XCTAssertTrue(tool.description.lowercased().contains("not the system music app"))
+        }
+        let current = DeviceToolPlatform.current == .mac ? mac : phone
+        XCTAssertEqual(library.tools.map(\.description), current.tools.map(\.description))
+    }
+
+    func testMusicErrorMessagesMatchPlatformAndPreservePhoneGuidance() {
+        let phoneMessages: [(MusicError, String)] = [
+            (.notAuthorized, "Apple Music access isn't allowed. Open Music in the term-llm app on the iPhone to connect it."),
+            (.cannotPlayCatalog, "This Apple ID can't play Apple Music songs. Check the iPhone is signed in with an active Apple Music subscription."),
+            (.didNotStart, "Apple Music took the songs but didn't start playing. Check the iPhone's Music app and audio output, then try music_control with action \"resume\"."),
+            (.playbackFailed("fixture"), "Apple Music couldn't start playback (fixture). Try playing a song in the Music app once, then retry."),
+        ]
+        for (error, expected) in phoneMessages {
+            XCTAssertEqual(error.message(on: .iPhone), expected)
+            XCTAssertEqual(error.errorDescription, error.message(on: .current))
+            let mac = error.message(on: .mac)
+            XCTAssertTrue(mac.contains("Mac"))
+            for forbidden in ["iphone", "phone", "lock screen", "carplay"] {
+                XCTAssertFalse(mac.lowercased().contains(forbidden), mac)
+            }
+        }
+        XCTAssertTrue(MusicError.didNotStart.message(on: .mac).contains("Music in this app"))
+        XCTAssertTrue(MusicError.playbackFailed("fixture").message(on: .mac).contains("retry in this app"))
+    }
+
     func testDemoHasFiveFixedFictionalSongsAndNeedsNoCatalogAccess() async throws {
         // Bypass MusicLibrary's initial access snapshot so ANY access, request,
         // search, or metadata lookup made by the tool fails this test.

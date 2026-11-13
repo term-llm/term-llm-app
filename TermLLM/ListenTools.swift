@@ -7,8 +7,10 @@ import Foundation
 final class ListenTools {
     private unowned let listen: Listen
     private let source: ListenServer?
+    private let platform: DeviceToolPlatform
 
-    init(listen: Listen, source: ListenServer? = nil) {
+    init(listen: Listen, source: ListenServer? = nil, platform: DeviceToolPlatform = .current) {
+        self.platform = platform
         self.source = source
         self.listen = listen
     }
@@ -27,28 +29,28 @@ final class ListenTools {
     var tools: [DeviceTool] {
         [
             tool("media_add",
-                 "Add audio or video to the Listen queue on the iPhone (podcast episodes, audio term-llm generated, songs, "
+                 "Add audio or video to the Listen queue on the \(platform.name) (podcast episodes, audio term-llm generated, songs, "
                  + "sound effects, videos played for their sound). Each url must point at the media file itself (mp3, m4a, "
                  + "wav, mp4, …), not a web page: any http(s) URL, or a /media/… path on this term-llm server. Give a good "
-                 + "title and artist (show, voice, or author): they appear on the lock screen. position: now starts playing "
+                 + "title and artist (show, voice, or author): they appear \(platform == .mac ? "in Now Playing" : "on the lock screen"). position: now starts playing "
                  + "it, next plays after the current item, end (default) adds to the bottom of Up Next. A URL already in the "
                  + "library is moved instead of duplicated.",
                  itemsSchema(),
                  { try await $0.add($1) }),
             tool("media_list",
-                 "List the Listen library on the iPhone: Up Next in play order (default), history (played or archived), "
+                 "List the Listen library on the \(platform.name): Up Next in play order (default), history (played or archived), "
                  + "or all, with item ids, progress, and download state.",
                  schema(["filter": .enumeration(["up_next", "history", "all"], "Which items. Default up_next."),
                          "limit": .integer("Maximum items, 1–50. Default 20.")]),
                  readOnly: true) { tools, args in try tools.list(args) },
             tool("media_play",
-                 "Play an item from the Listen library on the iPhone, resuming where it was left. Without item, resumes "
+                 "Play an item from the Listen library on the \(platform.name), resuming where it was left. Without item, resumes "
                  + "the current item or starts Up Next.",
                  schema(["item": .string("Item id (from media_list or media_add) or exact title."),
                          "start_at": .number("Start this many seconds in, instead of resuming.")]),
                  { try await $0.play($1) }),
             tool("media_control",
-                 "Control Listen playback on the iPhone: pause, resume, stop, seek (to seconds), skip (by seconds, "
+                 "Control Listen playback on the \(platform.name): pause, resume, stop, seek (to seconds), skip (by seconds, "
                  + "negative goes back), next, previous, rate (speed 0.5–3), sleep (pause after minutes; 0 cancels), "
                  + "sleep_at_end (pause when this item ends), cancel_sleep, hide_player/show_player (the mini player bar).",
                  schema(["action": .enumeration(Self.controlActions, "What to do."),
@@ -58,13 +60,13 @@ final class ListenTools {
                         required: ["action"]),
                  { try await $0.control($1) }),
             tool("media_now_playing",
-                 "What Listen is playing on the iPhone: the item, position, duration, time left, speed, state, sleep "
+                 "What Listen is playing on the \(platform.name): the item, position, duration, time left, speed, state, sleep "
                  + "timer, and the next item. Use it to know what the user has heard.",
                  schema([:]), readOnly: true) { tools, _ in tools.nowPlaying() },
             tool("media_manage",
-                 "Manage Listen items on the iPhone: remove, mark_played, mark_unplayed (back to Up Next), archive, "
+                 "Manage Listen items on the \(platform.name): remove, mark_played, mark_unplayed (back to Up Next), archive, "
                  + "move (to Up Next position to_index, 0 = top), clear_history (remove all played/archived), "
-                 + "download (keep on the phone for offline play), cancel_download, delete_download.",
+                 + "download (keep on the \(platform == .mac ? "Mac" : "phone") for offline play), cancel_download, delete_download.",
                  schema(["action": .enumeration(Self.manageActions, "What to do."),
                          "items": .array("Item ids or exact titles. Not needed for clear_history."),
                          "to_index": .integer("For move: position in Up Next, 0 = top.")],
@@ -311,11 +313,11 @@ final class ListenTools {
     private func itemsSchema() -> JSONValue {
         let item: [String: Parameter] = [
             "url": .string("Direct http(s) URL of the audio/video file, or a /media/… path on this term-llm server."),
-            "title": .string("Title for the lock screen and queue."),
+            "title": .string("Title for \(platform == .mac ? "Now Playing" : "the lock screen") and queue."),
             "artist": .string("Show, author, voice, or artist."),
             "album": .string("Podcast or collection name."),
             "description": .string("Episode notes or what the audio contains."),
-            "artwork_url": .string("Image URL for the lock screen."),
+            "artwork_url": .string("Image URL for \(platform == .mac ? "Now Playing" : "the lock screen")."),
             "kind": .enumeration(Self.kinds, "What it is. Default from the file type."),
             "duration_seconds": .number("Length if known."),
             "published_at": .string("ISO 8601 date if known."),

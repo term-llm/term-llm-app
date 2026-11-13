@@ -3,6 +3,43 @@ import Foundation
 import UIKit
 #endif
 
+/// Shared, privacy-safe log context for native dispatch and MusicKit. Operation
+/// and stage must be fixed labels (never tool arguments or error descriptions).
+struct DeviceToolDiagnostics: Sendable {
+    let operation: String
+    let callID: UUID? = WebMCPBridge.currentInvocation?.callID
+    let started = ContinuousClock.now
+
+    func event(_ stage: String, now: ContinuousClock.Instant = .now) -> String {
+        let elapsed = started.duration(to: now).components
+        let milliseconds = max(0, elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000)
+        return "operation=\(operation) stage=\(stage) call_id=\(callID?.uuidString ?? "none") elapsed_ms=\(milliseconds)"
+    }
+
+    /// Only domain/code pairs, never descriptions, userInfo, URLs or reflected
+    /// errors. Bound both chain depth and domain size, and stop reference cycles.
+    static func errorMetadata(_ error: Error) -> String {
+        var current: NSError? = error as NSError
+        var visited = Set<ObjectIdentifier>()
+        var codes: [String] = []
+        var cancelled = error is CancellationError || Task.isCancelled
+        while let item = current, codes.count < 3, visited.insert(ObjectIdentifier(item)).inserted {
+            cancelled = cancelled || (item.domain == NSURLErrorDomain && item.code == NSURLErrorCancelled)
+                || (item.domain == NSCocoaErrorDomain && item.code == NSUserCancelledError)
+            codes.append("\(safeDomain(item.domain)):\(item.code)")
+            current = (item.userInfo[NSUnderlyingErrorKey] as? Error).map { $0 as NSError }
+        }
+        return "error_chain=[\(codes.joined(separator: ","))] chain_truncated=\(current != nil) cancelled=\(cancelled)"
+    }
+
+    private static func safeDomain(_ domain: String) -> String {
+        let allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-".utf8
+        guard !domain.isEmpty, domain.utf8.count <= 128,
+              domain.utf8.allSatisfy({ allowed.contains($0) }) else { return "redacted-domain" }
+        return domain
+    }
+}
+
 /// Result of a device tool call. `isError` maps to MCP `isError`, so the agent
 /// sees a tool failure rather than a protocol error.
 struct DeviceToolResult: Equatable, Sendable {
@@ -92,14 +129,16 @@ struct DeviceInfoSnapshot: Equatable, Sendable {
     }
 }
 
-/// Presentation only: iOS-on-Mac still reports the native snapshot unchanged.
-/// An explicit value lets tests exercise both hosts without depending on runtime.
+/// Host capabilities and presentation for shared device tools. An explicit
+/// value lets tests exercise both hosts without depending on runtime.
 enum DeviceToolPlatform: Sendable {
     case iPhone, mac
 
     static var current: Self {
         AppPlatform.isMac ? .mac : .iPhone
     }
+
+    var offersNavigation: Bool { self == .iPhone }
 
     var name: String { self == .mac ? "Mac" : "iPhone" }
     var symbol: String { self == .mac ? "desktopcomputer" : "iphone" }
@@ -145,7 +184,11 @@ enum BuiltInDeviceTools {
     }
 
     static var standard: [DeviceTool] {
-        [ping(), deviceInfo { await MainActor.run { DeviceInfoSnapshot.current() } }]
+        standardTools()
+    }
+
+    static func standardTools(platform: DeviceToolPlatform = .current) -> [DeviceTool] {
+        [ping(platform: platform), deviceInfo(platform: platform) { await MainActor.run { DeviceInfoSnapshot.current() } }]
     }
 
     static func standardRegistry() -> DeviceToolRegistry {

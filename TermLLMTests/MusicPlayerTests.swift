@@ -160,6 +160,50 @@ final class MusicPlayerTests: XCTestCase {
         XCTAssertEqual(player.status, .idle)
     }
 
+    func testSparseSnapshotsReuseOnlyMatchingQueueMetadata() async throws {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        let cover = URL(string: "https://artwork.example/queued.jpg")!
+        let queued = MusicTrack(id: "1", title: "Queued title", artist: "Queued artist",
+                                album: "Queued album", artworkURL: cover)
+        try await player.play([queued, track("2")])
+
+        let sparse = MusicTrack(id: "1", title: "Live title", artist: nil, album: nil)
+        for _ in 0..<3 {
+            engine.emit { $0.current = sparse }
+            XCTAssertEqual(player.nowPlaying, MusicTrack(id: "1", title: "Live title", artist: "Queued artist",
+                                                       album: "Queued album", artworkURL: cover))
+        }
+
+        let live = MusicTrack(id: "1", title: "Live title", artist: "Live artist", album: "Live album",
+                              artworkURL: URL(string: "https://artwork.example/live.jpg")!)
+        engine.emit { $0.current = live }
+        XCTAssertEqual(player.nowPlaying, live, "snapshot metadata always wins over queued metadata")
+
+        engine.emit { $0.current = MusicTrack(id: "elsewhere", title: "External song") }
+        XCTAssertNil(player.nowPlaying?.artworkURL, "never borrow the previous song's artwork")
+        XCTAssertNil(player.nowPlaying?.artist)
+        XCTAssertNil(player.nowPlaying?.album)
+        engine.emit { $0.current = track("2") }
+        XCTAssertNil(player.nowPlaying?.artworkURL, "a different queued song has its own metadata")
+        engine.emit { $0.current = nil; $0.state = .stopped }
+        XCTAssertNil(player.nowPlaying, "clearing the current song clears its artwork too")
+        engine.emit { $0.current = sparse }
+        XCTAssertEqual(player.nowPlaying?.artworkURL, cover, "queue fallback remains stable after later changes")
+        XCTAssertEqual(engine.loads.count, 1, "metadata sync never triggers catalog reloads")
+    }
+
+    func testMetadataFallbackPreservesSuppliedFieldsAndRequiresMatchingIdentity() {
+        let rich = MusicTrack(id: "1", title: "Song", artist: "Artist", album: "Album",
+                              artworkURL: URL(string: "https://artwork.example/song.jpg")!)
+        let empty = MusicTrack(id: "1", title: "", artist: "", album: "")
+        XCTAssertEqual(empty.fillingMissingMetadata(from: rich), rich)
+        XCTAssertEqual(rich.fillingMissingMetadata(from: empty), rich)
+        XCTAssertEqual(empty.fillingMissingMetadata(from: nil), empty)
+        XCTAssertEqual(MusicTrack(id: "2", title: "Other").fillingMissingMetadata(from: rich),
+                       MusicTrack(id: "2", title: "Other"))
+    }
+
     func testTransport() async throws {
         let engine = FakeEngine()
         let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
@@ -388,5 +432,85 @@ final class MusicPlayerTests: XCTestCase {
         XCTAssertEqual(engine.playCount, 2, "retried once")
         XCTAssertEqual(player.status, .failed(MusicError.didNotStart.localizedDescription))
         XCTAssertEqual(player.notice?.isError, true)
+    }
+}
+
+@MainActor
+final class MusicLibraryTests: XCTestCase {
+    private func library(_ catalog: FakeCatalog) -> MusicLibrary {
+        MusicLibrary(catalog: catalog, engine: FakeEngine(),
+                     store: PlaylistStore(fileURL: temporaryPlaylistFile()), defaults: isolatedDefaults())
+    }
+
+    func testRefreshReflectsPermissionChangesWithoutRequestingAccess() {
+        let catalog = FakeCatalog(access: .notDetermined)
+        let library = library(catalog)
+        XCTAssertEqual(library.access, .notDetermined)
+        for status: MusicAccess in [.authorized, .denied, .restricted, .notDetermined, .authorized] {
+            catalog.setAccess(status)
+            library.refreshAccess()
+            XCTAssertEqual(library.access, status)
+        }
+        XCTAssertEqual(catalog.requestCount, 0)
+        XCTAssertTrue(catalog.searches.isEmpty)
+        XCTAssertFalse(library.isRequestingAccess)
+    }
+
+    func testExplicitRequestRereadsPermissionInsteadOfTrustingReturnValue() async {
+        let catalog = FakeCatalog(access: .notDetermined)
+        let library = library(catalog)
+        catalog.requestResult = .notDetermined
+        await library.requestAccess()
+        XCTAssertEqual(catalog.requestCount, 1)
+        XCTAssertEqual(library.access, .authorized, "read current permission after the prompt completes")
+        XCTAssertFalse(library.isRequestingAccess)
+    }
+
+    func testExplicitRequestDoesNotRepromptDeterminedPermissions() async {
+        for status: MusicAccess in [.denied, .restricted, .authorized] {
+            let catalog = FakeCatalog(access: .notDetermined)
+            let library = library(catalog)
+            catalog.setAccess(status) // permission changed since the UI was last shown
+            await library.requestAccess()
+            XCTAssertEqual(library.access, status)
+            XCTAssertEqual(catalog.requestCount, 0)
+        }
+    }
+
+    func testDuplicateRequestsAreIgnoredWhilePromptIsPending() async {
+        let catalog = FakeCatalog(access: .notDetermined)
+        let library = library(catalog)
+        let gate = MusicTestGate()
+        let requesting = expectation(description: "permission request suspended")
+        gate.onWait = { requesting.fulfill() }
+        catalog.beforeRequest = { try? await gate.wait() }
+        let first = Task { await library.requestAccess() }
+        await fulfillment(of: [requesting], timeout: 2)
+        XCTAssertTrue(library.isRequestingAccess)
+        await library.requestAccess()
+        XCTAssertEqual(catalog.requestCount, 1)
+        catalog.setAccess(.denied)
+        catalog.requestResult = .authorized
+        gate.finish()
+        await first.value
+        XCTAssertEqual(library.access, .denied, "a stale authorization result must not hide current denial")
+        XCTAssertFalse(library.isRequestingAccess)
+    }
+
+    func testPermissionGuidanceMatchesAvailableActions() throws {
+        XCTAssertNil(MusicAccess.authorized.guidance)
+        XCTAssertNil(MusicAccess.authorized.actionTitle)
+        XCTAssertEqual(MusicAccess.notDetermined.actionTitle, "Connect Apple Music")
+        XCTAssertTrue(try XCTUnwrap(MusicAccess.notDetermined.guidance).contains("choose Allow"))
+        XCTAssertEqual(MusicAccess.denied.actionTitle, "Open Settings")
+        let denied = try XCTUnwrap(MusicAccess.denied.guidance)
+        XCTAssertTrue(denied.contains("Settings"))
+        XCTAssertTrue(denied.contains("Media & Apple Music"))
+        XCTAssertTrue(denied.contains("term-llm"))
+        XCTAssertNil(MusicAccess.restricted.actionTitle, "requesting again cannot bypass restrictions")
+        XCTAssertTrue(try XCTUnwrap(MusicAccess.restricted.guidance).contains("administrator"))
+        for status: MusicAccess in [.notDetermined, .denied, .restricted] {
+            XCTAssertTrue(try XCTUnwrap(status.guidance).contains("Playlists"))
+        }
     }
 }

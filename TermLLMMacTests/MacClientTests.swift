@@ -284,6 +284,80 @@ final class MacClientTests: XCTestCase {
         XCTAssertTrue(window.isVisible, "The sheet shortcut must not close the underlying client")
     }
 
+    func testListenSheetDoneFromUpNextKeepsPlaybackAndMiniPlayer() async throws {
+        try await verifyListenSheetDismissal(usingEscape: false)
+    }
+
+    func testListenSheetEscapeKeepsPlaybackAndMiniPlayer() async throws {
+        try await verifyListenSheetDismissal(usingEscape: true)
+    }
+
+    private func verifyListenSheetDismissal(usingEscape: Bool) async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        let items = try await listen.add([
+            ListenDraft(url: URL(string: "https://pod.example/episode.mp3")!, title: "Episode", duration: 600)
+        ], placement: .now, download: .never)
+        let presentation = ListenSheetPresentation()
+        let host = NSHostingController(rootView: ListenSheetFixture(listen: listen, presentation: presentation))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            window.orderOut(nil)
+            window.contentViewController = nil
+        }
+        presentation.isPresented = true
+        try await waitUntil("the expanded podcast sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let stops = engine.stops
+        let rates = engine.rates
+        let showsBar = listen.player.showsBar
+
+        func element(_ identifier: String) -> (any NSAccessibilityProtocol)? {
+            var pending: [any NSAccessibilityProtocol] = [sheet]
+            var visited = Set<ObjectIdentifier>()
+            while let next = pending.popLast(), visited.count < 2_048 {
+                guard visited.insert(ObjectIdentifier(next)).inserted else { continue }
+                if next.accessibilityIdentifier() == identifier { return next }
+                pending.append(contentsOf: (next.accessibilityChildren() ?? []).compactMap { $0 as? any NSAccessibilityProtocol })
+            }
+            return nil
+        }
+        try await waitUntil("the explicit Done button") { element("listenPlayerDone") != nil }
+        if usingEscape {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [], timestamp: 0, windowNumber: sheet.windowNumber, context: nil,
+                characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+            XCTAssertTrue(sheet.performKeyEquivalent(with: event))
+        } else {
+            let upNext = try XCTUnwrap(element("listenPlayerUpNext"))
+            XCTAssertTrue(upNext.accessibilityPerformPress())
+            try await waitUntil("Up Next navigation") { element("listenPlayerUpNext") == nil }
+            // A short sheet must scroll its content, not clip its dismissal footer.
+            sheet.setContentSize(NSSize(width: 480, height: 360))
+            sheet.contentView?.layoutSubtreeIfNeeded()
+            let done = try XCTUnwrap(element("listenPlayerDone"))
+            let content = try XCTUnwrap(sheet.contentView)
+            let visibleFrame = sheet.convertToScreen(content.convert(content.bounds, to: nil))
+            XCTAssertTrue(visibleFrame.contains(done.accessibilityFrame()))
+            XCTAssertTrue(done.accessibilityPerformPress())
+        }
+        try await waitUntil("only the player sheet to close") {
+            !presentation.isPresented && window.attachedSheet == nil
+        }
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(listen.player.currentID, items[0].id)
+        XCTAssertTrue(listen.player.isPlaying)
+        XCTAssertTrue(engine.playing)
+        XCTAssertEqual(engine.stops, stops)
+        XCTAssertEqual(engine.rates, rates)
+        XCTAssertEqual(listen.player.showsBar, showsBar)
+    }
+
     func testChatWebViewExposesMicrophoneCaptureAPIs() async throws {
         let server = try LoopbackHTTPServer { _, _, _ in
             .init(body: Data("<!doctype html><title>Chat</title><p>ready</p>".utf8))
@@ -327,6 +401,86 @@ final class MacClientTests: XCTestCase {
         // The configured server's own microphone requests keep their grant.
         XCTAssertEqual(browser.mediaCaptureDecision(originScheme: "http", originHost: "localhost", originPort: Int(port),
                                                     frameURL: url, isMainFrame: true, type: .microphone), .grant)
+    }
+
+    func testChatRegistersAndExecutesSharedMusicAndListenTools() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let library = MusicLibrary(catalog: FakeCatalog(), engine: engine,
+                                   store: PlaylistStore(fileURL: directory.appending(path: "playlists.json")),
+                                   defaults: isolatedDefaults())
+        let listenEngine = FakeListenEngine()
+        let listen = makeListen(engine: listenEngine, directory: directory.appending(path: "Listen"))
+        let episode = try XCTUnwrap(listen.store.add([draft("fixture", title: "Fixture episode")], placement: .end).first)
+        let tools = DeviceToolsSettings.standardTools(
+            music: { library.tools },
+            navigation: { XCTFail("Mac tools must not initialize navigation"); return [] },
+            media: { listen.tools })
+        let settings = DeviceToolsSettings(defaults: isolatedDefaults(), registry: DeviceToolRegistry(tools: tools), listen: listen)
+        let server = try LoopbackHTTPServer { _, _, _ in
+            .init(body: Data("<!doctype html><title>Device tools fixture</title><p>ready</p>".utf8))
+        }
+        let port = try await server.start()
+        defer { server.stop() }
+        let url = try XCTUnwrap(URL(string: "http://localhost:\(port)/ui/"))
+        let source = HubConnection(id: UUID(), name: "Fixture", kind: .hub, url: url)
+        let registry = settings.registry(for: source)
+        let mediaList = try XCTUnwrap(registry.tool(named: "media_list"))
+        XCTAssertEqual(mediaList.description,
+                       "List the Listen library on the Mac: Up Next in play order (default), history (played or archived), "
+                       + "or all, with item ids, progress, and download state.")
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        // BrowserView.makeWebView calls the production syncDeviceTools path.
+        let browser = BrowserView(url: url, loading: .constant(false), canGoBack: .constant(false),
+                                  loadError: .constant(nil), loginRequired: .constant(false),
+                                  reloadCount: 0, backCount: 0, authenticatedCount: 0, deviceTools: registry,
+                                  onLoginRequired: {}, onRevealControls: {},
+                                  websiteDataStore: dataStore, connectionMount: url)
+        let coordinator = browser.makeCoordinator()
+        let webView = browser.makeWebView(coordinator: coordinator)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = webView
+        defer {
+            BrowserView.dismantleWebView(webView, coordinator: coordinator)
+            window.contentView = nil
+        }
+        try await waitUntil { webView.url != nil && !webView.isLoading }
+        XCTAssertTrue(webView.configuration.websiteDataStore === dataStore)
+        let probe = try await webView.callAsyncJavaScript("""
+            const tools = await document.modelContext.getTools();
+            const playlist = JSON.parse(await document.modelContext.executeTool('playlist_create_demo', {}));
+            const media = JSON.parse(await document.modelContext.executeTool('media_list', {}));
+            // The native handler must reject navigation too, not just hide it from the shim.
+            let navigationError;
+            try { await window.webkit.messageHandlers.termllmDeviceTools.postMessage({name: 'location_current'}); }
+            catch (error) { navigationError = String(error.message || error); }
+            return JSON.stringify({
+              names: tools.map(t => t.name), app: window.__termLLMDeviceTools.app,
+              device: window.__termLLMDeviceTools.device, playlist, media, navigationError
+            });
+            """, arguments: [:], in: nil, contentWorld: .page) as? String
+        let result = try JSONValue.decode(Data(try XCTUnwrap(probe).utf8))
+        // Keep the legacy cross-repo app marker for compatibility; device labels the actual host.
+        XCTAssertEqual(result["app"], "term-llm iOS")
+        XCTAssertEqual(result["device"], "Mac")
+        XCTAssertEqual(result["names"], .array(registry.tools.map(\.name).sorted().map(JSONValue.string)))
+        XCTAssertEqual(registry.tools.filter { $0.name.hasPrefix("media_") }.count, 6)
+        XCTAssertFalse(registry.tools.contains { $0.name == "location_current" || $0.name.hasPrefix("navigation_") })
+        XCTAssertEqual(result["navigationError"], "Unknown device tool: location_current")
+        XCTAssertEqual(result["playlist"]?["id"], .string(Playlist.demoID.uuidString))
+        XCTAssertEqual(result["playlist"]?["songs"], 5)
+        XCTAssertEqual(library.store.playlist(id: Playlist.demoID)?.entries.count, 5,
+                       "The bridge edits the same library used by the Music screen")
+        XCTAssertEqual(PlaylistStore(fileURL: directory.appending(path: "playlists.json")).playlist(id: Playlist.demoID)?.entries.count, 5)
+        XCTAssertEqual(result["media"]?["total"], 1)
+        XCTAssertEqual(result["media"]?["items"], .array([ListenTools.item(episode)]),
+                       "Source-bound media tools read the same Listen store as the native screen")
+        XCTAssertTrue(engine.loads.isEmpty)
+        XCTAssertEqual(engine.playCount, 0)
+        XCTAssertTrue(listenEngine.loads.isEmpty)
     }
 
     /// macOS 27 floats "Write with Siri" beside a focused text area whenever the
@@ -755,5 +909,21 @@ private struct MacWorkspaceNativeProbe: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         model.nativeToggleSamples.append((tab: tab, width: width, hasToggle: hasToggle))
+    }
+}
+
+@MainActor
+private final class ListenSheetPresentation: ObservableObject {
+    @Published var isPresented = false
+}
+
+@MainActor
+private struct ListenSheetFixture: View {
+    let listen: Listen
+    @ObservedObject var presentation: ListenSheetPresentation
+
+    var body: some View {
+        MiniPlayerBar(listen: listen) { presentation.isPresented = true }
+            .sheet(isPresented: $presentation.isPresented) { ListenPlayerView(listen: listen) }
     }
 }

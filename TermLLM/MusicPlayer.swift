@@ -210,7 +210,9 @@ final class MusicPlayer {
     /// Control Center, or the Music app.
     func sync() {
         let snapshot = engine.snapshot
-        nowPlaying = snapshot.current
+        nowPlaying = snapshot.current.map { current in
+            current.fillingMissingMetadata(from: queue.first { $0.id == current.id })
+        }
         if !queue.isEmpty, snapshot.current != nil, snapshot.shuffle != shuffle { rememberShuffle(snapshot.shuffle) }
         guard status != .loading else { return }
         switch snapshot.state {
