@@ -297,7 +297,8 @@ SIGUSR2 delivery, graceful replacement after active work, or production health p
 
 ## Known limits and non-claims
 
-- App updates check automatically but never install unattended: each installation needs confirmation. The [Sparkle test record](testing/MAC-SPARKLE-20261111.md) lists what the update flow has and has not been verified on. Gatekeeper acceptance of a CI release on another Mac, and production APNs delivery to it, are not yet verified. The official CLI release has its own signed/notarized distribution.
+- App updates check automatically but never install unattended: each installation needs confirmation. Gatekeeper acceptance of a CI release on another Mac, and production APNs delivery to it, are not yet verified. The official CLI release has its own signed/notarized distribution.
+- The local-feed updater flow was exercised with ad-hoc-signed Intel builds: install/relaunch succeeded without restarting the managed CLI, and a tampered ZIP was rejected. This does not establish production Developer ID update replacement, Apple-silicon update behavior, the full daily timer, enabled Computer Use/TCC continuity, or active chat/voice/draft recovery during an update.
 - Native setup and the shared client must be exercised together on Mac; kit fixtures alone do not prove the UI handoff or a live service.
 - Login-item firing after reboot/login is not established by registering it, and Open at Login registration from an unsigned development build is not verified.
 - Non-GUI SSH sessions may not be able to read the core's login-Keychain token. A logged-in GUI session is required when Keychain interaction is needed.

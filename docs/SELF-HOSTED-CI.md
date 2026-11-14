@@ -8,7 +8,7 @@ Every runner-backed job in `.github/workflows/` uses exactly:
 runs-on: [self-hosted, macOS, ARM64, term-llm-local]
 ```
 
-The only exception is a job that calls this repository's own reusable workflow (`uses: ./.github/workflows/…`); the called workflow's job declares that runner. GitHub-managed, non-billable Dependabot graph jobs are separate from checked-in CI; see the [public-release checklist](PUBLIC-RELEASE.md).
+The only exception is a job that calls this repository's own reusable workflow (`uses: ./.github/workflows/…`); the called workflow's job declares that runner. GitHub-managed [Dependabot graph jobs](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph-data#dependabot-graph-jobs) are separate from checked-in CI and incur no Actions-minute charges. Do not enable billable automatic dependency submission as a replacement.
 
 There is no hosted fallback, setup-go Actions cache, or artifact upload. The notarized Mac build's only upload is its GitHub release asset, which is not Actions artifact storage. Offline runners leave jobs queued. This prevents these workflows from consuming GitHub-hosted runner minutes; it does not clear existing billable storage or change account billing settings. Set a GitHub Actions budget with usage blocked at the limit as an independent safety net where supported by your account.
 
@@ -41,6 +41,17 @@ unset token
 Install only once. Service installation creates a per-user LaunchAgent; stay logged in. Alternatively use `./run.sh` in a foreground Terminal instead of installing a service. The runner checks out jobs into its own `_work` directory, not your development checkout. One registered agent runs one job at a time.
 
 Verify **Settings → Actions → Runners** shows `term-llm-macbook` online with the custom label. Self-hosted code runs with the runner user's permissions; repository visibility does not provide a sandbox. Only trusted collaborators/branches should execute here. Automatic checks run only on pushes to `main`, never on pull requests. Every job also rejects non-`main` refs, including manual dispatches. Checkout credentials are not persisted and checks have read-only contents permission. Do not add `pull_request` or `pull_request_target` triggers or manually run untrusted PR code on this persistent signing runner. Review contributions before merging; maintainer access and changes to `main` remain trusted. Prefer a dedicated macOS account without personal secrets for stronger isolation. Public job logs are readable by anyone: do not log credentials or private host/device details.
+
+Keep `main` protected against force pushes and deletion, including admins.
+The default Actions token must remain read-only, Actions must not approve PRs,
+and actions must be pinned to full SHAs. Release writes are job-scoped.
+Enable GitHub secret scanning and push protection when available, and keep
+Dependabot alerts enabled; an empty alert list is not an exhaustive audit.
+
+After an ownership transfer, update the checkout's `origin` and verify runner
+availability, signing-secret access, branch protections, Actions permissions and
+security settings under the destination organization's policies. GitHub release
+publishing follows `GITHUB_REPOSITORY`; the Sparkle feed URL stays unchanged.
 
 ## Installed tools
 
@@ -88,6 +99,12 @@ Before calling migration complete, push the new workflows, verify no active work
 ## Test plans and manual workflows
 
 `Lightweight checks / checks` checks out full history and runs the checksum-pinned Gitleaks scanner (`scripts/ci/check-secrets.sh`), then the portable Python checks, the notification contract, the push relay, and `swift test` for `TermLLMMacKit` (temporary homes, fake command runners and stubbed HTTP; about 12 seconds from a cold build). It never builds the iOS app or boots a simulator, and keeps its 10-minute limit. Everything else is manual (**Actions → workflow → Run workflow**, from `main`):
+
+The secret scan includes all fetched history and tags. `.gitleaksignore` must
+contain only reviewed historical false-positive fingerprints, not broad path or
+rule exclusions. Investigate new findings and rotate exposed credentials. Logs,
+release assets and screenshots also need review: `.gitignore` cannot remove
+previously published data, and scanner results are not proof of absence.
 
 | Workflow | Runs |
 | --- | --- |

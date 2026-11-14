@@ -3,8 +3,7 @@
 [MIT licensed](LICENSE). Copyright © 2026 Sam Saffron. Third-party components
 retain their own licenses, including the [macos-harness MIT notice](ComputerUseKit/LICENSE-macos-harness)
 for the Computer Use port; the root license does not replace dependency notices.
-See [third-party notices](THIRD-PARTY-NOTICES.md) and the
-[public-release/transfer checklist](docs/PUBLIC-RELEASE.md).
+See [third-party notices](THIRD-PARTY-NOTICES.md).
 
 **One codebase, two app targets.** Open `TermLLM.xcodeproj` and select a scheme:
 
@@ -122,7 +121,7 @@ Local simulator captures use a real loopback HTTP **protocol fixture**, not prod
 
 ## CI budget policy
 
-All CI jobs target the repository-scoped MacBook runner labelled `[self-hosted, macOS, ARM64, term-llm-local]`. **There is no GitHub-hosted fallback.** If the Mac is asleep, offline, or its runner is stopped, checks queue rather than consume hosted runner minutes. Workflows use installed tools and do not use Actions caches or upload artifacts.
+The GitHub Actions CI jobs defined in this repository target the repository-scoped MacBook runner labelled `[self-hosted, macOS, ARM64, term-llm-local]`. **There is no GitHub-hosted fallback.** If the Mac is asleep, offline, or its runner is stopped, checks queue rather than consume hosted runner minutes. Workflows use installed tools and do not use Actions caches or upload artifacts. Xcode Cloud app workflows are separate from this GitHub Actions policy; their configuration remains in `TermLLM.xcodeproj/xcshareddata/xcodecloud/`.
 
 Automatic checks run only on trusted pushes to `main`, never on pull requests, in one path-filtered job (`Lightweight checks / checks`): a checksum-pinned full-history secret scan, Python fixture/helper tests, notification contract/JavaScript checks, Go push-relay build/tests, and `swift test` for `TermLLMMacKit`. Superseded runs are cancelled; the job has a 10-minute limit and never boots a simulator. No simulator user journeys or video captures run in CI.
 
