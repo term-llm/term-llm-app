@@ -144,11 +144,9 @@ final class ComputerUseTests: XCTestCase {
             ComputerUseIssue.list(
                 enabled: true, status: ComputerUseStatus(), setup: ComputerUseSetup(commandInstalled: true, skill: .installed)), [])
         XCTAssertEqual(ComputerUseIssue.grant("Screen Recording").title, "Needs Screen Recording")
-        XCTAssertEqual(ComputerUseIssue.grant("Screen Recording").action, "Allow…")
-        XCTAssertEqual(ComputerUseIssue.skillOutdated.action, "Update Skill")
-        XCTAssertEqual(ComputerUseIssue.grant("Something New").detail, "Something New isn't allowed.")
+        XCTAssertEqual(ComputerUseIssue.skillOutdated.title, "Skill out of date")
     }
-    func testWindowCallsOutMissingFilesAtTheTopUntilFixed() async throws {
+    func testWindowShowsEachFileOnceWithItsFixUntilFixed() async throws {
         try setup.setEnabled(true)
         let controller = ComputerUseController(home: home, state: setup.state, binary: setup.binary, suppressRuntime: true)
         XCTAssertEqual(controller.issues, [], "Nothing is called out before the files are checked")
@@ -166,30 +164,37 @@ final class ComputerUseTests: XCTestCase {
                     && (($0 as? NSTextField)?.stringValue == text || ($0 as? NSButton)?.title == text)
             }
         }
+        func fix(_ id: String) -> NSButton? {
+            descendants(view.view).first {
+                !$0.isHiddenOrHasHiddenAncestor && $0.identifier?.rawValue == id
+            } as? NSButton
+        }
+        func count(_ text: String) -> Int {
+            descendants(view.view).filter {
+                !$0.isHiddenOrHasHiddenAncestor && ($0 as? NSTextField)?.stringValue == text
+            }.count
+        }
         controller.refreshInstallations()
-        try await waitUntil("callout shown") { shown(ComputerUseIssue.skillMissing.detail) != nil }
+        try await waitUntil("fixes shown") { fix("skill") != nil }
         XCTAssertEqual(controller.issues, [.command, .skillMissing])
         XCTAssertEqual(controller.icon, "exclamationmark.triangle")
-        view.view.layoutSubtreeIfNeeded()
-        let callout = try XCTUnwrap(shown(ComputerUseIssue.skillMissing.detail))
-        XCTAssertNotNil(shown("Install Command"))
-        XCTAssertNotNil(shown(ComputerUseIssue.command.detail))
-        let explanation = try XCTUnwrap(
-            descendants(view.view).first { ($0 as? NSTextField)?.stringValue.hasPrefix("Let term-llm agents") == true })
-        let top = { (child: NSView) in child.convert(child.bounds, to: nil).maxY }
-        XCTAssertGreaterThan(top(callout), top(explanation), "The callout comes before the explanation")
+        XCTAssertEqual(fix("command")?.title, "Install")
+        XCTAssertEqual(fix("skill")?.title, "Install")
+        XCTAssertEqual(count("Command-line tool"), 1, "Each file appears once")
+        XCTAssertEqual(count("computer-use skill"), 1, "Each file appears once")
 
         try setup.installCommand()
         try FileManager.default.createDirectory(
             at: setup.skill.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "older instructions".write(to: setup.skill, atomically: true, encoding: .utf8)
         controller.refreshInstallations()
-        try await waitUntil("command installed") { shown("Update Skill") != nil && shown("Install Command") == nil }
+        try await waitUntil("command installed") { fix("skill")?.title == "Update" && fix("command") == nil }
         XCTAssertEqual(controller.issues, [.skillOutdated])
+        XCTAssertNotNil(shown("Out of date"))
         try setup.installSkill()
         controller.refreshInstallations()
-        try await waitUntil("callout hidden") { controller.issues.isEmpty && shown("Update Skill") == nil }
-        XCTAssertNil(shown(ComputerUseIssue.skillOutdated.detail))
+        try await waitUntil("all fixed") { controller.issues.isEmpty && fix("skill") == nil }
+        XCTAssertNil(shown("Out of date"))
         XCTAssertEqual(controller.icon, "terminal")
     }
     func testHostedFixtureControllerNeverEnablesOrLaunches() {

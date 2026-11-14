@@ -3,25 +3,35 @@ import Combine
 
 /// Intentionally AppKit, like Local Service. This app only displays helper grant
 /// state and sends controls; it never imports AX, ScreenCaptureKit, or TCC APIs.
+///
+/// Every permission and file appears once, with its state and the button that
+/// fixes it; the menu bar item summarizes the same problems.
 @MainActor
 final class ComputerUseViewController: NSViewController {
     private let controller: ComputerUseController
     private var subscriptions: Set<AnyCancellable> = []
-    private let enable = NSButton(checkboxWithTitle: "Enable Computer Use for term-llm", target: nil, action: nil)
+    private let enable = NSButton(checkboxWithTitle: "Let agents use apps on this Mac", target: nil, action: nil)
     private let headline = NSTextField(labelWithString: "")
-    private let grants = NSStackView()
-    private let command = NSTextField(labelWithString: "")
-    private let skill = NSTextField(labelWithString: "")
+    private let permissions = NSStackView()
+    private let permissionRows = NSStackView()
+    private let files = NSStackView()
+    private let fileRows = NSStackView()
     private let error = NSTextField(wrappingLabelWithString: "")
     private let pause = NSButton(title: "Pause Computer Use", target: nil, action: nil)
-    private lazy var installSkillButton = button("Install Skill", #selector(installSkill))
+    private lazy var pauseRow = row([pause, note("Esc stops a running agent.")])
     private let approvals = NSStackView()
-    private let issues = NoticePanel()
-    private let issueRows = NSStackView()
     private let content = NSStackView()
-    private var renderedGrants: [String: Bool]?
+    private var renderedPermissions: [String: Bool]?
+    private var renderedFiles: ComputerUseSetup??
     private var renderedApprovals: [ComputerUseApprovedApp]?
-    private var renderedIssues: [ComputerUseIssue]?
+
+    /// Why a missing permission matters; required ones just say so.
+    static let permissionNotes = [
+        "Accessibility": "Required",
+        "Screen Recording": "Required",
+        "Event Posting": "Needed to click and type",
+        "Input Monitoring": "Needed to step back when you take over",
+    ]
 
     init(controller: ComputerUseController) {
         self.controller = controller
@@ -32,34 +42,30 @@ final class ComputerUseViewController: NSViewController {
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 420))
         headline.font = .systemFont(ofSize: 19, weight: .semibold)
-        let explanation = NSTextField(
-            wrappingLabelWithString:
-                "Let term-llm agents read and operate apps on this Mac. Only the separate term-llm Computer Use helper holds the permissions. An agent asks before it first uses each app. While one works, press Esc or choose Stop in the menu to stop it."
-        )
-        explanation.textColor = .secondaryLabelColor
         enable.target = self
         enable.action = #selector(toggleEnabled)
         pause.target = self
         pause.action = #selector(togglePause)
-        grants.orientation = .vertical
-        grants.alignment = .leading
-        grants.spacing = 10
+        error.textColor = .systemRed
+        for (section, rows, title) in [(permissions, permissionRows, "Permissions"), (files, fileRows, "Setup")] {
+            rows.orientation = .vertical
+            rows.alignment = .leading
+            rows.spacing = 8
+            section.orientation = .vertical
+            section.alignment = .leading
+            section.spacing = 10
+            section.addArrangedSubview(sectionTitle(title))
+            section.addArrangedSubview(rows)
+            rows.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        }
         approvals.orientation = .vertical
         approvals.alignment = .leading
         approvals.spacing = 8
-        let commandRow = row([command, button("Install / Repair…", #selector(installCommand))])
-        let skillRow = row([skill, installSkillButton])
-        error.textColor = .systemRed
-        issueRows.orientation = .vertical
-        issueRows.alignment = .leading
-        issueRows.spacing = 10
-        issueRows.translatesAutoresizingMaskIntoConstraints = false
-        issues.addSubview(issueRows)
         let stack = content
-        // What needs fixing, and why the last fix failed, come before everything else.
-        [headline, issues, error, explanation, enable, separator(), grants, separator(), approvals, separator(), commandRow, skillRow, pause].forEach {
+        [headline, enable, error, separator(), permissions, files, separator(), approvals, pauseRow].forEach {
             stack.addArrangedSubview($0)
         }
+        stack.setCustomSpacing(8, after: headline)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -70,15 +76,10 @@ final class ComputerUseViewController: NSViewController {
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -24),
-            explanation.widthAnchor.constraint(equalTo: stack.widthAnchor),
             error.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            grants.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            permissions.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            files.widthAnchor.constraint(equalTo: stack.widthAnchor),
             approvals.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            issues.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            issueRows.leadingAnchor.constraint(equalTo: issues.leadingAnchor, constant: 12),
-            issueRows.trailingAnchor.constraint(equalTo: issues.trailingAnchor, constant: -12),
-            issueRows.topAnchor.constraint(equalTo: issues.topAnchor, constant: 10),
-            issueRows.bottomAnchor.constraint(equalTo: issues.bottomAnchor, constant: -10),
         ])
         controller.objectWillChange.sink { [weak self] in
             // Published sends before the value changes; render on the next turn.
@@ -89,45 +90,20 @@ final class ComputerUseViewController: NSViewController {
     private func render() {
         headline.stringValue = controller.enabled ? "Computer Use · \(controller.statusTitle)" : "Computer Use is off"
         enable.state = controller.enabled ? .on : .off
-        let setup = controller.setup
-        command.stringValue =
-            "Command-line tool · " + (setup.map { $0.commandInstalled ? "Installed" : "Not installed" } ?? "Checking…")
-        let skillState: String? = switch setup?.skill {
-        case .installed: "Installed"
-        case .outdated: "Out of date"
-        case .missing: "Not installed"
-        case nil: nil
-        }
-        skill.stringValue = "computer-use skill · " + (skillState ?? "Checking…")
-        installSkillButton.title = setup?.skill == .outdated ? "Update Skill" : "Install Skill"
-        if renderedIssues != controller.issues {
-            renderedIssues = controller.issues
-            renderIssues()
-        }
         error.stringValue = controller.error ?? ""
         error.isHidden = controller.error == nil
         pause.title = controller.status.paused ? "Resume Computer Use" : "Pause Computer Use"
-        pause.isHidden = !controller.enabled
-        if renderedGrants != controller.status.grants {
-            renderedGrants = controller.status.grants
-            for child in grants.arrangedSubviews {
-                grants.removeArrangedSubview(child)
-                child.removeFromSuperview()
-            }
-            if controller.status.grants.isEmpty {
-                let note = NSTextField(
-                    wrappingLabelWithString: "Grants will appear when the helper's permissions module is available.")
-                note.textColor = .secondaryLabelColor
-                grants.addArrangedSubview(note)
-            }
-            for name in controller.status.grants.keys.sorted() {
-                let allowed = controller.status.grants[name] == true
-                let label = NSTextField(labelWithString: "\(name) · \(allowed ? "Allowed" : "Not allowed")")
-                let allow = button("Allow…", #selector(allowGrant(_:)))
-                allow.identifier = NSUserInterfaceItemIdentifier(name)
-                allow.isHidden = allowed
-                grants.addArrangedSubview(row([label, allow]))
-            }
+        pauseRow.isHidden = !controller.enabled
+        // Grants come from the running helper; there is nothing to show while it is off.
+        permissions.isHidden = !controller.enabled
+        files.isHidden = !controller.enabled
+        if renderedPermissions != controller.status.grants {
+            renderedPermissions = controller.status.grants
+            renderPermissions()
+        }
+        if renderedFiles != .some(controller.setup) {
+            renderedFiles = .some(controller.setup)
+            renderFiles()
         }
         if renderedApprovals != controller.alwaysAllowed {
             renderedApprovals = controller.alwaysAllowed
@@ -135,57 +111,91 @@ final class ComputerUseViewController: NSViewController {
         }
         fitWindowToContent()
     }
-    private func renderIssues() {
-        for child in issueRows.arrangedSubviews {
-            issueRows.removeArrangedSubview(child)
-            child.removeFromSuperview()
+    private func renderPermissions() {
+        clear(permissionRows)
+        let grants = renderedPermissions ?? [:]
+        if grants.isEmpty {
+            permissionRows.addArrangedSubview(note("Checking…"))
+            return
         }
-        let list = renderedIssues ?? []
-        issues.isHidden = list.isEmpty
-        for (index, issue) in list.enumerated() {
-            let icon = NSImageView()
-            icon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
-            icon.contentTintColor = .systemOrange
-            icon.setContentHuggingPriority(.required, for: .horizontal)
-            let label = NSTextField(wrappingLabelWithString: issue.detail)
-            label.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let fix = button(issue.action, #selector(fixIssue(_:)))
-            fix.tag = index
-            if case .grant(let name) = issue { fix.setAccessibilityLabel("Allow \(name)…") }
-            fix.setContentHuggingPriority(.required, for: .horizontal)
-            fix.setContentCompressionResistancePriority(.required, for: .horizontal)
-            let line = row([icon, label, fix])
-            line.spacing = 10
-            line.distribution = .fill
-            issueRows.addArrangedSubview(line)
-            line.widthAnchor.constraint(equalTo: issueRows.widthAnchor).isActive = true
+        for name in grants.keys.sorted() {
+            let allowed = grants[name] == true
+            let allow = allowed ? nil : button("Allow…", #selector(allowGrant(_:)), id: name)
+            allow?.setAccessibilityLabel("Allow \(name)…")
+            add(statusRow(ok: allowed, name: name, detail: allowed ? nil : Self.permissionNotes[name], fix: allow),
+                to: permissionRows)
         }
     }
-    private func renderApprovals() {
-        for child in approvals.arrangedSubviews {
-            approvals.removeArrangedSubview(child)
-            child.removeFromSuperview()
+    private func renderFiles() {
+        clear(fileRows)
+        guard let setup = renderedFiles ?? nil else {
+            fileRows.addArrangedSubview(note("Checking…"))
+            return
         }
-        let title = NSTextField(labelWithString: "Always allowed apps")
-        title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        approvals.addArrangedSubview(title)
+        add(statusRow(ok: setup.commandInstalled, name: "Command-line tool",
+                      detail: setup.commandInstalled ? nil : "Not installed",
+                      fix: setup.commandInstalled ? nil : button("Install", #selector(installCommand), id: "command")),
+            to: fileRows)
+        let skill: (String?, String?) = switch setup.skill {
+        case .installed: (nil, nil)
+        case .outdated: ("Out of date", "Update")
+        case .missing: ("Not installed", "Install")
+        }
+        add(statusRow(ok: setup.skill == .installed, name: "computer-use skill", detail: skill.0,
+                      fix: skill.1.map { button($0, #selector(installSkill), id: "skill") }),
+            to: fileRows)
+    }
+    private func renderApprovals() {
+        clear(approvals)
+        approvals.addArrangedSubview(sectionTitle("Always allowed apps"))
         if controller.alwaysAllowed.isEmpty {
-            let note = NSTextField(
-                wrappingLabelWithString: "None. Apps you choose Always Allow for appear here; remove one to be asked again.")
-            note.textColor = .secondaryLabelColor
-            approvals.addArrangedSubview(note)
-            note.widthAnchor.constraint(equalTo: approvals.widthAnchor).isActive = true
+            let none = note("None yet.")
+            approvals.addArrangedSubview(none)
+            none.widthAnchor.constraint(equalTo: approvals.widthAnchor).isActive = true
             return
         }
         for app in controller.alwaysAllowed {
             let label = NSTextField(labelWithString: app.name)
             label.toolTip = app.bundleID
-            let remove = button("Remove", #selector(forgetApproval(_:)))
-            remove.identifier = NSUserInterfaceItemIdentifier(app.bundleID)
+            let remove = button("Remove", #selector(forgetApproval(_:)), id: app.bundleID)
             remove.setAccessibilityLabel("Remove \(app.name)")
             approvals.addArrangedSubview(row([label, remove]))
+        }
+    }
+    /// Icon, name, why it matters, and the fix, aligned in columns.
+    private func statusRow(ok: Bool, name: String, detail: String?, fix: NSButton?) -> NSStackView {
+        let icon = NSImageView()
+        icon.image = NSImage(
+            systemSymbolName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+            accessibilityDescription: ok ? "OK" : "Needs attention")
+        icon.contentTintColor = ok ? .systemGreen : .systemOrange
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let label = NSTextField(labelWithString: name)
+        label.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        let reason = NSTextField(labelWithString: detail ?? "")
+        reason.textColor = .secondaryLabelColor
+        reason.lineBreakMode = .byTruncatingTail
+        reason.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        reason.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        var views: [NSView] = [icon, label, reason]
+        if let fix {
+            fix.setContentHuggingPriority(.required, for: .horizontal)
+            fix.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.append(fix)
+        }
+        let line = row(views)
+        line.spacing = 8
+        line.distribution = .fill
+        return line
+    }
+    private func add(_ line: NSStackView, to rows: NSStackView) {
+        rows.addArrangedSubview(line)
+        line.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+    }
+    private func clear(_ stack: NSStackView) {
+        for child in stack.arrangedSubviews {
+            stack.removeArrangedSubview(child)
+            child.removeFromSuperview()
         }
     }
     func fitWindowToContent() {
@@ -199,9 +209,10 @@ final class ComputerUseViewController: NSViewController {
         frame.origin.y = current.maxY - frame.height
         if abs(current.height - frame.height) > 1 { window.setFrame(frame, display: true) }
     }
-    private func button(_ title: String, _ action: Selector) -> NSButton {
+    private func button(_ title: String, _ action: Selector, id: String? = nil) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .rounded
+        if let id { button.identifier = NSUserInterfaceItemIdentifier(id) }
         return button
     }
     private func row(_ children: [NSView]) -> NSStackView {
@@ -210,6 +221,16 @@ final class ComputerUseViewController: NSViewController {
         row.alignment = .centerY
         row.spacing = 12
         return row
+    }
+    private func sectionTitle(_ text: String) -> NSTextField {
+        let title = NSTextField(labelWithString: text)
+        title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        return title
+    }
+    private func note(_ text: String) -> NSTextField {
+        let note = NSTextField(wrappingLabelWithString: text)
+        note.textColor = .secondaryLabelColor
+        return note
     }
     private func separator() -> NSView {
         let line = NSBox()
@@ -220,9 +241,6 @@ final class ComputerUseViewController: NSViewController {
     @objc private func togglePause() { controller.togglePause() }
     @objc private func installCommand() { controller.installCommand() }
     @objc private func installSkill() { controller.installSkill() }
-    @objc private func fixIssue(_ sender: NSButton) {
-        if let list = renderedIssues, list.indices.contains(sender.tag) { controller.fix(list[sender.tag]) }
-    }
     @objc private func forgetApproval(_ sender: NSButton) {
         if let bundleID = sender.identifier?.rawValue { controller.forgetApproval(bundleID) }
     }

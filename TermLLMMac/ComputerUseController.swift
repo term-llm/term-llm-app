@@ -160,8 +160,8 @@ struct ComputerUseSetup: Sendable, Equatable {
     var skill: ComputerUseSkillState
 }
 
-/// What stops agents using Computer Use fully, called out at the top of the menu
-/// and the Computer Use window, each with the button that fixes it.
+/// What stops agents using Computer Use fully, called out at the top of the menu;
+/// the Computer Use window shows each one in place with its fix.
 enum ComputerUseIssue: Sendable, Equatable {
     case grant(String)
     case command
@@ -185,29 +185,6 @@ enum ComputerUseIssue: Sendable, Equatable {
         case .command: return "Command not installed"
         case .skillMissing: return "Skill not installed"
         case .skillOutdated: return "Skill out of date"
-        }
-    }
-    var detail: String {
-        switch self {
-        case .grant(let name):
-            let effect = [
-                "Accessibility": "Computer Use can't work without it.",
-                "Screen Recording": "Computer Use can't work without it.",
-                "Input Monitoring": "Computer Use can't tell when you use an app yourself, so it won't step back.",
-                "Event Posting": "Agents can't send clicks and keys to apps.",
-            ][name]
-            return ["\(name) isn't allowed.", effect].compactMap { $0 }.joined(separator: " ")
-        case .command: return "The term-llm-computer command isn't installed. Agents run it to use apps."
-        case .skillMissing: return "The computer-use skill isn't installed. Agents won't know how to use apps on this Mac."
-        case .skillOutdated: return "The computer-use skill is out of date. Agents follow older instructions until you update it."
-        }
-    }
-    var action: String {
-        switch self {
-        case .grant: return "Allow…"
-        case .command: return "Install Command"
-        case .skillMissing: return "Install Skill"
-        case .skillOutdated: return "Update Skill"
         }
     }
 }
@@ -484,13 +461,6 @@ final class ComputerUseController: NSObject, ObservableObject {
             guard value != setup else { return }
             setup = value
             onChange?()
-        }
-    }
-    func fix(_ issue: ComputerUseIssue) {
-        switch issue {
-        case .grant(let name): send("allow", grant: name)
-        case .command: installCommand()
-        case .skillMissing, .skillOutdated: installSkill()
         }
     }
     /// approvals.json is the helper's file; it reads it on every check, so a
