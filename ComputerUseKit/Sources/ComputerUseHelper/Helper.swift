@@ -653,6 +653,34 @@ private final class HelperMainResources {
 }
 
 public enum HelperMain {
+    // DispatchSource's legacy handler API does not require Sendable, so inline
+    // closures in run() inherit MainActor and trap when the global queue fires.
+    // Build explicitly Sendable callbacks outside that actor-isolated context.
+    static func shutdownHandler(server: HelperServer) -> @Sendable () -> Void {
+        { server.requestShutdown() }
+    }
+
+    static func maintenanceHandler(
+        server: HelperServer, configuration: HelperConfiguration
+    ) -> @Sendable () -> Void {
+        let pid = configuration.environment["TERM_LLM_COMPUTER_HOST_PID"].flatMap(Int32.init)
+        let host = pid.flatMap(ProcessIdentity.lookup)
+        return {
+            server.reapSessions()
+            configuration.onMaintenance()
+            // Only an app-owned helper is started again by its owner.
+            if pid != nil, !server.hasRunningCalls, configuration.wantsRelaunch() {
+                server.note("relaunch to read a new permission grant")
+                server.requestShutdown()
+            }
+            if let pid {
+                if host == nil || ProcessIdentity.lookup(pid)?.started != host?.started { server.requestShutdown() }
+            } else if server.isIdle {
+                server.requestShutdown()
+            }
+        }
+    }
+
     /// Call on the main thread: it becomes the AppKit loop.
     @MainActor
     public static func run(executor: ToolExecutor) -> Never {
@@ -669,7 +697,7 @@ public enum HelperMain {
         for number in [SIGTERM, SIGINT] {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-            source.setEventHandler { server.requestShutdown() }
+            source.setEventHandler(handler: shutdownHandler(server: server))
             source.resume()
             signals.append(source)
         }
@@ -685,24 +713,9 @@ public enum HelperMain {
                 }
                 return
             }
-            let pid = configuration.environment["TERM_LLM_COMPUTER_HOST_PID"].flatMap(Int32.init)
-            let host = pid.flatMap(ProcessIdentity.lookup)
             let timer = DispatchSource.makeTimerSource(queue: .global())
             timer.schedule(deadline: .now() + 2, repeating: 2)
-            timer.setEventHandler {
-                server.reapSessions()
-                configuration.onMaintenance()
-                // Only an app-owned helper is started again by its owner.
-                if pid != nil, !server.hasRunningCalls, configuration.wantsRelaunch() {
-                    server.note("relaunch to read a new permission grant")
-                    server.requestShutdown()
-                }
-                if let pid {
-                    if host == nil || ProcessIdentity.lookup(pid)?.started != host?.started { server.requestShutdown() }
-                } else if server.isIdle {
-                    server.requestShutdown()
-                }
-            }
+            timer.setEventHandler(handler: maintenanceHandler(server: server, configuration: configuration))
             timer.resume()
             resources.hostTimer = timer
         }

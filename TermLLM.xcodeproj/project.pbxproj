@@ -380,6 +380,7 @@
 		93177419C5ACDF1938C79A29 /* WebKitHealthReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFE488FC423243E421F8596 /* WebKitHealthReport.swift */; };
 		B613FAC1E8DABEF7C9623400 /* WebKitHealthReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFE488FC423243E421F8596 /* WebKitHealthReport.swift */; };
 		AB6F71E068DBED5F020BFE01 /* LocalServiceViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC1A67A4C22B71EF04A9341 /* LocalServiceViewController.swift */; };
+		D8CA0BB074304092B5BE1C18 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1191,6 +1192,7 @@
 			buildPhases = (
 				C10000000000000000000051 /* Sources */,
 				C10000000000000000000053 /* Frameworks */,
+				C10000000000000000000055 /* Resources */,
 			);
 			buildRules = ();
 			dependencies = ();
@@ -1261,6 +1263,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		C10000000000000000000055 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D8CA0BB074304092B5BE1C18 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		000000000000000000000051 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -2188,6 +2198,7 @@
 		C10000000000000000000060 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				ENABLE_APP_SANDBOX = NO;
@@ -2212,6 +2223,7 @@
 		C10000000000000000000061 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = B6BAJ46A72;
 				ENABLE_APP_SANDBOX = NO;
