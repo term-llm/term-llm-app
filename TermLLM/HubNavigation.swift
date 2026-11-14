@@ -55,6 +55,16 @@ enum HubNavigation {
         return url
     }
 
+    /// File previews are documents, not chat routes. Opening one in the retained
+    /// chat WebView replaces the frontend (and its conversation controls).
+    static func isFileDocument(_ url: URL, server: URL) -> Bool {
+        guard isWithinMount(url, server: server) else { return false }
+        let mount = server.path.split(separator: "/")
+        let path = Array(url.path.split(separator: "/").dropFirst(mount.count))
+        if path.first == "files" { return true }
+        return path.count >= 3 && path[0] == "node" && path[2] == "files"
+    }
+
     static func nodeSessions(_ node: HubNode) -> [HubNodeSession] {
         var seen = Set<String>()
         return ((node.sessions?.active ?? []) + (node.sessions?.recent ?? [])).filter { seen.insert($0.id).inserted }

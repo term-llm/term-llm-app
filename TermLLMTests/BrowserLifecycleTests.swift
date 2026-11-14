@@ -402,6 +402,22 @@ final class BrowserLifecycleTests: XCTestCase {
         XCTAssertEqual(view.reloads, 0)
     }
 
+    func testNativeNewConversationLoadsEvenWhenFileDocumentIsCurrent() {
+        let state = State()
+        let coordinator = coordinator(browser(state))
+        let file = URL(string: "https://example.com/ui/files/review.md")!
+        let view = webView(file)
+        var parent = browser(state)
+        let draft = URL(string: "https://example.com/ui/?new=1")!
+        parent.nativeDestination = HubBrowserDestination(url: draft)
+        coordinator.update(view, parent: parent)
+        coordinator.update(view, parent: parent)
+        XCTAssertEqual(view.requests.map(\.url), [draft], "Native navigation must not depend on the current document's JavaScript")
+        parent.nativeDestination = HubBrowserDestination(url: draft)
+        coordinator.update(view, parent: parent)
+        XCTAssertEqual(view.requests.map(\.url), [draft, draft], "Repeated new-conversation requests must still navigate")
+    }
+
     func testBackgroundTerminationWaitsForActiveScene() async {
         let state = State()
         let coordinator = coordinator(browser(state, phase: .background))
@@ -1111,18 +1127,28 @@ extension BrowserLifecycleTests {
                 <textarea aria-label="Draft"></textarea><p>Local retained document</p>
                 """, baseURL: nil)
             try await navigation.wait()
-            let initialScroll = try await original.callAsyncJavaScript("""
-                document.querySelector('textarea').value = 'unsent workspace draft';
-                window.scrollTo(0, 640);
-                return window.scrollY;
-                """, contentWorld: .page) as? Double
-            XCTAssertEqual(try XCTUnwrap(initialScroll), 640, accuracy: 1)
-            // WebKit acknowledges scrollTo in the web process before its native
-            // scroll view receives the transaction. Establish the real viewport
-            // before hiding it; otherwise the test detaches an uncommitted scroll.
-            for _ in 0..<100 where abs(original.scrollView.contentOffset.y - 640) > 1 {
+            // didFinish can precede WebKit's first native layout transaction. A JS
+            // scroll here can be overwritten by that transaction's initial zero
+            // offset, so first wait for the actual scrollable native viewport.
+            for _ in 0..<200 where original.scrollView.contentSize.height < 5000 || original.bounds.height == 0 {
                 try await Task.sleep(for: .milliseconds(10))
             }
+            XCTAssertEqual(original.scrollView.contentSize.height, 5000, accuracy: 1,
+                           "The fixture document must finish native layout before scrolling")
+            _ = try await original.callAsyncJavaScript("document.querySelector('textarea').value = 'unsent workspace draft';",
+                                                       contentWorld: .page)
+            // Seed the viewport as a native scroll would, then require both
+            // processes to agree before exercising detachment. Merely seeing a
+            // JS scrollTo return 640 does not establish the native checkpoint.
+            original.scrollView.setContentOffset(CGPoint(x: 0, y: 640), animated: false)
+            var initialScroll: Double?
+            for _ in 0..<200 {
+                initialScroll = try await original.callAsyncJavaScript("return window.scrollY;", contentWorld: .page) as? Double
+                if let initialScroll, abs(initialScroll - 640) <= 1,
+                   abs(original.scrollView.contentOffset.y - 640) <= 1 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(try XCTUnwrap(initialScroll), 640, accuracy: 1)
             XCTAssertEqual(original.scrollView.contentOffset.y, 640, accuracy: 1, "Initial native scroll must agree with the document before detachment")
 
             // Wide split -> overlay-capable portrait -> very narrow iPad/Mac ->

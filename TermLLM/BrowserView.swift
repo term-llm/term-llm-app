@@ -996,6 +996,12 @@ struct BrowserView {
                 decisionHandler(.cancel)
                 return
             }
+            if navigationAction.targetFrame?.isMainFrame != false,
+               HubNavigation.isFileDocument(destination, server: parent.connectionMount ?? parent.url) {
+                NativeApp.open(destination)
+                decisionHandler(.cancel)
+                return
+            }
             if isLoginRoute(destination) {
                 decisionHandler(.cancel)
                 parent.onLoginRequired()
@@ -1017,6 +1023,8 @@ struct BrowserView {
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let url = navigationAction.request.url {
                 if let mount = parent.connectionMount, !HubNavigation.isWithinMount(url, server: mount) {
+                    NativeApp.open(url)
+                } else if HubNavigation.isFileDocument(url, server: parent.connectionMount ?? parent.url) {
                     NativeApp.open(url)
                 } else if isLoginRoute(url) {
                     parent.onLoginRequired()

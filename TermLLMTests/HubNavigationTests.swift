@@ -2,6 +2,23 @@ import XCTest
 @testable import TermLLM
 
 final class HubNavigationTests: XCTestCase {
+    func testFileDocumentsAreSeparatedFromChatRoutes() throws {
+        let hub = try XCTUnwrap(URL(string: "https://hub.samsaffron.com/"))
+        let file = try XCTUnwrap(URL(string: "https://hub.samsaffron.com/node/jarvis/files/term-llm-proxy-generic-review.md"))
+        XCTAssertTrue(HubNavigation.isFileDocument(file, server: hub))
+        let mounted = try XCTUnwrap(URL(string: "https://hub.example/work/"))
+        for path in ["/work/node/jarvis/files/report.md", "/work/node/jarvis/files/report.html?preview=1", "/work/files/report.pdf"] {
+            XCTAssertTrue(HubNavigation.isFileDocument(try XCTUnwrap(URL(string: path, relativeTo: mounted)?.absoluteURL), server: mounted), path)
+        }
+        for path in ["/work/", "/work/node/jarvis/?new=1", "/work/node/jarvis/chat/files",
+                     "/work/node/files/chat/123", "/work/api/files/report.md", "/other/files/report.md"] {
+            XCTAssertFalse(HubNavigation.isFileDocument(try XCTUnwrap(URL(string: path, relativeTo: mounted)?.absoluteURL), server: mounted), path)
+        }
+        XCTAssertFalse(HubNavigation.isFileDocument(file, server: mounted))
+        let direct = try XCTUnwrap(URL(string: "https://node.example/ui/"))
+        XCTAssertTrue(HubNavigation.isFileDocument(try XCTUnwrap(URL(string: "files/report.md", relativeTo: direct)?.absoluteURL), server: direct))
+    }
+
     func testMountedPathsAreNotDoublePrefixed() throws {
         let server = try XCTUnwrap(URL(string: "https://hub.example/prefix/"))
         XCTAssertEqual(HubNavigation.destination("/prefix/node/dev/chat/7?new=1", server: server)?.absoluteString,
