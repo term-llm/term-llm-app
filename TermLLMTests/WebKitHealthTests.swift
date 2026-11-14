@@ -632,6 +632,48 @@ final class WebKitHealthMonitorTests: XCTestCase {
         withExtendedLifetime(web) {}
     }
 
+    /// A Mac's display sleeping or the Mac sleeping keeps native ticks going
+    /// (or pauses uptime) while WebKit stops the page: neither the silence
+    /// during the pause nor a slow resume afterwards may stop the page.
+    func testDisplayPauseAndWakeDoNotStopTheVisiblePage() throws {
+        let monitor = monitor()
+        let web = WKWebView(frame: .zero)
+        let session = monitor.makeSession(for: web, now: 0)
+        session.contextProvider = { WebKitPageContext(userCanSee: true) }
+        var stops: [WebKitTeardownReason] = []
+        session.onTeardown = { reason, _ in stops.append(reason) }
+        monitor.applicationWillEnterForeground(now: 0)
+        let before = try XCTUnwrap(session.activityWindowID)
+        monitor.record(report(["window": before, "vis": "visible"]), from: session, now: 1)
+        monitor.tick(now: 5, native: native(5, device: 2))
+        monitor.displayDidPause("display", now: 10)
+        monitor.displayDidPause("sleep", now: 11)
+        for time in stride(from: 15.0, through: 200, by: 5) {
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        monitor.displayDidResume("sleep", now: 200)
+        for time in stride(from: 205.0, through: 260, by: 5) {
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertTrue(stops.isEmpty, "the display is still asleep")
+        monitor.displayDidResume("display", now: 260)
+        let after = try XCTUnwrap(session.activityWindowID)
+        XCTAssertNotEqual(after, before)
+        for time in stride(from: 265.0, through: 400, by: 5) {
+            monitor.record(report(["window": before, "vis": "visible"]), from: session, now: time)
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertTrue(stops.isEmpty, "silence after waking is not a hang until the page reports again")
+        XCTAssertFalse(monitor.events.contains { ["stalled", "stop", "would-stop"].contains($0.kind) })
+        // A fresh report re-arms the watchdog for a genuine hang.
+        monitor.record(report(["window": after, "vis": "visible"]), from: session, now: 405)
+        for time in stride(from: 405.0, through: 455, by: 5) {
+            monitor.tick(now: time, native: native(time, device: 2))
+        }
+        XCTAssertEqual(stops, [.unresponsive])
+        withExtendedLifetime(web) {}
+    }
+
     func testContinuousNativeSamplingStillRecordsALongForegroundBlockAfterResume() throws {
         let monitor = monitor()
         monitor.autoStopEnabled = false

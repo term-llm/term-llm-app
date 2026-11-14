@@ -2,6 +2,8 @@ import Foundation
 import os
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 import WebKit
 
@@ -92,6 +94,11 @@ final class WebKitHealthMonitor: ObservableObject {
     private var cpuEpisodePeak: Double = 0
     private var lastThermal = ProcessInfo.processInfo.thermalState
     private var observers: [NSObjectProtocol] = []
+    private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    /// Why the display cannot show the page right now (Mac sleep, display
+    /// sleep, screen lock, another user's session). WebKit throttles or
+    /// suspends the page then, so its silence says nothing about a hang.
+    private(set) var displayPausedBy: Set<String> = []
     private var parked: WebKitParkedPage?
     /// Main-thread time spent in this monitor since `costSince`.
     private var costNanoseconds: UInt64 = 0
@@ -157,8 +164,49 @@ final class WebKitHealthMonitor: ObservableObject {
                 }
             },
         ]
+        observeDisplayPauses()
         schedule(every: NativeApp.state == .background ? Self.backgroundInterval : Self.interval)
         tick()
+    }
+
+    private func observeDisplayPauses() {
+        #if os(macOS)
+        let workspace = NSWorkspace.shared.notificationCenter
+        let distributed = DistributedNotificationCenter.default()
+        let events: [(NotificationCenter, Notification.Name, String, Bool)] = [
+            (workspace, NSWorkspace.willSleepNotification, "sleep", true),
+            (workspace, NSWorkspace.didWakeNotification, "sleep", false),
+            (workspace, NSWorkspace.screensDidSleepNotification, "display", true),
+            (workspace, NSWorkspace.screensDidWakeNotification, "display", false),
+            (workspace, NSWorkspace.sessionDidResignActiveNotification, "session", true),
+            (workspace, NSWorkspace.sessionDidBecomeActiveNotification, "session", false),
+            (distributed, Notification.Name("com.apple.screenIsLocked"), "lock", true),
+            (distributed, Notification.Name("com.apple.screenIsUnlocked"), "lock", false),
+        ]
+        systemObservers = events.map { center, name, cause, paused in
+            (center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if paused { self?.displayDidPause(cause) } else { self?.displayDidResume(cause) }
+                }
+            })
+        }
+        #endif
+    }
+
+    /// The Mac slept, its display slept or locked: the page cannot be seen
+    /// and WebKit stops running it, so stop judging its silence.
+    func displayDidPause(_ cause: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard displayPausedBy.insert(cause).inserted else { return }
+        invalidateActivityWindows(now: now)
+        record("display", "Display paused (\(cause)).")
+    }
+
+    /// Back from a pause: the page must report afresh before its silence
+    /// counts again, however long WebKit takes to resume it.
+    func displayDidResume(_ cause: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard displayPausedBy.remove(cause) != nil else { return }
+        invalidateActivityWindows(now: now)
+        record("display", "Display resumed (\(cause)).")
     }
 
     /// Invalidate before doing any sampling or accepting queued page messages.
@@ -216,6 +264,8 @@ final class WebKitHealthMonitor: ObservableObject {
         timer = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers = []
+        for (center, observer) in systemObservers { center.removeObserver(observer) }
+        systemObservers = []
     }
 
     private func schedule(every interval: TimeInterval) {
@@ -459,7 +509,7 @@ final class WebKitHealthMonitor: ObservableObject {
         let thermal = natives.last?.thermal ?? ProcessInfo.processInfo.thermalState
         switch policy.verdict(.init(now: now, context: session.context, hiddenSince: session.hiddenSince,
                                     visibleSince: session.visibleSince, lastSampleAt: session.lastSampleAt,
-                                    armed: session.documentID != nil && probeEnabled, samples: session.samples,
+                                    armed: isArmed(session), samples: session.samples,
                                     thermal: thermal, outsideAppCPU: outsideAppCPU(now: now))) {
         case .healthy:
             break
@@ -521,6 +571,11 @@ final class WebKitHealthMonitor: ObservableObject {
         tick()
     }
 
+    /// Silence is only evidence of a hang while the page could be running.
+    private func isArmed(_ session: WebKitPageSession) -> Bool {
+        session.documentID != nil && probeEnabled && displayPausedBy.isEmpty
+    }
+
     /// Average cores busy outside this app over the last 30 s.
     private func outsideAppCPU(now: TimeInterval) -> Double? {
         let values = natives.filter { now - $0.uptime <= 30 }.compactMap(\.otherCPU)
@@ -548,7 +603,7 @@ final class WebKitHealthMonitor: ObservableObject {
         if let primary {
             let verdict = policy.verdict(.init(now: now, context: primary.context, hiddenSince: primary.hiddenSince,
                                                visibleSince: primary.visibleSince, lastSampleAt: primary.lastSampleAt,
-                                               armed: primary.documentID != nil && probeEnabled, samples: primary.samples,
+                                               armed: isArmed(primary), samples: primary.samples,
                                                thermal: native.thermal, outsideAppCPU: outsideAppCPU(now: now)))
             next.context = primary.context
             next.latest = primary.latest
