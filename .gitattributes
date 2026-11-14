@@ -1,0 +1,3 @@
+# Preserve upstream license texts byte-for-byte, including upstream trailing spaces.
+Licenses/Sparkle-LICENSE.txt whitespace=-blank-at-eol
+Licenses/THIRD-PARTY-NOTICES.txt whitespace=-blank-at-eol

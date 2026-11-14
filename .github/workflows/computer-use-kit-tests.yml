@@ -3,7 +3,7 @@ name: ComputerUseKit tests (manual local Mac)
 # Opt-in only and self-hosted: never consume GitHub-hosted runner minutes.
 # The tests exercise the accessibility, input-event, screen-capture, pasteboard
 # and permission code through injected fakes whose defaults are the live system
-# calls, so they stay out of the automatic pull-request job.
+# calls, so they stay out of the automatic main-branch job.
 on:
   workflow_dispatch:
 
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   package:
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, term-llm-local]
     timeout-minutes: 20
     env:

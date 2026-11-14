@@ -1,7 +1,7 @@
 name: Linked devices native validation
 
-# Opt-in only. The parent dispatches this after pushing the private PR.
-# Never use a GitHub-hosted/paid fallback for this private native build.
+# Opt-in only. Dispatch from main after merging trusted changes.
+# Never use a GitHub-hosted/paid fallback for this native build.
 # The job is native-simulator-tests.yml; the suites are listed in
 # TestPlans/TermLLM-LinkedDevices.xctestplan.
 on:
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   simulator:
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/native-simulator-tests.yml
     with:
       test-plan: TermLLM-LinkedDevices

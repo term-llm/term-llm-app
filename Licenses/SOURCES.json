@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "refreshed": "2026-11-14",
+  "notes": [
+    "Provenance for every license text shipped in Licenses/THIRD-PARTY-NOTICES.txt.",
+    "licenseFile paths are relative to the repository root; sha256 pins the exact bytes",
+    "that scripts/check-license-notices.py verifies and renders. Refreshing a component",
+    "means re-copying its text, updating sha256 and, for Swift packages, revision here.",
+    "Only components that ship inside a distributed term-llm build belong in this file."
+  ],
+  "components": [
+    {
+      "id": "term-llm",
+      "name": "term-llm",
+      "license": "MIT License",
+      "source": "https://github.com/SamSaffron/term-llm-app",
+      "licenseFile": "LICENSE",
+      "sha256": "a153506e5360b93555ac91ad0686248c73823edf6252edeecbde4fdd5daf2d68",
+      "products": [
+        "term-llm for iOS",
+        "term-llm for macOS",
+        "term-llm Computer Use helper",
+        "term-llm-computer"
+      ]
+    },
+    {
+      "id": "sparkle",
+      "name": "Sparkle",
+      "version": "2.10.1",
+      "license": "MIT License, including its bundled notices for bsdiff, sais-lite, ed25519 and SUSignatureVerifier",
+      "source": "https://github.com/sparkle-project/Sparkle",
+      "revision": "ab7d71291238df6e0492143b120c9b696a35f603",
+      "packageIdentity": "sparkle",
+      "licenseFile": "Licenses/Sparkle-LICENSE.txt",
+      "sha256": "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe",
+      "products": [
+        "term-llm for macOS"
+      ]
+    },
+    {
+      "id": "webrtc",
+      "name": "WebRTC",
+      "version": "M155 (155.0.0)",
+      "license": "BSD 3-Clause License, Copyright (c) 2011, The WebRTC project authors",
+      "source": "https://github.com/stasel/WebRTC",
+      "revision": "44f36788497f701bc8c0306de3a1c2511d56019d",
+      "packageIdentity": "webrtc",
+      "licenseFile": "Licenses/WebRTC-LICENSE.txt",
+      "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "artifact": {
+        "url": "https://github.com/stasel/WebRTC/releases/download/155.0.0/WebRTC-M155.xcframework.zip",
+        "checksum": "cb9adacf2d6bbf598d1d9e3e6c16d8fb97ca987b5b697746891828f9dc068ffe",
+        "licensePath": "WebRTC.xcframework/LICENSE",
+        "note": "WebRTC-LICENSE.txt is the notice inside that binary artifact, copied verbatim"
+      },
+      "products": [
+        "term-llm for iOS",
+        "term-llm for macOS"
+      ]
+    },
+    {
+      "id": "browser-use-macos-harness",
+      "name": "browser-use macOS harness",
+      "license": "MIT License, Copyright (c) 2026 Browser Use",
+      "source": "https://github.com/browser-use/macos-harness",
+      "licenseFile": "ComputerUseKit/LICENSE-macos-harness",
+      "sha256": "5afa3d97bf1e6f998d587fa101e3fe0d0c416840b7fe77bcd6ae97690a334631",
+      "products": [
+        "term-llm Computer Use helper",
+        "term-llm-computer"
+      ],
+      "revision": "43d9edf",
+      "note": "Ported to Swift in ComputerUseKit/"
+    }
+  ]
+}

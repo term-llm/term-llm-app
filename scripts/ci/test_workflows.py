@@ -92,7 +92,7 @@ class WorkflowBudgetTests(unittest.TestCase):
                                     "Do not introduce GitHub artifact/cache storage")
 
     def test_only_lightweight_checks_and_main_releases_run_automatically(self):
-        expected = {"checks.yml": {"pull_request", "workflow_dispatch"},
+        expected = {"checks.yml": {"push", "workflow_dispatch"},
                     "notarized-mac-build.yml": {"push", "workflow_dispatch"},
                     self.SIMULATOR_WORKFLOW: {"workflow_call"}}
         for filename, text in workflows().items():
@@ -103,12 +103,51 @@ class WorkflowBudgetTests(unittest.TestCase):
                    if f"uses: ./.github/workflows/{self.SIMULATOR_WORKFLOW}" in text}
         self.assertEqual(callers, set(self.NATIVE_ENTRY_POINTS))
 
+    def test_all_jobs_require_trusted_main_and_no_pr_events(self):
+        for filename, text in workflows().items():
+            with self.subTest(workflow=filename):
+                self.assertFalse(events(text) & {"pull_request", "pull_request_target"},
+                                 "Never execute public PR code on the persistent signing runner")
+                for job, block in jobs(text).items():
+                    self.assertIn("    if: github.ref == 'refs/heads/main'", block,
+                                  f"{job} must reject dispatches from untrusted refs")
+
+    def test_secret_scan_fetches_history_and_verifies_the_scanner(self):
+        text = (WORKFLOWS / "checks.yml").read_text()
+        self.assertIn("fetch-depth: 0", text)
+        self.assertIn("bash scripts/ci/check-secrets.sh", text)
+        scanner = (ROOT / "scripts/ci/check-secrets.sh").read_text()
+        self.assertIn("--redact", scanner)
+        self.assertIn("--all --full-history", scanner)
+        self.assertRegex(scanner, r"sha256=[a-f0-9]{64}")
+        self.assertLess(scanner.index("shasum -a 256 --check"), scanner.index("tar -xzf"))
+        self.assertIn("--proto-redir '=https'", scanner)
+        baseline = (ROOT / ".gitleaksignore").read_text().splitlines()
+        for fingerprint in (line for line in baseline if line and not line.startswith("#")):
+            self.assertRegex(fingerprint, r"^[a-f0-9]{40}:[^:]+:[a-z0-9-]+:[0-9]+$",
+                             "Suppress only reviewed historical findings, not paths or rules")
+
+    def test_license_checks_guard_checks_and_releases(self):
+        checks = (WORKFLOWS / "checks.yml").read_text()
+        release = (WORKFLOWS / "notarized-mac-build.yml").read_text()
+        for text in (checks, release):
+            self.assertIn("python3 scripts/check-license-notices.py", text)
+            self.assertIn("'LICENSE'", section(text, "on"))
+            self.assertIn("'Licenses/**'", section(text, "on"))
+        self.assertLess(release.index("Verify license inputs before signing"),
+                        release.index("Install Developer ID profiles"))
+        archive = release.split("- name: Archive and export with Developer ID signing", 1)[1].split("- name:", 1)[0]
+        self.assertIn('--bundle "$MAC_RELEASE_DIR/export/term-llm.app"', archive)
+        self.assertIn('--bundle "$MAC_RELEASE_DIR/export/term-llm.app/Contents/Helpers/term-llm Computer Use.app"', archive)
+
     def test_lightweight_checks_stay_small_and_simulator_free(self):
         text = (WORKFLOWS / "checks.yml").read_text()
         self.assertEqual(list(jobs(text)), ["checks"])
         self.assertEqual(re.findall(r"^\s*timeout-minutes:\s*(.+)$", text, re.MULTILINE), ["10"])
         self.assertIn("cancel-in-progress: true", text)
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", text)
+        self.assertIn("branches: [main]", section(text, "on"))
+        self.assertNotIn("pull_request", events(text))
+        self.assertIn("if: github.ref == 'refs/heads/main'", text)
         for simulator in ("xcodebuild", "simctl", "owned-ios-simulator", "iphonesimulator", "-destination"):
             self.assertNotIn(simulator, text)
         self.assertLessEqual(self.LIGHTWEIGHT_PATHS,

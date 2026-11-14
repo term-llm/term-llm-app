@@ -1,5 +1,6 @@
 """Offline SwiftBar tests: no GitHub requests or service changes."""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,11 +9,65 @@ from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "runner_menu", Path(__file__).resolve().parents[1] / "swiftbar/term-llm-ci.1m.py")
-menu = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(menu)
+
+
+def load_menu(repository=None):
+    with patch.dict(os.environ):
+        if repository is None:
+            os.environ.pop("TERM_LLM_CI_REPO", None)
+        else:
+            os.environ["TERM_LLM_CI_REPO"] = repository
+        module = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(module)
+        return module
+
+
+menu = load_menu()
 
 
 class SwiftBarTests(unittest.TestCase):
+    def test_current_repository_is_default(self):
+        self.assertEqual(menu.REPO, "SamSaffron/term-llm-app")
+        self.assertEqual(menu.ACTIONS_URL, "https://github.com/SamSaffron/term-llm-app/actions")
+
+    def test_repository_override_applies_to_api_and_all_github_links(self):
+        plugin = load_menu("term-llm/term-llm-app")
+        with patch.object(plugin.shutil, "which", return_value="/opt/homebrew/bin/gh"), patch.object(
+                plugin, "command", return_value=subprocess.CompletedProcess([], 0, stdout="{}")) as run:
+            plugin.github("actions/runners")
+            plugin.github("actions/runs?per_page=5")
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["/opt/homebrew/bin/gh", "api", "repos/term-llm/term-llm-app/actions/runners"],
+            ["/opt/homebrew/bin/gh", "api", "repos/term-llm/term-llm-app/actions/runs?per_page=5"]])
+        text = plugin.render(None, [{"id": 123, "name": "Build", "conclusion": "success"}], "Running")
+        for path in ("actions", "actions/runs/123", "settings/actions/runners"):
+            self.assertIn("href=https://github.com/term-llm/term-llm-app/" + path, text)
+        self.assertNotIn(menu.DEFAULT_REPO, text)
+
+    def test_invalid_repository_override_fails_closed_without_requests_or_links(self):
+        for repository in ("", " ", "term-llm", "term-llm/app/extra", "/app", "owner/",
+                           "https://github.com/term-llm/app", "owner/repo?query", "owner/repo#fragment",
+                           "owner/repo | bash=bad", "owner/repo\n---", "owner/repo%2Fextra",
+                           "owner/..", "owner/.", "-owner/repo", "owner-/repo", "own--er/repo",
+                           "a" * 40 + "/repo", "owner/" + "a" * 101, "øwner/repo"):
+            with self.subTest(repository=repository):
+                plugin = load_menu(repository)
+                self.assertIsNone(plugin.REPO)
+                with patch.object(plugin, "command") as run, patch.object(
+                        plugin, "local_service", return_value="Running"), patch(
+                        "sys.argv", ["plugin"]), patch("builtins.print") as output:
+                    self.assertEqual(plugin.main(), 0)
+                run.assert_not_called()
+                text = output.call_args.args[0]
+                self.assertIn("Invalid TERM_LLM_CI_REPO", text)
+                self.assertNotIn("href=", text)
+                self.assertIn("Local service: Running", text)
+
+    def test_repository_validation_allows_normal_github_names(self):
+        for repository in ("a/b", "SamSaffron/term-llm-app", "term-llm/.github", "org/repo_name.v2"):
+            with self.subTest(repository=repository):
+                self.assertEqual(load_menu(repository).REPO, repository)
+
     def test_idle_busy_offline_unknown_are_distinct(self):
         for runner, title in [({"status": "online", "busy": False}, "CI 🟢"),
                               ({"status": "online", "busy": True}, "CI 🟠"),

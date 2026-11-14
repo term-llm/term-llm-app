@@ -63,6 +63,7 @@ public struct GitHubReleaseTransport: ReleaseTransport {
                    delegate: ReleaseRedirects(), delegateQueue: nil)
     }
     public func fetch(_ url: URL) throws -> ReleaseResponse {
+        guard url.scheme == "https" else { throw ReleaseError.invalidResponse }
         let session = makeSession()
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url)
@@ -94,7 +95,7 @@ private final class ReleaseRedirects: NSObject, URLSessionTaskDelegate {
 
 public struct ReleaseInstaller {
     public static let productionRequirement = "identifier \"term-llm\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"B6BAJ46A72\""
-    public static let latestURL = URL(string: "https://github.com/samsaffron/term-llm/releases/latest")!
+    public static let latestURL = URL(string: "https://github.com/term-llm/term-llm/releases/latest")!
     public let provisioner: CLIProvisioner
     public let transport: ReleaseTransport
     public let requirement: String
@@ -108,11 +109,41 @@ public struct ReleaseInstaller {
         var arm: Int32 = 0; var size = MemoryLayout<Int32>.size
         return sysctlbyname("hw.optional.arm64", &arm, &size, nil, 0) == 0 && arm == 1 ? "arm64" : "amd64"
     }
+    private struct ResolvedRelease {
+        let repository: String
+        let tag: String
+        let version: String
+        var url: String { "https://github.com/\(repository)/releases/tag/\(tag)" }
+        var downloadBase: String { "https://github.com/\(repository)/releases/download/\(tag)/" }
+    }
+    private func resolveRelease(at url: URL, expectedVersion: String? = nil) throws -> ResolvedRelease {
+        let final = try transport.fetch(url).url
+        // Only the known core repository and its pre-transfer name are trusted.
+        // Carry the validated final repository/tag through downloads and provenance;
+        // never infer ownership from an arbitrary GitHub redirect.
+        guard let components = URLComponents(url: final, resolvingAgainstBaseURL: false),
+              components.scheme == "https", components.host?.lowercased() == "github.com",
+              components.port == nil || components.port == 443,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.percentEncodedPath == components.path else { throw ReleaseError.invalidResponse }
+        let parts = components.path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 6, parts[0].isEmpty, parts[3] == "releases", parts[4] == "tag" else {
+            throw ReleaseError.invalidResponse
+        }
+        let repository = "\(parts[1])/\(parts[2])".lowercased()
+        guard ["term-llm/term-llm", "samsaffron/term-llm"].contains(repository) else { throw ReleaseError.invalidResponse }
+        let tag = String(parts[5])
+        let version = try SemanticVersion(tag).description
+        guard tag == version || tag == "v\(version)",
+              expectedVersion == nil || expectedVersion == version else { throw ReleaseError.invalidResponse }
+        return ResolvedRelease(repository: repository, tag: tag, version: version)
+    }
+    private func resolveRelease(version: String) throws -> ResolvedRelease {
+        try resolveRelease(at: URL(string: "https://github.com/term-llm/term-llm/releases/tag/v\(version)")!, expectedVersion: version)
+    }
     public func latestVersion() throws -> String {
-        let response = try transport.fetch(Self.latestURL)
-        let prefix = "/samsaffron/term-llm/releases/tag/"
-        guard response.url.host == "github.com", response.url.path.hasPrefix(prefix) else { throw ReleaseError.invalidResponse }
-        return try SemanticVersion(String(response.url.path.dropFirst(prefix.count))).description
+        try resolveRelease(at: Self.latestURL).version
     }
     public func verifySignature(at binary: URL) throws {
         var code: SecStaticCode?; var req: SecRequirement?
@@ -156,6 +187,11 @@ public struct ReleaseInstaller {
         try provisioner.requireManagementEnabled()
         let version = try SemanticVersion(version).description
         guard try SemanticVersion(version) >= SemanticVersion(minimumVersion) else { throw ReleaseError.belowMinimum }
+        return try withVerifiedCandidate(release: resolveRelease(version: version), smokeTest: smokeTest, body: body)
+    }
+    private func withVerifiedCandidate<T>(release: ResolvedRelease, smokeTest: Bool = true, body: (URL, String, String) throws -> T) throws -> T {
+        let version = release.version
+        guard try SemanticVersion(version) >= SemanticVersion(minimumVersion) else { throw ReleaseError.belowMinimum }
         let fm = provisioner.fileManager
         let root = provisioner.supportDirectory.appendingPathComponent("staging")
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -164,7 +200,7 @@ public struct ReleaseInstaller {
         try fm.createDirectory(at: stage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: stage) }
         let name = "term-llm_\(version)_darwin_\(Self.nativeArchitecture).tar.gz"
-        let base = "https://github.com/samsaffron/term-llm/releases/download/v\(version)/"
+        let base = release.downloadBase
         let archive = stage.appendingPathComponent(name)
         try transport.fetch(URL(string: base + name)!).data.write(to: archive)
         let checksums = try transport.fetch(URL(string: base + "checksums.txt")!).data
@@ -193,16 +229,27 @@ public struct ReleaseInstaller {
             guard smoke.succeeded, let report = try? JSONDecoder().decode(ServiceStatusReport.self, from: Data(smoke.stdout.utf8)),
                   report.schemaVersion == 1, report.service("web") != nil else { throw ReleaseError.smokeTest }
         }
-        return try body(candidate, version, "https://github.com/samsaffron/term-llm/releases/tag/v\(version)")
+        return try body(candidate, version, release.url)
     }
     @discardableResult
     public func install(version: String? = nil, skippedVersions: [String] = [], force: Bool = false) throws -> CLISelection? {
         try provisioner.requireManagementEnabled()
-        let resolved = try version.map { try SemanticVersion($0).description } ?? latestVersion()
+        let latest: ResolvedRelease?
+        let resolved: String
+        if let version {
+            latest = nil
+            resolved = try SemanticVersion(version).description
+        } else {
+            let release = try resolveRelease(at: Self.latestURL)
+            latest = release
+            resolved = release.version
+        }
         if skippedVersions.contains(resolved) { return nil }
         if !force, let current = try provisioner.loadSelection().get(), current.source == .release,
            let installed = try? SemanticVersion(current.version), installed >= (try SemanticVersion(resolved)) { return nil }
-        return try withVerifiedCandidate(version: resolved) { binary, version, provenance in
+        guard try SemanticVersion(resolved) >= SemanticVersion(minimumVersion) else { throw ReleaseError.belowMinimum }
+        let release = try latest ?? resolveRelease(version: resolved)
+        return try withVerifiedCandidate(release: release) { binary, version, provenance in
             try provisioner.installVerified(binary: binary, version: version,
                  sha256: CLIProvisioner.sha256(of: binary), provenance: provenance)
         }

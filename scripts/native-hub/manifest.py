@@ -27,7 +27,7 @@ def main():
         limitations=["Synthetic local Hub protocol data; no production credentials or Hub process",
                      "Chat is labelled static HTTP HTML, not upstream chat frontend or model execution",
                      "No real installation/distribution, contain, tunnel, redirect service, or passkey pairing exercised"],
-        protocol_repository="SamSaffron/term-llm", protocol_commit="2496b5fddebdc9369642d062fa87b98cd649d415",
+        protocol_repository="term-llm/term-llm", protocol_commit="2496b5fddebdc9369642d062fa87b98cd649d415",
         checked_out_commit=git("rev-parse", "HEAD"), dirty_worktree=bool(git("status", "--porcelain")),
         started_at=os.environ["CAPTURE_STARTED_AT"], finished_at=datetime.now(timezone.utc).isoformat(),
         exit_status=int(os.environ["CAPTURE_EXIT_STATUS"]), simulator_udid=os.environ["SIMULATOR_UDID"],

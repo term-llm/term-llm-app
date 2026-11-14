@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   simulator:
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, term-llm-local]
     timeout-minutes: 30
     env:

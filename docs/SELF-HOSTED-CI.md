@@ -2,13 +2,13 @@
 
 ## Financial boundary
 
-Every job in `.github/workflows/` uses exactly:
+Every runner-backed job in `.github/workflows/` uses exactly:
 
 ```yaml
 runs-on: [self-hosted, macOS, ARM64, term-llm-local]
 ```
 
-The only exception is a job that calls this repository's own reusable workflow (`uses: ./.github/workflows/…`); the called workflow's job declares that runner.
+The only exception is a job that calls this repository's own reusable workflow (`uses: ./.github/workflows/…`); the called workflow's job declares that runner. GitHub-managed, non-billable Dependabot graph jobs are separate from checked-in CI; see the [public-release checklist](PUBLIC-RELEASE.md).
 
 There is no hosted fallback, setup-go Actions cache, or artifact upload. The notarized Mac build's only upload is its GitHub release asset, which is not Actions artifact storage. Offline runners leave jobs queued. This prevents these workflows from consuming GitHub-hosted runner minutes; it does not clear existing billable storage or change account billing settings. Set a GitHub Actions budget with usage blocked at the limit as an independent safety net where supported by your account.
 
@@ -16,16 +16,18 @@ Repository changes must be pushed to take effect. Check other branches and GitHu
 
 ## One-time registration
 
-Use a dedicated directory outside your development checkout. The official macOS ARM64 runner package was downloaded and SHA-256 verified in `~/actions-runner-term-llm`, but **registration and service startup were not completed by the agent**.
+Use a dedicated directory outside your development checkout. The official macOS ARM64 runner package was downloaded and SHA-256 verified in `~/actions-runner-term-llm`, and the repository runner is registered as `term-llm-macbook`. The commands below are for a new installation or re-registration after a transfer; do not run them over an existing registration.
 
 Run these commands yourself in Terminal (requires repository administration permission through `gh`):
 
 ```sh
+# Run from the repository checkout so gh resolves its current owner/name.
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 cd "$HOME/actions-runner-term-llm"
 # Short-lived token: do not paste it into files, logs, or chat.
-token="$(gh api --method POST repos/SamSaffron/term-llm-app/actions/runners/registration-token --jq .token)"
+token="$(gh api --method POST "repos/$repo/actions/runners/registration-token" --jq .token)"
 ./config.sh --unattended \
-  --url https://github.com/SamSaffron/term-llm-app \
+  --url "https://github.com/$repo" \
   --token "$token" \
   --name term-llm-macbook \
   --labels term-llm-local \
@@ -38,7 +40,7 @@ unset token
 
 Install only once. Service installation creates a per-user LaunchAgent; stay logged in. Alternatively use `./run.sh` in a foreground Terminal instead of installing a service. The runner checks out jobs into its own `_work` directory, not your development checkout. One registered agent runs one job at a time.
 
-Verify **Settings → Actions → Runners** shows `term-llm-macbook` online with the custom label. Self-hosted code runs with the runner user's permissions. A private repository is not a sandbox: only trusted collaborators/branches should execute here. The automatic job rejects fork PRs, uses read-only contents permission, and does not persist checkout credentials. Manual runs must also target trusted refs. Prefer a dedicated macOS account without personal secrets for stronger isolation.
+Verify **Settings → Actions → Runners** shows `term-llm-macbook` online with the custom label. Self-hosted code runs with the runner user's permissions; repository visibility does not provide a sandbox. Only trusted collaborators/branches should execute here. Automatic checks run only on pushes to `main`, never on pull requests. Every job also rejects non-`main` refs, including manual dispatches. Checkout credentials are not persisted and checks have read-only contents permission. Do not add `pull_request` or `pull_request_target` triggers or manually run untrusted PR code on this persistent signing runner. Review contributions before merging; maintainer access and changes to `main` remain trusted. Prefer a dedicated macOS account without personal secrets for stronger isolation. Public job logs are readable by anyone: do not log credentials or private host/device details.
 
 ## Installed tools
 
@@ -57,6 +59,8 @@ SwiftBar is installed in `~/Applications/SwiftBar.app`. The `term-llm-ci.1m.py` 
 - **CI 🔴**: offline or missing from the repository runner list.
 - **CI ⚠️**: GitHub status unavailable (network/authentication problem), not a claim that the runner stopped.
 
+The plugin defaults to the current app repository. After an ownership transfer, set `TERM_LLM_CI_REPO=owner/repository` in its environment; invalid overrides fail closed without making API calls. All repository links and requests use the same override.
+
 The menu includes local LaunchAgent status, five recent repository runs with links, runner diagnostics, and start/stop service controls. Stop requires confirmation because it may interrupt work. Recent runs are repository-wide history and can include old hosted runs; they are not all necessarily jobs executed by this Mac. Polling is read-only, once per minute, using your existing `gh` login; it never dispatches workflows or registers runners. No tokens are saved in the plugin.
 
 Enable **Launch at Login** in SwiftBar settings to bring the menu back after login. This is separate from the runner's own LaunchAgent: quitting SwiftBar does not stop CI.
@@ -74,16 +78,16 @@ Offline tests: `python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v`.
 ## Daily workflow
 
 1. Keep the Mac awake, online, and logged in with the runner active. For a foreground session, `caffeinate -i ./run.sh` can prevent idle system sleep while the agent runs (it does not make closed-lid operation reliable).
-2. Push a trusted branch/open or update a PR. Relevant changes trigger `Lightweight checks / checks` here.
-3. Inspect the PR's check logs. Fix failures and push again normally.
-4. For app/extension build and simulator unit coverage, use **Actions → Native notification checks (manual local Mac)** (focused) or **Native unit tests (manual local Mac)** (every `TermLLMTests` suite) **→ Run workflow** after the workflow is registered on the default branch. No UI journeys run. See [Test plans and manual workflows](#test-plans-and-manual-workflows).
+2. Review contributions locally; untrusted PRs do not run on this Mac. Merge trusted changes to `main`; relevant pushes trigger `Lightweight checks / checks`.
+3. Inspect the main-branch run logs. Fix failures and push trusted corrections normally.
+4. For app/extension build and simulator unit coverage, use **Actions → Native notification checks (manual local Mac)** (focused) or **Native unit tests (manual local Mac)** (every `TermLLMTests` suite) **→ Run workflow** from `main` after the workflow is registered on the default branch. No UI journeys run. See [Test plans and manual workflows](#test-plans-and-manual-workflows).
 5. Stop/start the service with `./svc.sh stop` / `./svc.sh start` from the runner directory as needed. Offline means queued, not paid fallback.
 
-Before calling migration complete, push the new workflows, verify no active workflow still targets `ubuntu-*`, `macos-*`, or `windows-*` hosted labels, and get a fresh PR run showing `term-llm-macbook` as its runner. If old required checks block merging, adjust branch rules to the intended current checks. Path-filtered checks need special handling if required on docs-only PRs.
+Before calling migration complete, push the new workflows, verify no active workflow still targets `ubuntu-*`, `macos-*`, or `windows-*` hosted labels, and get a fresh main-branch run showing `term-llm-macbook` as its runner. If old required checks block merging, adjust branch rules to the intended current checks. These post-merge, path-filtered checks must not be required as pre-merge PR checks.
 
 ## Test plans and manual workflows
 
-`Lightweight checks / checks` runs the portable Python checks, the notification contract, the push relay, and `swift test` for `TermLLMMacKit` (temporary homes, fake command runners and stubbed HTTP; about 12 seconds from a cold build). It never builds the iOS app or boots a simulator, and keeps its 10-minute limit. Everything else is manual (**Actions → workflow → Run workflow**, from a trusted ref):
+`Lightweight checks / checks` checks out full history and runs the checksum-pinned Gitleaks scanner (`scripts/ci/check-secrets.sh`), then the portable Python checks, the notification contract, the push relay, and `swift test` for `TermLLMMacKit` (temporary homes, fake command runners and stubbed HTTP; about 12 seconds from a cold build). It never builds the iOS app or boots a simulator, and keeps its 10-minute limit. Everything else is manual (**Actions → workflow → Run workflow**, from `main`):
 
 | Workflow | Runs |
 | --- | --- |
@@ -112,7 +116,7 @@ Edit selections in Xcode's test plan editor or in the JSON. `scripts/ci/test_wor
 
 ## Notarized Mac builds
 
-**Notarized Mac build** (`.github/workflows/notarized-mac-build.yml`) runs here for every push to `main` that changes the app, and on manual dispatch from `main`. It archives the `TermLLMMac` scheme in Release with Developer ID signing, exports and verifies it, notarizes and staples it, checks that Gatekeeper accepts it, then creates a release `mac-v<version>` with `term-llm-macos-<version>.zip`, marked Latest. CI automatically increments the patch version within the project's `MARKETING_VERSION` major/minor: `1.0.1`, `1.0.2`, and so on. To start a new minor series, manually change `MARKETING_VERSION` to `1.1` in both project configurations in `TermLLM.xcodeproj/project.pbxproj`; the next release is `1.1.1`. CI reads published GitHub Mac releases and, after authenticating it, the website appcast to choose the next patch, ignores drafts, prereleases and the legacy `mac-v1.0-2` naming, and applies the version to both app and extension through its temporary xcconfig. It does not commit version bumps back to Git or change iOS versions. Failed/cancelled builds do not consume a patch; manual reruns after a successful publication get the next patch. The internal build number remains the workflow run number. Releases of this private repository are visible to its collaborators only. The same stapled ZIP is EdDSA-signed for Sparkle and published with a signed appcast to `https://term-llm.com/mac/` before the private GitHub release; see [Sparkle updates](#sparkle-updates). **The website downloads are public.**
+**Notarized Mac build** (`.github/workflows/notarized-mac-build.yml`) runs here for every push to `main` that changes the app, and on manual dispatch from `main`. It archives the `TermLLMMac` scheme in Release with Developer ID signing, exports and verifies it, notarizes and staples it, checks that Gatekeeper accepts it, then creates a release `mac-v<version>` with `term-llm-macos-<version>.zip`, marked Latest. CI automatically increments the patch version within the project's `MARKETING_VERSION` major/minor: `1.0.1`, `1.0.2`, and so on. To start a new minor series, manually change `MARKETING_VERSION` to `1.1` in both project configurations in `TermLLM.xcodeproj/project.pbxproj`; the next release is `1.1.1`. CI reads published GitHub Mac releases and, after authenticating it, the website appcast to choose the next patch, ignores drafts, prereleases and the legacy `mac-v1.0-2` naming, and applies the version to both app and extension through its temporary xcconfig. It does not commit version bumps back to Git or change iOS versions. Failed/cancelled builds do not consume a patch; manual reruns after a successful publication get the next patch. The internal build number remains the workflow run number. GitHub release visibility follows repository visibility; releases and their assets are public when the repository is public. The same stapled ZIP is EdDSA-signed for Sparkle and published with a signed appcast to `https://term-llm.com/mac/` before the GitHub release; see [Sparkle updates](#sparkle-updates). **The website downloads are public.**
 
 One-time setup:
 
@@ -130,7 +134,7 @@ One-time setup:
    op item edit "term-llm CI: App Store Connect notary key (94WH5NUQB4)" \
      --vault "term-llm CI" --title "App Store Connect notary key" --account $acct
    op service-account create "term-llm-app CI" --vault "term-llm CI:read_items" --raw --account $acct \
-     | gh secret set OP_SERVICE_ACCOUNT_TOKEN -R SamSaffron/term-llm-app
+     | gh secret set OP_SERVICE_ACCOUNT_TOKEN --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
    ```
 
    The workflow's `MACOS_*_REF` values name the fields: `developer-id.p12` and `password` on **Developer ID Application**; `AuthKey_94WH5NUQB4.p8`, `key id` and `issuer id` on **App Store Connect notary key**. Update them if you rename an item or rotate the notary key. The runner needs the 1Password CLI (`op`) installed; it does not use your own 1Password sign-in. Revoking the service account in 1Password cuts off CI.
@@ -153,10 +157,9 @@ What this does not protect against: the runner runs as you, so for the few secon
 
 ## Sparkle updates
 
-**One-time setup, code only until Sam explicitly applies it.** This PR does not
-provision secrets, change the server, or publish a build. Review the public
-distribution decision before enabling this: **anyone can download the notarized
-Mac app from term-llm.com**, not just private-repository collaborators. The
+**One-time setup.** Signing secrets and website access must be provisioned
+separately; merging code alone does not provision them. The distribution is public: **anyone can download the notarized
+Mac app from term-llm.com**, independently of source-repository visibility. The
 Sparkle feed URL is stable: `https://term-llm.com/mac/appcast.xml`.
 The stable latest Mac app download is **https://term-llm.com/mac/download**:
 a direct ZIP response (not a redirect), revalidated on every request, with

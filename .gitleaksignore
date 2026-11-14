@@ -1,0 +1,22 @@
+# Reviewed with Gitleaks 8.30.1 before public release (2026-11-14).
+# Exact historical fingerprints only; future changes remain scanned.
+# Synthetic test vectors, diagnostics redaction fixtures, documentation examples,
+# a key property name, and a test request-body assertion; no live credentials.
+12cd5655840de869b17c2ca56df57200776343f1:TermLLM/PeerPairing.swift:generic-api-key:197
+368b1a988587468bbb91b0dae705dfe36b3f513c:TermLLMTests/PushTests.swift:generic-api-key:225
+377ab3a135a73fd2bd229c2ba357d522a52c564d:TermLLMTests/MobileSharingProtocolTests.swift:generic-api-key:11
+377ab3a135a73fd2bd229c2ba357d522a52c564d:TermLLMTests/MobileSharingProtocolTests.swift:generic-api-key:8
+377ab3a135a73fd2bd229c2ba357d522a52c564d:TermLLMTests/MobileSharingProtocolTests.swift:generic-api-key:9
+377ab3a135a73fd2bd229c2ba357d522a52c564d:scripts/mobile-sharing/fixtures/vectors_v2.json:generic-api-key:12
+377ab3a135a73fd2bd229c2ba357d522a52c564d:scripts/mobile-sharing/fixtures/vectors_v2.json:generic-api-key:4
+377ab3a135a73fd2bd229c2ba357d522a52c564d:scripts/mobile-sharing/fixtures/vectors_v2.json:generic-api-key:5
+377ab3a135a73fd2bd229c2ba357d522a52c564d:scripts/mobile-sharing/fixtures/vectors_v2.json:generic-api-key:7
+777dd455a2b63d75e764a0bcc10f1134a62d15cd:TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json:generic-api-key:12
+777dd455a2b63d75e764a0bcc10f1134a62d15cd:TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json:generic-api-key:4
+777dd455a2b63d75e764a0bcc10f1134a62d15cd:TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json:generic-api-key:5
+777dd455a2b63d75e764a0bcc10f1134a62d15cd:TermLLMTests/Fixtures/mobile-sharing-vectors-v2.json:generic-api-key:7
+829d36d4bf61268476a4f2e5410b8a2a788204b0:TermLLMMacKit/Tests/TermLLMMacKitTests/DiagnosticsTests.swift:generic-api-key:10
+c0ecc28879b8c1b11c6720199bb39fb61637991c:push-relay/README.md:generic-api-key:161
+c0ecc28879b8c1b11c6720199bb39fb61637991c:push-relay/README.md:generic-api-key:80
+ffe40a2de17269a86ea67e63c7c6d51e857cac2f:push-relay/ops/OPERATOR-RELAY.md:generic-api-key:161
+ffe40a2de17269a86ea67e63c7c6d51e857cac2f:push-relay/ops/OPERATOR-RELAY.md:generic-api-key:80

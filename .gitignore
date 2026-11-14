@@ -6,3 +6,13 @@ xcuserdata/
 build/
 output/
 .worktrees/
+
+# Local Python caches and credentials must not be published.
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.key

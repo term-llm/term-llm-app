@@ -50,14 +50,14 @@ unit tests for each state.
 
 ## Ownership: the app owns its copy of term-llm
 
-**One source:** the official `samsaffron/term-llm` GitHub release, the same files
+**One source:** the official `term-llm/term-llm` GitHub release, the same files
 used by Homebrew, install.sh and `term-llm upgrade`. The CLI has been Developer ID
 signed and notarized since **0.9.94**, the minimum supported version. The app
 never builds or bundles a CLI. The app itself is notarized separately, by CI
 ([Notarized Mac builds](SELF-HOSTED-CI.md#notarized-mac-builds)); app updates use Sparkle and do not replace or restart the managed CLI.
 
 Choose **Set Up term-llm** in **Local Service…**. The app resolves
-`https://github.com/samsaffron/term-llm/releases/latest`, selects native hardware
+`https://github.com/term-llm/term-llm/releases/latest`, selects native hardware
 arm64/amd64 (including under Rosetta), and downloads the versioned Darwin archive
 and `checksums.txt` with an ephemeral, cookie/cache-free session. Before executing
 a candidate it checks the exact archive checksum, extracts only `term-llm`,

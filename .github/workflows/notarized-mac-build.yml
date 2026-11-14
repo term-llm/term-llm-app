@@ -9,6 +9,9 @@ on:
   push:
     branches: [main]
     paths:
+      - 'LICENSE'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'Licenses/**'
       - 'Shared/**'
       - 'TermLLM/**'
       - 'TermLLMMac/**'
@@ -62,6 +65,8 @@ jobs:
           printf 'DEVELOPER_DIR=%s\n' "$(xcode-select -p)" >> "$GITHUB_ENV"
           printf 'MAC_RELEASE_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/term-llm-mac-release.XXXXXX")" >> "$GITHUB_ENV"
           xcodebuild -version
+      - name: Verify license inputs before signing
+        run: python3 scripts/check-license-notices.py
       - name: Select the next Mac patch version
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,6 +121,9 @@ jobs:
             -exportOptionsPlist "$MAC_RELEASE_DIR/ExportOptions.plist"
           python3 scripts/ci/notarized-mac-build.py --work-dir "$MAC_RELEASE_DIR" \
             verify --app "$MAC_RELEASE_DIR/export/term-llm.app"
+          python3 scripts/check-license-notices.py \
+            --bundle "$MAC_RELEASE_DIR/export/term-llm.app" \
+            --bundle "$MAC_RELEASE_DIR/export/term-llm.app/Contents/Helpers/term-llm Computer Use.app"
       - name: Stage the notary key on the RAM disk
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

@@ -1,8 +1,13 @@
 name: Lightweight checks
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
+      - '.gitleaksignore'
+      - 'LICENSE'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'Licenses/**'
       - 'Shared/**'
       - 'TermLLM/**'
       - 'TermLLMNotificationService/**'
@@ -32,7 +37,8 @@ jobs:
   checks:
     # No hosted fallback: offline MacBook means queued checks, not paid minutes.
     runs-on: [self-hosted, macOS, ARM64, term-llm-local]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Never execute PR code on the persistent signing Mac, even after approval.
+    if: github.ref == 'refs/heads/main'
     timeout-minutes: 10
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -41,11 +47,18 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Scan full history for secrets with a checksum-pinned scanner
+        run: bash scripts/ci/check-secrets.sh
       - name: Use installed MacBook tools
         run: |
           source scripts/ci/bootstrap-macos.sh
           node --version
           go version
+      - name: Verify shipped license notices
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_check_license_notices.py' -v
+          python3 scripts/check-license-notices.py
       - name: Test portable fixtures and validation helpers (no simulator journeys)
         run: |
           python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v

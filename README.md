@@ -1,5 +1,11 @@
 # term-llm for iPhone, iPad and Mac
 
+[MIT licensed](LICENSE). Copyright © 2026 Sam Saffron. Third-party components
+retain their own licenses, including the [macos-harness MIT notice](ComputerUseKit/LICENSE-macos-harness)
+for the Computer Use port; the root license does not replace dependency notices.
+See [third-party notices](THIRD-PARTY-NOTICES.md) and the
+[public-release/transfer checklist](docs/PUBLIC-RELEASE.md).
+
 **One codebase, two app targets.** Open `TermLLM.xcodeproj` and select a scheme:
 
 - **TermLLM** for iPhone and iPad. Choose an iPhone simulator, or a signing team and device, then run.
@@ -118,13 +124,13 @@ Local simulator captures use a real loopback HTTP **protocol fixture**, not prod
 
 All CI jobs target the repository-scoped MacBook runner labelled `[self-hosted, macOS, ARM64, term-llm-local]`. **There is no GitHub-hosted fallback.** If the Mac is asleep, offline, or its runner is stopped, checks queue rather than consume hosted runner minutes. Workflows use installed tools and do not use Actions caches or upload artifacts.
 
-Automatic trusted, same-repository pull-request checks run in one path-filtered job (`Lightweight checks / checks`): Python fixture/helper tests, notification contract/JavaScript checks, Go push-relay build/tests, and `swift test` for `TermLLMMacKit`. Superseded runs are cancelled; the job has a 10-minute limit and never boots a simulator. No simulator user journeys or video captures run in CI.
+Automatic checks run only on trusted pushes to `main`, never on pull requests, in one path-filtered job (`Lightweight checks / checks`): a checksum-pinned full-history secret scan, Python fixture/helper tests, notification contract/JavaScript checks, Go push-relay build/tests, and `swift test` for `TermLLMMacKit`. Superseded runs are cancelled; the job has a 10-minute limit and never boots a simulator. No simulator user journeys or video captures run in CI.
 
-**Native notification checks (manual local Mac)**, **Linked devices native validation** and **Native unit tests (manual local Mac)** are available through **Actions → Run workflow** for unsigned app/extension compilation and simulator XCTest coverage. Each selects a checked-in test plan from `TestPlans/` and uses a job-owned disposable simulator. **ComputerUseKit tests (manual local Mac)** and **Mac app tests (manual local Mac)** provide opt-in package and Mac app coverage. Portable checks alone do **not** compile the iOS app. Hub capture scripts remain local-only.
+**Native notification checks (manual local Mac)**, **Linked devices native validation** and **Native unit tests (manual local Mac)** are available through **Actions → Run workflow** from `main` for unsigned app/extension compilation and simulator XCTest coverage. Each selects a checked-in test plan from `TestPlans/` and uses a job-owned disposable simulator. **ComputerUseKit tests (manual local Mac)** and **Mac app tests (manual local Mac)** provide opt-in package and Mac app coverage. Portable checks alone do **not** compile the iOS app. Hub capture scripts remain local-only.
 
 See [MacBook runner setup and daily workflow](docs/SELF-HOSTED-CI.md). Changes must be pushed before GitHub uses this configuration; registering a runner alone does not reroute old hosted workflows. Existing GitHub artifact/cache storage is not deleted by this change. Review repository Actions billing/budgets separately for a hard spending limit.
 
-If branch protection requires retired `capture`, `test`, or `simulator` checks, update those requirements. Avoid requiring a path-filtered workflow without accounting for docs-only PRs: GitHub may otherwise wait indefinitely for a skipped workflow.
+If branch protection requires retired `capture`, `test`, or `simulator` checks, update those requirements. Do not require the post-merge `Lightweight checks` job as a pre-merge PR check. All self-hosted jobs reject non-`main` refs.
 
 ## Guided demo
 
@@ -378,7 +384,7 @@ This requires a term-llm web UI with WebMCP client-tool support.
 
 ## Passkeys for arbitrary servers
 
-This app signs in through `ASWebAuthenticationSession` (the system browser), **not** WebAuthn inside `WKWebView`. See the [term-llm native app sign-in protocol](https://github.com/samsaffron/term-llm/blob/main/docs-site/content/guides/web-ui-and-api.md#native-app-sign-in).
+This app signs in through `ASWebAuthenticationSession` (the system browser), **not** WebAuthn inside `WKWebView`. See the [term-llm native app sign-in protocol](https://github.com/term-llm/term-llm/blob/main/docs-site/content/guides/web-ui-and-api.md#native-app-sign-in).
 
 1. When term-llm requests `/auth/login` or `/auth/setup`, the app opens the system passkey flow.
 2. The operator must approve the handoff on the server's page; each handoff requires a fresh passkey assertion (the initial sign-in assertion counts if they just signed in).

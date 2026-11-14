@@ -11,6 +11,12 @@
 		E51000000000000000000002 /* AppUpdatePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E51000000000000000000012; };
 		E51000000000000000000003 /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E51000000000000000000013; };
 		E51000000000000000000004 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E51000000000000000000021; };
+		E6A100000000000000000011 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000002 /* LICENSE */; };
+		E6A100000000000000000012 /* THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000003 /* THIRD-PARTY-NOTICES.txt */; };
+		E6A100000000000000000013 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000002 /* LICENSE */; };
+		E6A100000000000000000014 /* THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000003 /* THIRD-PARTY-NOTICES.txt */; };
+		E6A100000000000000000015 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000002 /* LICENSE */; };
+		E6A100000000000000000016 /* THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = E6A100000000000000000003 /* THIRD-PARTY-NOTICES.txt */; };
 		000000000000000000000BA1 /* ListenNetworkUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000BA0 /* ListenNetworkUsage.swift */; };
 		000000000000000000000080 /* TermLLMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000040 /* TermLLMApp.swift */; };
 		000000000000000000000081 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000041 /* ContentView.swift */; };
@@ -533,6 +539,12 @@
 		00000000000000000000020B /* ListenToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenToolsTests.swift; sourceTree = "<group>"; };
 		000000000000000000000220 /* ListenViewRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenViewRenderingTests.swift; sourceTree = "<group>"; };
 		000000000000000000000300 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		E6A100000000000000000002 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = SOURCE_ROOT; };
+		E6A100000000000000000003 /* THIRD-PARTY-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD-PARTY-NOTICES.txt; sourceTree = "<group>"; };
+		E6A100000000000000000004 /* Sparkle-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sparkle-LICENSE.txt; sourceTree = "<group>"; };
+		E6A100000000000000000005 /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebRTC-LICENSE.txt; sourceTree = "<group>"; };
+		E6A100000000000000000006 /* SOURCES.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SOURCES.json; sourceTree = "<group>"; };
+		E6A100000000000000000007 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		000000000000000000000340 /* VoiceShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcut.swift; sourceTree = "<group>"; };
 		000000000000000000000341 /* VoiceShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceShortcutTests.swift; sourceTree = "<group>"; };
 		000000000000000000000350 /* AppControlsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsBar.swift; sourceTree = "<group>"; };
@@ -736,8 +748,22 @@
 				000000000000000000000703 /* TermLLMUITests */,
 				000000000000000000000005 /* TermLLMTests */,
 				F100000000000000000000B1 /* TermLLMMacTests */,
+				E6A100000000000000000001 /* Licenses */,
+				E6A100000000000000000002 /* LICENSE */,
 				000000000000000000000003 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		E6A100000000000000000001 /* Licenses */ = {
+			isa = PBXGroup;
+			children = (
+				E6A100000000000000000003 /* THIRD-PARTY-NOTICES.txt */,
+				E6A100000000000000000004 /* Sparkle-LICENSE.txt */,
+				E6A100000000000000000005 /* WebRTC-LICENSE.txt */,
+				E6A100000000000000000006 /* SOURCES.json */,
+				E6A100000000000000000007 /* README.md */,
+			);
+			path = Licenses;
 			sourceTree = "<group>";
 		};
 		000000000000000000000003 /* Products */ = {
@@ -1268,6 +1294,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D8CA0BB074304092B5BE1C18 /* Assets.xcassets in Resources */,
+				E6A100000000000000000015 /* LICENSE in Resources */,
+				E6A100000000000000000016 /* THIRD-PARTY-NOTICES.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1277,6 +1305,8 @@
 			files = (
 				000000000000000000000084 /* Assets.xcassets in Resources */,
 				000000000000000000000301 /* PrivacyInfo.xcprivacy in Resources */,
+				E6A100000000000000000011 /* LICENSE in Resources */,
+				E6A100000000000000000012 /* THIRD-PARTY-NOTICES.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1309,6 +1339,8 @@
 			files = (
 				F1000000000000000000006B /* Assets.xcassets in Resources */,
 				F1000000000000000000006C /* PrivacyInfo.xcprivacy in Resources */,
+				E6A100000000000000000013 /* LICENSE in Resources */,
+				E6A100000000000000000014 /* THIRD-PARTY-NOTICES.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

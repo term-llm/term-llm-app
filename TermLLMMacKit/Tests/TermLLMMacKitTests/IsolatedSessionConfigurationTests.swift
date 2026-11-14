@@ -102,6 +102,17 @@ final class IsolatedSessionConfigurationTests: XCTestCase {
         XCTAssertEqual(ProbeURLProtocol.requests.count, 1)
     }
 
+    func testGitHubTransportRejectsHTTPRequestsAndFinalResponses() throws {
+        let transport = GitHubReleaseTransport(configuration: injectedConfiguration())
+        XCTAssertThrowsError(try transport.fetch(URL(string: "http://github.com/term-llm/term-llm/releases/latest")!))
+        XCTAssertTrue(ProbeURLProtocol.requests.isEmpty)
+        ProbeURLProtocol.handler = { _ in
+            let final = URL(string: "http://release-assets.githubusercontent.com/asset")!
+            return (HTTPURLResponse(url: final, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("fixture".utf8))
+        }
+        XCTAssertThrowsError(try transport.fetch(ReleaseInstaller.latestURL))
+    }
+
     func testGitHubHTTPSCDNRedirectPolicyIsDistinctFromLoopbackRejection() throws {
         let github = GitHubReleaseTransport().makeSession()
         let probe = LocalSessionProbe.makeSession()

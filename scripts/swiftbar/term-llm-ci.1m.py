@@ -8,16 +8,35 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 
-REPO = "SamSaffron/term-llm-app"
+DEFAULT_REPO = "SamSaffron/term-llm-app"
+
+
+def configured_repository():
+    # Set TERM_LLM_CI_REPO after an app-repository transfer. Do not silently
+    # query the old repository when an override is malformed (including empty).
+    value = os.environ.get("TERM_LLM_CI_REPO", DEFAULT_REPO)
+    parts = value.split("/")
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if (not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", owner)
+            or "--" in owner or repo in (".", "..")
+            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", repo)):
+        return None
+    return value
+
+
+REPO = configured_repository()
 RUNNER_NAME = "term-llm-macbook"
 RUNNER_DIR = Path.home() / "actions-runner-term-llm"
-ACTIONS_URL = "https://github.com/" + REPO + "/actions"
+ACTIONS_URL = "https://github.com/" + REPO + "/actions" if REPO else None
 
 
 def clean(value):
@@ -30,6 +49,8 @@ def command(args, timeout=10, **kwargs):
 
 
 def github(endpoint):
+    if REPO is None:
+        return None
     gh = shutil.which("gh")
     if not gh:
         gh = next((p for p in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
@@ -69,7 +90,11 @@ def open_folder(label, path):
 
 
 def render(runner, runs, service):
-    if runner is None:
+    if REPO is None:
+        title = "CI ⚠️"
+        status = "Invalid TERM_LLM_CI_REPO — expected owner/repository"
+        runs = None
+    elif runner is None:
         title = "CI ⚠️"
         status = "GitHub status unavailable — check network / gh authentication"
     elif runner.get("status") != "online":
@@ -96,9 +121,11 @@ def render(runner, runs, service):
                 continue
             lines.append("{} {} · {} · {} | href={}/runs/{}".format(
                 icon, name, branch, clean(state), ACTIONS_URL, run_id))
-    lines += ["---", "Open GitHub Actions | href=" + ACTIONS_URL,
-              "Runner settings | href=https://github.com/" + REPO + "/settings/actions/runners",
-              open_folder("Open runner diagnostic logs", RUNNER_DIR / "_diag"),
+    lines += ["---"]
+    if REPO:
+        lines += ["Open GitHub Actions | href=" + ACTIONS_URL,
+                  "Runner settings | href=https://github.com/" + REPO + "/settings/actions/runners"]
+    lines += [open_folder("Open runner diagnostic logs", RUNNER_DIR / "_diag"),
               open_folder("Open runner folder", RUNNER_DIR)]
     if (RUNNER_DIR / ".service").is_file():
         lines += ["---", action("Start runner service", "--start"),
