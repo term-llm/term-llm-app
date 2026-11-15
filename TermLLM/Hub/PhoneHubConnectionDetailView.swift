@@ -54,18 +54,8 @@ struct PhoneHubConnectionDetailView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
         }
         .sheet(isPresented: $showingManage) {
-            if let workspace = source.hubWorkspace {
-                VStack(spacing: 0) {
-                    Button("Back to \(source.connection.name)") { showingManage = false }
-                        .padding().accessibilityIdentifier("phoneHub.details.close")
-                    HubView(source: source, workspace: workspace, onOpenChat: { url in
-                        openDestination(url, nodeID: nil)
-                    }, onOpenNodeChat: { url, nodeID in
-                        openDestination(url, nodeID: nodeID)
-                    }, onSettings: { showingManage = false })
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-            }
+            PhoneHubManageSheet(source: source, closeTitle: "Back to \(source.connection.name)",
+                                onOpen: openDestination, onClose: { showingManage = false })
         }
         .sheet(isPresented: $showingDirectAuth) {
             PhoneHubDirectAuthentication(source: source)
@@ -188,25 +178,58 @@ struct PhoneHubConnectionDetailView: View {
     }
 
     private func openDestination(_ url: URL, nodeID: String?) {
-        guard source.isActive, !store.unauthorized else { return }
-        if nodeID == nil, url == source.connection.url {
+        switch Self.destination(url, nodeID: nodeID, source: source, aggregate: aggregate) {
+        case .ignore: return
+        case .unsafe: navigationError = Self.unsafeDestinationMessage
+        case .open:
             showingManage = false
             onOpenChat(source.id, url)
-            return
         }
-        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+    }
+
+    enum Destination { case open, unsafe, ignore }
+    static let unsafeDestinationMessage = "The source supplied an unsafe chat path. Navigation blocked."
+
+    /// A Hub page may only open its own root or a path the aggregate resolves
+    /// to the same URL for that node.
+    static func destination(_ url: URL, nodeID: String?, source: HubSourceWorkspace, aggregate: HubAggregateStore) -> Destination {
+        guard source.isActive, !source.store.unauthorized else { return .ignore }
+        if nodeID == nil, url == source.connection.url { return .open }
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return .ignore }
         let path = parts.percentEncodedPath + (parts.percentEncodedQuery.map { "?" + $0 } ?? "")
         guard url.scheme == source.connection.url.scheme, url.host == source.connection.url.host, url.port == source.connection.url.port,
               let nodeID, aggregate.destination(path: path, sourceID: source.id, nodeID: nodeID) == url else {
-            navigationError = "The source supplied an unsafe chat path. Navigation blocked."
-            return
+            return .unsafe
         }
-        showingManage = false
-        onOpenChat(source.id, url)
+        return .open
     }
 }
 
-@MainActor private struct PhoneHubDirectAuthentication: View {
+/// A Hub's own management page, where it also signs in.
+@MainActor
+struct PhoneHubManageSheet: View {
+    @ObservedObject var source: HubSourceWorkspace
+    let closeTitle: String
+    let onOpen: (URL, String?) -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        if let workspace = source.hubWorkspace {
+            VStack(spacing: 0) {
+                Button(closeTitle, action: onClose)
+                    .padding().accessibilityIdentifier("phoneHub.details.close")
+                HubView(source: source, workspace: workspace, onOpenChat: { url in
+                    onOpen(url, nil)
+                }, onOpenNodeChat: { url, nodeID in
+                    onOpen(url, nodeID)
+                }, onSettings: onClose)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+        }
+    }
+}
+
+@MainActor struct PhoneHubDirectAuthentication: View {
     @ObservedObject var source: HubSourceWorkspace
     @Environment(\.dismiss) private var dismiss
     @State private var token = ""

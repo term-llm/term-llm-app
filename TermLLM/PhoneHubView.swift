@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 
 @MainActor
@@ -25,8 +26,20 @@ struct PhoneHubView: View {
     @State private var searchSort: PhoneHubSessionSort = .relevance
     @State private var selectedSession: PhoneHubSessionKey?
 
+    /// A connection opened from the home issue banner: its page, or straight to sign-in.
+    @State private var connectionSheet: ConnectionSheet?
+    /// Banner sign-in goes straight to the system passkey sheet.
+    @State private var nativeLogin = NativeLogin()
+    @State private var signingInSourceID: UUID?
+
     enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
     struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
+    struct ConnectionSheet: Identifiable {
+        enum Route { case details, hubSignIn, directSignIn }
+        let id = UUID()
+        let sourceID: UUID
+        let route: Route
+    }
 
     private var loadingSources: [HubSourceWorkspace] {
         aggregate.sources.filter { !$0.store.unauthorized && ($0.store.nodesLoading || $0.store.attentionLoading) }
@@ -99,6 +112,10 @@ struct PhoneHubView: View {
                                               onSelect: { panel = $0 }) {
                             sessionControls
                         }
+                        PhoneHubConnectionIssuesBanner(aggregate: aggregate, signingInSourceID: signingInSourceID,
+                                                       onOpen: openIssue, onShowAll: onSettings)
+                    } else {
+                        PhoneHubAddConnectionBanner(top: usesWorkspaceChrome ? 12 : 8) { editor = Editor() }
                     }
                 }
             }
@@ -145,6 +162,9 @@ struct PhoneHubView: View {
                 PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
                     .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
             }
+            .sheet(item: $connectionSheet) { sheet in
+                connectionSheetContent(sheet)
+            }
             .navigationDestination(for: PhoneHubAgentRoute.self) { route in
                 PhoneHubAgentView(route: route, aggregate: aggregate, isVisible: isVisible,
                                   onOpenChat: onOpenChat, onSettings: onSettings)
@@ -158,6 +178,7 @@ struct PhoneHubView: View {
         .onChange(of: aggregate.sources.map(\.id)) { _, ids in
             // A removed connection takes its agent pages with it.
             let live = Set(ids)
+            if let sheet = connectionSheet, !live.contains(sheet.sourceID) { connectionSheet = nil }
             if agentPath.contains(where: { !live.contains($0.sourceID) }) {
                 agentPath.removeAll { !live.contains($0.sourceID) }
             }
@@ -170,6 +191,7 @@ struct PhoneHubView: View {
             // A chat/push/voice handoff must not leave a connection editor
             // over the retained browser destination.
             editor = nil
+            connectionSheet = nil
         }
         .onChange(of: pendingConnectionURL, initial: true) { _, url in
             guard let url else { return }
@@ -186,22 +208,9 @@ struct PhoneHubView: View {
                     VStack(spacing: 16) {
                         Image(systemName: "network").font(.largeTitle).foregroundStyle(.secondary)
                         Text("Your agents, all in one place").font(.title3.bold())
-                        Text("Add a connection to bring your agents together.")
+                        // Add Connection lives in the pinned banner above.
+                        Text("Add a connection above to bring your agents together, or look around first.")
                             .foregroundStyle(.secondary)
-                        Button { editor = Editor() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "plus")
-                                    .accessibilityHidden(true)
-                                Text("Add Connection")
-                            }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 28)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .buttonBorderShape(.roundedRectangle(radius: 16))
-                        .frame(maxWidth: 320)
-                        .accessibilityIdentifier("phoneHub.addConnection")
                         Button("Try demo") {
                             do {
                                 let source = try connections.save(name: "Demo", kind: .directNode, address: ServerAddress.demo)
@@ -538,6 +547,9 @@ struct PhoneHubView: View {
         let unavailable = aggregate.sources.contains { source in
             source.store.unauthorized || (panel == .attention ? source.store.attentionError != nil : source.store.nodeError != nil)
         }
+        let unavailableAll = unavailable && aggregate.sources.allSatisfy { source in
+            source.store.unauthorized || (panel == .attention ? source.store.attentionError != nil : source.store.nodeError != nil)
+        }
         let offlineOnly = panel == .nodes && !showOfflineNodes && !aggregate.nodes.isEmpty
         VStack(spacing: 12) {
             if loading {
@@ -548,13 +560,102 @@ struct PhoneHubView: View {
             } else {
                 Image(systemName: unavailable ? "wifi.exclamationmark" : (panel == .attention ? "checkmark.circle" : "bubble.left.and.bubble.right"))
                     .font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
-                Text(unavailable ? "Some results are unavailable" : (offlineOnly ? "No agents online" : (panel == .attention ? "You’re all caught up" : "No \(panel.rawValue.lowercased()) yet")))
+                Text(unavailable ? "Can’t reach \(unavailableAll ? "your connections" : "some connections")" : (offlineOnly ? "No agents online" : (panel == .attention ? "You’re all caught up" : "No \(panel.rawValue.lowercased()) yet")))
                     .font(.headline)
-                Text(unavailable ? "Open Settings › Connections to sign in or try again." : (offlineOnly ? "Offline agents are hidden. Turn on Show offline agents in Settings › Connections to see them." : (aggregate.sources.isEmpty ? "Add a connection to get started." : (panel == .attention ? "New requests and results will appear here." : "Your \(panel.rawValue.lowercased()) will appear here when available."))))
+                Text(unavailable ? "Reconnect above to see their \(panel.rawValue.lowercased())." : (offlineOnly ? "Offline agents are hidden. Turn on Show offline agents in Settings › Connections to see them." : (aggregate.sources.isEmpty ? "Add a connection to get started." : (panel == .attention ? "New requests and results will appear here." : "Your \(panel.rawValue.lowercased()) will appear here when available."))))
                     .font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 24)
+    }
+
+    private func openIssue(_ source: HubSourceWorkspace, action: PhoneHubConnectionIssue.Action?) {
+        if action == .signIn && !source.connection.isLinkedDevices {
+            signIn(source)
+        } else {
+            connectionSheet = ConnectionSheet(sourceID: source.id, route: .details)
+        }
+    }
+
+    /// One tap from the banner to the system passkey sheet, as Chat's sign-in
+    /// does. Only a token Hub needs a page first, to type its token.
+    private func signIn(_ source: HubSourceWorkspace) {
+        guard signingInSourceID == nil else { return }
+        let tokenPage: ConnectionSheet.Route = source.connection.kind == .hub
+            ? (source.hubWorkspace == nil ? .details : .hubSignIn) : .directSignIn
+        // Fixtures cannot complete a system passkey ceremony.
+        guard !PhoneHubFixture.isEnabled else {
+            connectionSheet = ConnectionSheet(sourceID: source.id, route: tokenPage)
+            return
+        }
+        signingInSourceID = source.id
+        source.authenticationError = nil
+        Task { @MainActor in
+            if source.connection.kind == .hub, let client = source.hubWorkspace?.client,
+               case .page(let config)? = try? await client.discover() {
+                source.store.setAuthMode(HubAuthMode(rawValue: config.authMode) ?? .passkey)
+                if config.authMode == HubAuthMode.bearer.rawValue {
+                    signingInSourceID = nil
+                    connectionSheet = ConnectionSheet(sourceID: source.id, route: tokenPage)
+                    return
+                }
+            }
+            guard let epoch = await source.prepareAuthentication() else { signingInSourceID = nil; return }
+            nativeLogin.cookieSink = source.nativeCookieSink(epoch: epoch)
+            nativeLogin.signIn(to: source.connection.url) { result in
+                signingInSourceID = nil
+                guard source.isActive, source.authEpoch == epoch else { return }
+                switch result {
+                case .success:
+                    Task { _ = await source.authenticationSucceeded(epoch: epoch) }
+                case .failure(let error):
+                    // Closing the passkey sheet is a choice, not a failure.
+                    if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin { return }
+                    source.authenticationError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func connectionSheetContent(_ sheet: ConnectionSheet) -> some View {
+        if let source = aggregate.source(sheet.sourceID) {
+            let close = { connectionSheet = nil }
+            let openChat: (UUID, URL) -> Void = { id, url in
+                connectionSheet = nil
+                onOpenChat(id, url)
+            }
+            Group {
+                switch sheet.route {
+                case .hubSignIn:
+                    PhoneHubManageSheet(source: source, closeTitle: "Done", onOpen: { url, nodeID in
+                        switch PhoneHubConnectionDetailView.destination(url, nodeID: nodeID, source: source, aggregate: aggregate) {
+                        case .ignore: return
+                        case .unsafe: navigationError = PhoneHubConnectionDetailView.unsafeDestinationMessage; close()
+                        case .open: openChat(source.id, url)
+                        }
+                    }, onClose: close)
+                case .directSignIn:
+                    PhoneHubDirectAuthentication(source: source)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+                case .details:
+                    NavigationStack {
+                        PhoneHubConnectionDetailView(source: source, store: source.store, connections: connections,
+                                                     aggregate: aggregate, onOpenChat: openChat)
+                            #if !os(macOS)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done", action: close).accessibilityIdentifier("phoneHub.issueSheet.done")
+                                }
+                            }
+                            #endif
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+                }
+            }
+            #if os(macOS)
+            .frame(minWidth: 480, idealWidth: 540, minHeight: 520, idealHeight: 640)
+            #endif
+        }
     }
 
     private func open(_ path: String, source: HubConnection, nodeID: String) {

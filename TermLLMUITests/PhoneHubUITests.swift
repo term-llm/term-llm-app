@@ -501,7 +501,12 @@ final class PhoneHubUITests: XCTestCase {
     func testConnectionSetupExplainsFailureAndAllowsRetry() throws {
         continueAfterFailure = false
         launch(reset: true)
-        required(app.buttons["phoneHub.addConnection"]).tap()
+        // With nothing configured, the pinned banner offers the connection.
+        let add = required(app.buttons["phoneHub.addConnection"])
+        XCTAssertTrue(add.isHittable)
+        _ = required(app.staticTexts["No connections yet"])
+        shot("home-no-connections-banner")
+        add.tap()
         XCTAssertFalse(app.segmentedControls["phoneHub.connection.kind"].exists)
         XCTAssertFalse(required(app.buttons["phoneHub.connection.save"]).isEnabled)
         shot("connection-ready")
@@ -804,6 +809,17 @@ final class PhoneHubUITests: XCTestCase {
         reveal(homeNode)
         XCTAssertFalse(app.buttons["phoneHub.node." + work + ".shared"].exists)
         shot("07-one-source-auth-failure-isolated")
+        // The signed-out source is called out on the home page with a direct
+        // sign-in, not left behind Settings › Connections.
+        let signIn = required(app.buttons["phoneHub.issue.action." + work], timeout: 10)
+        XCTAssertEqual(signIn.label, "Sign In Work Hub")
+        XCTAssertFalse(app.buttons["phoneHub.issue.action." + home].exists, "Healthy sources raise no issue")
+        shot("08-home-connection-issue")
+        signIn.tap()
+        _ = required(app.staticTexts["Sign in to Hub"])
+        shot("09-home-issue-sign-in")
+        required(app.buttons["phoneHub.details.close"]).tap()
+        _ = required(app.buttons["phoneHub.issue.action." + work])
     }
 
     // MARK: Agent page
