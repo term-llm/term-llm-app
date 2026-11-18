@@ -10,10 +10,15 @@ import UIKit
 @Observable
 final class Listen {
     static let shared: Listen = {
+        #if DEBUG && targetEnvironment(simulator)
+        let fixture = ListenShelfFixture.makeIfEnabled()
+        #else
+        let fixture: Listen? = nil
+        #endif
         let cookies = WebKitCookieJar()
         let server = { ListenServer.current() }
         let artwork = ListenArtworkStore(cookies: cookies, server: server)
-        let listen = Listen(store: ListenStore(), engine: AVListenEngine(), cookies: cookies, server: server,
+        let listen = fixture ?? Listen(store: ListenStore(), engine: AVListenEngine(), cookies: cookies, server: server,
                             nowPlaying: SystemNowPlaying(artwork: artwork), artwork: artwork)
         for name in [NativeApp.didEnterBackground, NativeApp.willTerminate] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in

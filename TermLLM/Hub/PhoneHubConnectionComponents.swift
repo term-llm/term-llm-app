@@ -168,7 +168,15 @@ struct PhoneHubConnectionIssuesBanner: View {
     }
 
     private func row(_ source: HubSourceWorkspace, _ issue: PhoneHubConnectionIssue) -> some View {
-        HStack(spacing: 12) {
+        #if os(macOS)
+        let offersSettings = MacLocalNetworkSettingsButton.isAvailable(for: source)
+        let message = offersSettings
+            ? "Couldn’t reach this server. For a local server, check Privacy & Security → Local Network."
+            : issue.message
+        #else
+        let message = issue.message
+        #endif
+        return HStack(spacing: 12) {
             Button { onOpen(source, nil) } label: {
                 HStack(spacing: 10) {
                     Image(systemName: issue.action == .signIn ? "person.crop.circle.badge.exclamationmark" : "wifi.exclamationmark")
@@ -178,7 +186,7 @@ struct PhoneHubConnectionIssuesBanner: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(issue.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                        Text(issue.message).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                        Text(message).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                     }
                     Spacer(minLength: 0)
                 }
@@ -188,6 +196,13 @@ struct PhoneHubConnectionIssuesBanner: View {
             .accessibilityElement(children: .combine)
             .accessibilityHint("Shows this connection")
             .accessibilityIdentifier("phoneHub.issue.\(issue.id.uuidString)")
+            #if os(macOS)
+            if offersSettings {
+                MacLocalNetworkSettingsButton()
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            #endif
             let busy = issue.busy || signingInSourceID == source.id
             ZStack {
                 // Fixed footprint: progress replaces the button without moving the row.
@@ -214,6 +229,21 @@ struct PhoneHubConnectionIssuesBanner: View {
         .accessibilityIdentifier("phoneHub.issue.action.\(issue.id.uuidString)")
     }
 }
+
+#if os(macOS)
+@MainActor
+struct MacLocalNetworkSettingsButton: View {
+    static func isAvailable(for source: HubSourceWorkspace) -> Bool {
+        source.offersLocalNetworkSettings && NativeApp.localNetworkPrivacySettingsURL != nil
+    }
+
+    var body: some View {
+        Button("Open Privacy & Security…", action: NativeApp.openLocalNetworkPrivacySettings)
+            .help("In Privacy & Security, select Local Network to see app permissions")
+            .accessibilityIdentifier("phoneHub.localNetworkSettings")
+    }
+}
+#endif
 
 /// Pinned on the Agents home when nothing is configured: says what a
 /// connection is for and adds one in a tap.

@@ -41,7 +41,8 @@ final class HubStore: ObservableObject {
     @Published private(set) var nodes: [HubNode] = []
     @Published private(set) var nodesLoading = false
     @Published private(set) var nodesVerified = false
-    @Published private(set) var nodeError: String?
+    @Published private var nodeFailure: PanelFailure?
+    var nodeError: String? { nodeFailure?.message }
     @Published private(set) var resolverWarning: String?
     @Published private(set) var lastNodesRefresh: Date?
 
@@ -55,7 +56,11 @@ final class HubStore: ObservableObject {
     @Published private(set) var totalUnseen = 0
     @Published private(set) var attentionLoading = false
     @Published private(set) var attentionVerified = false
-    @Published private(set) var attentionError: String?
+    @Published private var attentionFailure: PanelFailure?
+    var attentionError: String? { attentionFailure?.message }
+
+    /// The displayed panel failure, in the same priority order as the connection summary.
+    var hasUnreachablePanelFailure: Bool { (nodeFailure ?? attentionFailure) == .unreachable }
     @Published private(set) var lastAttentionRefresh: Date?
     @Published private(set) var attentionLimit = HubStore.defaultAttentionLimit
 
@@ -291,8 +296,8 @@ final class HubStore: ObservableObject {
         // New epoch owns all flags — reset everything old defers will skip.
         unauthorized = false
         recentAuthRequired = false
-        nodeError = nil
-        attentionError = nil
+        nodeFailure = nil
+        attentionFailure = nil
         delegationError = nil
         resolverWarning = nil
         securityStatus = nil
@@ -478,7 +483,7 @@ final class HubStore: ObservableObject {
         } catch {
             guard epochCurrent(e) else { return }
             if authPurgeIfNeeded(error) { return }
-            nodeError = "Could not remove node: \(errorMessage(error))"
+            nodeFailure = PanelFailure(error, prefix: "Could not remove node: ")
             return
         }
         if epochCurrent(e) {
@@ -764,8 +769,8 @@ final class HubStore: ObservableObject {
         refreshing = false
 
         unauthorized = true
-        nodeError = "Hub authorization expired. Sign in again."
-        attentionError = nil
+        nodeFailure = .other("Hub authorization expired. Sign in again.")
+        attentionFailure = nil
         delegationError = nil
         resolverWarning = nil
         securityStatus = nil
@@ -878,7 +883,7 @@ final class HubStore: ObservableObject {
             guard epochCurrent(e), nodesSeq == seq else { return }
             if authPurgeIfNeeded(error) { return }
             if error is CancellationError { return }
-            nodeError = "Failed to load nodes: \(errorMessage(error))"
+            nodeFailure = PanelFailure(error, prefix: "Failed to load nodes: ")
         }
         if epochCurrent(e), nodesSeq == seq { initialLoading = false }
     }
@@ -894,13 +899,13 @@ final class HubStore: ObservableObject {
             if totalUnseen != data.totalUnseen { totalUnseen = data.totalUnseen }
             if attentionHasMore != data.hasMore { attentionHasMore = data.hasMore }
             if !attentionVerified { attentionVerified = true }
-            if attentionError != nil { attentionError = nil }
+            if attentionFailure != nil { attentionFailure = nil }
             lastAttentionRefresh = clock()
         } catch {
             guard epochCurrent(e), attentionSeq == seq else { return }
             if authPurgeIfNeeded(error) { return }
             if error is CancellationError { return }
-            attentionError = errorMessage(error)
+            attentionFailure = PanelFailure(error)
         }
     }
 
@@ -926,7 +931,7 @@ final class HubStore: ObservableObject {
         showNodes(incoming, orderVersion: orderVer)
         if !nodesVerified { nodesVerified = true }
         if resolverWarning != resolverError { resolverWarning = resolverError }
-        if nodeError != nil { nodeError = nil }
+        if nodeFailure != nil { nodeFailure = nil }
         lastNodesRefresh = clock()
 
         let ids = Set(incoming.map(\.id))
@@ -976,7 +981,32 @@ enum HubStoreError: LocalizedError, Equatable {
 
 // MARK: - Helpers
 
+private enum PanelFailure: Equatable {
+    case unreachable
+    case other(String)
+
+    init(_ error: Error, prefix: String = "") {
+        if let apiError = error as? HubAPIError {
+            self = .other(prefix + apiError.message)
+            return
+        }
+        let networkError = error as NSError
+        // This does not prove an internet outage or a Local Network permission denial.
+        if networkError.domain == NSURLErrorDomain, networkError.code == URLError.notConnectedToInternet.rawValue {
+            self = .unreachable
+        } else {
+            self = .other(prefix + error.localizedDescription)
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .unreachable: ServerAddress.unreachableMessage
+        case .other(let message): message
+        }
+    }
+}
+
 private func errorMessage(_ error: Error) -> String {
-    if let apiError = error as? HubAPIError { return apiError.message }
-    return error.localizedDescription
+    PanelFailure(error).message
 }

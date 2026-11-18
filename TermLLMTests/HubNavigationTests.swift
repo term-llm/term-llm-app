@@ -149,6 +149,17 @@ final class TailnetDiscoveryTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(unknown, .unknown)
     }
 
+    func testUnreachableServerDoesNotClaimAnInternetOutage() {
+        let code = URLError.notConnectedToInternet.rawValue
+        let local = HubServerRole.DiscoveryFailure.network(code: code, tailnet: false).localizedDescription
+        let tailnet = HubServerRole.DiscoveryFailure.network(code: code, tailnet: true).localizedDescription
+        XCTAssertEqual(local, ServerAddress.unreachableMessage)
+        XCTAssertTrue(tailnet.hasPrefix("Couldn’t reach this server."))
+        XCTAssertTrue(tailnet.contains("Tailscale"))
+        XCTAssertFalse(local.localizedCaseInsensitiveContains("offline"))
+        XCTAssertFalse(tailnet.localizedCaseInsensitiveContains("offline"))
+    }
+
     func testOrdinaryDNSFailureDoesNotSuggestAnUnrelatedVPN() {
         let error = HubServerRole.DiscoveryFailure.network(code: URLError.cannotFindHost.rawValue, tailnet: false)
         XCTAssertFalse(error.localizedDescription.contains("Tailscale"))

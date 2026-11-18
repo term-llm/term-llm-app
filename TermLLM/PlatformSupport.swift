@@ -189,6 +189,14 @@ enum NativeApp {
     }
     /// Privacy & Security ▸ Media & Apple Music, where MusicKit access lives.
     static var appSettingsURL: URL? { URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Media") }
+    static var localNetworkPrivacySettingsURL: URL? {
+        guard #available(macOS 15, *) else { return nil }
+        // The Local Network app list doesn't have a reliable deep link. Open its parent.
+        return URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")
+    }
+    static func openLocalNetworkPrivacySettings() {
+        if let url = localNetworkPrivacySettingsURL { open(url) }
+    }
     static func copy(_ string: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(string, forType: .string)

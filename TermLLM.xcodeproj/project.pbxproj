@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A0C8E2D447FC44E1B6A5E701 /* ListenShelfFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C8E2D447FC44E1B6A5E702 /* ListenShelfFixture.swift */; };
+		A0C8E2D447FC44E1B6A5E703 /* PodcastMiniPlayerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0C8E2D447FC44E1B6A5E704 /* PodcastMiniPlayerUITests.swift */; };
 		E51000000000000000000001 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E51000000000000000000011; };
 		E51000000000000000000002 /* AppUpdatePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E51000000000000000000012; };
 		E51000000000000000000003 /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E51000000000000000000013; };
@@ -467,6 +469,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A0C8E2D447FC44E1B6A5E702 /* ListenShelfFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenShelfFixture.swift; sourceTree = "<group>"; };
+		A0C8E2D447FC44E1B6A5E704 /* PodcastMiniPlayerUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastMiniPlayerUITests.swift; sourceTree = "<group>"; };
 		E51000000000000000000011 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
 		E51000000000000000000012 /* AppUpdatePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdatePolicy.swift; sourceTree = "<group>"; };
 		E51000000000000000000013 /* AppUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateTests.swift; sourceTree = "<group>"; };
@@ -975,6 +979,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000701 /* NativeHubUITests.swift */,
+				A0C8E2D447FC44E1B6A5E704 /* PodcastMiniPlayerUITests.swift */,
 				44048B627E5C6CC472B6A72F /* PhoneHubUITests.swift */,
 				000000000000000000000B9E /* WebKitHealthUITests.swift */,
 			);
@@ -1048,6 +1053,7 @@
 				FADB545B718C9F1F16DA3157 /* ListenComponents.swift */,
 				6C1CFDFB163758500B9769E3 /* ListenPlayerView.swift */,
 				BB4D39B90FD823A0F955215F /* MediaPlaybackShelf.swift */,
+				A0C8E2D447FC44E1B6A5E702 /* ListenShelfFixture.swift */,
 			);
 			path = Listen;
 			sourceTree = "<group>";
@@ -1425,6 +1431,7 @@
 				000000000000000000000243 /* ListenDownloader.swift in Sources */,
 				000000000000000000000244 /* ListenPlayer.swift in Sources */,
 				000000000000000000000245 /* Listen.swift in Sources */,
+				A0C8E2D447FC44E1B6A5E701 /* ListenShelfFixture.swift in Sources */,
 				000000000000000000000246 /* ListenTools.swift in Sources */,
 				000000000000000000000247 /* ListenViews.swift in Sources */,
 				9B76766D0F7980A0BD673E51 /* ListenComponents.swift in Sources */,
@@ -1560,6 +1567,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000700 /* NativeHubUITests.swift in Sources */,
+				A0C8E2D447FC44E1B6A5E703 /* PodcastMiniPlayerUITests.swift in Sources */,
 				9B4DABD976B6EF33ACCCB206 /* PhoneHubUITests.swift in Sources */,
 				000000000000000000000B9F /* WebKitHealthUITests.swift in Sources */,
 			);

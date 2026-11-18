@@ -35,6 +35,51 @@ final class HubAggregateStoreTests: XCTestCase {
     private func drain() async {
         for _ in 0..<30 { await Task.yield() }
     }
+    func testSavedHubAndDirectNodeOfferLocalNetworkSettingsForReachabilityFailures() async {
+        for kind in HubConnection.Kind.allCases {
+            let connection = connection("work", kind: kind)
+            let client = MockHubClient()
+            let store = HubStore(client: client, pollInterval: 999)
+            let source = HubSourceWorkspace(connection: connection, store: store)
+            defer { store.dispose() }
+            XCTAssertFalse(source.offersLocalNetworkSettings)
+
+            client.nodesResponse = { throw URLError(.notConnectedToInternet) }
+            await store.refresh()
+            XCTAssertTrue(source.offersLocalNetworkSettings, kind.rawValue)
+
+            client.nodesResponse = { self.nodes(connection) }
+            client.attentionResponse = { throw URLError(.notConnectedToInternet) }
+            await store.refresh()
+            XCTAssertTrue(source.offersLocalNetworkSettings, "\(kind.rawValue) attention failure")
+
+            client.attentionResponse = { self.attention(connection) }
+            await store.refresh()
+            XCTAssertFalse(source.offersLocalNetworkSettings, "\(kind.rawValue) recovered")
+        }
+    }
+
+    func testLinkedDevicesAndManagedLocalServiceDoNotOfferLocalNetworkSettings() async {
+        let key = LinkedDevicesBase64URL.encode(Data(repeating: 1, count: 32))
+        let excluded = [
+            HubConnection(id: UUID(), name: "Linked", kind: .directNode,
+                          url: URL(string: "http://localhost:8767/ui/")!, linkedDevicesHostKey: key),
+            HubConnection(id: UUID(), name: "This Mac", kind: .directNode,
+                          url: URL(string: "http://127.0.0.1:8737/")!, managedLocalService: true),
+        ]
+        for connection in excluded {
+            let client = MockHubClient()
+            client.nodesResponse = { throw URLError(.notConnectedToInternet) }
+            client.attentionResponse = { throw URLError(.notConnectedToInternet) }
+            let store = HubStore(client: client, pollInterval: 999)
+            let source = HubSourceWorkspace(connection: connection, store: store)
+            defer { store.dispose() }
+            await store.refresh()
+            XCTAssertNotNil(source.error)
+            XCTAssertFalse(source.offersLocalNetworkSettings, connection.name)
+        }
+    }
+
     func testResumingPollingCanLeaveChosenSourcesPaused() throws {
         let work = connection("work"), desk = connection("desk", kind: .directNode)
         let aggregate = HubAggregateStore { connection in

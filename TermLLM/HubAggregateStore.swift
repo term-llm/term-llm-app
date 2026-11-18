@@ -197,6 +197,13 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     var isActive: Bool { active }
     var authEpoch: UInt64 { authenticationEpoch }
     var error: String? { authenticationError ?? store.nodeError ?? store.attentionError }
+
+    /// Offer a settings shortcut, not a diagnosis: -1009 can also mean an outage.
+    var offersLocalNetworkSettings: Bool {
+        isActive && !connection.isLinkedDevices && !connection.isManagedLocalService &&
+            !store.unauthorized && authenticationError == nil && store.hasUnreachablePanelFailure
+    }
+
     func start() {
         guard active else { return }
         store.start()

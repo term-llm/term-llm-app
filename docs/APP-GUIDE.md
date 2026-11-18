@@ -75,8 +75,10 @@ bundle ID and refreshed provisioning profiles.
 
 **Podcasts** holds an **Up Next** queue and playback history for podcast episodes
 and other audio/video URLs. Items resume from their saved positions. The shared
-mini player opens full controls for seeking, speed and a sleep timer. Hiding it
-does not stop playback; starting Music pauses the audio queue and vice versa.
+mini player on iPhone keeps Play/Pause and **×** beside the episode title. Tap
+the title or artwork for the full title, skips, seeking, speed and sleep timer.
+Tap **×** to hide the bar without stopping playback. Starting Music pauses the
+audio queue and vice versa.
 Starting either player also ends a live voice call.
 
 Use **Download for offline** to save an episode. Interrupted downloads can

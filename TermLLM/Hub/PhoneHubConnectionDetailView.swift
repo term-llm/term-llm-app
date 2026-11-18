@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// One connection's status and every action for it, in Settings style:
-/// action rows, navigation rows, and one destructive row at the bottom.
+/// One connection’s status and actions, shown from Settings or the Agents banner.
 @MainActor
 struct PhoneHubConnectionDetailView: View {
     @ObservedObject var source: HubSourceWorkspace
@@ -9,6 +8,7 @@ struct PhoneHubConnectionDetailView: View {
     @ObservedObject var connections: HubConnectionStore
     @ObservedObject var aggregate: HubAggregateStore
     let onOpenChat: (UUID, URL) -> Void
+    var onClose: (() -> Void)? = nil
     @ObservedObject private var linkedDevices = LinkedDevicesRuntime.shared
     @Environment(\.dismiss) private var dismiss
     @State private var editor: PhoneHubView.Editor?
@@ -16,11 +16,59 @@ struct PhoneHubConnectionDetailView: View {
     @State private var showingDirectAuth = false
     @State private var confirmingRemove = false
     @State private var navigationError: String?
+    #if os(macOS)
+    @State private var copiedAppFolder = false
+    #endif
 
     private var isLinked: Bool { source.connection.isLinkedDevices }
     private var style: PhoneHubConnectionStyle { PhoneHubConnectionStyle(source.connection) }
 
     var body: some View {
+        detailContent
+            .confirmationDialog(isLinked ? "Forget \(source.connection.name)?" : "Remove \(source.connection.name)?",
+                                isPresented: $confirmingRemove, titleVisibility: .visible) {
+                Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) {
+                    let id = source.id
+                    if let onClose { onClose() } else { dismiss() }
+                    connections.remove(id)
+                }
+                .accessibilityIdentifier("phoneHub.remove.confirm")
+            } message: {
+                Text(isLinked ? "This app will need to be linked again to use this device."
+                     : "Its agents disappear from the app. You can add it again later.")
+            }
+            .sheet(item: $editor) { editor in
+                PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            }
+            .sheet(isPresented: $showingManage) {
+                PhoneHubManageSheet(source: source, closeTitle: "Back to \(source.connection.name)",
+                                    onOpen: openDestination, onClose: { showingManage = false })
+            }
+            .sheet(isPresented: $showingDirectAuth) {
+                PhoneHubDirectAuthentication(source: source)
+                    .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            }
+    }
+
+    @ViewBuilder private var detailContent: some View {
+        #if os(macOS)
+        macDetail
+            .accessibilityIdentifier("phoneHub.connectionDetail")
+            .navigationBarBackButtonHidden(true)
+            .workspaceTopBar {
+                if let onClose {
+                    WorkspaceHeader(title: "Connection Details") {
+                        Button("Done", action: onClose)
+                            .buttonStyle(.bordered)
+                            .keyboardShortcut(.cancelAction)
+                            .accessibilityIdentifier("phoneHub.issueSheet.done")
+                    }
+                } else {
+                    PushedPageHeader(title: "Connection Details") { EmptyView() }
+                }
+            }
+        #else
         List {
             Section { header }
                 .listRowBackground(Color.clear)
@@ -29,40 +77,118 @@ struct PhoneHubConnectionDetailView: View {
                 Section { Text(navigationError).foregroundStyle(.orange) }
             }
             if isLinked { linkedSections } else { serverSections }
-            Section {
-                Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) { confirmingRemove = true }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
-            }
+            Section { removeButton.frame(maxWidth: .infinity) }
         }
-        .accessibilityIdentifier("phoneHub.connectionDetail")
         .settingsPageTitle(source.connection.name)
-        .confirmationDialog(isLinked ? "Forget \(source.connection.name)?" : "Remove \(source.connection.name)?",
-                            isPresented: $confirmingRemove, titleVisibility: .visible) {
-            Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) {
-                let id = source.id
-                dismiss()
-                connections.remove(id)
+        .accessibilityIdentifier("phoneHub.connectionDetail")
+        #endif
+    }
+
+    #if os(macOS)
+    private var macDetail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    PhoneHubConnectionIcon(style: style, size: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(source.connection.name).font(.title3.weight(.semibold))
+                        Text(connectionSubtitle).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    statusCapsule(PhoneHubConnectionStatus.of(source, linked: linkedDevices), showsFreshness: false)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+
+                if let navigationError {
+                    Text(navigationError).foregroundStyle(.orange)
+                }
+                if !isLinked {
+                    if store.unauthorized {
+                        Text("Sign in to see this server’s agents.").foregroundStyle(.secondary)
+                    } else if let error = source.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if MacLocalNetworkSettingsButton.isAvailable(for: source) {
+                    localNetworkRecovery
+                }
+
+                HStack(spacing: 8) {
+                    if isLinked {
+                        linkedReconnectButton
+                    } else if store.unauthorized {
+                        signInButton
+                    } else {
+                        retryButton
+                        openChatButton
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    if !store.unauthorized || isLinked {
+                        LabeledContent("Agents", value: agentsSummary)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 36)
+                    }
+                    if !isLinked {
+                        if !store.unauthorized { Divider().padding(.horizontal, 12) }
+                        manageButton
+                        Divider().padding(.horizontal, 12)
+                        addressButton
+                    }
+                }
+                .background {
+                    RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1))
+                        .allowsHitTesting(false)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                removeButton
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.red)
             }
-            .accessibilityIdentifier("phoneHub.remove.confirm")
-        } message: {
-            Text(isLinked ? "This app will need to be linked again to use this device."
-                 : "Its agents disappear from the app. You can add it again later.")
-        }
-        .sheet(item: $editor) { editor in
-            PhoneHubConnectionEditor(connections: connections, source: editor.source, initialAddress: editor.address, onDone: {})
-                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
-        }
-        .sheet(isPresented: $showingManage) {
-            PhoneHubManageSheet(source: source, closeTitle: "Back to \(source.connection.name)",
-                                onOpen: openDestination, onClose: { showingManage = false })
-        }
-        .sheet(isPresented: $showingDirectAuth) {
-            PhoneHubDirectAuthentication(source: source)
-                .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(20)
+            .frame(maxWidth: .infinity)
         }
     }
 
+    private var localNetworkRecovery: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if #available(macOS 27.2, *) {
+                Text("Already enabled? If there are several term-llm entries, click + in Local Network. Press ⌘⇧G, paste this app’s folder path, then select term-llm.app.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                MacLocalNetworkSettingsButton()
+                if #available(macOS 27.2, *) {
+                    Button(copiedAppFolder ? "Folder Path Copied" : "Copy App Folder Path") {
+                        NativeApp.copy(Bundle.main.bundleURL.deletingLastPathComponent().path)
+                        copiedAppFolder = true
+                    }
+                    .accessibilityIdentifier("phoneHub.copyRunningAppFolder")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+        }
+    }
+
+    private var connectionSubtitle: String {
+        let address = PhoneHubConnectionStyle.address(source.connection)
+        return source.connection.name.caseInsensitiveCompare(address) == .orderedSame ? style.title : "\(style.title) · \(address)"
+    }
+    #else
     private var header: some View {
         let status = PhoneHubConnectionStatus.of(source, linked: linkedDevices)
         return VStack(spacing: 6) {
@@ -80,8 +206,9 @@ struct PhoneHubConnectionDetailView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// A fixed-shape status slot: refreshing changes its contents, not layout.
-    private func statusCapsule(_ status: PhoneHubConnectionStatus) -> some View {
+    #endif
+
+    private func statusCapsule(_ status: PhoneHubConnectionStatus, showsFreshness: Bool = true) -> some View {
         HStack(spacing: 6) {
             ZStack {
                 Circle().fill(status.color).frame(width: 7, height: 7).opacity(status.tone == .busy ? 0 : 1)
@@ -90,7 +217,7 @@ struct PhoneHubConnectionDetailView: View {
             .frame(width: 12, height: 12)
             Group {
                 // Freshness only describes data the app could load.
-                if !isLinked, !store.unauthorized, let updated = store.lastNodesRefresh {
+                if showsFreshness, !isLinked, !store.unauthorized, let updated = store.lastNodesRefresh {
                     Text("\(status.text) · \(updated, style: .relative) ago")
                 } else {
                     Text(status.text)
@@ -107,11 +234,48 @@ struct PhoneHubConnectionDetailView: View {
         .accessibilityIdentifier(store.nodesLoading ? "phoneHub.nodesLoading.\(source.id.uuidString)" : "phoneHub.syncStatus.\(source.id.uuidString)")
     }
 
+    private var removeButton: some View {
+        Button(isLinked ? "Forget Device" : "Remove Connection", role: .destructive) { confirmingRemove = true }
+            .accessibilityIdentifier("phoneHub.remove.\(source.id.uuidString)")
+    }
+
+    private var signInButton: some View {
+        Button("Sign in") { showAuthentication() }
+            .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
+    }
+
+    private var openChatButton: some View {
+        Button("Open in Chat") { openDestination(source.connection.url, nodeID: nil) }
+            .disabled(!source.isActive)
+            .accessibilityIdentifier("phoneHub.openChat.\(source.id.uuidString)")
+    }
+
+    private var retryButton: some View {
+        Button(source.error == nil ? "Refresh now" : "Retry") { Task { await store.refresh() } }
+            .disabled(store.refreshing)
+            .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+    }
+
+    private var manageButton: some View {
+        navigationRow(source.connection.kind == .hub ? "Manage server" : "Authentication") { showAuthentication() }
+            .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
+    }
+
+    private var addressButton: some View {
+        navigationRow("Address & name", value: "Edit") { editor = PhoneHubView.Editor(source: source.connection) }
+            .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+    }
+
+    private var linkedReconnectButton: some View {
+        Button("Connect now") { linkedDevices.reconnectNow(source.id) }
+            .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+    }
+
+    #if !os(macOS)
     @ViewBuilder private var serverSections: some View {
         if store.unauthorized {
             Section {
-                Button("Sign in") { showAuthentication() }
-                    .accessibilityIdentifier("phoneHub.signIn.\(source.id.uuidString)")
+                signInButton
             } footer: {
                 Text("Sign in to see this server’s agents. Credentials are kept separately for each connection.")
             }
@@ -121,35 +285,23 @@ struct PhoneHubConnectionDetailView: View {
             }
         }
         Section("Server") {
-            // Signed out: Sign in above is the one way forward.
             if !store.unauthorized {
                 LabeledContent("Agents", value: agentsSummary)
-                Button("Open in Chat") { openDestination(source.connection.url, nodeID: nil) }
-                    .disabled(!source.isActive)
-                    .accessibilityIdentifier("phoneHub.openChat.\(source.id.uuidString)")
-                Button(source.error == nil ? "Refresh now" : "Retry") { Task { await store.refresh() } }
-                    .disabled(store.refreshing)
-                    .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+                openChatButton
+                retryButton
             }
-            if source.connection.kind == .hub {
-                navigationRow("Manage server") { showingManage = true }
-                    .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-            } else {
-                navigationRow("Authentication") { showingDirectAuth = true }
-                    .accessibilityIdentifier("phoneHub.details.\(source.id.uuidString)")
-            }
-            navigationRow("Address & name", value: "Edit") { editor = PhoneHubView.Editor(source: source.connection) }
-                .accessibilityIdentifier("phoneHub.edit.\(source.id.uuidString)")
+            manageButton
+            addressButton
         }
     }
 
     @ViewBuilder private var linkedSections: some View {
         Section("Device") {
             LabeledContent("Agents", value: agentsSummary)
-            Button("Connect now") { linkedDevices.reconnectNow(source.id) }
-                .accessibilityIdentifier("phoneHub.retry.\(source.id.uuidString)")
+            linkedReconnectButton
         }
     }
+    #endif
 
     private var agentsSummary: String {
         let nodes = store.nodes
@@ -159,6 +311,21 @@ struct PhoneHubConnectionDetailView: View {
     }
 
     private func navigationRow(_ title: String, value: String? = nil, action: @escaping () -> Void) -> some View {
+        #if os(macOS)
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(ConnectionDetailRowStyle())
+        #else
         Button(action: action) {
             HStack {
                 Text(title)
@@ -171,6 +338,7 @@ struct PhoneHubConnectionDetailView: View {
             .contentShape(Rectangle())
         }
         .foregroundStyle(.primary)
+        #endif
     }
 
     private func showAuthentication() {
@@ -204,6 +372,18 @@ struct PhoneHubConnectionDetailView: View {
         return .open
     }
 }
+
+#if os(macOS)
+private struct ConnectionDetailRowStyle: ButtonStyle {
+    @State private var hovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.primary.opacity(configuration.isPressed ? 0.08 : hovered ? 0.04 : 0))
+            .onHover { hovered = $0 }
+    }
+}
+#endif
 
 /// A Hub's own management page, where it also signs in.
 @MainActor

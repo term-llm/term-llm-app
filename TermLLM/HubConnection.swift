@@ -127,7 +127,7 @@ enum HubServerRole: Equatable {
                 case .cannotConnectToHost, .networkConnectionLost:
                     return "Could not reach the server." + hint
                 case .notConnectedToInternet:
-                    return "The network connection is unavailable." + hint
+                    return tailnet ? "Couldn’t reach this server." + hint : ServerAddress.unreachableMessage
                 case .secureConnectionFailed, .serverCertificateHasBadDate,
                      .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
                      .serverCertificateNotYetValid, .clientCertificateRejected,

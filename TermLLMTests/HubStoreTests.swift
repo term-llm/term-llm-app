@@ -368,6 +368,107 @@ final class HubStoreTests: XCTestCase {
         XCTAssertNotNil(store.attentionError)
     }
 
+    func testUnreachableServerDoesNotClaimInternetOutageOrPermissionDenial() async throws {
+        // URLSession may deliver a typed URLError or its bridged NSError.
+        let errors: [Error] = [
+            URLError(.notConnectedToInternet),
+            NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue),
+        ]
+        for error in errors {
+            client.nodesResponse = { throw error }
+            client.attentionResponse = { throw error }
+            client.delegationsResponse = { throw error }
+            await store.refresh()
+
+            let message = try XCTUnwrap(store.nodeError)
+            XCTAssertTrue(message.hasPrefix("Couldn’t reach this server."), message)
+            XCTAssertFalse(message.localizedCaseInsensitiveContains("offline"))
+            XCTAssertFalse(message.localizedCaseInsensitiveContains("denied"))
+            #if os(macOS)
+            if #available(macOS 15, *) {
+                XCTAssertTrue(message.contains("If the server is on your local network"))
+                XCTAssertTrue(message.contains("System Settings → Privacy & Security → Local Network"))
+            }
+            #else
+            XCTAssertTrue(message.contains("If the server is on your local network"))
+            XCTAssertTrue(message.contains("Settings → Privacy & Security → Local Network"))
+            #endif
+            XCTAssertEqual(store.attentionError, message)
+            XCTAssertEqual(store.delegationError, message)
+            XCTAssertFalse(store.unauthorized, "A reachability failure must not purge authentication")
+        }
+    }
+
+    func testOtherErrorsKeepTheirDescriptions() async {
+        let errors: [Error] = [
+            URLError(.timedOut),
+            URLError(.cannotFindHost),
+            NSError(domain: "HubStoreTests", code: URLError.notConnectedToInternet.rawValue),
+            serverError("Server unavailable"),
+        ]
+        for error in errors {
+            client.nodesResponse = { throw error }
+            await store.refresh()
+            XCTAssertEqual(store.nodeError, "Failed to load nodes: \(error.localizedDescription)")
+        }
+    }
+
+    func testLocalNetworkSettingsFollowsTheDisplayedPanelFailure() async {
+        let connection = HubConnection(id: UUID(), name: "Work", kind: .hub,
+                                       url: URL(string: "https://example.com/")!)
+        let source = HubSourceWorkspace(connection: connection, store: store)
+        client.delegationsResponse = { throw URLError(.notConnectedToInternet) }
+        await store.refresh()
+        XCTAssertFalse(source.offersLocalNetworkSettings, "Delegations are not the displayed connection error")
+
+        client.attentionResponse = { throw URLError(.notConnectedToInternet) }
+        await store.refresh()
+        XCTAssertTrue(source.offersLocalNetworkSettings, "Attention failure is displayed when nodes succeed")
+
+        let unrelatedErrors: [Error] = [
+            URLError(.timedOut),
+            NSError(domain: "HubStoreTests", code: URLError.notConnectedToInternet.rawValue),
+        ]
+        for error in unrelatedErrors {
+            client.nodesResponse = { throw error }
+            await store.refresh()
+            XCTAssertFalse(source.offersLocalNetworkSettings,
+                           "An unrelated node error takes precedence over unreachable attention")
+        }
+
+        client.nodesResponse = {
+            throw NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        }
+        await store.refresh()
+        XCTAssertTrue(source.offersLocalNetworkSettings, "Bridged URLSession errors also qualify")
+
+        client.nodesResponse = { NodesResponse(nodes: [makeNode()], resolverError: nil) }
+        client.attentionResponse = {
+            AttentionResponse(totalRunning: 0, totalInputRequired: 0, totalUnseen: 0,
+                              nodes: [], inputRequired: [], inbox: [], hasMore: false)
+        }
+        await store.refresh()
+        XCTAssertFalse(source.offersLocalNetworkSettings, "Successful panels clear the shortcut despite a delegation error")
+    }
+
+    func testLocalNetworkSettingsYieldsToAuthentication() async {
+        let connection = HubConnection(id: UUID(), name: "Work", kind: .hub,
+                                       url: URL(string: "https://example.com/")!)
+        let source = HubSourceWorkspace(connection: connection, store: store)
+        client.nodesResponse = { throw URLError(.notConnectedToInternet) }
+        await store.refresh()
+        XCTAssertTrue(source.offersLocalNetworkSettings)
+
+        source.authenticationError = "Sign in again"
+        XCTAssertFalse(source.offersLocalNetworkSettings, "Authentication is displayed before panel failures")
+        source.authenticationError = nil
+        XCTAssertTrue(source.offersLocalNetworkSettings)
+
+        store.purgeOnUnauthorized()
+        XCTAssertTrue(store.unauthorized)
+        XCTAssertFalse(source.offersLocalNetworkSettings, "Revoked authorization must offer sign-in instead")
+    }
+
     // MARK: - Auth purge
 
     func testAuthPurgeClearsAllPrivateState() async {

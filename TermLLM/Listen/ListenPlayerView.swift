@@ -94,7 +94,7 @@ struct ListenPlayerView: View {
                     Text(item.title)
                         .font(.title3.weight(.semibold))
                         .multilineTextAlignment(.center)
-                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                     if !item.subtitle.isEmpty {
                         Text(item.subtitle)
                             .font(.subheadline)

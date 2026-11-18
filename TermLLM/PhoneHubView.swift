@@ -18,8 +18,8 @@ struct PhoneHubView: View {
     @AppStorage("phoneHub.showOfflineAgents", store: PhoneHubFixture.defaults) private var showOfflineNodes = false
     @State private var editor: Editor?
     @State private var navigationError: String?
-    /// Agent pages pushed on the Agents stack; kept across Chat round-trips.
-    @State private var agentPath: [PhoneHubAgentRoute] = []
+    /// Agent pages stay on the stack across Chat round-trips.
+    @State private var path: [Route] = []
     @State private var sessionSearch = ""
     @AppStorage("phoneHub.sessionSort", store: PhoneHubFixture.defaults) private var sessionSort: PhoneHubSessionSort = .recent
     /// Search keeps its own order: relevance by default, per query session.
@@ -33,6 +33,22 @@ struct PhoneHubView: View {
     @State private var signingInSourceID: UUID?
 
     enum Panel: String, CaseIterable { case nodes = "Agents", attention = "Attention", sessions = "Sessions" }
+    private enum Route: Hashable {
+        case agent(PhoneHubAgentRoute)
+        #if os(macOS)
+        case connection(UUID)
+        #endif
+
+        var sourceID: UUID {
+            switch self {
+            case .agent(let route): route.sourceID
+            #if os(macOS)
+            case .connection(let sourceID): sourceID
+            #endif
+            }
+        }
+    }
+
     struct Editor: Identifiable { let id = UUID(); var source: HubConnection?; var address: String? }
     struct ConnectionSheet: Identifiable {
         enum Route { case details, hubSignIn, directSignIn }
@@ -70,7 +86,7 @@ struct PhoneHubView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $agentPath) {
+        NavigationStack(path: $path) {
             Group {
                 // Mac and iPad give the Agents panel a page of its own: one
                 // agent's live work, or a card per agent. iPhone keeps the list.
@@ -165,23 +181,35 @@ struct PhoneHubView: View {
             .sheet(item: $connectionSheet) { sheet in
                 connectionSheetContent(sheet)
             }
-            .navigationDestination(for: PhoneHubAgentRoute.self) { route in
-                PhoneHubAgentView(route: route, aggregate: aggregate, isVisible: isVisible,
-                                  onOpenChat: onOpenChat, onSettings: onSettings)
-                    // A pushed agent still owns its native back/navigation controls.
-                    .navigationBarVisibility(isVisible ? .visible : .hidden)
-                    // An edited endpoint is a new source identity: start over
-                    // with it rather than keep the old one's history.
-                    .id(aggregate.source(route.sourceID).map(ObjectIdentifier.init))
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .agent(let agent):
+                    PhoneHubAgentView(route: agent, aggregate: aggregate, isVisible: isVisible,
+                                      onOpenChat: onOpenChat, onSettings: onSettings)
+                        // A pushed agent still owns its native back/navigation controls.
+                        .navigationBarVisibility(isVisible ? .visible : .hidden)
+                        // An edited endpoint is a new source identity: start over
+                        // with it rather than keep the old one's history.
+                        .id(aggregate.source(agent.sourceID).map(ObjectIdentifier.init))
+                #if os(macOS)
+                case .connection(let sourceID):
+                    if let source = aggregate.source(sourceID) {
+                        PhoneHubConnectionDetailView(source: source, store: source.store, connections: connections,
+                                                     aggregate: aggregate, onOpenChat: { id, url in
+                            closeConnectionDetails()
+                            onOpenChat(id, url)
+                        }, onClose: closeConnectionDetails)
+                        .id(ObjectIdentifier(source))
+                    }
+                #endif
+                }
             }
         }
         .onChange(of: aggregate.sources.map(\.id)) { _, ids in
             // A removed connection takes its agent pages with it.
             let live = Set(ids)
             if let sheet = connectionSheet, !live.contains(sheet.sourceID) { connectionSheet = nil }
-            if agentPath.contains(where: { !live.contains($0.sourceID) }) {
-                agentPath.removeAll { !live.contains($0.sourceID) }
-            }
+            path.removeAll { !live.contains($0.sourceID) }
         }
         .onChange(of: sessionSearch) { _, text in aggregate.updateSearchQuery(text) }
         .onChange(of: connections.connections, initial: true) { _, sources in aggregate.synchronize(sources.filter { $0.needsKindReview != true }) }
@@ -192,6 +220,9 @@ struct PhoneHubView: View {
             // over the retained browser destination.
             editor = nil
             connectionSheet = nil
+            #if os(macOS)
+            closeConnectionDetails()
+            #endif
         }
         .onChange(of: pendingConnectionURL, initial: true) { _, url in
             guard let url else { return }
@@ -251,7 +282,7 @@ struct PhoneHubView: View {
             ] as [String?]).compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             // The row opens the agent's page (new, pinned and recent
             // conversations); the compose button keeps a one-tap new chat.
-            NavigationLink(value: PhoneHubAgentRoute(sourceID: row.source.id, nodeID: row.node.id)) {
+            NavigationLink(value: Route.agent(PhoneHubAgentRoute(sourceID: row.source.id, nodeID: row.node.id))) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.node.name).font(.headline).foregroundStyle(.primary)
@@ -573,9 +604,25 @@ struct PhoneHubView: View {
         if action == .signIn && !source.connection.isLinkedDevices {
             signIn(source)
         } else {
-            connectionSheet = ConnectionSheet(sourceID: source.id, route: .details)
+            openConnectionDetails(source.id)
         }
     }
+
+    private func openConnectionDetails(_ sourceID: UUID) {
+        #if os(macOS)
+        // AppKit vetoes app termination while a document-modal sheet is up.
+        // Routine connection status and retry belong in the Agents window.
+        path.append(.connection(sourceID))
+        #else
+        connectionSheet = ConnectionSheet(sourceID: sourceID, route: .details)
+        #endif
+    }
+
+    #if os(macOS)
+    private func closeConnectionDetails() {
+        if case .connection = path.last { path.removeLast() }
+    }
+    #endif
 
     /// One tap from the banner to the system passkey sheet, as Chat's sign-in
     /// does. Only a token Hub needs a page first, to type its token.
@@ -584,6 +631,7 @@ struct PhoneHubView: View {
         let tokenPage: ConnectionSheet.Route = source.connection.kind == .hub
             ? (source.hubWorkspace == nil ? .details : .hubSignIn) : .directSignIn
         // Fixtures cannot complete a system passkey ceremony.
+        guard tokenPage != .details else { openConnectionDetails(source.id); return }
         guard !PhoneHubFixture.isEnabled else {
             connectionSheet = ConnectionSheet(sourceID: source.id, route: tokenPage)
             return
@@ -638,18 +686,18 @@ struct PhoneHubView: View {
                     PhoneHubDirectAuthentication(source: source)
                         .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
                 case .details:
+                    #if !os(macOS)
                     NavigationStack {
                         PhoneHubConnectionDetailView(source: source, store: source.store, connections: connections,
-                                                     aggregate: aggregate, onOpenChat: openChat)
-                            #if !os(macOS)
+                                                     aggregate: aggregate, onOpenChat: openChat, onClose: close)
                             .toolbar {
                                 ToolbarItem(placement: .confirmationAction) {
                                     Button("Done", action: close).accessibilityIdentifier("phoneHub.issueSheet.done")
                                 }
                             }
-                            #endif
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) { PhoneHubFixtureBanner() }
+                    #endif
                 }
             }
             #if os(macOS)

@@ -27,6 +27,38 @@ For **iOS simulator testing only**, the app accepts
 hosts remain disallowed. Microphone and WebRTC features may also require a
 secure context. External links open outside the app.
 
+## Mac Local Network access
+
+For a Hub or Direct Node on your local network, allow **term-llm** in
+**System Settings → Privacy & Security → Local Network**, then retry the
+connection. On macOS 15 and later, **Open Privacy & Security…** on the **Agents**
+connection-error banner or in connection details opens the parent pane. Click
+**Local Network** there to see the app list. The app doesn't change privacy settings.
+
+macOS applies this permission per app: a successful `curl` request from Terminal
+does not prove the running app has access. A hostname can also resolve to a
+private local address even when it looks like a public domain. Multiple
+differently signed copies can be treated as distinct apps, even with the same
+name. Use one stable signed copy: for example, the release in **Applications**,
+rather than alternating between it and a differently signed Xcode debug build.
+Check the permission for the copy you actually run. On macOS 27.2 and later,
+connection details can copy the running app’s folder path. In the **Local
+Network** app list, click **+**, press **Command–Shift–G**, paste the path,
+and select **term-llm.app** in that folder. If you can identify the correct
+entry but its enabled setting still doesn't work, Apple recommends removing
+that entry to reset its Local Network permission. Open the same signed app
+again and retry the connection.
+See [Apple's Local Network privacy guide](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+The app reports “Couldn’t reach this server” when `URLSession` returns
+`NSURLErrorDomain -1009`. That error does not establish that the internet is
+offline or that Local Network access was denied; the Settings shortcut is a
+troubleshooting option, not a diagnosis. The permission suggestion is conditional
+on the server being on your local network. Linked devices, the managed **This
+Mac** service and authentication errors do not offer this shortcut. If access is
+already allowed and relaunching does not help, check network connectivity, DNS
+and server availability.
+
 ## Authentication
 
 Use the connection's **Sign in** or **Authentication** action. For passkeys,

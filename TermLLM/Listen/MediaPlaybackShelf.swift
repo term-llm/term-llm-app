@@ -248,26 +248,57 @@ struct MiniPlayerBar: View {
     @State private var drag: CGFloat = 0
     private var player: ListenPlayer { listen.player }
 
+    private var isPhone: Bool { WorkspacePlatform.current == .phone }
+    private var showsInlineSkips: Bool { !isPhone && !dynamicTypeSize.isAccessibilitySize && !compactLayout }
+
+    private func episodeTitle(_ item: ListenItem) -> some View {
+        Text(item.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
+    }
+
+    private func openLabel(_ item: ListenItem) -> some View {
+        HStack(spacing: isPhone ? 8 : 12) {
+            // Keep a stable cover (or the standard placeholder) when text wraps.
+            ListenArtwork(item: item, size: isPhone ? 32 : 42, store: listen.artwork)
+            Group {
+                if isPhone && usesSystemBackground {
+                    // The tab accessory has a fixed height. Drop the subtitle,
+                    // not the artwork or either control, when the title wraps.
+                    ViewThatFits(in: .vertical) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            episodeTitle(item)
+                            ListenMiniPlayerSubtitle(player: player, item: item)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        episodeTitle(item)
+                            .lineLimit(2)
+                            .allowsTightening(true)
+                            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.94)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 1) {
+                        episodeTitle(item).lineLimit(isPhone ? 2 : 1)
+                        ListenMiniPlayerSubtitle(player: player, item: item)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     var body: some View {
         if let item = player.current {
             HStack(spacing: 0) {
                 Button(action: onOpen) {
-                    HStack(spacing: 12) {
-                        ListenArtwork(item: item, size: 42, store: listen.artwork)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            ListenMiniPlayerSubtitle(player: player, item: item)
-                        }
-                        Spacer(minLength: 4)
-                    }
-                    .contentShape(Rectangle())
+                    openLabel(item)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Now playing: \(item.title)")
                 .accessibilityHint("Opens the player")
-                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                .accessibilityIdentifier("miniPlayerOpen")
+                if showsInlineSkips {
                     Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: {
                         Image(systemName: "gobackward.15").frame(width: 44, height: 44).contentShape(Rectangle())
                     }
@@ -287,7 +318,8 @@ struct MiniPlayerBar: View {
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                .accessibilityIdentifier("miniPlayerPlayPause")
+                if showsInlineSkips {
                     Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: {
                         Image(systemName: "goforward.30").frame(width: 44, height: 44).contentShape(Rectangle())
                     }
@@ -314,16 +346,16 @@ struct MiniPlayerBar: View {
             }
             .buttonStyle(.plain)
             .font(.body.weight(.medium))
-            .padding(.leading, 14)
+            .padding(.leading, usesSystemBackground ? 12 : 14)
             .padding(.trailing, 4)
-            .padding(.vertical, 4)
+            .padding(.vertical, usesSystemBackground ? 0 : 4)
             .background(alignment: .bottom) {
                 ListenMiniPlayerProgress(player: player)
             }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .modifier(PlaybackControlSurface(usesSystemBackground: usesSystemBackground))
-            .padding(.horizontal, 10)
-            .padding(.bottom, 4)
+            .padding(.horizontal, usesSystemBackground ? 0 : 10)
+            .padding(.bottom, usesSystemBackground ? 0 : 4)
             .offset(y: max(0, drag))
             .gesture(
                 DragGesture(minimumDistance: 12)
