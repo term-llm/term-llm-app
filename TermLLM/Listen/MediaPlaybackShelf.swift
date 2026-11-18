@@ -234,12 +234,13 @@ private struct MusicMiniPlayerBar: View {
 // MARK: - Mini player
 
 /// The persistent mini player above the web page. It lives outside the web
-/// view, so playback and the bar survive page loads. Standalone, ✕ stops and
-/// closes it; the shared shelf supplies a hide-only dismissal instead. Swiping
+/// view, so playback and the bar survive page loads. Tap the episode for full
+/// controls. On narrow shelves, dismissal is in the episode's context menu:
+/// it stops playback when standalone and only hides the shared shelf. Swiping
 /// down hides either presentation while playback carries on.
 struct MiniPlayerBar: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var compactLayout = false
+    @State private var hasRoomForInlineControls = false
     let listen: Listen
     var usesSystemBackground = false
     var onDismiss: (() -> Void)? = nil
@@ -247,6 +248,8 @@ struct MiniPlayerBar: View {
 
     @State private var drag: CGFloat = 0
     private var player: ListenPlayer { listen.player }
+    private var showsInlineControls: Bool { hasRoomForInlineControls && !dynamicTypeSize.isAccessibilitySize }
+    private var dismissLabel: String { onDismiss == nil ? "Close player" : "Hide Podcast player" }
 
     var body: some View {
         if let item = player.current {
@@ -266,8 +269,14 @@ struct MiniPlayerBar: View {
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Now playing: \(item.title)")
-                .accessibilityHint("Opens the player")
-                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                .accessibilityHint("Opens the full player and playback controls")
+                .accessibilityIdentifier("miniPlayerOpen")
+                .contextMenu {
+                    if !showsInlineControls {
+                        Button(action: dismissPlayer) { Label(dismissLabel, systemImage: "xmark") }
+                    }
+                }
+                if showsInlineControls {
                     Button { Task { await player.skip(by: -SystemNowPlaying.skipBack) } } label: {
                         Image(systemName: "gobackward.15").frame(width: 44, height: 44).contentShape(Rectangle())
                     }
@@ -287,30 +296,28 @@ struct MiniPlayerBar: View {
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-                if !dynamicTypeSize.isAccessibilitySize && !compactLayout {
+                if showsInlineControls {
                     Button { Task { await player.skip(by: SystemNowPlaying.skipForward) } } label: {
                         Image(systemName: "goforward.30").frame(width: 44, height: 44).contentShape(Rectangle())
                     }
                     .accessibilityLabel("Forward 30 seconds")
                 }
-                Button {
-                    withAnimation(.snappy) {
-                        if let onDismiss { onDismiss() } else { player.stop() }
+                if showsInlineControls {
+                    Button(action: dismissPlayer) {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(.secondary.opacity(0.15), in: Circle())
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .background(.secondary.opacity(0.15), in: Circle())
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                    .accessibilityLabel(dismissLabel)
+                    .accessibilityHint(onDismiss == nil
+                        ? "Stops playback. The episode keeps its place in Up Next."
+                        : "Hides the panel without stopping playback.")
+                    .accessibilityIdentifier("miniPlayerClose")
                 }
-                .accessibilityLabel(onDismiss == nil ? "Close player" : "Hide Podcast player")
-                .accessibilityHint(onDismiss == nil
-                    ? "Stops playback. The episode keeps its place in Up Next."
-                    : "Hides the panel without stopping playback.")
-                .accessibilityIdentifier("miniPlayerClose")
             }
             .buttonStyle(.plain)
             .font(.body.weight(.medium))
@@ -324,6 +331,7 @@ struct MiniPlayerBar: View {
             .modifier(PlaybackControlSurface(usesSystemBackground: usesSystemBackground))
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
             .offset(y: max(0, drag))
             .gesture(
                 DragGesture(minimumDistance: 12)
@@ -343,7 +351,14 @@ struct MiniPlayerBar: View {
             .accessibilityAction(named: "Back 15 seconds") { Task { await player.skip(by: -SystemNowPlaying.skipBack) } }
             .accessibilityAction(named: "Forward 30 seconds") { Task { await player.skip(by: SystemNowPlaying.skipForward) } }
             .accessibilityIdentifier("miniPlayer")
-            .onGeometryChange(for: Bool.self) { $0.size.width < 360 } action: { compactLayout = $0 }
+            // Budget about 200pt for text after artwork, padding and four 44pt controls.
+            .onGeometryChange(for: Bool.self) { $0.size.width >= 480 } action: { hasRoomForInlineControls = $0 }
+        }
+    }
+
+    private func dismissPlayer() {
+        withAnimation(.snappy) {
+            if let onDismiss { onDismiss() } else { player.stop() }
         }
     }
 

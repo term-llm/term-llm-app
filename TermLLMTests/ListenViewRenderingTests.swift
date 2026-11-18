@@ -243,7 +243,8 @@ final class ListenViewRenderingTests: XCTestCase {
             .flatMap(\.windows).first(where: \.isKeyWindow)
         let window = try hostedWindow(
             MediaShelfRenderingHarness(listen: fixture.listen, music: fixture.library.player)
-                .environment(\.dynamicTypeSize, .accessibility3), width: 320)
+                .environment(\.dynamicTypeSize, source == .music ? .accessibility3 : .large),
+            width: source == .music ? 320 : 402)
         defer { window.isHidden = true; previousKeyWindow?.makeKey() }
         try await Task.sleep(for: .milliseconds(800))
         try capture(window, named: "shelf-\(source)-before-accessibility-hide")
@@ -254,11 +255,18 @@ final class ListenViewRenderingTests: XCTestCase {
         guard elements.contains(where: { identifier($0) == "mediaShelfHarnessContent" }) else {
             throw XCTSkip("This unit-test host does not expose the SwiftUI accessibility tree; inspect screenshot attachments instead")
         }
-        let closeID = source == .music ? "musicMiniPlayerClose" : "miniPlayerClose"
-        let close = try XCTUnwrap(elements.first { identifier($0) == closeID }, "The shelf must expose its X control")
-        let labels = source == .music
-            ? ["Hide Music player", "Pause Music"]
-            : ["Hide Podcast player", "Pause"]
+        let shelfID = source == .music ? "musicMiniPlayer" : "miniPlayer"
+        let labels: [String]
+        if source == .music {
+            labels = ["Hide Music player", "Pause Music"]
+        } else {
+            let title = try XCTUnwrap(elements.first { identifier($0) == "miniPlayerOpen" })
+            XCTAssertGreaterThanOrEqual(title.accessibilityFrame.width, 230, "The episode should get most of the compact shelf")
+            XCTAssertTrue(title.accessibilityTraits.contains(.button))
+            XCTAssertFalse(elements.contains { identifier($0) == "miniPlayerClose" })
+            XCTAssertFalse(elements.contains { ["Back 15 seconds", "Forward 30 seconds"].contains($0.accessibilityLabel ?? "") })
+            labels = ["Pause"]
+        }
         for label in labels {
             let control = try XCTUnwrap(elements.first { $0.accessibilityLabel == label }, "Missing control: \(label)")
             XCTAssertTrue(control.accessibilityTraits.contains(.button), label)
@@ -266,21 +274,30 @@ final class ListenViewRenderingTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(frame.width, 44, label)
             XCTAssertGreaterThanOrEqual(frame.height, 44, label)
             XCTAssertTrue(window.convert(window.bounds, to: nil).insetBy(dx: -0.5, dy: -0.5).contains(frame),
-                          "\(label) must not be clipped outside the 320pt window")
+                          "\(label) must not be clipped outside the window")
         }
         let podcastID = fixture.listen.player.currentID
         let musicID = fixture.library.player.nowPlaying?.id
         let pauseCount = fixture.musicEngine.pauseCount
         let stopCount = fixture.podcastEngine.stops
-        guard close.accessibilityActivate() else {
-            throw XCTSkip("The host exposes AX frames but does not support activating SwiftUI buttons in process")
+        let didHide: Bool
+        if source == .music {
+            let close = try XCTUnwrap(elements.first { identifier($0) == "musicMiniPlayerClose" })
+            didHide = close.accessibilityActivate()
+        } else {
+            let shelf = try XCTUnwrap(elements.first { identifier($0) == shelfID })
+            let action = try XCTUnwrap(shelf.accessibilityCustomActions?.first { $0.name == "Hide player, keep playing" })
+            didHide = action.actionHandler?(action) ?? false
+        }
+        guard didHide else {
+            throw XCTSkip("The host does not support invoking the shelf's accessibility action in process")
         }
         try await Task.sleep(for: .milliseconds(800))
         let remainingElements = accessibilityElements(in: window)
         XCTAssertTrue(remainingElements.contains { identifier($0) == "mediaShelfHarnessContent" },
                       "The parent tab content should remain accessible after hiding the shelf")
-        XCTAssertFalse(remainingElements.contains { identifier($0) == closeID },
-                       "X should hide the panel, not merely leave an inactive control")
+        XCTAssertFalse(remainingElements.contains { identifier($0) == shelfID },
+                       "Hiding the shelf should remove it from the accessibility tree")
         XCTAssertEqual(fixture.listen.player.currentID, podcastID)
         XCTAssertEqual(fixture.library.player.nowPlaying?.id, musicID)
         XCTAssertEqual(fixture.musicEngine.pauseCount, pauseCount)
