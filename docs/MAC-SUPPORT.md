@@ -4,12 +4,39 @@
 
 Open `TermLLM.xcodeproj`, choose the **TermLLMMac** scheme and Run. It builds `term-llm.app`, a native macOS (AppKit + SwiftUI, macOS 14+) client compiled from the same `TermLLM/` sources as the iPhone/iPad app, plus the Mac-only code in `TermLLMMac/`. The **TermLLM** scheme is iPhone/iPad only; there is no Mac Catalyst or Designed-for-iPad build.
 
+For a usable local build, use Apple Development signing (the app and bundled
+Computer Use helper already have automatic signing configured):
+
 ```sh
 xcodebuild build -project TermLLM.xcodeproj -scheme TermLLMMac \
-  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath output/local-mac-signed \
+  CODE_SIGN_IDENTITY='Apple Development' DEVELOPMENT_TEAM=B6BAJ46A72 \
+  CODE_SIGNING_ALLOWED=YES
 ```
 
-That unsigned build is a compile check only. Without its Keychain entitlements every credential read and write fails (`-34018`), so no connection, This Mac included, can sign in. To actually use the app, run it from Xcode or build without `CODE_SIGNING_ALLOWED=NO` so it is team-signed. It keeps the iPhone app's bundle ID (`com.termllm.app`), app group and shared Keychain group, so settings, saved connections and credentials from an earlier Mac Catalyst build carry over. Credentials use the data-protection Keychain, as on iPhone, not the legacy login keychain.
+The app is at `output/local-mac-signed/Build/Products/Debug/term-llm.app`.
+Quit the currently running app before opening this copy so its Computer Use
+helper also restarts from the signed bundle. macOS may require approving the
+helper's permissions again when switching signing identities; signing does not
+bypass permission approval. Do not rebuild over a running app/helper.
+
+For a **compile check only**, keep unsigned output separate from runnable builds:
+
+```sh
+xcodebuild build -project TermLLM.xcodeproj -scheme TermLLMMac \
+  -destination 'platform=macOS' -derivedDataPath output/mac-compile-check \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Without its Keychain entitlements every credential read and write fails
+(`-34018`), so an unsigned compile-check app cannot sign in. It must not replace
+the signed app or helper being used: doing so can invalidate Computer Use's
+permission identity even while its permission preflight still reports granted.
+The signed app keeps the iPhone app's bundle ID (`com.termllm.app`), app group and
+shared Keychain group, so settings, saved connections and credentials from an
+earlier Mac Catalyst build carry over. Credentials use the data-protection
+Keychain, as on iPhone, not the legacy login keychain.
 
 The Computer Use helper, both notification extensions and the UI-test runner set
 `LM_SKIP_METADATA_EXTRACTION = YES`: they contain no App Intents, so there is no
