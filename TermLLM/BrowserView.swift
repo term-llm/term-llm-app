@@ -196,6 +196,20 @@ struct BrowserView {
         return type == .microphone && matchesOrigin ? .grant : .prompt
     }
 
+    func geolocationDecision(originScheme: String, originHost: String, originPort: Int,
+                             frameURL: URL?, isMainFrame: Bool) -> WKPermissionDecision {
+        let matchesOrigin = isHubOrigin(scheme: originScheme, host: originHost, port: originPort)
+        guard isLinkedDevices else { return matchesOrigin ? .grant : .prompt }
+        // Pairing is not location consent. Only the paired direct chat may ask.
+        guard isMainFrame, matchesOrigin,
+              let mount = connectionMount, HubConnectionStore.isLinkedDevicesBridgeURL(mount),
+              HubNavigation.isWithinMount(url, server: mount),
+              let frameURL, HubNavigation.isWithinMount(frameURL, server: mount),
+              let path = URLComponents(url: frameURL, resolvingAgainstBaseURL: false)?.percentEncodedPath,
+              HubNavigation.chatDestination(path, server: mount, nodeID: nil, direct: true) != nil else { return .deny }
+        return .prompt
+    }
+
     private func isHubOrigin(scheme originScheme: String, host originHost: String, port originPort: Int) -> Bool {
         guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
         let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : 0
@@ -1047,20 +1061,13 @@ struct BrowserView {
                 frameURL: frame.request.url, isMainFrame: frame.isMainFrame, type: type))
         }
 
-        // iOS owns the one-time location authorization; skip WebKit's per-page prompt for the hub.
-        @available(iOS 27.0, *)
+        @available(iOS 27.0, macOS 27.0, *)
         func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo,
                      decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
-            if parent.isLinkedDevices {
-                decisionHandler(.deny)
-            } else {
-                decisionHandler(isHubOrigin(origin) ? .grant : .prompt)
-            }
-        }
-
-        private func isHubOrigin(_ origin: WKSecurityOrigin) -> Bool {
-            parent.isHubOrigin(scheme: origin.protocol, host: origin.host, port: origin.port)
+            decisionHandler(parent.geolocationDecision(
+                originScheme: origin.protocol, originHost: origin.host, originPort: origin.port,
+                frameURL: frame.request.url, isMainFrame: frame.isMainFrame))
         }
 
         private func isLoginRoute(_ destination: URL) -> Bool {
