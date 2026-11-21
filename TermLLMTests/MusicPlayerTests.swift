@@ -433,6 +433,40 @@ final class MusicPlayerTests: XCTestCase {
         XCTAssertEqual(player.status, .failed(MusicError.didNotStart.localizedDescription))
         XCTAssertEqual(player.notice?.isError, true)
     }
+
+    /// A slow network can keep the system player buffering long after play()
+    /// returns (12s was observed on Mac); that is a slow start, not a failure.
+    func testWaitsLongerAfterAskingAgain() async throws {
+        let engine = FakeEngine()
+        engine.startLag = 15
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults(),
+                                 startCheck: .init(polls: 10, interval: .milliseconds(1), retryPolls: 30))
+        try await player.play([track("1")])
+        XCTAssertEqual(player.status, .playing)
+        XCTAssertEqual(engine.playCount, 2)
+        XCTAssertNil(player.notice)
+    }
+
+    func testPlaybackStartingAfterGivingUpClearsTheFailure() async throws {
+        let engine = FakeEngine()
+        engine.neverStarts = true
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults(),
+                                 startCheck: .init(polls: 3, interval: .milliseconds(1)))
+        _ = try? await player.play([track("1")])
+        XCTAssertEqual(player.notice?.text, MusicError.didNotStart.localizedDescription)
+
+        engine.emit { $0.state = .playing }
+        XCTAssertEqual(player.status, .playing)
+        XCTAssertNil(player.notice, "the didn't-start error is no longer true")
+    }
+
+    func testPlaybackStartingKeepsUnrelatedNotices() async throws {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        player.post("Saved", isError: false)
+        engine.emit { $0.state = .playing }
+        XCTAssertEqual(player.notice?.text, "Saved")
+    }
 }
 
 @MainActor

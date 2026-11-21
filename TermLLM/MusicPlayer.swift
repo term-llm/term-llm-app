@@ -40,9 +40,19 @@ final class MusicPlayer {
     static let shuffleKey = "music.shuffle"
 
     /// How long to wait for the system player to report playing after play().
+    /// The first wait is short so a play() the player ignored is asked again;
+    /// the second is long because a song can take many seconds to buffer on a
+    /// slow network, and giving up then reports a failure while music starts.
     struct StartCheck {
-        var polls = 30
-        var interval: Duration = .milliseconds(100)
+        var polls: Int
+        var interval: Duration
+        var retryPolls: Int
+
+        init(polls: Int = 30, interval: Duration = .milliseconds(100), retryPolls: Int? = nil) {
+            self.polls = polls
+            self.interval = interval
+            self.retryPolls = retryPolls ?? max(polls, 150)
+        }
     }
 
     init(engine: MusicPlaybackEngine, defaults: UserDefaults = .standard, startCheck: StartCheck = StartCheck()) {
@@ -155,7 +165,7 @@ final class MusicPlayer {
             try checkRequest(request)
             try await engine.play()
             try checkRequest(request)
-            for _ in 0..<startCheck.polls {
+            for _ in 0..<(attempt == 1 ? startCheck.polls : startCheck.retryPolls) {
                 try checkRequest(request)
                 if engine.snapshot.state == .playing {
                     status = .playing
@@ -216,7 +226,10 @@ final class MusicPlayer {
         if !queue.isEmpty, snapshot.current != nil, snapshot.shuffle != shuffle { rememberShuffle(snapshot.shuffle) }
         guard status != .loading else { return }
         switch snapshot.state {
-        case .playing: status = .playing
+        case .playing:
+            status = .playing
+            // Playback that starts after the wait gave up makes that error untrue.
+            if notice?.text == MusicError.didNotStart.localizedDescription { notice = nil }
         case .paused: status = .paused
         case .stopped: if case .failed = status {} else { status = snapshot.current == nil ? .idle : .paused }
         }

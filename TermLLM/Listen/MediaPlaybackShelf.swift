@@ -246,23 +246,29 @@ struct MiniPlayerBar: View {
     var onOpen: () -> Void
 
     @State private var drag: CGFloat = 0
+    /// A point smaller than the subheadline title so two lines leave air
+    /// above and below inside the fixed-height tab accessory.
+    @ScaledMetric(relativeTo: .subheadline) private var accessoryTitleSize: CGFloat = 13
     private var player: ListenPlayer { listen.player }
 
     private var isPhone: Bool { WorkspacePlatform.current == .phone }
     private var showsInlineSkips: Bool { !isPhone && !dynamicTypeSize.isAccessibilitySize && !compactLayout }
+    /// The phone tab accessory has a fixed height; inset its contents so the
+    /// title never runs edge to edge against the cover and controls.
+    private var isTabAccessory: Bool { isPhone && usesSystemBackground }
 
     private func episodeTitle(_ item: ListenItem) -> some View {
         Text(item.title)
-            .font(.subheadline.weight(.semibold))
+            .font(isTabAccessory ? .system(size: accessoryTitleSize, weight: .semibold) : .subheadline.weight(.semibold))
             .foregroundStyle(.primary)
     }
 
     private func openLabel(_ item: ListenItem) -> some View {
-        HStack(spacing: isPhone ? 8 : 12) {
+        HStack(spacing: 12) {
             // Keep a stable cover (or the standard placeholder) when text wraps.
             ListenArtwork(item: item, size: isPhone ? 32 : 42, store: listen.artwork)
             Group {
-                if isPhone && usesSystemBackground {
+                if isTabAccessory {
                     // The tab accessory has a fixed height. Drop the subtitle,
                     // not the artwork or either control, when the title wraps.
                     ViewThatFits(in: .vertical) {
@@ -292,6 +298,7 @@ struct MiniPlayerBar: View {
             HStack(spacing: 0) {
                 Button(action: onOpen) {
                     openLabel(item)
+                        .padding(.vertical, isTabAccessory && !dynamicTypeSize.isAccessibilitySize ? 6 : 0)
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -346,8 +353,8 @@ struct MiniPlayerBar: View {
             }
             .buttonStyle(.plain)
             .font(.body.weight(.medium))
-            .padding(.leading, usesSystemBackground ? 12 : 14)
-            .padding(.trailing, 4)
+            .padding(.leading, isTabAccessory ? 22 : usesSystemBackground ? 12 : 14)
+            .padding(.trailing, isTabAccessory ? 14 : 4)
             .padding(.vertical, usesSystemBackground ? 0 : 4)
             .background(alignment: .bottom) {
                 ListenMiniPlayerProgress(player: player)
