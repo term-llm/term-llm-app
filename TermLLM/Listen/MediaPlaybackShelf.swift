@@ -246,9 +246,6 @@ struct MiniPlayerBar: View {
     var onOpen: () -> Void
 
     @State private var drag: CGFloat = 0
-    /// A point smaller than the subheadline title so two lines leave air
-    /// above and below inside the fixed-height tab accessory.
-    @ScaledMetric(relativeTo: .subheadline) private var accessoryTitleSize: CGFloat = 13
     private var player: ListenPlayer { listen.player }
 
     private var isPhone: Bool { WorkspacePlatform.current == .phone }
@@ -259,7 +256,7 @@ struct MiniPlayerBar: View {
 
     private func episodeTitle(_ item: ListenItem) -> some View {
         Text(item.title)
-            .font(isTabAccessory ? .system(size: accessoryTitleSize, weight: .semibold) : .subheadline.weight(.semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(.primary)
     }
 
@@ -269,18 +266,15 @@ struct MiniPlayerBar: View {
             ListenArtwork(item: item, size: isPhone ? 32 : 42, store: listen.artwork)
             Group {
                 if isTabAccessory {
-                    // The tab accessory has a fixed height. Drop the subtitle,
-                    // not the artwork or either control, when the title wraps.
-                    ViewThatFits(in: .vertical) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            episodeTitle(item)
+                    // The tab accessory has a fixed height. One standard-style
+                    // line each keeps air above and below; the full title is in
+                    // the player sheet and the accessibility label. Large text
+                    // drops the subtitle rather than crowding the edges.
+                    VStack(alignment: .leading, spacing: 1) {
+                        episodeTitle(item).lineLimit(1)
+                        if !dynamicTypeSize.isAccessibilitySize {
                             ListenMiniPlayerSubtitle(player: player, item: item)
                         }
-                        .fixedSize(horizontal: false, vertical: true)
-                        episodeTitle(item)
-                            .lineLimit(2)
-                            .allowsTightening(true)
-                            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.94)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 1) {
@@ -298,7 +292,6 @@ struct MiniPlayerBar: View {
             HStack(spacing: 0) {
                 Button(action: onOpen) {
                     openLabel(item)
-                        .padding(.vertical, isTabAccessory && !dynamicTypeSize.isAccessibilitySize ? 6 : 0)
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -353,8 +346,8 @@ struct MiniPlayerBar: View {
             }
             .buttonStyle(.plain)
             .font(.body.weight(.medium))
-            .padding(.leading, isTabAccessory ? 22 : usesSystemBackground ? 12 : 14)
-            .padding(.trailing, isTabAccessory ? 14 : 4)
+            .padding(.leading, isTabAccessory ? 20 : usesSystemBackground ? 12 : 14)
+            .padding(.trailing, isTabAccessory ? 12 : 4)
             .padding(.vertical, usesSystemBackground ? 0 : 4)
             .background(alignment: .bottom) {
                 ListenMiniPlayerProgress(player: player)
