@@ -4,6 +4,13 @@ import XCTest
 @testable import TermLLM
 
 @MainActor
+private func assertBearer(_ security: HubConnectionSecurity?, equals expected: String?,
+                          file: StaticString = #filePath, line: UInt = #line) async {
+    let actual = await security?.loadBearer()
+    XCTAssertEqual(actual, expected, file: file, line: line)
+}
+
+@MainActor
 final class HubConnectionSecurityTests: XCTestCase {
     private func connection(_ mount: String, id: UUID = UUID()) -> HubConnection {
         HubConnection(id: id, name: mount, kind: .directNode, url: URL(string: "https://example.com\(mount)")!)
@@ -61,18 +68,18 @@ final class HubConnectionSecurityTests: XCTestCase {
         await security.saveCookies([try cookie(source, value: "session")], epoch: security.epoch)
         XCTAssertEqual(events.log, ["load", "read", "load", "write"])
     }
-    func testCredentialIdentityIsUUIDScopedAndTrustRealmChangeStartsEmpty() throws {
+    func testCredentialIdentityIsUUIDScopedAndTrustRealmChangeStartsEmpty() async throws {
         let storage = HubMemoryBearerStorage()
         let oldConnection = connection("/old/")
         let newConnection = connection("/new/")
         let old = HubConnectionSecurity(connection: oldConnection, bearerStorage: storage, dataStore: .nonPersistent())
         try old.setBearer("old-secret")
         let new = HubConnectionSecurity(connection: newConnection, bearerStorage: storage, dataStore: .nonPersistent())
-        XCTAssertNil(new.bearer)
+        await assertBearer(new, equals: nil)
         XCTAssertNil(try storage.read(id: newConnection.id))
         old.dispose(removeCredentials: true)
         XCTAssertNil(try storage.read(id: oldConnection.id))
-        XCTAssertNil(new.bearer)
+        await assertBearer(new, equals: nil)
         XCTAssertTrue(new.active)
         new.dispose(removeCredentials: true)
     }
@@ -397,7 +404,7 @@ final class ManagedLocalAuthenticationTests: XCTestCase {
             XCTAssertGreaterThan(purges, 0, scenario)
             XCTAssertNotEqual(source.browserIdentity, identity, scenario)
             XCTAssertGreaterThan(source.authEpoch, epoch, scenario)
-            XCTAssertEqual(source.security?.bearer, "token", scenario)
+            await assertBearer(source.security, equals: "token")
             XCTAssertTrue(source.browserReady, scenario)
             XCTAssertFalse(source.browserRevoked, scenario)
             source.dispose(removeCredentials: false)
@@ -458,7 +465,7 @@ final class ManagedLocalAuthenticationTests: XCTestCase {
                 XCTAssertEqual(source.browserIdentity, identity, failure)
                 XCTAssertEqual(source.authEpoch, epoch, failure)
                 XCTAssertEqual(security.epoch, securityEpoch, failure)
-                XCTAssertEqual(security.bearer, "token", failure)
+                await assertBearer(security, equals: "token")
                 XCTAssertEqual(try storage.read(id: connection.id), "token", failure)
                 XCTAssertEqual(purges, 0, failure)
 
@@ -539,7 +546,7 @@ final class ManagedLocalAuthenticationTests: XCTestCase {
                 XCTAssertNotEqual(source.browserIdentity, identity)
                 XCTAssertNotNil(source.authenticationError)
                 await fulfillment(of: [purged], timeout: 2)
-                XCTAssertNil(source.security?.bearer)
+                await assertBearer(source.security, equals: nil)
                 XCTAssertNil(try storage.read(id: connection.id))
             }
         }
@@ -669,4 +676,301 @@ private actor CookieWriteGate {
     private var continuation: CheckedContinuation<Void, Never>?
     func wait() async { if !released { await withCheckedContinuation { continuation = $0 } } }
     func release() { released = true; continuation?.resume(); continuation = nil }
+}
+
+private final class GatedHubBearerStorage: HubBearerStorage, Sendable {
+    let memory = HubMemoryBearerStorage()
+    let gate = CredentialReadGate()
+    let fails: Bool
+    init(fails: Bool = false) { self.fails = fails }
+    func read(id: UUID) throws -> String? {
+        let snapshot = try memory.read(id: id)
+        gate.read()
+        if fails { throw HubKeychainBearerStorage.StorageError.failed }
+        return snapshot
+    }
+    func write(_ token: String?, id: UUID) throws { try memory.write(token, id: id) }
+}
+
+extension HubConnectionSecurityTests {
+    private func waitForRead(_ storage: GatedHubBearerStorage) async throws {
+        for _ in 0..<400 where storage.gate.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(storage.gate.readCount, 1)
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+    }
+
+    func testBearerRestorationIsLazyOffMainAndCoalescedPerConnection() async throws {
+        let storage = GatedHubBearerStorage()
+        let a = connection("/first/"), b = connection("/second/")
+        try storage.write("first-token", id: a.id)
+        try storage.write("second-token", id: b.id)
+        let first = HubConnectionSecurity(connection: a, bearerStorage: storage, dataStore: .nonPersistent())
+        let second = HubConnectionSecurity(connection: b, bearerStorage: storage, dataStore: .nonPersistent())
+        XCTAssertEqual(storage.gate.readCount, 0, "workspace construction must not read Keychain")
+        storage.gate.pause()
+        defer { storage.gate.resume(); first.dispose(removeCredentials: false); second.dispose(removeCredentials: false) }
+        let load = Task { await first.loadBearer() }
+        try await waitForRead(storage)
+        let duplicate = Task { await first.loadBearer() }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(storage.gate.readCount, 1)
+        storage.gate.resume()
+        let restored = await load.value, same = await duplicate.value
+        XCTAssertEqual(restored, "first-token")
+        XCTAssertEqual(same, restored)
+        let other = await second.loadBearer()
+        XCTAssertEqual(other, "second-token")
+        XCTAssertEqual(storage.gate.readCount, 2)
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+    }
+
+    func testDelayedBearerReadCannotOverwriteExplicitCredentialChange() async throws {
+        let storage = GatedHubBearerStorage()
+        let source = connection("/rotation/")
+        try storage.write("old-token", id: source.id)
+        let security = HubConnectionSecurity(connection: source, bearerStorage: storage, dataStore: .nonPersistent())
+        storage.gate.pause()
+        defer { storage.gate.resume(); security.dispose(removeCredentials: false) }
+        let load = Task { await security.loadBearer() }
+        try await waitForRead(storage)
+        security.nextEpoch()
+        try security.setBearer("new-token")
+        storage.gate.resume()
+        let replaced = await load.value
+        XCTAssertEqual(replaced, "new-token")
+        await assertBearer(security, equals: "new-token")
+        XCTAssertEqual(try storage.read(id: source.id), "new-token")
+    }
+
+    func testDelayedBearerReadCannotResurrectAfterEpochChangeOrDisposal() async throws {
+        for disposed in [false, true] {
+            let storage = GatedHubBearerStorage()
+            let source = connection("/retired/")
+            try storage.write("old-token", id: source.id)
+            let security = HubConnectionSecurity(connection: source, bearerStorage: storage, dataStore: .nonPersistent())
+            storage.gate.pause()
+            defer { storage.gate.resume(); security.dispose(removeCredentials: false) }
+            let load = Task { await security.loadBearer() }
+            try await waitForRead(storage)
+            if disposed { security.dispose(removeCredentials: true) }
+            else { security.nextEpoch(); try security.setBearer(nil) }
+            storage.gate.resume()
+            let stale = await load.value
+            XCTAssertNil(stale)
+            await assertBearer(security, equals: nil)
+            let current = await security.loadBearer()
+            XCTAssertNil(current)
+            XCTAssertEqual(storage.gate.readCount, 1)
+        }
+    }
+
+    func testFailedAndMissingBearerReadsFailClosedAndStayUUIDScoped() async throws {
+        for fails in [false, true] {
+            let storage = GatedHubBearerStorage(fails: fails)
+            let other = connection("/other/")
+            try storage.write("unrelated-token", id: other.id)
+            let security = HubConnectionSecurity(connection: connection("/missing/"), bearerStorage: storage,
+                                                 dataStore: .nonPersistent())
+            defer { security.dispose(removeCredentials: false) }
+            let token = await security.loadBearer()
+            XCTAssertNil(token)
+            await assertBearer(security, equals: nil)
+            XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+        }
+    }
+}
+
+extension ManagedLocalAuthenticationTests {
+    func testRevocationDuringInitialBearerRestorationCannotRestoreWorkspace() async throws {
+        let connection = connection()
+        let storage = GatedHubBearerStorage()
+        try storage.write("saved-token", id: connection.id)
+        let source = HubSourceWorkspace(connection: connection, bearerStorage: storage, dataStore: .nonPersistent(),
+                                        transport: ManagedLocalAuthTransport(handler: managedLocalAuthResponse))
+        storage.gate.pause()
+        defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+        let authentication = Task { await source.authenticateManagedLocalService("saved-token") }
+        for _ in 0..<400 where storage.gate.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(storage.gate.readCount, 1)
+        source.revokeAuthorization()
+        let identity = source.browserIdentity, epoch = source.authEpoch
+        storage.gate.resume()
+        let accepted = await authentication.value
+        XCTAssertFalse(accepted)
+        XCTAssertEqual(source.browserIdentity, identity)
+        XCTAssertEqual(source.authEpoch, epoch)
+        XCTAssertTrue(source.browserRevoked)
+        XCTAssertFalse(source.browserReady)
+    }
+}
+
+extension HubConnectionSecurityTests {
+    func testCookieEpochBeforeFirstLoadDoesNotSuppressStoredBearer() async throws {
+        let storage = GatedHubBearerStorage()
+        let source = connection("/cold-epoch/")
+        try storage.write("stored-token", id: source.id)
+        let security = HubConnectionSecurity(connection: source, bearerStorage: storage, dataStore: .nonPersistent())
+        defer { security.dispose(removeCredentials: false) }
+        let generation = security.bearerGeneration
+        security.nextEpoch()
+        XCTAssertEqual(security.bearerGeneration, generation)
+        XCTAssertEqual(storage.gate.readCount, 0)
+        let restored = await security.loadBearer()
+        XCTAssertEqual(restored, "stored-token")
+        XCTAssertEqual(storage.gate.readCount, 1)
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+    }
+
+    func testCookieEpochDuringSuspendedLoadDoesNotDiscardStoredBearer() async throws {
+        let storage = GatedHubBearerStorage()
+        let source = connection("/suspended-epoch/")
+        try storage.write("stored-token", id: source.id)
+        let security = HubConnectionSecurity(connection: source, bearerStorage: storage, dataStore: .nonPersistent())
+        storage.gate.pause()
+        defer { storage.gate.resume(); security.dispose(removeCredentials: false) }
+        let load = Task { await security.loadBearer() }
+        try await waitForRead(storage)
+        security.nextEpoch()
+        storage.gate.resume()
+        let restored = await load.value
+        XCTAssertEqual(restored, "stored-token")
+        XCTAssertEqual(storage.gate.readCount, 1)
+    }
+
+    func testColdChatPreparationRestoresScriptAndCookieBeforeAnyNativeRequest() async throws {
+        let storage = GatedHubBearerStorage()
+        let sourceConnection = connection("/cold-chat/")
+        try storage.write("stored-token", id: sourceConnection.id)
+        let source = HubSourceWorkspace(connection: sourceConnection, bearerStorage: storage, dataStore: .nonPersistent())
+        storage.gate.pause()
+        defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+        // Match an auth callback epoch bump before the first native request.
+        let security = try XCTUnwrap(source.security)
+        security.nextEpoch()
+        security.authorizeCookieReads()
+        XCTAssertNil(source.browserAuthenticationScript)
+        let preparation = Task { await source.prepareBrowserAuthentication() }
+        try await waitForRead(storage)
+        XCTAssertNil(source.browserAuthenticationScript, "Chat cannot receive an unprepared script")
+        storage.gate.resume()
+        let prepared = await preparation.value
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(source.browserAuthenticationScript,
+                       HubConnectionSecurity.directBearerScript(token: "stored-token", server: sourceConnection.url))
+        let cookies = await security.cookies()
+        XCTAssertEqual(cookies.first(where: { $0.name == "term_llm_token" })?.value, "stored-token")
+        XCTAssertEqual(storage.gate.readCount, 1)
+        try security.setBearer("replacement-token")
+        XCTAssertNil(source.browserAuthenticationScript, "A prepared script cannot cross bearer generations")
+    }
+
+    func testColdChatPreparationCannotPublishAcrossRetiredLifecycleOrCookieEpoch() async throws {
+        for change in ["revoke", "dispose", "epoch", "bearer"] {
+            let storage = GatedHubBearerStorage()
+            let sourceConnection = connection("/late-chat/")
+            try storage.write("stored-token", id: sourceConnection.id)
+            let source = HubSourceWorkspace(connection: sourceConnection, bearerStorage: storage, dataStore: .nonPersistent())
+            storage.gate.pause()
+            defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+            let preparation = Task { await source.prepareBrowserAuthentication() }
+            try await waitForRead(storage)
+            switch change {
+            case "revoke": source.revokeAuthorization()
+            case "dispose": source.dispose(removeCredentials: false)
+            case "epoch": source.security?.nextEpoch()
+            default:
+                // A newer explicit token is valid in loadBearer, but the cookie
+                // epoch guard still prevents an old caller from importing it.
+                source.security?.nextEpoch()
+                try source.security?.setBearer("replacement-token")
+            }
+            storage.gate.resume()
+            let prepared = await preparation.value
+            XCTAssertFalse(prepared, change)
+            XCTAssertNil(source.browserAuthenticationScript, change)
+        }
+    }
+}
+
+extension ManagedLocalAuthenticationTests {
+    func testColdAttachComparisonAwaitsRestorationAndReusesCredentialWithoutReset() async throws {
+        let connection = connection()
+        let storage = GatedHubBearerStorage()
+        try storage.write("saved-token", id: connection.id)
+        var purges = 0
+        let source = HubSourceWorkspace(connection: connection, bearerStorage: storage, dataStore: .nonPersistent(),
+                                        transport: ManagedLocalAuthTransport(handler: managedLocalAuthResponse),
+                                        dataPurger: { purges += 1 })
+        storage.gate.pause()
+        defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+        let identity = source.browserIdentity, epoch = source.authEpoch
+        var finished = false
+        let comparison = Task {
+            let ready = await source.hasReadyManagedLocalCredential("saved-token")
+            finished = true
+            return ready
+        }
+        for _ in 0..<400 where storage.gate.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(storage.gate.readCount, 1)
+        XCTAssertFalse(finished, "The attach fast path must not compare a cold nil cache")
+        storage.gate.resume()
+        let initiallyReady = await comparison.value
+        XCTAssertFalse(initiallyReady, "A cold browser still needs preparation/validation")
+        let accepted = await source.authenticateManagedLocalService("saved-token")
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(source.browserIdentity, identity)
+        XCTAssertEqual(source.authEpoch, epoch)
+        XCTAssertEqual(purges, 0)
+        XCTAssertNotNil(source.browserAuthenticationScript)
+        let ready = await source.hasReadyManagedLocalCredential("saved-token")
+        XCTAssertTrue(ready)
+        XCTAssertEqual(storage.gate.readCount, 1)
+    }
+
+    func testAttachComparisonRejectsRevocationWhileRestorationIsSuspended() async throws {
+        let connection = connection()
+        let storage = GatedHubBearerStorage()
+        try storage.write("saved-token", id: connection.id)
+        let source = HubSourceWorkspace(connection: connection, bearerStorage: storage, dataStore: .nonPersistent())
+        storage.gate.pause()
+        defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+        let comparison = Task { await source.hasReadyManagedLocalCredential("saved-token") }
+        for _ in 0..<400 where storage.gate.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(storage.gate.readCount, 1)
+        source.revokeAuthorization()
+        storage.gate.resume()
+        let ready = await comparison.value
+        XCTAssertFalse(ready)
+        XCTAssertTrue(source.browserRevoked)
+    }
+}
+
+extension HubConnectionSecurityTests {
+    func testColdActivationAndAuthenticationCallbackPrepareScriptBeforeBrowserReadiness() async throws {
+        for callback in [false, true] {
+            let storage = GatedHubBearerStorage()
+            let sourceConnection = connection("/cold-readiness/")
+            try storage.write("stored-token", id: sourceConnection.id)
+            let source = HubSourceWorkspace(connection: sourceConnection, bearerStorage: storage, dataStore: .nonPersistent(),
+                                            transport: ManagedLocalAuthTransport(handler: managedLocalAuthResponse))
+            storage.gate.pause()
+            defer { storage.gate.resume(); source.dispose(removeCredentials: false) }
+            let authentication: Task<Bool, Never>?
+            if callback { authentication = Task { await source.authenticationSucceeded(epoch: source.authEpoch) } }
+            else { authentication = nil; source.start() }
+            try await waitForRead(storage)
+            XCTAssertFalse(source.browserReady)
+            XCTAssertNil(source.browserAuthenticationScript)
+            storage.gate.resume()
+            if let authentication {
+                let accepted = await authentication.value
+                XCTAssertTrue(accepted)
+            }
+            for _ in 0..<400 where !source.browserReady { try await Task.sleep(for: .milliseconds(5)) }
+            XCTAssertTrue(source.browserReady)
+            XCTAssertEqual(source.browserAuthenticationScript,
+                           HubConnectionSecurity.directBearerScript(token: "stored-token", server: sourceConnection.url))
+            XCTAssertEqual(storage.gate.readCount, 1)
+        }
+    }
 }

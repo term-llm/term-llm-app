@@ -293,6 +293,14 @@ final class MusicToolsTests: XCTestCase {
         XCTAssertEqual(wrongList, "song_ids must be a list of strings.")
     }
 
+    func testIntegerArgumentsRejectUnrepresentableDoubles() throws {
+        for value in [1e100, -1e100, .infinity, -.infinity, .nan, Double(Int.max)] {
+            XCTAssertThrowsError(try Arguments(["limit": .double(value)]).int("limit"))
+        }
+        XCTAssertEqual(try Arguments(["limit": .double(42)]).int("limit"), 42)
+        XCTAssertEqual(try Arguments(["limit": .double(Double(Int.min))]).int("limit"), Int.min)
+    }
+
     func testAcceptsObviousIntent() async throws {
         catalog.searchResults = [track("100")]
         // Numbers and booleans as strings, one id instead of a list, blank optionals.
@@ -303,6 +311,14 @@ final class MusicToolsTests: XCTestCase {
         XCTAssertEqual(library.store.playlists.first?.tracks.map(\.id), ["100", "200", "300"])
         let playing = try await call("music_play", ["playlist": "Loose", "song_ids": "", "shuffle": "false", "start_entry_id": .null])
         XCTAssertEqual(playing["status"], "playing")
+    }
+
+    func testPlaybackToolsAttachToThePlayerButLibraryToolsDoNot() async throws {
+        try await call("playlist_list")
+        try await call("music_search", ["query": "Portishead"])
+        XCTAssertEqual(engine.activations, 0)
+        try await call("music_now_playing")
+        XCTAssertEqual(engine.activations, 1)
     }
 
     func testPlayingAndControlling() async throws {

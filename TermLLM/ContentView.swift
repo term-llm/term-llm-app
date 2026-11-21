@@ -76,9 +76,9 @@ struct ContentView: View {
     private var isFixture: Bool { HubFixture.isEnabled || PhoneHubFixture.isEnabled }
     private var browserIsRevoked: Bool { hubBrowserRevoked || (!HubFixture.isEnabled && selectedWorkspace?.browserRevoked == true) }
     private var browserAuthenticationScript: String? {
-        guard connections.selected?.kind == .directNode, let source = selectedWorkspace,
-              let token = source.security?.bearer else { return nil }
-        return HubConnectionSecurity.directBearerScript(token: token, server: source.connection.url)
+        // Browser readiness and explicit chat opens await preparation on the
+        // workspace. Render only that generation-checked script, not a cold cache.
+        selectedWorkspace?.browserAuthenticationScript
     }
     private var desktopCommandPolicy: DesktopCommandPolicy {
         DesktopCommandPolicy(
@@ -346,6 +346,13 @@ struct ContentView: View {
         }
         .onChange(of: effectiveScenePhase) { _, phase in
             if phase == .background {
+                #if os(iOS)
+                // Mitigate the keyboard autofill hang observed at background
+                // termination. Relinquish focus once per transition, natively:
+                // never reload/detach the retained Chat document or await JS.
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                              to: nil, from: nil, for: nil)
+                #endif
                 aggregate.setPollingSuspended(true)
                 linkedDevices.setForeground(false)
             }
@@ -922,8 +929,11 @@ struct ContentView: View {
             else { return }
             aggregate.synchronize(connections.connections.filter { $0.needsKindReview != true })
             guard !Task.isCancelled, let source = aggregate.source(connection.id), source.isActive else { return }
-            if source.security?.bearer == request.token, source.browserReady,
-               !source.browserRevoked, !source.store.unauthorized { return }
+            let expected = source.authEpoch
+            let unchanged = await source.hasReadyManagedLocalCredential(request.token)
+            guard !Task.isCancelled, source.isActive, source.authEpoch == expected,
+                  aggregate.source(connection.id) === source else { return }
+            if unchanged { return }
             await source.authenticateManagedLocalService(request.token)
         }
         #endif

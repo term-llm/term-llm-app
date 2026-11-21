@@ -66,7 +66,9 @@ denial, use **Open Settings**. Browsing does not start playback or request
 permission automatically.
 
 On iPhone/iPad, Apple Music uses the system Music player. Mac plays inside
-term-llm, not the system Music app. If iPhone/iPad playback fails despite a valid
+term-llm, not the system Music app. term-llm attaches to the player only once
+Music is used (the Music screen, music tools or playback), so music started
+elsewhere appears in the media shelf after that. If iPhone/iPad playback fails despite a valid
 subscription, play a song in Music once and retry. Testing playback requires a
 real device; developers also need the MusicKit App Service enabled for their
 bundle ID and refreshed provisioning profiles.

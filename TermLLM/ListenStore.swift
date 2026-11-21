@@ -1,6 +1,18 @@
 import Foundation
 import Observation
 
+/// Limits apply both to untrusted tools and older on-disk metadata. One year
+/// permits long recordings without passing absurd values to AVFoundation/UI.
+enum ListenMediaTime {
+    static let maximum: TimeInterval = 365 * 24 * 60 * 60
+    static func validDuration(_ value: TimeInterval) -> Bool { value.isFinite && value > 0 && value <= maximum }
+    static func validPosition(_ value: TimeInterval) -> Bool { value.isFinite && value >= 0 && value <= maximum }
+    static func seconds(_ value: TimeInterval) -> Int {
+        guard value.isFinite else { return 0 }
+        return Int(exactly: min(maximum, max(0, value)).rounded()) ?? 0
+    }
+}
+
 /// The Listen library kept on this phone. Unplayed and in-progress items in
 /// list order form Up Next; played and archived items stay as history until
 /// cleared. Saved as JSON after every change, except playback positions,
@@ -23,18 +35,19 @@ final class ListenStore {
 
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let positionsURL: URL
-    /// Positions recorded since the library file was last written.
-    @ObservationIgnored private var pendingPositions: [UUID: TimeInterval] = [:]
-    @ObservationIgnored private var positionsFileMayExist = false
+    @ObservationIgnored private let persistence: ListenPersistence
+    @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private let now: () -> Date
     static let formatVersion = 1
     /// History beyond this many items is dropped, oldest first.
     static let historyLimit = 200
 
-    init(fileURL: URL = ListenStore.defaultFileURL, now: @escaping () -> Date = Date.init) {
+    init(fileURL: URL = ListenStore.defaultFileURL, now: @escaping () -> Date = Date.init,
+         persistenceQueue: DispatchQueue = DispatchQueue(label: "TermLLM.ListenPersistence", qos: .utility)) {
         self.fileURL = fileURL
         positionsURL = Self.positionsURL(for: fileURL)
         self.now = now
+        persistence = ListenPersistence(fileURL: fileURL, positionsURL: positionsURL, queue: persistenceQueue)
         load()
     }
 
@@ -116,6 +129,8 @@ final class ListenStore {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         var item = items[index]
         change(&item)
+        if let duration = item.duration, !ListenMediaTime.validDuration(duration) { item.duration = nil }
+        if !ListenMediaTime.validPosition(item.position) { item.position = 0 }
         item.updatedAt = now()
         items[index] = item
         if save { persist() }
@@ -127,12 +142,10 @@ final class ListenStore {
     /// history make that hundreds of KB). The next library save takes them in
     /// and deletes the small file.
     func setPosition(_ position: TimeInterval, for id: UUID) {
-        guard position.isFinite, let index = items.firstIndex(where: { $0.id == id }) else { return }
+        guard ListenMediaTime.validPosition(position), let index = items.firstIndex(where: { $0.id == id }) else { return }
         let position = max(0, position)
         if items[index].position != position { items[index].position = position }
-        guard pendingPositions[id] != position else { return }
-        pendingPositions[id] = position
-        writePositions()
+        persistence.setPosition(position, for: id)
     }
 
     func setStatus(_ ids: [UUID], _ status: ListenItem.Status) throws {
@@ -204,21 +217,38 @@ final class ListenStore {
     }
 
     func persist() {
-        do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try Self.encoder.encode(Stored(version: Self.formatVersion, items: items))
-            try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            if notice?.hasPrefix(Self.saveFailurePrefix) == true { notice = nil }
-        } catch {
-            listenLog.error("Listen library save failed: \(error.localizedDescription, privacy: .public)")
-            notice = "\(Self.saveFailurePrefix) \(error.localizedDescription)"
-            return
+        saveGeneration += 1
+        let generation = saveGeneration
+        persistence.writeLibrary(items) { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.saveGeneration == generation else { return }
+                if let error {
+                    self.notice = "\(Self.saveFailurePrefix) \(error)"
+                } else if self.notice?.hasPrefix(Self.saveFailurePrefix) == true {
+                    self.notice = nil
+                }
+            }
         }
-        // The library now holds every position.
-        pendingPositions = [:]
-        if positionsFileMayExist {
-            try? FileManager.default.removeItem(at: positionsURL)
-            positionsFileMayExist = false
+    }
+
+    /// A queue marker, not a main-thread wait. Also used to end a lifecycle
+    /// background assertion after all previously enqueued writes finish.
+    func whenPersistenceCompletes(_ completion: @escaping @Sendable () -> Void) {
+        persistence.whenDrained(completion)
+    }
+
+    /// Only willTerminate may briefly wait for queued writes. The drain marker
+    /// signals on the persistence queue itself, never via the blocked MainActor.
+    @discardableResult
+    func drainForTermination() -> Bool {
+        let drained = DispatchSemaphore(value: 0)
+        persistence.whenDrained { drained.signal() }
+        return drained.wait(timeout: .now() + 1.5) == .success
+    }
+
+    func flushForTesting() async {
+        await withCheckedContinuation { continuation in
+            persistence.whenDrained { continuation.resume() }
         }
     }
 
@@ -255,35 +285,22 @@ final class ListenStore {
         if let details = draft.details { item.details = details }
         if let artworkURL = draft.artworkURL { item.artworkURL = artworkURL }
         if let kind = draft.kind { item.kind = kind }
-        if let duration = draft.duration, duration > 0 { item.duration = duration }
+        if let duration = draft.duration, ListenMediaTime.validDuration(duration) { item.duration = duration }
         if let publishedAt = draft.publishedAt { item.publishedAt = publishedAt }
-    }
-
-    private func writePositions() {
-        let positions = Dictionary(uniqueKeysWithValues: pendingPositions.map { ($0.key.uuidString, $0.value) })
-        do {
-            try FileManager.default.createDirectory(at: positionsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try Self.encoder.encode(StoredPositions(version: Self.formatVersion, positions: positions))
-            positionsFileMayExist = true
-            try data.write(to: positionsURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        } catch {
-            listenLog.error("Listen position save failed: \(error.localizedDescription, privacy: .public)")
-        }
     }
 
     /// Positions recorded after the library was last saved win over its own.
     private func loadPositions() {
         guard let data = try? Data(contentsOf: positionsURL) else { return }
-        positionsFileMayExist = true
         guard let stored = try? Self.decoder.decode(StoredPositions.self, from: data) else {
             listenLog.error("Listen positions file is unreadable; using the library's positions")
             return
         }
         for (key, position) in stored.positions {
-            guard let id = UUID(uuidString: key), position.isFinite, position >= 0,
+            guard let id = UUID(uuidString: key), ListenMediaTime.validPosition(position),
                   let index = items.firstIndex(where: { $0.id == id }) else { continue }
             items[index].position = position
-            pendingPositions[id] = position
+            persistence.seedPosition(position, for: id)
         }
     }
 
@@ -300,22 +317,21 @@ final class ListenStore {
         }
         guard let body = try? Self.decoder.decode(Body.self, from: data) else {
             let backup = fileURL.deletingLastPathComponent()
-                .appending(path: "library-unreadable-\(Int(now().timeIntervalSince1970)).json")
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
+                .appending(path: "library-unreadable-\((Int(exactly: now().timeIntervalSince1970.rounded(.down)) ?? 0)).json")
+            persistence.setAside(at: backup)
             notice = "The Listen library couldn't be read. It was kept as \(backup.lastPathComponent) and a new one started."
             return
         }
         var seen = Set<UUID>()
         items = body.items.compactMap(\.value).filter { seen.insert($0.id).inserted }
+        for index in items.indices {
+            if let duration = items[index].duration, !ListenMediaTime.validDuration(duration) { items[index].duration = nil }
+            if !ListenMediaTime.validPosition(items[index].position) { items[index].position = 0 }
+        }
         // A download interrupted by the app quitting won't finish.
         for index in items.indices where items[index].download == .downloading || items[index].download == .queued {
             items[index].download = .none
         }
-    }
-
-    private struct Stored: Encodable {
-        let version: Int
-        let items: [ListenItem]
     }
 
     private struct StoredPositions: Codable {
@@ -333,16 +349,76 @@ final class ListenStore {
         init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
     }
 
-    private static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        return encoder
-    }()
-
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+}
+
+/// Both library snapshots and position deltas use this one FIFO. Mutable state
+/// and encoders live exclusively on the queue; the lock-free MainActor facade
+/// only passes immutable Sendable snapshots. Normal and background saves never
+/// wait synchronously; willTerminate alone uses a bounded 1.5-second drain.
+private final class ListenPersistence: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let fileURL: URL
+    private let positionsURL: URL
+    private var positions: [String: TimeInterval] = [:]
+
+    init(fileURL: URL, positionsURL: URL, queue: DispatchQueue) {
+        self.queue = queue
+        self.fileURL = fileURL
+        self.positionsURL = positionsURL
+    }
+
+    func seedPosition(_ position: TimeInterval, for id: UUID) {
+        queue.async { self.positions[id.uuidString] = position }
+    }
+
+    func setPosition(_ position: TimeInterval, for id: UUID) {
+        queue.async {
+            guard self.positions[id.uuidString] != position else { return }
+            self.positions[id.uuidString] = position
+            do {
+                try self.write(StoredPositions(version: 1, positions: self.positions), to: self.positionsURL)
+            } catch {
+                listenLog.error("Listen position save failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    func writeLibrary(_ items: [ListenItem], completion: @escaping @Sendable (String?) -> Void) {
+        queue.async {
+            do {
+                try self.write(Stored(version: 1, items: items), to: self.fileURL)
+                // Only a successful write subsumes older position deltas. A
+                // later delta is queued behind this removal and cannot be lost.
+                self.positions = [:]
+                try? FileManager.default.removeItem(at: self.positionsURL)
+                completion(nil)
+            } catch {
+                listenLog.error("Listen library save failed: \(error.localizedDescription, privacy: .public)")
+                completion(error.localizedDescription)
+            }
+        }
+    }
+
+    func setAside(at backup: URL) {
+        queue.async { try? FileManager.default.moveItem(at: self.fileURL, to: backup) }
+    }
+
+    func whenDrained(_ completion: @escaping @Sendable () -> Void) { queue.async(execute: completion) }
+
+    private func write<Value: Encodable>(_ value: Value, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(value)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    private struct Stored: Encodable { let version: Int; let items: [ListenItem] }
+    private struct StoredPositions: Encodable { let version: Int; let positions: [String: TimeInterval] }
 }

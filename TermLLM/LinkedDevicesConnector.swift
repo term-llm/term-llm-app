@@ -31,7 +31,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, Sendable {
             guard let capability = link.invitationCapability else {
                 throw LinkedDevicesProtocolError.invalidLink
             }
-            let prepared = try identities.prepare(hostKey: link.hostKey)
+            let prepared = try await identities.prepareAsync(hostKey: link.hostKey)
             let attempt = try LinkedDevicesPairingAttempt(link: link, credential: prepared,
                                                            deviceName: Self.safeDeviceName(deviceName), now: clock())
             stage = .contactingBroker
@@ -49,7 +49,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, Sendable {
                 // PairingAttempt preserves the identity already durably prepared.
                 credential.deviceSeed = prepared.deviceSeed
                 stage = .savingIdentity
-                try identities.save(credential)
+                try await identities.saveAsync(credential)
                 // Pairing is identity-only. The consumed invitation socket never
                 // carries SDP; close it, then use the durable device slot for the
                 // first signed transport handshake exactly like every reconnect.

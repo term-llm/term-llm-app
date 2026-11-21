@@ -141,12 +141,44 @@ struct LinkedDevicesCredential: Codable, Equatable, Sendable {
 final class LinkedDevicesIdentityStore: @unchecked Sendable {
     private let storage: any LinkedDevicesSecureStorage
     private let lock = NSLock()
+    // Keychain IPC and contention on the transaction lock must not stall scene
+    // transitions. Production callers enqueue all storage work on this worker.
+    private let storageQueue = DispatchQueue(label: "com.termllm.linked-devices.credentials")
 
     #if canImport(Security)
     convenience init() { self.init(storage: LinkedDevicesKeychainStorage()) }
     #endif
 
     init(storage: any LinkedDevicesSecureStorage) { self.storage = storage }
+
+    func prepareAsync(hostKey: Data) async throws -> LinkedDevicesCredential {
+        try await perform { try self.prepare(hostKey: hostKey) }
+    }
+
+    func loadAsync(hostKey: Data) async throws -> LinkedDevicesCredential {
+        try await perform { try self.load(hostKey: hostKey) }
+    }
+
+    func saveAsync(_ credential: LinkedDevicesCredential) async throws {
+        try await perform { try self.save(credential) }
+    }
+
+    func removeAsync(hostKey: Data) async throws {
+        try await perform { try self.remove(hostKey: hostKey) }
+    }
+
+    /// Enqueue synchronously when catalog removal invalidates a source. Do not
+    /// wait for a pending read's lock on MainActor; later queued pairing writes
+    /// must also not be overtaken by this deletion.
+    func removeInBackground(hostKey: Data) {
+        storageQueue.async { try? self.remove(hostKey: hostKey) }
+    }
+
+    private func perform<Value: Sendable>(_ operation: @escaping @Sendable () throws -> Value) async throws -> Value {
+        try await withCheckedThrowingContinuation { continuation in
+            storageQueue.async { continuation.resume(with: Result { try operation() }) }
+        }
+    }
 
     static func account(hostKey: Data) -> String {
         "host-" + LinkedDevicesBase64URL.encode(Data(SHA256.hash(data: hostKey)))

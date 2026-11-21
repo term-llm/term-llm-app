@@ -53,7 +53,7 @@ enum PhoneHubFixture {
     }
 }
 
-protocol HubBearerStorage {
+protocol HubBearerStorage: Sendable {
     func read(id: UUID) throws -> String?
     func write(_ token: String?, id: UUID) throws
 }
@@ -156,10 +156,12 @@ final class HubWebsiteDataBarrier {
 }
 
 /// Explicitly used only for tests and simulator protocol fixtures.
-final class HubMemoryBearerStorage: HubBearerStorage {
+// Sendability: every access to the token dictionary is serialized by the lock.
+final class HubMemoryBearerStorage: HubBearerStorage, @unchecked Sendable {
+    private let lock = NSLock()
     private var tokens: [UUID: String] = [:]
-    func read(id: UUID) throws -> String? { tokens[id] }
-    func write(_ token: String?, id: UUID) throws { tokens[id] = token }
+    func read(id: UUID) throws -> String? { lock.withLock { tokens[id] } }
+    func write(_ token: String?, id: UUID) throws { lock.withLock { tokens[id] = token } }
 }
 
 @MainActor
@@ -171,7 +173,10 @@ final class HubConnectionSecurity {
     private(set) var active = true
     private(set) var epoch: UInt64 = 0
     private(set) var cookiesReadable = true
-    private(set) var bearer: String?
+    private var bearer: String?
+    private(set) var bearerGeneration: UInt64 = 0
+    private var bearerLoaded = false
+    private var bearerLoad: Task<String?, Never>?
     private let websiteDataBarrier: HubWebsiteDataBarrier
     private let cookieWriter: (@MainActor (HTTPCookie) async -> Void)?
     private let dataPurger: (@MainActor () async -> Void)?
@@ -191,7 +196,32 @@ final class HubConnectionSecurity {
         self.bearerStorage = bearerStorage
         self.websiteDataBarrier = websiteDataBarrier ?? .shared(for: connection.id)
         self.dataStore = dataStore ?? (PhoneHubFixture.isEnabled ? .nonPersistent() : WKWebsiteDataStore(forIdentifier: connection.id))
-        bearer = try? bearerStorage.read(id: connection.id)
+    }
+
+    /// Restoring a UUID-scoped bearer can involve synchronous Keychain IPC.
+    /// Defer it until needed and keep it off MainActor, including construction.
+    func loadBearer() async -> String? {
+        guard active, !Task.isCancelled else { return nil }
+        if bearerLoaded { return bearer }
+        let expected = bearerGeneration
+        let task: Task<String?, Never>
+        if let pending = bearerLoad { task = pending }
+        else {
+            let storage = bearerStorage, sourceID = id
+            task = Task.detached { try? storage.read(id: sourceID) }
+            bearerLoad = task
+        }
+        let restored = await task.value
+        guard active, !Task.isCancelled else { return nil }
+        // Cookie callback epochs do not change the bearer identity. Only an
+        // explicit bearer mutation supersedes this UUID-scoped storage read.
+        // If another waiter or setBearer won meanwhile, return its current value.
+        if bearerLoaded { return bearer }
+        guard bearerGeneration == expected else { return nil }
+        bearer = restored
+        bearerLoaded = true
+        bearerLoad = nil
+        return bearer
     }
 
     func cookies() async -> [HTTPCookie] {
@@ -257,16 +287,24 @@ final class HubConnectionSecurity {
     func setBearer(_ token: String?) throws {
         guard active else { throw CancellationError() }
         try bearerStorage.write(token, id: id)
+        bearerGeneration &+= 1
         bearer = token
+        bearerLoaded = true
+        bearerLoad = nil
     }
 
     /// Authentication replaces callbacks, not other connections' credentials.
-    func nextEpoch() { epoch &+= 1; cookiesReadable = false }
+    func nextEpoch() {
+        epoch &+= 1
+        cookiesReadable = false
+    }
     func authorizeCookieReads() { guard active else { return }; cookiesReadable = true }
 
     func dispose(removeCredentials: Bool) {
         active = false
         epoch &+= 1
+        bearerGeneration &+= 1
+        bearerLoad = nil
         if removeCredentials {
             try? bearerStorage.write(nil, id: id)
             bearer = nil

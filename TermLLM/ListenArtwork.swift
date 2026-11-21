@@ -28,16 +28,21 @@ final class ListenArtworkStore {
     private let server: () -> ListenServer?
     private let session: URLSession
     private let images = NSCache<NSString, PlatformImage>()
+    private let fileQueue: DispatchQueue
+    /// Known files can be returned without joining utility cleanup work.
     private var saved: Set<String> = []
+    private var fileReads: [String: Int] = [:]
     private var loads: [String: Task<URL?, Never>] = [:]
     private var failures: [String: ContinuousClock.Instant] = [:]
 
     init(directory: URL = ListenArtworkStore.defaultDirectory, cookies: ListenCookieJar?,
-         server: @escaping () -> ListenServer?, session: URLSession = ListenMediaSession.shared) {
+         server: @escaping () -> ListenServer?, session: URLSession = ListenMediaSession.shared,
+         fileQueue: DispatchQueue = DispatchQueue(label: "TermLLM.ListenArtworkFiles", qos: .utility)) {
         self.directory = directory
         self.cookies = cookies
         self.server = server
         self.session = session
+        self.fileQueue = fileQueue
         images.totalCostLimit = 32 << 20
     }
 
@@ -75,7 +80,20 @@ final class ListenArtworkStore {
     private func file(url: URL, owner: UUID?, credentialed: Bool) async -> URL? {
         let name = fileName(url: url, owner: owner)
         let destination = directory.appending(path: name)
-        if saved.contains(name) || FileManager.default.fileExists(atPath: destination.path(percentEncoded: false)) {
+        if saved.contains(name) { return destination }
+        fileReads[name, default: 0] += 1
+        defer {
+            fileReads[name, default: 0] -= 1
+            if fileReads[name] == 0 { fileReads[name] = nil }
+        }
+        // Ordered after pruning and before any subsequent save. No directory
+        // scans, image writes or existence checks block MainActor.
+        let exists = await withCheckedContinuation { continuation in
+            fileQueue.async {
+                continuation.resume(returning: FileManager.default.fileExists(atPath: destination.path(percentEncoded: false)))
+            }
+        }
+        if exists {
             saved.insert(name)
             return destination
         }
@@ -94,9 +112,11 @@ final class ListenArtworkStore {
             }
             guard let (data, response) = try? await self.session.data(for: request),
                   (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true else { return nil }
-            return await Task.detached(priority: .utility) {
-                ListenArtworkStore.save(data, to: destination, in: directory)
-            }.value
+            return await withCheckedContinuation { continuation in
+                self.fileQueue.async {
+                    continuation.resume(returning: ListenArtworkStore.save(data, to: destination, in: directory))
+                }
+            }
         }
         loads[name] = load
         let file = await load.value
@@ -152,10 +172,22 @@ final class ListenArtworkStore {
     }
 
     private func prune(keepingNames keep: Set<String>) {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
-        for name in names where !keep.contains(name) && loads[name] == nil {
-            try? FileManager.default.removeItem(at: directory.appending(path: name))
-            saved.remove(name)
+        let keep = keep.union(loads.keys).union(fileReads.keys)
+        // Invalidate before enqueueing deletion. Requests for removed names
+        // must check disk behind the prune; retained/in-flight files stay fast.
+        saved.formIntersection(keep)
+        let directory = directory
+        fileQueue.async {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+            for name in names where !keep.contains(name) {
+                try? FileManager.default.removeItem(at: directory.appending(path: name))
+            }
+        }
+    }
+
+    func flushForTesting() async {
+        await withCheckedContinuation { continuation in
+            fileQueue.async { continuation.resume() }
         }
     }
 

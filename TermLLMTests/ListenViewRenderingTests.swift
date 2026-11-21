@@ -8,6 +8,16 @@ import XCTest
 #if os(iOS)
 @MainActor
 final class ListenViewRenderingTests: XCTestCase {
+    func testTimeFormattingRejectsInvalidPersistedValuesWithoutTrapping() {
+        for value in [1e100, -1e100, .infinity, -.infinity, .nan, -1] {
+            XCTAssertEqual(ListenFormat.time(value), "—")
+        }
+        XCTAssertEqual(ListenFormat.time(0), "0:00")
+        XCTAssertEqual(ListenFormat.time(3661), "1:01:01")
+        XCTAssertEqual(ListenMediaTime.seconds(1e100), Int(ListenMediaTime.maximum))
+        XCTAssertEqual(ListenMediaTime.seconds(.nan), 0)
+    }
+
     private func sampleListen() async throws -> Listen {
         let engine = FakeListenEngine()
         // Saving the streaming episode stays in flight at about a third.

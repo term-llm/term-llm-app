@@ -73,6 +73,109 @@ final class ListenTransferTests: XCTestCase {
         try Data(contentsOf: try XCTUnwrap(saved).file)
     }
 
+    func testProgressDoesNotWaitForFileQueueAndSealIsAwaitable() async throws {
+        let server = FakeMediaServer()
+        let body = mediaBody(2 << 20)
+        server.serve(url, .init(body: body))
+        server.hold(128 << 10 ..< body.count)
+        let (first, _) = transfer(server)
+        first.start()
+        await eventually { first.progress.received == 128 << 10 }
+        let release = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "file queue blocked")
+        first.queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let start = ContinuousClock.now
+        XCTAssertEqual(first.progress.received, 128 << 10)
+        XCTAssertEqual(first.progress.expected, Int64(body.count))
+        XCTAssertLessThan(start.duration(to: .now), .milliseconds(100), "progress must never join the I/O queue")
+        var sealed = false
+        let close = Task { await first.cancelAndSeal(keepingPartial: true); sealed = true }
+        await Task.yield()
+        XCTAssertFalse(sealed)
+        release.signal()
+        await close.value
+        let (resumed, _) = transfer(server, id: first.id)
+        XCTAssertEqual(resumed.progress.received, 128 << 10, "the completion makes the recorded bytes safe to reopen")
+        await resumed.cancelAndSeal(keepingPartial: false)
+    }
+
+    func testReleasingSealedTransferDoesNotDeleteItsReplacementsPartials() async throws {
+        let server = FakeMediaServer()
+        let body = mediaBody(3 << 20)
+        let id = UUID()
+        server.serve(url, .init(body: body))
+        server.hold(1 << 20 ..< body.count)
+        var old: ListenTransfer?
+        do {
+            let (first, _) = transfer(server, id: id)
+            old = first
+            first.start()
+            await eventually { first.progress.received == 1 << 20 }
+            await first.cancelAndSeal(keepingPartial: false)
+        }
+        weak let retired = old
+        let oldQueue = try XCTUnwrap(old).queue
+        let (replacement, outcome) = transfer(server, id: id)
+        replacement.start()
+        await eventually { replacement.progress.received == 1 << 20 }
+        await withCheckedContinuation { continuation in replacement.queue.async { continuation.resume() } }
+        let partials = ListenTransfer.partialFiles(for: id, in: directory)
+        XCTAssertTrue(partials.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        old = nil
+        await withCheckedContinuation { continuation in oldQueue.async { continuation.resume() } }
+        XCTAssertNil(retired)
+        XCTAssertTrue(partials.allSatisfy { FileManager.default.fileExists(atPath: $0.path) },
+                      "a sealed owner's deinit must not unlink the replacement's partial or record")
+        server.release()
+        await eventually { outcome.result != nil }
+        XCTAssertEqual(try contents(outcome.saved), body)
+    }
+
+    func testLateCancellationOfFailedOrSealedTransferLeavesReplacementAlone() async throws {
+        for failed in [false, true] {
+            let server = FakeMediaServer()
+            let body = mediaBody(3 << 20)
+            let id = UUID()
+            server.serve(url, .init(body: body, mime: failed ? "text/html" : "audio/mpeg"))
+            server.hold(1 << 20 ..< body.count)
+            var old: ListenTransfer?
+            do {
+                let (first, result) = transfer(server, id: id)
+                old = first
+                first.start()
+                if failed {
+                    await eventually { result.error != nil }
+                } else {
+                    await eventually { first.progress.received == 1 << 20 }
+                    await first.cancelAndSeal(keepingPartial: true)
+                }
+            }
+            server.serve(url, .init(body: body))
+            let (replacement, outcome) = transfer(server, id: id)
+            replacement.start()
+            // A sealed partial is reused; a failed, discarded one starts anew.
+            await eventually { replacement.progress.received == 1 << 20 }
+            await withCheckedContinuation { continuation in replacement.queue.async { continuation.resume() } }
+            await old?.cancelAndSeal(keepingPartial: false)
+            old?.setSaving(false)
+            await old?.cancelAndSeal(keepingPartial: false)
+            let partials = ListenTransfer.partialFiles(for: id, in: directory)
+            XCTAssertTrue(partials.allSatisfy { FileManager.default.fileExists(atPath: $0.path) },
+                          "late cancellation must not delete paths after ownership was relinquished")
+            let oldQueue = try XCTUnwrap(old).queue
+            weak let retired = old
+            old = nil
+            await withCheckedContinuation { continuation in oldQueue.async { continuation.resume() } }
+            XCTAssertNil(retired)
+            XCTAssertTrue(partials.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+            server.release()
+            await eventually { outcome.result != nil }
+            XCTAssertEqual(try contents(outcome.saved), body)
+        }
+    }
+
     func testDownloadsTheWholeFileOnce() async throws {
         let body = mediaBody(3 << 20)
         let server = FakeMediaServer()
@@ -159,8 +262,7 @@ final class ListenTransferTests: XCTestCase {
             let (first, _) = transfer(server, id: id)
             first.start()
             await eventually { first.progress.received == 1 << 20 }
-            first.cancel(keepingPartial: true)
-            _ = first.progress // the cancellation has landed
+            await first.cancelAndSeal(keepingPartial: true)
         }
         server.release()
 
@@ -185,8 +287,7 @@ final class ListenTransferTests: XCTestCase {
             let (first, _) = transfer(server, id: id)
             first.start()
             await eventually { first.progress.received == 1 << 20 }
-            first.cancel(keepingPartial: true)
-            _ = first.progress
+            await first.cancelAndSeal(keepingPartial: true)
         }
         let changed = Data(body.reversed())
         server.serve(url, .init(body: changed, etag: "\"v2\""))
@@ -273,8 +374,7 @@ final class ListenTransferTests: XCTestCase {
         XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=3145728-4194303"])
         XCTAssertEqual(server.bytesSent, 4 << 20, "reads from cache still advance the window, without repeats")
         XCTAssertNil(outcome.result)
-        transfer.cancel(keepingPartial: false)
-        _ = transfer.progress
+        await transfer.cancelAndSeal(keepingPartial: false)
     }
 
     func testPlaybackSeekAndTailProbeDoNotBackfillTheGapAndPromotionDoes() async throws {
@@ -328,8 +428,7 @@ final class ListenTransferTests: XCTestCase {
         XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=8388608-11534335"])
         XCTAssertEqual(transfer.progress.received, (3 << 20) + (256 << 10))
         XCTAssertNil(outcome.result)
-        transfer.cancel(keepingPartial: false)
-        _ = transfer.progress
+        await transfer.cancelAndSeal(keepingPartial: false)
     }
 
     func testPlaybackRetryAndRelaunchKeepTheBoundAndReusePartialBytes() async throws {
@@ -346,8 +445,7 @@ final class ListenTransferTests: XCTestCase {
             XCTAssertEqual(server.ranges(for: url), ["bytes=0-3145727", "bytes=524288-3145727"])
             XCTAssertEqual(server.requests.last?.value(forHTTPHeaderField: "If-Range"), "\"v1\"")
             XCTAssertNil(outcome.result)
-            first.cancel(keepingPartial: true)
-            _ = first.progress
+            await first.cancelAndSeal(keepingPartial: true)
         }
         let (resumed, outcome) = transfer(server, id: id, playbackOnly: true)
         resumed.start()

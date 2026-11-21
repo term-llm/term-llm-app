@@ -77,11 +77,14 @@ final class FakeEngine: MusicPlaybackEngine {
         set { stored = newValue }
     }
     var onLoad: (() -> Void)?
+    private(set) var activations = 0
     private(set) var loads: [(tracks: [MusicTrack], index: Int, shuffle: Bool)] = []
     private(set) var loaded: [MusicTrack] = []
     private(set) var playCount = 0
     private(set) var pauseCount = 0
     private(set) var skips: [String] = []
+
+    func activate() { activations += 1 }
 
     func load(_ tracks: [MusicTrack], startingAt index: Int, shuffle: Bool) async throws -> [MusicTrack] {
         loads.append((tracks, index, shuffle))

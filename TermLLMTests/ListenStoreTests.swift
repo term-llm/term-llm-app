@@ -59,15 +59,17 @@ final class ListenStoreTests: XCTestCase {
 
     /// Playback records its position regularly. That must not rewrite the
     /// library, which history and show notes make hundreds of KB.
-    func testPositionsAreSavedApartFromTheLibrary() throws {
+    func testPositionsAreSavedApartFromTheLibrary() async throws {
         let library = temporaryDirectory().appending(path: "library.json")
         let positions = ListenStore.positionsURL(for: library)
         let store = ListenStore(fileURL: library)
         let items = store.add([draft("a"), draft("b")], placement: .end)
+        await store.flushForTesting()
         let saved = try Data(contentsOf: library)
 
         store.setPosition(120, for: items[0].id)
         store.setPosition(150, for: items[0].id)
+        await store.flushForTesting()
         XCTAssertEqual(try Data(contentsOf: library), saved, "the library isn't rewritten")
         XCTAssertEqual(store.item(items[0].id)?.position, 150)
         XCTAssertLessThan(try Data(contentsOf: positions).count, 200)
@@ -75,28 +77,31 @@ final class ListenStoreTests: XCTestCase {
 
         // The next library save takes the position in and drops the small file.
         try store.setStatus([items[1].id], .archived)
+        await store.flushForTesting()
         XCTAssertFalse(FileManager.default.fileExists(atPath: positions.path(percentEncoded: false)))
         XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, 150)
     }
 
-    func testAnUnreadablePositionsFileFallsBackToTheLibrary() throws {
+    func testAnUnreadablePositionsFileFallsBackToTheLibrary() async throws {
         let library = temporaryDirectory().appending(path: "library.json")
         let store = ListenStore(fileURL: library)
         let items = store.add([draft("a")], placement: .end)
         store.setPosition(30, for: items[0].id)
         try store.setStatus([items[0].id], .inProgress)
+        await store.flushForTesting()
         try Data("{".utf8).write(to: ListenStore.positionsURL(for: library))
         let reopened = ListenStore(fileURL: library)
         XCTAssertEqual(reopened.item(items[0].id)?.position, 30)
         XCTAssertNil(reopened.notice)
     }
 
-    func testPersistsAndRecoversFromAnUnreadableFile() throws {
+    func testPersistsAndRecoversFromAnUnreadableFile() async throws {
         let directory = temporaryDirectory()
         let file = directory.appending(path: "library.json")
         let store = ListenStore(fileURL: file)
         let items = store.add([draft("a"), draft("b")], placement: .end)
         store.update(items[0].id) { $0.position = 42; $0.status = .inProgress }
+        await store.flushForTesting()
 
         let reopened = ListenStore(fileURL: file)
         XCTAssertEqual(reopened.upNext.map(\.title), ["a", "b"])
@@ -106,6 +111,7 @@ final class ListenStoreTests: XCTestCase {
         let recovered = ListenStore(fileURL: file)
         XCTAssertTrue(recovered.items.isEmpty)
         XCTAssertNotNil(recovered.notice)
+        await recovered.flushForTesting()
         let names = try FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))
         XCTAssertTrue(names.contains { $0.hasPrefix("library-unreadable-") })
     }
@@ -121,7 +127,7 @@ final class ListenStoreTests: XCTestCase {
         XCTAssertEqual(item.resumePosition(), 0)
     }
 
-    func testSameMediaURLRetainsDistinctPersistentSourceOwners() throws {
+    func testSameMediaURLRetainsDistinctPersistentSourceOwners() async throws {
         let directory = temporaryDirectory()
         let file = directory.appendingPathComponent("owned-media.json")
         let store = ListenStore(fileURL: file)
@@ -130,7 +136,53 @@ final class ListenStoreTests: XCTestCase {
         let items = store.add([ListenDraft(url: url, sourceID: a), ListenDraft(url: url, sourceID: b)], placement: .end)
         XCTAssertEqual(items.count, 2)
         XCTAssertNotEqual(items[0].id, items[1].id)
+        await store.flushForTesting()
         XCTAssertEqual(ListenStore(fileURL: file).items.map(\.sourceID), [a, b])
+    }
+
+    func testPersistedAbsurdTimesAreSanitizedBeforeUse() async throws {
+        let file = temporaryDirectory().appending(path: "library.json")
+        let store = ListenStore(fileURL: file)
+        let items = store.add([draft("invalid"), draft("valid")], placement: .end)
+        await store.flushForTesting()
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var rows = try XCTUnwrap(body["items"] as? [[String: Any]])
+        rows[0]["duration"] = 1e100
+        rows[0]["position"] = -1e100
+        rows[1]["duration"] = 120
+        rows[1]["position"] = 20
+        body["items"] = rows
+        try JSONSerialization.data(withJSONObject: body).write(to: file)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "positions": [items[0].id.uuidString: 1e100]])
+            .write(to: ListenStore.positionsURL(for: file))
+        let reopened = ListenStore(fileURL: file)
+        XCTAssertNil(reopened.items[0].duration)
+        XCTAssertEqual(reopened.items[0].position, 0)
+        XCTAssertEqual(reopened.items[1].duration, 120)
+        XCTAssertEqual(reopened.items[1].position, 20)
+    }
+
+    func testPositionLibraryAndLaterPositionWritesKeepFIFOOrder() async throws {
+        let file = temporaryDirectory().appending(path: "library.json")
+        let queue = DispatchQueue(label: "ListenStoreTests.blockedPersistence")
+        let release = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "persistence queue blocked")
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let store = ListenStore(fileURL: file, persistenceQueue: queue)
+        let item = store.add([draft("a")], placement: .end)[0]
+        store.setPosition(10, for: item.id)
+        try store.setStatus([item.id], .inProgress)
+        store.setPosition(20, for: item.id)
+        XCTAssertEqual(store.item(item.id)?.position, 20, "memory updates while disk is blocked")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        release.signal()
+        await store.flushForTesting()
+        XCTAssertEqual(ListenStore(fileURL: file).item(item.id)?.position, 20)
+        try store.setStatus([item.id], .played)
+        await store.flushForTesting()
+        XCTAssertEqual(ListenStore(fileURL: file).item(item.id)?.position, 0, "an older delta cannot resurrect a played position")
     }
 
     func testURLPolicy() throws {

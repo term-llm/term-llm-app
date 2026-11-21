@@ -309,7 +309,8 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
 
         XCTAssertTrue(catalog.connections.isEmpty, "removed source must not be recreated by late enrollment")
         XCTAssertNil(runtime.statuses[existing.id])
-        XCTAssertThrowsError(try identities.load(hostKey: host))
+        do { _ = try await identities.loadAsync(hostKey: host); XCTFail("Removed credential survived") }
+        catch { XCTAssertEqual(error as? LinkedDevicesStorageError, .missing) }
     }
 
     func testLateAttachmentCannotResurrectRevokedSource() async throws {
@@ -421,12 +422,14 @@ private final class CountingRuntimeTestConnector: LinkedDevicesSessionConnecting
     private let lock = NSLock()
     private var connects = 0
     private var closes = 0
+    private var connectedHostKeys: [Data] = []
+    var hostKeys: [Data] { lock.withLock { connectedHostKeys } }
     var connectCount: Int { lock.withLock { connects } }
     var closeCount: Int { lock.withLock { closes } }
 
     func reconnect(credential: LinkedDevicesCredential,
                    closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
-        lock.withLock { connects += 1 }
+        lock.withLock { connects += 1; connectedHostKeys.append(credential.hostKey) }
         let authorization = PeerAuthorizationState(PeerAuthorization(
             peerID: LinkedDevicesBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
             expiresAt: .distantFuture, scopePrefix: credential.basePath ?? "/"))
@@ -542,5 +545,234 @@ extension LinkedDevicesRuntimeTests {
         XCTAssertEqual(runtime.status(for: source.id), .revoked)
         runtime.setForeground(true)
         XCTAssertEqual(runtime.status(for: source.id), .revoked)
+    }
+}
+
+private final class GatedRuntimeCredentialStorage: LinkedDevicesSecureStorage, Sendable {
+    let memory = LinkedDevicesMemoryStorage()
+    let gate = CredentialReadGate()
+    private let failingAccount: String?
+    init(failingHostKey: Data? = nil) {
+        failingAccount = failingHostKey.map { LinkedDevicesIdentityStore.account(hostKey: $0) }
+    }
+    func read(account: String) throws -> Data? {
+        let snapshot = try memory.read(account: account)
+        gate.read()
+        if account == failingAccount { throw LinkedDevicesStorageError.unavailable(-1) }
+        return snapshot
+    }
+    func write(_ data: Data, account: String) throws { try memory.write(data, account: account) }
+    func delete(account: String) throws { try memory.delete(account: account) }
+}
+
+extension LinkedDevicesRuntimeTests {
+    private func credentialSource(_ identities: LinkedDevicesIdentityStore, seed: UInt8) throws -> HubConnection {
+        let host = Data(repeating: seed, count: 32)
+        var credential = LinkedDevicesCredential(hostKey: host, deviceSeed: Data(repeating: seed &+ 1, count: 32))
+        credential.basePath = "/chat"
+        try identities.save(credential)
+        return HubConnection(id: UUID(), name: "Peer", kind: .directNode,
+                             url: try XCTUnwrap(URL(string: "http://localhost:\(44_000 + Int(seed))/chat/")),
+                             linkedDevicesHostKey: LinkedDevicesBase64URL.encode(host))
+    }
+
+    func testForegroundReservesSeveralStartsAndReadsCredentialsOffMainThread() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let sources = try [UInt8(0x91), 0x92, 0x93].map { try credentialSource(identities, seed: $0) }
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                           makeListener: { ImmediateLoopbackListener() })
+        defer { storage.gate.resume(); runtime.synchronize([]) }
+        runtime.setForeground(false)
+        runtime.synchronize(sources)
+        XCTAssertEqual(storage.gate.readCount, 0)
+        storage.gate.pause()
+        runtime.setForeground(true)
+        XCTAssertTrue(sources.allSatisfy { runtime.status(for: $0.id) == .connecting })
+        try await waitUntil { storage.gate.readCount == 1 }
+        // MainActor is responsive while storage is blocked, and reentrant
+        // lifecycle/catalog callbacks cannot submit duplicate attempts.
+        runtime.synchronize(sources)
+        runtime.setForeground(true)
+        XCTAssertEqual(connector.connectCount, 0)
+        storage.gate.resume()
+        try await waitUntil { sources.allSatisfy { runtime.status(for: $0.id).isConnected } }
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+        XCTAssertEqual(storage.gate.readCount, sources.count)
+        XCTAssertEqual(connector.connectCount, sources.count)
+        XCTAssertEqual(Set(connector.hostKeys), Set([UInt8(0x91), 0x92, 0x93].map { Data(repeating: $0, count: 32) }))
+    }
+
+    func testRemovalDuringCredentialLoadCannotConnectAndDoesNotWaitForStorageLock() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let source = try credentialSource(identities, seed: 0x94)
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector)
+        defer { storage.gate.resume() }
+        storage.gate.pause()
+        runtime.synchronize([source])
+        try await waitUntil { storage.gate.readCount == 1 }
+        runtime.synchronize([])
+        XCTAssertNil(runtime.statuses[source.id])
+        storage.gate.resume()
+        // This queued load drains the earlier removal, proving deletion as well
+        // as immediate invalidation without ever waiting on the lock on main.
+        let host = try XCTUnwrap(LinkedDevicesBase64URL.decode(source.linkedDevicesHostKey!))
+        do { _ = try await identities.loadAsync(hostKey: host); XCTFail("Removed credential survived") }
+        catch { XCTAssertEqual(error as? LinkedDevicesStorageError, .missing) }
+        XCTAssertEqual(connector.connectCount, 0)
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+    }
+
+    func testHostIdentityChangeDuringCredentialLoadRejectsStaleCredential() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let source = try credentialSource(identities, seed: 0x95)
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector)
+        defer { storage.gate.resume(); runtime.synchronize([]) }
+        storage.gate.pause()
+        runtime.synchronize([source])
+        try await waitUntil { storage.gate.readCount == 1 }
+        var changed = source
+        changed.linkedDevicesHostKey = LinkedDevicesBase64URL.encode(Data(repeating: 0x96, count: 32))
+        runtime.synchronize([changed])
+        storage.gate.resume()
+        let host = try XCTUnwrap(LinkedDevicesBase64URL.decode(source.linkedDevicesHostKey!))
+        _ = try await identities.loadAsync(hostKey: host)
+        XCTAssertEqual(runtime.status(for: source.id), .identityChanged)
+        XCTAssertEqual(connector.connectCount, 0)
+    }
+
+    func testBackgroundDuringCredentialLoadCancelsStart() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let source = try credentialSource(identities, seed: 0x97)
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector)
+        defer { storage.gate.resume(); runtime.synchronize([]) }
+        storage.gate.pause()
+        runtime.synchronize([source])
+        try await waitUntil { storage.gate.readCount == 1 }
+        runtime.setForeground(false)
+        storage.gate.resume()
+        let host = try XCTUnwrap(LinkedDevicesBase64URL.decode(source.linkedDevicesHostKey!))
+        _ = try await identities.loadAsync(hostKey: host)
+        XCTAssertEqual(runtime.status(for: source.id), .suspended)
+        XCTAssertEqual(connector.connectCount, 0)
+    }
+
+    func testForegroundAgainWhileOldCredentialLoadIsPendingOnlyConnectsNewAttempt() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let source = try credentialSource(identities, seed: 0x98)
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                           makeListener: { ImmediateLoopbackListener() })
+        defer { storage.gate.resume(); runtime.synchronize([]) }
+        storage.gate.pause()
+        runtime.synchronize([source])
+        try await waitUntil { storage.gate.readCount == 1 }
+        runtime.setForeground(false)
+        runtime.setForeground(true)
+        storage.gate.releaseOne()
+        try await waitUntil { storage.gate.readCount == 2 }
+        XCTAssertEqual(connector.connectCount, 0, "the retired read cannot start the old attempt")
+        storage.gate.resume()
+        try await waitUntil { runtime.status(for: source.id).isConnected }
+        XCTAssertEqual(connector.connectCount, 1)
+    }
+
+    func testEndpointChangeDuringCredentialLoadRetiresOldAttempt() async throws {
+        let storage = GatedRuntimeCredentialStorage()
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let source = try credentialSource(identities, seed: 0x9D)
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                           makeListener: { ImmediateLoopbackListener() })
+        defer { storage.gate.resume(); runtime.synchronize([]) }
+        storage.gate.pause()
+        runtime.synchronize([source])
+        try await waitUntil { storage.gate.readCount == 1 }
+        var changed = source
+        changed.url = try XCTUnwrap(URL(string: "http://localhost:44999/chat/"))
+        runtime.synchronize([changed])
+        storage.gate.releaseOne()
+        try await waitUntil { storage.gate.readCount == 2 }
+        XCTAssertEqual(connector.connectCount, 0, "the retired endpoint cannot use a late credential")
+        storage.gate.resume()
+        try await waitUntil { runtime.status(for: source.id).isConnected }
+        XCTAssertEqual(connector.connectCount, 1)
+    }
+
+    func testMissingCorruptAndFailedCredentialsFailClosedWithoutBorrowingAnotherSource() async throws {
+        let storage = GatedRuntimeCredentialStorage(failingHostKey: Data(repeating: 0x9C, count: 32))
+        let identities = LinkedDevicesIdentityStore(storage: storage)
+        let valid = try credentialSource(identities, seed: 0x99)
+        let missing = try credentialSource(identities, seed: 0x9A)
+        let corrupt = try credentialSource(identities, seed: 0x9B)
+        let failed = try credentialSource(identities, seed: 0x9C)
+        try identities.remove(hostKey: Data(repeating: 0x9A, count: 32))
+        try storage.write(Data("invalid".utf8), account: LinkedDevicesIdentityStore.account(hostKey: Data(repeating: 0x9B, count: 32)))
+        let connector = CountingRuntimeTestConnector()
+        let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                           makeListener: { ImmediateLoopbackListener() })
+        defer { runtime.synchronize([]) }
+        runtime.synchronize([valid, missing, corrupt, failed])
+        try await waitUntil {
+            runtime.status(for: valid.id).isConnected &&
+            runtime.status(for: missing.id) != .connecting && runtime.status(for: corrupt.id) != .connecting &&
+            runtime.status(for: failed.id) != .connecting
+        }
+        XCTAssertEqual(connector.connectCount, 1)
+        XCTAssertEqual(runtime.status(for: missing.id), .failed(LinkedDevicesRuntime.safeMessage(LinkedDevicesStorageError.missing)))
+        XCTAssertEqual(runtime.status(for: corrupt.id), .failed(LinkedDevicesRuntime.safeMessage(LinkedDevicesStorageError.corrupt)))
+        XCTAssertEqual(runtime.status(for: failed.id), .failed(LinkedDevicesRuntime.safeMessage(LinkedDevicesStorageError.unavailable(-1))))
+        XCTAssertEqual(connector.hostKeys, [Data(repeating: 0x99, count: 32)])
+        XCTAssertEqual(storage.gate.mainThreadReadCount, 0)
+    }
+}
+
+extension LinkedDevicesRuntimeTests {
+    func testOwnedButIneligibleCredentialCompletionReleasesReservationAndCanRestart() async throws {
+        for change in ["url", "kind", "host", "cancelled"] {
+            let storage = GatedRuntimeCredentialStorage()
+            let identities = LinkedDevicesIdentityStore(storage: storage)
+            let source = try credentialSource(identities, seed: 0xA1)
+            let connector = CountingRuntimeTestConnector()
+            let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
+                                               makeListener: { ImmediateLoopbackListener() })
+            storage.gate.pause()
+            defer { storage.gate.resume(); runtime.synchronize([]) }
+            runtime.synchronize([source])
+            try await waitUntil { storage.gate.readCount == 1 }
+            let token = try XCTUnwrap(runtime.pendingStartToken(for: source.id))
+            // Deliver an owned completion whose captured source snapshot no
+            // longer matches, without another lifecycle callback clearing it.
+            var expected = source
+            switch change {
+            case "url": expected.url = try XCTUnwrap(URL(string: "http://localhost:44998/changed/"))
+            case "kind": expected.kind = .hub
+            case "host": expected.linkedDevicesHostKey = LinkedDevicesBase64URL.encode(Data(repeating: 0xA2, count: 32))
+            default: break
+            }
+            XCTAssertFalse(runtime.revalidatePendingStart(sourceID: source.id, token: token, expected: expected,
+                                                          cancelled: change == "cancelled"), change)
+            XCTAssertNil(runtime.pendingStartToken(for: source.id), change)
+            XCTAssertEqual(runtime.status(for: source.id), .offline, change)
+            XCTAssertEqual(connector.connectCount, 0)
+            runtime.synchronize([source])
+            let replacement = try XCTUnwrap(runtime.pendingStartToken(for: source.id))
+            XCTAssertNotEqual(replacement, token)
+            XCTAssertFalse(runtime.revalidatePendingStart(sourceID: source.id, token: token, expected: expected,
+                                                          cancelled: false))
+            XCTAssertEqual(runtime.pendingStartToken(for: source.id), replacement,
+                           "A stale callback cannot clear the replacement reservation")
+            storage.gate.resume()
+            try await waitUntil { runtime.status(for: source.id).isConnected }
+            XCTAssertEqual(connector.connectCount, 1)
+        }
     }
 }

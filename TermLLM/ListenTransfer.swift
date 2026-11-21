@@ -199,7 +199,7 @@ private final class LoaderRead: ListenTransferRead {
 /// changed on the server starts over.
 // Sendability: mutable transfer/file/read state is confined to queue after init
 // (and exclusive deinit). AVFoundation must install this delegate on that same
-// queue; public controls enqueue and progress synchronizes through queue.sync.
+// queue; public controls enqueue; progress uses a separate snapshot lock, never held for I/O.
 final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     struct Saved: Sendable {
         let file: URL
@@ -237,10 +237,13 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     private let makeRequest: @Sendable (URL) async -> URLRequest
     private let finished: @Sendable (ListenTransfer, Result<Saved, Error>) -> Void
 
+    private let progressLock = NSLock()
+    private var progressSnapshot: (received: Int64, expected: Int64?) = (0, nil)
+
     // Everything below is confined to `queue` (or to init and deinit).
     private var file: FileHandle?
-    private var held = ListenByteRanges()
-    private var length: Int64?
+    private var held = ListenByteRanges() { didSet { publishProgress() } }
+    private var length: Int64? { didSet { publishProgress() } }
     private var mime: String?
     private var validator: String?
     /// Save ahead of playback, or (by default) fetch the whole file.
@@ -335,14 +338,10 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     deinit {
         request?.cancel?()
         retry?.cancel()
-        switch phase {
-        case .saved: break
-        case .running where keepsPartial: record()
-        default:
-            if !keepsPartial {
-                try? FileManager.default.removeItem(at: partialURL)
-                try? FileManager.default.removeItem(at: recordURL)
-            }
+        // A terminal transfer has relinquished these paths. A replacement may
+        // already own them, even while this instance is retained by AVPlayer.
+        if case .running = phase {
+            if keepsPartial { record() } else { discardPartial() }
         }
         try? file?.close()
     }
@@ -369,6 +368,7 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     /// Stopping saving still serves only demanded bytes and discards the partial.
     func setSaving(_ saving: Bool, playbackOnly: Bool = false) {
         queue.async {
+            guard case .running = self.phase else { return }
             self.saving = saving
             self.playbackOnly = playbackOnly
             self.keepsPartial = saving
@@ -376,27 +376,50 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         }
     }
 
-    /// Stops for good. A kept partial file resumes next time.
-    func cancel(keepingPartial: Bool) {
+    /// Completion runs on the transfer queue only after the partial is sealed
+    /// and closed. Reusers must await this, not use progress as an I/O barrier.
+    func cancel(keepingPartial: Bool, completion: @escaping @Sendable () -> Void = {}) {
         queue.async {
-            guard case .running = self.phase else { return }
-            self.phase = .cancelled
-            self.stopRequest()
-            self.failReads(CancellationError())
-            if keepingPartial {
-                self.record()
+            defer { completion() }
+            switch self.phase {
+            case .running:
+                self.phase = .cancelled
+                self.stopRequest()
+                self.retry?.cancel()
+                self.retry = nil
+                self.failReads(CancellationError())
+                self.keepsPartial = keepingPartial
+                if keepingPartial {
+                    self.record()
+                    try? self.file?.close()
+                    self.file = nil
+                } else {
+                    self.discardPartial()
+                }
+                // No subsequent cancellation or deinit may touch these paths.
+            case .failed, .cancelled:
                 try? self.file?.close()
                 self.file = nil
-            } else {
-                self.keepsPartial = false
-                self.discardPartial()
+            case .saved:
+                break // Playback may still read the moved, saved file.
             }
         }
     }
 
-    /// Bytes on the phone and the file's size, once known.
+    func cancelAndSeal(keepingPartial: Bool) async {
+        await withCheckedContinuation { continuation in
+            cancel(keepingPartial: keepingPartial) { continuation.resume() }
+        }
+    }
+
+    /// A tiny memory-only critical section: never waits for the file queue.
     var progress: (received: Int64, expected: Int64?) {
-        queue.sync { (held.total, length) }
+        progressLock.withLock { progressSnapshot }
+    }
+
+    private func publishProgress() {
+        let snapshot = (held.total, length)
+        progressLock.withLock { progressSnapshot = snapshot }
     }
 
     /// Reads as playback would (tests).
@@ -782,12 +805,16 @@ final class ListenTransfer: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         retry?.cancel()
         retry = nil
         failReads(error)
-        if discard {
+        if discard || !keepsPartial {
             keepsPartial = false
             discardPartial()
         } else {
             record()
+            try? file?.close()
+            file = nil
         }
+        // Complete all owned file work before publishing failure; a retry may
+        // reopen these paths while this failed instance is still retained.
         finished(self, .failure(error))
     }
 

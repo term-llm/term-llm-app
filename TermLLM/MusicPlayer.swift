@@ -37,6 +37,7 @@ final class MusicPlayer {
     @ObservationIgnored private let startCheck: StartCheck
     /// Invalidated by pause or a newer start/resume, independently of task lifetime.
     @ObservationIgnored private var playbackRequest = UUID()
+    @ObservationIgnored private var connected = false
     static let shuffleKey = "music.shuffle"
 
     /// How long to wait for the system player to report playing after play().
@@ -65,6 +66,23 @@ final class MusicPlayer {
     }
 
     var isPlaying: Bool { status == .playing || status == .loading }
+
+    /// Starts mirroring the system player. Deferred until Music is actually
+    /// used (Music screen, music tools, playback) so podcast-only sessions
+    /// never create MusicKit's player, whose main-thread XPC can stall launch
+    /// and foreground transitions into a watchdog kill.
+    func connect() {
+        if attach() { sync() }
+    }
+
+    /// Attaches without reading state, for callers that are about to replace it.
+    @discardableResult
+    private func attach() -> Bool {
+        guard !connected else { return false }
+        connected = true
+        engine.activate()
+        return true
+    }
 
     /// True while `playlist` is what the system player is working through.
     func isActive(_ playlist: Playlist) -> Bool {
@@ -101,6 +119,7 @@ final class MusicPlayer {
         startingEntryID = entryID
         defer { if playbackRequest == request { startingEntryID = nil } }
         if let shuffle { rememberShuffle(shuffle) }
+        attach()
         willStartPlayback?()
         status = .loading
         do {
@@ -139,6 +158,7 @@ final class MusicPlayer {
     }
 
     func resume() async throws {
+        connect()
         guard nowPlaying != nil || !queue.isEmpty else { throw MusicError.nothingToResume }
         let request = UUID()
         playbackRequest = request
@@ -192,17 +212,21 @@ final class MusicPlayer {
     /// Syncs as soon as the skip lands, so callers (e.g. tool results) never
     /// report the song that was just skipped.
     func next() async throws {
+        attach()
         try await engine.skipToNext()
         sync()
     }
 
     func previous() async throws {
+        attach()
         try await engine.skipToPrevious()
         sync()
     }
 
     func setShuffle(_ enabled: Bool) {
         rememberShuffle(enabled)
+        // No attach: an unattached engine ignores this and `load` applies the
+        // remembered preference, so toggling shuffle never creates the player.
         engine.setShuffle(enabled)
     }
 

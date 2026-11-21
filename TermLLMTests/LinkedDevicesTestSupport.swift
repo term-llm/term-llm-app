@@ -364,3 +364,27 @@ enum RealLoopbackTestError: Error {
     case timedOut
     case unexpectedEOF
 }
+
+/// A synchronous storage read gate, deliberately outside any storage lock.
+/// Never block MainActor on regression: record a bad read and let XCTest fail.
+final class CredentialReadGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var paused = false
+    private var reads = 0
+    private var mainThreadReads = 0
+    var readCount: Int { lock.withLock { reads } }
+    var mainThreadReadCount: Int { lock.withLock { mainThreadReads } }
+    func pause() { lock.withLock { paused = true } }
+    func releaseOne() { semaphore.signal() }
+    func resume() { lock.withLock { paused = false }; semaphore.signal() }
+    func read() {
+        let onMain = Thread.isMainThread
+        let shouldWait = lock.withLock {
+            reads += 1
+            if onMain { mainThreadReads += 1 }
+            return paused && !onMain
+        }
+        if shouldWait { semaphore.wait() }
+    }
+}

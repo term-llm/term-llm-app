@@ -142,7 +142,8 @@ struct ListenArtwork: View {
 
 enum ListenFormat {
     static func time(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded())
+        guard ListenMediaTime.validPosition(seconds) else { return "—" }
+        let total = ListenMediaTime.seconds(seconds)
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let secs = total % 60

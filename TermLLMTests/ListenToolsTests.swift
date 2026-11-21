@@ -143,6 +143,32 @@ final class ListenToolsTests: XCTestCase {
         XCTAssertEqual(try JSONValue.decode(Data(result.utf8))["total"], 0)
     }
 
+    func testAbsurdToolTimesAndSleepMinutesReturnErrorsWithoutMutation() async throws {
+        let listen = makeListen()
+        for value in [1e100, -1, 0] as [Double] {
+            let error = await failure(listen, "media_add", ["url": "https://example.com/audio.mp3", "duration_seconds": .double(value)])
+            XCTAssertTrue(error?.contains("duration_seconds") == true)
+            XCTAssertTrue(listen.store.items.isEmpty)
+        }
+        _ = try await call(listen, "media_add", ["url": "http://example.com/a.mp3", "position": "now", "download": "never"])
+        for (name, args) in [
+            ("media_play", ["start_at": JSONValue.double(1e100)]),
+            ("media_control", ["action": "seek", "seconds": .double(1e100)]),
+            ("media_control", ["action": "skip", "seconds": .double(-1e100)]),
+            ("media_control", ["action": "sleep", "minutes": .int(Int.max)]),
+            ("media_control", ["action": "sleep", "minutes": .double(1e100)]),
+            ("media_control", ["action": "sleep", "minutes": -1]),
+        ] {
+            let error = await failure(listen, name, args)
+            XCTAssertNotNil(error, "\(name) \(args)")
+        }
+        XCTAssertNil(listen.player.sleepAt)
+        _ = try await call(listen, "media_control", ["action": "sleep", "minutes": 1440])
+        XCTAssertNotNil(listen.player.sleepAt)
+        _ = try await call(listen, "media_control", ["action": "sleep", "minutes": 0])
+        XCTAssertNil(listen.player.sleepAt)
+    }
+
     func testAddWithMetadataAndPlayNow() async throws {
         let engine = FakeListenEngine()
         let listen = makeListen(engine: engine)

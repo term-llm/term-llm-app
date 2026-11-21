@@ -118,6 +118,14 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     @Published private(set) var browserRevoked = false
     @Published private(set) var browserIdentity = UUID()
     @Published private(set) var browserReady = false
+    // SwiftUI consumes only an asynchronously prepared script, never a cold
+    // synchronous credential read. Generation checks hide superseded scripts.
+    @Published private var preparedBrowserBearer: (generation: UInt64, script: String)?
+    var browserAuthenticationScript: String? {
+        guard active, !browserRevoked, let security, security.active,
+              let preparedBrowserBearer, preparedBrowserBearer.generation == security.bearerGeneration else { return nil }
+        return preparedBrowserBearer.script
+    }
     @Published var authenticationError: String?
     private var observation: AnyCancellable?
     private var authObservation: AnyCancellable?
@@ -143,7 +151,7 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
             searcher = client
             sessions = client
         } else {
-            let client = DirectNodeClient(baseURL: connection.url, cookieSource: { await security.cookies() }, bearerSource: { await security.bearer }, transport: transport,
+            let client = DirectNodeClient(baseURL: connection.url, cookieSource: { await security.cookies() }, bearerSource: { await security.loadBearer() }, transport: transport,
                                           displayNameSource: { await relay.displayName() })
             directClient = client
             hubWorkspace = nil
@@ -209,8 +217,9 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         store.start()
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let expected = self.authenticationEpoch
             await self.prepareBrowserAuthentication()
-            guard self.active, !self.browserRevoked else { return }
+            guard self.active, self.authenticationEpoch == expected, !self.browserRevoked else { return }
             self.browserReady = true
         }
     }
@@ -347,6 +356,10 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         security?.authorizeCookieReads()
         installAuthorizationContext()
         let current = authenticationEpoch
+        // Successful callbacks can precede the first native request on launch.
+        // Do not expose Chat before its bearer script has been restored/prepared.
+        await prepareBrowserAuthentication()
+        guard active, !Task.isCancelled, authenticationEpoch == current else { return false }
         browserRevoked = false
         browserReady = true
         browserIdentity = UUID()
@@ -378,19 +391,28 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
     @discardableResult
     func authenticateManagedLocalService(_ token: String) async -> Bool {
         guard active, !Task.isCancelled else { return false }
+        var restored: String?
+        if connection.isManagedLocalService, connection.kind == .directNode,
+           !browserRevoked, !store.unauthorized,
+           let security, security.active, security.cookiesReadable {
+            let expectedAuthentication = authenticationEpoch, expectedSecurity = security.epoch
+            restored = await security.loadBearer()
+            guard active, !Task.isCancelled, authenticationEpoch == expectedAuthentication,
+                  security.active, security.epoch == expectedSecurity else { return false }
+        }
         guard connection.isManagedLocalService, connection.kind == .directNode,
               !browserRevoked, !store.unauthorized,
               let security, security.active, security.cookiesReadable,
-              security.bearer == token, let directClient else {
+              restored == token, let directClient else {
             let authenticated = await signInWithBearer(token)
             return authenticated && !Task.isCancelled && active && browserReady && !browserRevoked &&
                 !store.unauthorized && authenticationError == nil
         }
         let expected = authenticationEpoch
-        let securityEpoch = security.epoch
+        let securityEpoch = security.epoch, bearerGeneration = security.bearerGeneration
         func isCurrent() -> Bool {
             active && !Task.isCancelled && authenticationEpoch == expected &&
-                security.active && security.epoch == securityEpoch && security.bearer == token &&
+                security.active && security.epoch == securityEpoch && security.bearerGeneration == bearerGeneration &&
                 !browserRevoked && !store.unauthorized
         }
         do {
@@ -413,14 +435,35 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
         }
     }
 
+    /// The non-navigating attach path must also restore a cold workspace before
+    /// comparing credentials. Never accept a result from a retired auth context.
+    func hasReadyManagedLocalCredential(_ token: String) async -> Bool {
+        guard active, connection.isManagedLocalService, connection.kind == .directNode,
+              !browserRevoked, !store.unauthorized, let security, security.active else { return false }
+        let expected = authenticationEpoch, securityEpoch = security.epoch
+        let restored = await security.loadBearer()
+        return active && !Task.isCancelled && authenticationEpoch == expected &&
+            security.active && security.epoch == securityEpoch && security.cookiesReadable &&
+            browserReady && !browserRevoked && !store.unauthorized && restored == token
+    }
+
     @discardableResult
     func prepareBrowserAuthentication() async -> Bool {
-        guard active, connection.kind == .directNode, let security, let token = security.bearer else { return false }
+        guard active, connection.kind == .directNode, let security else { return false }
+        let expected = authenticationEpoch, securityEpoch = security.epoch
+        guard let token = await security.loadBearer(), active, !Task.isCancelled,
+              authenticationEpoch == expected, security.active, security.epoch == securityEpoch else { return false }
+        let bearerGeneration = security.bearerGeneration
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
         if let cookie = HTTPCookie(properties: [.name: "term_llm_token", .value: token.addingPercentEncoding(withAllowedCharacters: allowed) ?? "",
                                                .domain: connection.url.host!, .path: connection.mountPath,
                                                .secure: connection.url.scheme == "https" ? "TRUE" : "FALSE"]) {
-            return await security.saveCookies([cookie], epoch: security.epoch)
+            guard await security.saveCookies([cookie], epoch: securityEpoch), active, !Task.isCancelled,
+                  authenticationEpoch == expected, security.active, security.epoch == securityEpoch,
+                  security.bearerGeneration == bearerGeneration else { return false }
+            preparedBrowserBearer = (bearerGeneration,
+                                     HubConnectionSecurity.directBearerScript(token: token, server: connection.url))
+            return true
         }
         return false
     }

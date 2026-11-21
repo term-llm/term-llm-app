@@ -61,6 +61,9 @@ protocol MusicPlaybackEngine: AnyObject {
     /// Called whenever the snapshot may have changed.
     var onChange: (@MainActor () -> Void)? { get set }
     var snapshot: PlaybackSnapshot { get }
+    /// Starts mirroring the player. Until then the snapshot is empty and the
+    /// underlying player is untouched. Idempotent.
+    func activate()
     /// Queues `tracks` from `index` and returns the ones Apple Music could resolve.
     func load(_ tracks: [MusicTrack], startingAt index: Int, shuffle: Bool) async throws -> [MusicTrack]
     func play() async throws
@@ -261,12 +264,18 @@ extension MusicTrack {
 final class AppleMusicEngine: MusicPlaybackEngine {
     var onChange: (@MainActor () -> Void)?
     #if os(macOS)
-    private let player = ApplicationMusicPlayer.shared
+    private typealias Player = ApplicationMusicPlayer
     private let diagnosticEngine = "application"
     #else
-    private let player = SystemMusicPlayer.shared
+    private typealias Player = SystemMusicPlayer
     private let diagnosticEngine = "system"
     #endif
+    /// Created on first use, never at launch: once MusicKit's player exists it
+    /// keeps itself in sync with the media server through synchronous XPC on
+    /// the main thread. During podcast playback that call stalled a foreground
+    /// scene update past the 10 s watchdog (0x8BADF00D in
+    /// -[MPMusicPlayerController currentPlaybackRate]).
+    private var attached: Player?
     private let catalog: AppleMusicCatalog
     private var observers: Set<AnyCancellable> = []
     /// A newer load/play or explicit pause supersedes work suspended in MusicKit.
@@ -274,6 +283,18 @@ final class AppleMusicEngine: MusicPlaybackEngine {
 
     init(catalog: AppleMusicCatalog = AppleMusicCatalog()) {
         self.catalog = catalog
+    }
+
+    private var player: Player {
+        activate()
+        return attached!
+    }
+
+    func activate() {
+        guard attached == nil else { return }
+        let player = Player.shared
+        attached = player
+        musicLog.info("player.attach engine=\(self.diagnosticEngine, privacy: .public)")
         // objectWillChange fires before the change lands; read on the next turn.
         let notify: () -> Void = { [weak self] in
             DispatchQueue.main.async { self?.onChange?() }
@@ -283,6 +304,7 @@ final class AppleMusicEngine: MusicPlaybackEngine {
     }
 
     var snapshot: PlaybackSnapshot {
+        guard let player = attached else { return PlaybackSnapshot() }
         let state: PlaybackSnapshot.State
         switch player.state.playbackStatus {
         case .playing, .seekingForward, .seekingBackward: state = .playing
@@ -395,9 +417,11 @@ final class AppleMusicEngine: MusicPlaybackEngine {
 
     func pause() {
         playbackRequest = UUID()
-        player.pause()
+        // Nothing to pause before this app has touched the player.
+        attached?.pause()
     }
     func skipToNext() async throws { try await player.skipToNextEntry() }
     func skipToPrevious() async throws { try await player.skipToPreviousEntry() }
-    func setShuffle(_ enabled: Bool) { player.state.shuffleMode = enabled ? .songs : .off }
+    /// Before attaching, `load` applies the remembered shuffle preference.
+    func setShuffle(_ enabled: Bool) { attached?.state.shuffleMode = enabled ? .songs : .off }
 }

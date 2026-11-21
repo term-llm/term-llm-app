@@ -91,6 +91,10 @@ final class ListenTools {
             } catch {
                 throw DeviceToolError(message: "\(label)url: \(error.localizedDescription)")
             }
+            let duration = try entry.double("duration_seconds")
+            if let duration, !ListenMediaTime.validDuration(duration) {
+                throw DeviceToolError(message: "\(label)duration_seconds must be greater than 0 and at most \(Int(ListenMediaTime.maximum)) seconds (one year).")
+            }
             return ListenDraft(
                 url: url,
                 title: try entry.optionalString("title"),
@@ -103,7 +107,7 @@ final class ListenTools {
                     }
                 },
                 kind: try kind(entry, label: label),
-                duration: try entry.double("duration_seconds"),
+                duration: duration,
                 publishedAt: try entry.optionalString("published_at").flatMap(Self.date),
                 sourceID: server.flatMap { HubNavigation.isWithinMount(url, server: $0.base) ? $0.sourceID : nil }
             )
@@ -142,8 +146,15 @@ final class ListenTools {
         return .object(result)
     }
 
+    private static func requirePosition(_ value: TimeInterval, name: String) throws {
+        guard ListenMediaTime.validPosition(value) else {
+            throw DeviceToolError(message: "\(name) must be between 0 and \(Int(ListenMediaTime.maximum)) seconds (one year).")
+        }
+    }
+
     private func play(_ args: Arguments) async throws -> JSONValue {
         let start = try args.double("start_at")
+        if let start { try Self.requirePosition(start, name: "start_at") }
         if let reference = try args.optionalString("item") {
             let item = try store.resolve(reference)
             try await player.play(item.id, from: start)
@@ -163,17 +174,27 @@ final class ListenTools {
         case "stop": player.stop()
         case "seek":
             guard let seconds = try args.double("seconds") else { throw DeviceToolError(message: "seek needs seconds (the position).") }
+            try Self.requirePosition(seconds, name: "seconds")
             try requireCurrent()
             await player.seek(to: seconds)
         case "skip":
             try requireCurrent()
-            await player.skip(by: try args.double("seconds") ?? 30)
+            let seconds = try args.double("seconds") ?? 30
+            guard abs(seconds) <= ListenMediaTime.maximum else {
+                throw DeviceToolError(message: "seconds must be between -\(Int(ListenMediaTime.maximum)) and \(Int(ListenMediaTime.maximum)).")
+            }
+            await player.skip(by: seconds)
         case "next": try await player.next()
         case "previous", "back": try await player.previous()
         case "rate", "speed":
             guard let rate = try args.double("rate") else { throw DeviceToolError(message: "rate needs rate, e.g. 1.5.") }
             player.setRate(Float(rate))
-        case "sleep": player.sleep(minutes: try args.int("minutes") ?? 0)
+        case "sleep":
+            let minutes = try args.int("minutes") ?? 0
+            guard (0...ListenPlayer.maximumSleepMinutes).contains(minutes) else {
+                throw DeviceToolError(message: "minutes must be between 0 and \(ListenPlayer.maximumSleepMinutes) (24 hours); 0 cancels the sleep timer.")
+            }
+            player.sleep(minutes: minutes)
         case "sleep_at_end": player.sleepAtEndOfItem()
         case "cancel_sleep": player.cancelSleepTimer()
         case "hide_player": player.hideBar()
@@ -192,15 +213,15 @@ final class ListenTools {
         ]
         if let item = player.current {
             result["item"] = Self.item(item)
-            result["position_s"] = .int(Int(player.position.rounded()))
+            result["position_s"] = .int(ListenMediaTime.seconds(player.position))
             if let duration = player.duration ?? item.duration {
-                result["duration_s"] = .int(Int(duration.rounded()))
-                result["remaining_s"] = .int(max(0, Int((duration - player.position).rounded())))
+                result["duration_s"] = .int(ListenMediaTime.seconds(duration))
+                result["remaining_s"] = .int(max(0, ListenMediaTime.seconds(duration - player.position)))
             }
             result["source"] = .string(player.streaming ? "stream" : "file")
             if player.buffering { result["buffering"] = true }
             if let until = player.bufferedUntil {
-                result["buffered_ahead_s"] = .int(max(0, Int((until - player.position).rounded())))
+                result["buffered_ahead_s"] = .int(max(0, ListenMediaTime.seconds(until - player.position)))
             }
             if let progress = listen.downloader.progress[item.id] {
                 result["download_received_bytes"] = .int(Int(progress.received))
@@ -291,8 +312,8 @@ final class ListenTools {
         ]
         if let artist = item.artist { object["artist"] = .string(artist) }
         if let album = item.album { object["album"] = .string(album) }
-        if let duration = item.duration { object["duration_s"] = .int(Int(duration.rounded())) }
-        if item.position > 0 { object["position_s"] = .int(Int(item.position.rounded())) }
+        if let duration = item.duration { object["duration_s"] = .int(ListenMediaTime.seconds(duration)) }
+        if item.position > 0 { object["position_s"] = .int(ListenMediaTime.seconds(item.position)) }
         if let details = item.details { object["description"] = .string(String(details.prefix(280))) }
         if let error = item.downloadError, item.download == .failed { object["download_error"] = .string(error) }
         return .object(object)

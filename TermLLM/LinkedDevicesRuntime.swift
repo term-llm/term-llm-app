@@ -259,7 +259,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             statuses[id] = nil
             capturing.remove(id)
             tearDown(entry)
-            if let key = hostKey(entry.connection) { try? identities.remove(hostKey: key) }
+            if let key = hostKey(entry.connection) { identities.removeInBackground(hostKey: key) }
             let store = WKWebsiteDataStore(forIdentifier: id)
             HubWebsiteDataBarrier.shared(for: id).enqueue {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -274,6 +274,10 @@ final class LinkedDevicesRuntime: ObservableObject {
             if entry.connection.linkedDevicesHostKey != connection.linkedDevicesHostKey {
                 markTerminal(entry, .identityChanged)
                 continue
+            }
+            if entry.connection.url != connection.url || entry.connection.kind != connection.kind {
+                // A changed endpoint cannot inherit an in-flight start/bridge.
+                tearDownConnection(entry)
             }
             entry.connection = connection
             startIfEligible(entry, immediate: true)
@@ -298,6 +302,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             for entry in entries.values {
                 entry.task?.cancel()
                 entry.task = nil
+                if entry.live == nil && !entry.enrolling { entry.activeToken = nil }
                 if entry.live == nil && !entry.terminal { statuses[entry.connection.id] = .suspended }
                 scheduleBackgroundClose(entry)
             }
@@ -575,7 +580,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             entries[sourceID] = nil
             statuses[sourceID] = nil
             if existing == nil, !catalog.connections.contains(where: { $0.id == sourceID }) {
-                try? identities.remove(hostKey: paired.credential.hostKey)
+                try? await identities.removeAsync(hostKey: paired.credential.hostKey)
                 // Preserve the safe underlying cause: the generic rollback
                 // message used to hide listener and catalog failures entirely.
                 throw LinkedDevicesPairingFailure(stage: stage, error: error,
@@ -614,6 +619,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             for entry in entries.values where entry.live == nil && !entry.terminal {
                 entry.task?.cancel()
                 entry.task = nil
+                if !entry.enrolling { entry.activeToken = nil }
                 statuses[entry.connection.id] = .offline
             }
         }
@@ -630,25 +636,38 @@ final class LinkedDevicesRuntime: ObservableObject {
             markTerminal(entry, .identityChanged)
             return
         }
-        let credential: LinkedDevicesCredential
-        do { credential = try identities.load(hostKey: key) }
-        catch {
-            statuses[entry.connection.id] = .failed(error.localizedDescription)
-            return
-        }
-        guard credential.hostKey == key else {
-            markTerminal(entry, .identityChanged)
-            return
-        }
         let delay: UInt64 = immediate ? 0 : Self.backoffNanoseconds(attempt: entry.attempt)
         let token = UUID()
+        // Reserve the attempt before yielding to storage. Foreground/network
+        // callbacks must not launch duplicate reads or connection attempts.
         entry.activeToken = token
         statuses[entry.connection.id] = .connecting
         let sourceID = entry.connection.id
+        let connection = entry.connection
         entry.task = Task { @MainActor [weak self, weak entry] in
             if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
-            guard !Task.isCancelled, let self, let entry, self.entries[sourceID] === entry,
+            guard let self, let entry,
+                  self.revalidatePendingStart(sourceID: sourceID, token: token, expected: connection,
+                                              cancelled: Task.isCancelled),
                   let connector = self.connector else { return }
+            let credential: LinkedDevicesCredential
+            do { credential = try await self.identities.loadAsync(hostKey: key) }
+            catch {
+                guard self.revalidatePendingStart(sourceID: sourceID, token: token, expected: connection,
+                                                  cancelled: Task.isCancelled) else { return }
+                entry.task = nil
+                entry.activeToken = nil
+                self.statuses[sourceID] = .failed(Self.safeMessage(error))
+                return
+            }
+            // Keychain work cannot be interrupted. Discard its result unless
+            // source identity, attempt generation and eligibility still match.
+            guard self.revalidatePendingStart(sourceID: sourceID, token: token, expected: connection,
+                                              cancelled: Task.isCancelled) else { return }
+            guard credential.hostKey == key else {
+                self.markTerminal(entry, .identityChanged)
+                return
+            }
             do {
                 let live = try await connector.reconnect(credential: credential) { [weak self] in
                     Task { @MainActor [weak self] in
@@ -680,6 +699,30 @@ final class LinkedDevicesRuntime: ObservableObject {
                 self.startIfEligible(entry, immediate: false)
             }
         }
+    }
+
+    /// Read-only attempt identity and post-await validation are internal so
+    /// lifecycle tests can exercise owned-but-ineligible completion directly.
+    func pendingStartToken(for sourceID: UUID) -> UUID? {
+        guard let entry = entries[sourceID], entry.task != nil else { return nil }
+        return entry.activeToken
+    }
+
+    func revalidatePendingStart(sourceID: UUID, token: UUID, expected: HubConnection,
+                                cancelled: Bool) -> Bool {
+        guard let entry = entries[sourceID], owns(entry, sourceID: sourceID, token: token) else { return false }
+        guard !cancelled, foreground, networkAvailable, expected.id == sourceID,
+              entry.connection.url == expected.url, entry.connection.kind == expected.kind,
+              let expectedKey = hostKey(expected), hostKey(entry.connection) == expectedKey else {
+            // We still own this reservation, but cannot use it. Never strand it
+            // in connecting, and never clear a replacement attempt's state.
+            entry.task?.cancel()
+            entry.task = nil
+            entry.activeToken = nil
+            statuses[sourceID] = foreground ? .offline : .suspended
+            return false
+        }
+        return true
     }
 
     private func owns(_ entry: Entry, sourceID: UUID, token: UUID) -> Bool {
@@ -837,6 +880,7 @@ final class LinkedDevicesRuntime: ObservableObject {
         case LinkedDevicesStorageError.hostMismatch, LinkedDevicesProtocolError.hostIdentityChanged: return "Host identity changed"
         case LinkedDevicesStorageError.missing: return "Linked device credentials are missing. Pair again."
         case LinkedDevicesStorageError.corrupt: return "Linked device credentials are unreadable. Forget the connection and pair again."
+        case LinkedDevicesStorageError.unavailable(_): return "Linked device credentials could not be loaded securely. Try connecting again."
         case LinkedDevicesProtocolError.invalid(_): return "The host returned invalid transport data. Connect manually or pair again."
         case let value as LinkedDevicesBrokerError where shouldStopAutomatically(value):
             return value.localizedDescription

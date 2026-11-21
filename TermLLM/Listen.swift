@@ -22,11 +22,27 @@ final class Listen {
                             nowPlaying: SystemNowPlaying(artwork: artwork), artwork: artwork)
         for name in [NativeApp.didEnterBackground, NativeApp.willTerminate] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { listen.player.savePlayingPosition() }
+                MainActor.assumeIsolated { listen.saveForLifecycle(background: name == NativeApp.didEnterBackground) }
             }
         }
         return listen
     }()
+
+    /// Read the engine on MainActor, then let the persistence FIFO do all disk
+    /// work. Only termination waits (at most 1.5 seconds); background saves stay
+    /// asynchronous and get bounded OS time.
+    func saveForLifecycle(background: Bool) {
+        #if os(iOS)
+        let assertion = background ? ListenBackgroundSave() : nil
+        #endif
+        player.savePlayingPosition()
+        if !background { store.drainForTermination() }
+        #if os(iOS)
+        if let assertion {
+            store.whenPersistenceCompletes { Task { @MainActor in assertion.end() } }
+        }
+        #endif
+    }
 
     enum DownloadPolicy: String, CaseIterable, Sendable {
         /// Download media from the connected server; stream everything else.
@@ -134,3 +150,40 @@ final class Listen {
         }
     }
 }
+
+#if os(iOS)
+/// Completion, timeout and OS expiration all share an idempotent end path.
+@MainActor
+final class ListenBackgroundSave {
+    typealias BeginTask = @MainActor (@escaping @Sendable () -> Void) -> UIBackgroundTaskIdentifier
+    typealias EndTask = @MainActor (UIBackgroundTaskIdentifier) -> Void
+
+    private let endTask: EndTask
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+    private var timeout: Task<Void, Never>?
+
+    init(beginTask: BeginTask = {
+        UIApplication.shared.beginBackgroundTask(withName: "Save Listen position", expirationHandler: $0)
+    }, endTask: @escaping EndTask = { UIApplication.shared.endBackgroundTask($0) }) {
+        self.endTask = endTask
+        identifier = beginTask { [weak self] in
+            // UIKit delivers expiration on main and requires the assertion to
+            // end before this handler returns, not in a later actor task.
+            MainActor.assumeIsolated { self?.end() }
+        }
+        timeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(25))
+            guard !Task.isCancelled else { return }
+            self?.end()
+        }
+    }
+
+    func end() {
+        timeout?.cancel()
+        timeout = nil
+        guard identifier != .invalid else { return }
+        endTask(identifier)
+        identifier = .invalid
+    }
+}
+#endif

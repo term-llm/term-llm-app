@@ -164,6 +164,7 @@ final class MusicTools {
     }
 
     private func nowPlaying() -> JSONValue {
+        player.connect()
         var result: [String: JSONValue] = [
             "status": .string(Self.status(player.status)),
             "shuffle": .bool(player.shuffle),
@@ -179,6 +180,7 @@ final class MusicTools {
 
     private func control(_ args: Arguments) async throws -> JSONValue {
         let valid = "one of \(Self.actions.joined(separator: ", "))"
+        player.connect()
         switch try args.string("action", valid).lowercased() {
         case "pause": player.pause()
         case "resume", "play": try await player.resume()
@@ -333,7 +335,8 @@ struct Arguments {
         switch values[key] {
         case nil, .null?: return nil
         case .int(let value)?: return value
-        case .double(let value)? where value.rounded() == value: return Int(value)
+        case .double(let value)?:
+            if let integer = Int(exactly: value) { return integer }
         case .string(let raw)?:
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { return nil }

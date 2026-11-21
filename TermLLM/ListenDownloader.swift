@@ -18,7 +18,7 @@ final class ListenDownloader {
 
         var fraction: Double? {
             guard let expected, expected > 0 else { return nil }
-            return min(1, Double(received) / Double(expected))
+            return min(1, max(0, Double(received) / Double(expected)))
         }
     }
 
@@ -47,6 +47,7 @@ final class ListenDownloader {
     @ObservationIgnored private var waiting: [UUID] = []
     /// Downloads started only to cache what's streaming.
     @ObservationIgnored private var forPlayback: Set<UUID> = []
+    @ObservationIgnored private var sourceSelection = UUID()
 
     init(store: ListenStore, cookies: ListenCookieJar, server: @escaping () -> ListenServer?,
          directory: URL = ListenDownloader.defaultDirectory,
@@ -88,7 +89,15 @@ final class ListenDownloader {
     /// otherwise its transfer, which saves it while it plays. Video and plain
     /// http stream straight from the URL (cookies only for the connected server).
     func source(for item: ListenItem) async -> ListenSource {
-        retirePlaybackCaches(except: item.id)
+        let selection = UUID()
+        sourceSelection = selection
+        await retirePlaybackCaches(except: item.id)
+        await awaitSealed(item.id)
+        // ListenPlayer drops superseded source results. Do not start another
+        // cache for that stale selection after a slow seal let a newer play win.
+        guard sourceSelection == selection else { return ListenSource(url: item.url, spoken: item.kind != .music) }
+        // A download or removal may have completed while sealing suspended us.
+        guard let item = store.item(item.id) else { return ListenSource(url: item.url, spoken: item.kind != .music) }
         if let local = localURL(for: item) { return ListenSource(url: local, spoken: item.kind != .music) }
         if item.download == .downloaded {
             // The file vanished; forget it.
@@ -160,7 +169,7 @@ final class ListenDownloader {
                 transfer.setSaving(false)
                 streams[id] = WeakTransfer(transfer)
             } else {
-                transfer.cancel(keepingPartial: false)
+                seal(transfer, keepingPartial: false)
             }
         }
         if let item = store.item(id), item.download == .queued || item.download == .downloading {
@@ -186,8 +195,8 @@ final class ListenDownloader {
             waiting.removeAll { $0 == item.id }
             forPlayback.remove(item.id)
             stopWatching(item.id)
-            transfers.removeValue(forKey: item.id)?.cancel(keepingPartial: false)
-            streams.removeValue(forKey: item.id)?.transfer?.cancel(keepingPartial: false)
+            if let transfer = transfers.removeValue(forKey: item.id) { seal(transfer, keepingPartial: false) }
+            if let transfer = streams.removeValue(forKey: item.id)?.transfer { seal(transfer, keepingPartial: false) }
             if let name = item.localFile { try? FileManager.default.removeItem(at: directory.appending(path: name)) }
             removePartial(item.id)
         }
@@ -214,6 +223,32 @@ final class ListenDownloader {
 
     // MARK: - Private
 
+    /// All close/delete operations for an item's partial finish before reuse.
+    @ObservationIgnored private var sealing: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
+
+    private func seal(_ transfer: ListenTransfer, keepingPartial: Bool) {
+        enqueueFileWork(transfer.id) {
+            await transfer.cancelAndSeal(keepingPartial: keepingPartial)
+        }
+    }
+
+    private func enqueueFileWork(_ id: UUID, _ work: @escaping @Sendable () async -> Void) {
+        let previous = sealing[id]?.task
+        let token = UUID()
+        let task = Task { [weak self] in
+            await previous?.value
+            await work()
+            guard let self, self.sealing[id]?.token == token else { return }
+            self.sealing[id] = nil
+            self.startWaiting()
+        }
+        sealing[id] = (token, task)
+    }
+
+    private func awaitSealed(_ id: UUID) async {
+        while let pending = sealing[id] { await pending.task.value }
+    }
+
     private struct WeakTransfer {
         weak var transfer: ListenTransfer?
         init(_ transfer: ListenTransfer) { self.transfer = transfer }
@@ -235,15 +270,14 @@ final class ListenDownloader {
     /// Playback caches only need an active writer/watcher while current. Keep
     /// sparse bytes for a later resume, without retaining every visited episode
     /// or letting old completion callbacks update a replacement transfer.
-    private func retirePlaybackCaches(except current: UUID) {
+    private func retirePlaybackCaches(except current: UUID) async {
+        var retired: [UUID] = []
         for id in forPlayback where id != current {
             waiting.removeAll { $0 == id }
             stopWatching(id)
             if let transfer = transfers.removeValue(forKey: id) {
-                transfer.cancel(keepingPartial: true)
-                // Seal the partial before another source selection can reopen
-                // it on a different transfer queue. No remote work is awaited.
-                _ = transfer.progress
+                seal(transfer, keepingPartial: true)
+                retired.append(id)
             }
             if let item = store.item(id), item.download == .queued || item.download == .downloading {
                 store.update(id) { $0.download = .none; $0.downloadError = nil }
@@ -251,6 +285,7 @@ final class ListenDownloader {
         }
         forPlayback = forPlayback.intersection([current])
         startWaiting()
+        for id in retired { await awaitSealed(id) }
     }
 
     /// The transfer playback reads: the download in flight, or a new one
@@ -267,8 +302,9 @@ final class ListenDownloader {
     private func startWaiting() {
         // The current playback cache may stay idle/partial indefinitely.
         // It must not occupy a whole-file download queue slot.
-        while transfers.keys.filter({ !forPlayback.contains($0) }).count < Self.maxConcurrent, !waiting.isEmpty {
-            let id = waiting.removeFirst()
+        while transfers.keys.filter({ !forPlayback.contains($0) }).count < Self.maxConcurrent,
+              let index = waiting.firstIndex(where: { sealing[$0] == nil }) {
+            let id = waiting.remove(at: index)
             guard let item = store.item(id) else { continue }
             begin(item)
         }
@@ -358,18 +394,47 @@ final class ListenDownloader {
     /// An unfinished download's file, unless a live transfer still owns it.
     private func removePartial(_ id: UUID) {
         guard transfers[id] == nil, streams[id]?.transfer == nil else { return }
-        ListenTransfer.partialFiles(for: id, in: directory).forEach { try? FileManager.default.removeItem(at: $0) }
+        let files = ListenTransfer.partialFiles(for: id, in: directory)
+        enqueueFileWork(id) {
+            await Task.detached(priority: .utility) {
+                files.forEach { try? FileManager.default.removeItem(at: $0) }
+            }.value
+        }
     }
 
     /// Unfinished downloads of items still in Up Next resume later; the rest go.
     private func removeStrayPartials() {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
-        for name in names where name.contains(".partial") {
-            if let id = UUID(uuidString: String(name.prefix(36))), let item = store.item(id), item.isQueued,
-               item.download != .downloaded {
-                continue
+        let directory = directory
+        Task { [weak self] in
+            let names = await Task.detached(priority: .utility) {
+                (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+            }.value
+            guard let self else { return }
+            for (id, names) in Self.partialFileGroups(in: names) {
+                var extras = names
+                if let id {
+                    // Recheck live state after the scan; newly started transfers win.
+                    if let item = self.store.item(id), item.isQueued, item.download != .downloaded { continue }
+                    // The data and JSON record share one close/delete gate.
+                    self.removePartial(id)
+                    let partials = Set(ListenTransfer.partialFiles(for: id, in: directory).map(\.lastPathComponent))
+                    extras.removeAll { partials.contains($0) }
+                }
+                let files = extras.map { directory.appending(path: $0) }
+                if !files.isEmpty {
+                    await Task.detached(priority: .utility) {
+                        files.forEach { try? FileManager.default.removeItem(at: $0) }
+                    }.value
+                }
             }
-            try? FileManager.default.removeItem(at: directory.appending(path: name))
+        }
+    }
+
+    /// One group per item, including both its partial data and resume record.
+    /// Unrecognizable partial names share the nil group for stray-file removal.
+    nonisolated static func partialFileGroups(in names: [String]) -> [UUID?: [String]] {
+        Dictionary(grouping: names.filter { $0.contains(".partial") }) {
+            UUID(uuidString: String($0.prefix(36)))
         }
     }
 

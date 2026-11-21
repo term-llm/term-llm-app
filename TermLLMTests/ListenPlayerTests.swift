@@ -64,6 +64,138 @@ final class ListenPlayerTests: XCTestCase {
         XCTAssertEqual(listen.store.upNext.map(\.title), ["b"])
     }
 
+    func testSkippingBackPastStartStillClampsToZero() async throws {
+        let engine = FakeListenEngine()
+        let listen = makeListen(engine: engine)
+        _ = try await listen.add([draft("a")], placement: .now, download: .never)
+        engine.currentTime = 5
+        await listen.player.skip(by: -30)
+        XCTAssertEqual(listen.player.position, 0)
+        XCTAssertEqual(engine.currentTime, 0)
+    }
+
+    func testSleepTimerClampsNativeIntegerExtremesWithoutOverflow() {
+        let listen = makeListen()
+        listen.player.sleep(minutes: Int.max)
+        XCTAssertNotNil(listen.player.sleepAt)
+        XCTAssertLessThanOrEqual(listen.player.sleepAt!.timeIntervalSinceNow, 24 * 60 * 60 + 1)
+        listen.player.sleep(minutes: Int.min)
+        XCTAssertNil(listen.player.sleepAt)
+    }
+
+    func testRemoteCommandDispatchWorksOffMainAndSynchronouslyOnMain() async {
+        var synchronous = false
+        SystemNowPlaying.deliver { synchronous = true }
+        XCTAssertTrue(synchronous)
+        let delivered = expectation(description: "remote command delivered on main")
+        await Task.detached {
+            XCTAssertFalse(Thread.isMainThread)
+            SystemNowPlaying.deliver {
+                XCTAssertTrue(Thread.isMainThread)
+                delivered.fulfill()
+            }
+        }.value
+        await fulfillment(of: [delivered], timeout: 2)
+    }
+
+    func testLifecycleSaveEnqueuesSnapshotsWithoutWaitingForDisk() async throws {
+        let file = temporaryDirectory().appending(path: "library.json")
+        let queue = DispatchQueue(label: "ListenPlayerTests.blockedPersistence")
+        let release = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "persistence blocked")
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let store = ListenStore(fileURL: file, persistenceQueue: queue)
+        let engine = FakeListenEngine()
+        let listen = Listen(store: store, engine: engine, cookies: FakeCookieJar(), server: { nil },
+                            downloadDirectory: temporaryDirectory(), defaults: isolatedDefaults())
+        let item = try await listen.add([ListenDraft(url: URL(string: "http://example.com/a.mp3")!)],
+                                        placement: .now, download: .never)[0]
+        engine.currentTime = 123
+        listen.saveForLifecycle(background: true)
+        store.persist()
+        engine.currentTime = 234
+        let started = ContinuousClock.now
+        listen.saveForLifecycle(background: true)
+        XCTAssertLessThan(started.duration(to: .now), .milliseconds(100), "background entry must remain asynchronous")
+        XCTAssertEqual(store.item(item.id)?.position, 234)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        release.signal()
+        await store.flushForTesting()
+        XCTAssertEqual(ListenStore(fileURL: file).item(item.id)?.position, 234)
+    }
+
+    func testTerminationWaitsForFinalPositionAndQueuedLibraryWrites() async throws {
+        let file = temporaryDirectory().appending(path: "library.json")
+        let queue = DispatchQueue(label: "ListenPlayerTests.terminationPersistence")
+        let release = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "persistence blocked briefly")
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let store = ListenStore(fileURL: file, persistenceQueue: queue)
+        let engine = FakeListenEngine()
+        let listen = Listen(store: store, engine: engine, cookies: FakeCookieJar(), server: { nil },
+                            downloadDirectory: temporaryDirectory(), defaults: isolatedDefaults())
+        let item = try await listen.add([ListenDraft(url: URL(string: "http://example.com/terminate.mp3")!)],
+                                        placement: .now, download: .never)[0]
+        store.update(item.id) { $0.title = "Queued library change" }
+        engine.currentTime = 345
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { release.signal() }
+        let started = ContinuousClock.now
+        listen.saveForLifecycle(background: false)
+        let elapsed = started.duration(to: .now)
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(100))
+        XCTAssertLessThan(elapsed, .seconds(2))
+        // No async flush here: termination must return after these writes land.
+        let reopened = ListenStore(fileURL: file)
+        XCTAssertEqual(reopened.item(item.id)?.position, 345)
+        XCTAssertEqual(reopened.item(item.id)?.title, "Queued library change")
+    }
+
+    func testTerminationDrainStopsWaitingAtItsBound() async throws {
+        let file = temporaryDirectory().appending(path: "library.json")
+        let queue = DispatchQueue(label: "ListenPlayerTests.stalledTerminationPersistence")
+        let release = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "persistence blocked beyond termination bound")
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let store = ListenStore(fileURL: file, persistenceQueue: queue)
+        let listen = Listen(store: store, engine: FakeListenEngine(), cookies: FakeCookieJar(), server: { nil },
+                            downloadDirectory: temporaryDirectory(), defaults: isolatedDefaults())
+        _ = store.add([draft("queued-at-termination")], placement: .end)
+        let started = ContinuousClock.now
+        listen.saveForLifecycle(background: false)
+        let elapsed = started.duration(to: .now)
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(1400))
+        XCTAssertLessThan(elapsed, .seconds(2), "termination must never wait indefinitely for disk")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        release.signal()
+        await store.flushForTesting()
+        XCTAssertEqual(ListenStore(fileURL: file).items.count, 1)
+    }
+
+    #if os(iOS)
+    func testBackgroundExpirationEndsAssertionSynchronouslyAndOnlyOnce() throws {
+        let identifier = UIBackgroundTaskIdentifier(rawValue: 42)
+        var expiration: (@Sendable () -> Void)?
+        var ended: [UIBackgroundTaskIdentifier] = []
+        let assertion = ListenBackgroundSave(beginTask: { handler in
+            expiration = handler
+            return identifier
+        }, endTask: { ended.append($0) })
+        let expire = try XCTUnwrap(expiration)
+        expire()
+        XCTAssertEqual(ended, [identifier], "the assertion must be ended before expiration returns")
+        expire()
+        assertion.end()
+        XCTAssertEqual(ended, [identifier], "completion/expiration/timeout share an idempotent end path")
+    }
+    #endif
+
     func testSleepTimerPauses() async throws {
         let engine = FakeListenEngine()
         var clock = Date(timeIntervalSince1970: 1_000)
@@ -176,21 +308,25 @@ final class ListenPlayerTests: XCTestCase {
         let listen = makeListen(engine: engine, directory: directory)
         let items = try await listen.add([draft("a")], placement: .now, download: .never)
         await settle()
+        await listen.store.flushForTesting()
         let saved = try Data(contentsOf: library)
         let played = ListenPlayer.saveInterval * 3
         for second in 1...played {
             engine.currentTime = TimeInterval(second)
             engine.send(.tick)
         }
+        await listen.store.flushForTesting()
         XCTAssertEqual(try Data(contentsOf: library), saved)
         XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played))
 
         engine.currentTime = TimeInterval(played + 4)
         listen.player.savePlayingPosition()
+        await listen.store.flushForTesting()
         XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played + 4),
-                       "leaving the foreground saves it at once")
+                       "leaving the foreground enqueues the newest snapshot")
         engine.currentTime = TimeInterval(played + 9)
         listen.player.pause()
+        await listen.store.flushForTesting()
         XCTAssertEqual(ListenStore(fileURL: library).item(items[0].id)?.position, TimeInterval(played + 9))
         XCTAssertEqual(try Data(contentsOf: library), saved)
     }
@@ -231,6 +367,7 @@ final class ListenPlayerTests: XCTestCase {
         let items = try await first.add([draft("a")], placement: .now, download: .never)
         engine.currentTime = 50
         first.player.pause()
+        await first.store.flushForTesting()
 
         let relaunched = Listen(store: ListenStore(fileURL: directory.appending(path: "l.json")), engine: FakeListenEngine(),
                                 cookies: FakeCookieJar(), server: { testServer }, downloadDirectory: directory, defaults: defaults)
@@ -367,6 +504,99 @@ final class ListenPlayerTests: XCTestCase {
         let local = try XCTUnwrap(listen.downloader.localURL(for: try XCTUnwrap(listen.store.item(id))))
         XCTAssertEqual(try Data(contentsOf: local), body)
         listen.player.stop()
+    }
+
+    func testNewerEpisodeSelectionWinsWhileOlderSelectionAwaitsSeal() async throws {
+        let engine = FakeListenEngine()
+        let server = FakeMediaServer()
+        let drafts = [draft("slow-seal"), draft("superseded"), draft("newest")]
+        let body = mediaBody(2 << 20)
+        for draft in drafts { server.serve(draft.url, .init(body: body)) }
+        server.hold(128 << 10 ..< body.count)
+        let listen = makeListen(engine: engine, server: server)
+        let items = try await listen.add(drafts, placement: .now, download: .never)
+        let old = try XCTUnwrap(engine.loads.last?.source.transfer)
+        try await waitFor { old.progress.received == 128 << 10 }
+        let entered = expectation(description: "old file queue blocked")
+        let release = DispatchSemaphore(value: 0)
+        old.queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        let superseded = Task { try await listen.player.play(items[1].id) }
+        try await waitFor {
+            listen.player.currentID == items[1].id && listen.store.item(items[0].id)?.download == ListenItem.Download.none
+        }
+        try await listen.player.play(items[2].id)
+        release.signal()
+        try await superseded.value
+        XCTAssertEqual(listen.player.currentID, items[2].id)
+        XCTAssertEqual(listen.downloader.activeCount, 1)
+        XCTAssertEqual(Set(listen.downloader.progress.keys), Set([items[2].id]), "a stale source must not restart an orphan playback cache")
+        listen.player.stop()
+        listen.downloader.cancel(items[2].id)
+    }
+
+    func testCancelThenReopenWaitsForPartialCloseAndDelete() async throws {
+        let engine = FakeListenEngine()
+        let server = FakeMediaServer()
+        let body = mediaBody(2 << 20)
+        let draft = draft("seal-and-reopen")
+        server.serve(draft.url, .init(body: body))
+        server.hold(128 << 10 ..< body.count)
+        let listen = makeListen(engine: engine, server: server)
+        let item = try await listen.add([draft], placement: .now, download: .never)[0]
+        let old = try XCTUnwrap(engine.loads.last?.source.transfer)
+        try await waitFor { old.progress.received == 128 << 10 }
+        let entered = expectation(description: "old transfer file queue blocked")
+        let release = DispatchSemaphore(value: 0)
+        old.queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        listen.player.stop()
+        listen.downloader.cancel(item.id)
+        listen.downloader.download(item.id)
+        XCTAssertEqual(listen.store.item(item.id)?.download, .queued)
+        let reopening = Task { await listen.downloader.source(for: item) }
+        await Task.yield()
+        XCTAssertEqual(listen.downloader.activeCount, 0, "no new writer may reopen before the old queue seals")
+        release.signal()
+        let source = await reopening.value
+        XCTAssertFalse(source.transfer === old)
+        server.release()
+        try await waitFor { listen.store.item(item.id)?.download == .downloaded }
+        let saved = try XCTUnwrap(listen.downloader.localURL(for: try XCTUnwrap(listen.store.item(item.id))))
+        XCTAssertEqual(try Data(contentsOf: saved), body, "late cancellation must not unlink a replacement writer's bytes")
+    }
+
+    func testPartialCleanupGroupsDataAndRecordIntoOneItemOperation() {
+        let id = UUID(), other = UUID()
+        let data = "\(id.uuidString).partial"
+        let record = "\(id.uuidString).partial.json"
+        let otherData = "\(other.uuidString).partial"
+        let groups = ListenDownloader.partialFileGroups(in: [data, record, otherData, "invalid.partial", "saved.mp3"])
+        XCTAssertEqual(groups.count, 3, "two item groups and one unrecognizable-name group")
+        XCTAssertEqual(Set(groups[id] ?? []), Set([data, record]), "the data and record schedule just one per-item cleanup")
+        XCTAssertEqual(groups[other], [otherData])
+        XCTAssertEqual(groups[nil], ["invalid.partial"])
+    }
+
+    func testDeferredPartialCleanupPreservesQueuedItemsAndRemovesStrays() async throws {
+        let directory = temporaryDirectory()
+        let store = ListenStore(fileURL: directory.appending(path: "library.json"))
+        let queued = store.add([draft("resume")], placement: .end)[0]
+        let downloads = directory.appending(path: "Downloads")
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        let kept = ListenTransfer.partialFiles(for: queued.id, in: downloads)[0]
+        let stray = ListenTransfer.partialFiles(for: UUID(), in: downloads)[0]
+        let malformed = downloads.appending(path: "not-an-id.partial")
+        for file in [kept, stray, malformed] { try Data("partial".utf8).write(to: file) }
+        let downloader = ListenDownloader(store: store, cookies: FakeCookieJar(), server: { nil }, directory: downloads)
+        try await waitFor {
+            !FileManager.default.fileExists(atPath: stray.path) && !FileManager.default.fileExists(atPath: malformed.path)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+        XCTAssertEqual(downloader.activeCount, 0)
+        await store.flushForTesting()
     }
 
     func testSwitchingSeveralPlaybackCachesDoesNotStarveExplicitQueuedDownloads() async throws {
@@ -586,8 +816,6 @@ final class ListenAudioSessionTests: XCTestCase {
         }
     }
 
-    // Run in a Swift task: older simulator runtimes crash in the isolated-
-    // deinit back-deployment shim when XCTest invokes this synchronously.
     func testReleasingEngineExplicitlyRemovesItsPeriodicObserver() async {
         let player = ObserverRecordingPlayer()
         #if os(iOS)
@@ -602,6 +830,25 @@ final class ListenAudioSessionTests: XCTestCase {
         XCTAssertNil(released)
         XCTAssertEqual(player.observerRemovals, 1,
                        "Releasing a time-observer token without removeTimeObserver is undefined behavior")
+    }
+
+    /// Reproduces the SwiftUI teardown crash: the last reference is dropped
+    /// when a main-actor job's autorelease pool drains after its task ended.
+    /// `isolated deinit` aborted there in TaskLocal::StopLookupScope.
+    func testEngineReleasedByJobAutoreleasePoolAfterTaskEnds() async {
+        let player = ObserverRecordingPlayer()
+        for _ in 0..<20 {
+            await Task { @MainActor in
+                #if os(iOS)
+                let engine = AVListenEngine(audioSession: FakeListenAudioSession(), player: player)
+                #else
+                let engine = AVListenEngine(player: player)
+                #endif
+                _ = Unmanaged.passRetained(engine).autorelease()
+            }.value
+            await Task.yield()
+        }
+        XCTAssertEqual(player.observerRemovals, 20)
     }
 
     #if os(iOS)
@@ -902,6 +1149,59 @@ final class ListenArtworkTests: XCTestCase {
         XCTAssertEqual(ArtworkProtocol.requests(for: url), 1, "never downloaded again")
     }
 
+    func testMemoizedArtworkLookupDoesNotWaitForRetainingPrune() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let queue = DispatchQueue(label: "ListenArtworkTests.blockedPrune", qos: .utility)
+        let artwork = ListenArtworkStore(directory: directory, cookies: nil, server: { nil }, session: session,
+                                         fileQueue: queue)
+        let episode = item()
+        let saved = await artwork.file(for: episode)
+        XCTAssertNotNil(saved)
+        let entered = expectation(description: "utility file queue blocked")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 2) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        artwork.prune(keeping: [episode])
+        let started = ContinuousClock.now
+        let cached = await artwork.file(for: episode)
+        XCTAssertEqual(cached, saved)
+        XCTAssertLessThan(started.duration(to: .now), .milliseconds(100), "a memoized file must not join a queued launch prune")
+        release.signal()
+        await artwork.flushForTesting()
+        XCTAssertNotNil(artwork.savedFile(for: episode))
+    }
+
+    func testPruneInvalidatesFileMemoBeforeDeletingAndLookupRefetches() async throws {
+        let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
+        defer { session.invalidateAndCancel() }
+        let queue = DispatchQueue(label: "ListenArtworkTests.memoInvalidation", qos: .utility)
+        let artwork = ListenArtworkStore(directory: directory, cookies: nil, server: { nil }, session: session,
+                                         fileQueue: queue)
+        let episode = item()
+        let url = try XCTUnwrap(episode.artworkURL)
+        let initial = await artwork.file(for: episode)
+        XCTAssertNotNil(initial)
+        XCTAssertEqual(ArtworkProtocol.requests(for: url), 1)
+        let entered = expectation(description: "prune pending on blocked file queue")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        await fulfillment(of: [entered], timeout: 1)
+        defer { release.signal() }
+        artwork.prune(keeping: [])
+        var returned = false
+        let lookup = Task { let file = await artwork.file(for: episode); returned = true; return file }
+        await Task.yield()
+        XCTAssertFalse(returned, "a file scheduled for deletion must not be returned from a stale memo")
+        release.signal()
+        let reloaded = await lookup.value
+        XCTAssertNotNil(reloaded)
+        XCTAssertEqual(ArtworkProtocol.requests(for: url), 2, "the ordered lookup sees the prune, then fetches a new file")
+        XCTAssertNotNil(artwork.savedFile(for: episode))
+        await artwork.flushForTesting()
+    }
+
     func testMissingArtworkIsNotRefetchedOnEveryRebuild() async throws {
         let session = ListenMediaSession.makeSession(protocolClasses: [ArtworkProtocol.self])
         defer { session.invalidateAndCancel() }
@@ -932,6 +1232,7 @@ final class ListenArtworkTests: XCTestCase {
         _ = await artwork.image(for: other, pixels: 160)
         XCTAssertNotNil(artwork.savedFile(for: other))
         artwork.prune(keeping: [public1])
+        await artwork.flushForTesting()
         XCTAssertNotNil(artwork.savedFile(for: public1))
         XCTAssertNil(artwork.savedFile(for: other))
     }
@@ -956,6 +1257,7 @@ final class ListenArtworkTests: XCTestCase {
         _ = await relaunched.image(url: kept, pixels: row)
         XCTAssertEqual(ArtworkProtocol.requests(for: kept), 1, "never downloaded again")
         relaunched.prune(keepingURLs: [kept])
+        await relaunched.flushForTesting()
         XCTAssertNotNil(relaunched.savedFile(url: kept))
         XCTAssertNil(relaunched.savedFile(url: dropped))
     }

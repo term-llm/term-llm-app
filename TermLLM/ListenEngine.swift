@@ -236,6 +236,30 @@ final class ListenBufferCallbackCoalescer: @unchecked Sendable {
     deinit { pending?.cancel() }
 }
 
+/// Mutated only by AVListenEngine on MainActor, then exclusively during
+/// teardown. AVPlayer/NotificationCenter observation removal is thread-safe.
+/// Deliberately not an actor-isolated deinit: the runtime's back-deployment
+/// thunk aborts in TaskLocal::StopLookupScope when UIKit releases a hosting
+/// view while an autorelease pool drains. This also keeps non-Sendable tokens
+/// out of AVListenEngine's nonisolated deinit without weakening actor checks.
+private final class ListenEngineObservers {
+    let player: AVPlayer
+    var timeObserver: Any?
+    var itemObservers: [NSObjectProtocol] = []
+    var sessionObservers: [NSObjectProtocol] = []
+    var bufferCallbacks: ListenBufferCallbackCoalescer?
+    var itemKeyValueObservers: [NSKeyValueObservation] = []
+
+    init(player: AVPlayer) { self.player = player }
+
+    deinit {
+        bufferCallbacks?.invalidate()
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        itemObservers.forEach(NotificationCenter.default.removeObserver)
+        sessionObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+}
+
 @MainActor
 final class AVListenEngine: ListenEngine {
     var onEvent: (@MainActor (ListenEngineEvent) -> Void)?
@@ -245,10 +269,7 @@ final class AVListenEngine: ListenEngine {
     /// Bumped by every play, pause, and stop so a play that finishes
     /// activating after a later pause or stop doesn't start audio.
     private var playRequest = 0
-    private var timeObserver: Any?
-    private var itemObservers: [NSObjectProtocol] = []
-    private var bufferCallbacks: ListenBufferCallbackCoalescer?
-    private var sessionObservers: [NSObjectProtocol] = []
+    private let observations: ListenEngineObservers
     private var spoken = true
     private var isRemote = false
     /// The resource loader holds its delegate weakly.
@@ -260,12 +281,14 @@ final class AVListenEngine: ListenEngine {
     #if os(iOS)
     init(audioSession: any ListenAudioSession = AVAudioSession.sharedInstance(), player: AVPlayer = AVPlayer()) {
         self.player = player
+        observations = ListenEngineObservers(player: player)
         self.audioSession = ListenAudioSessionQueue(session: audioSession)
         startObserving()
     }
     #else
     init(player: AVPlayer = AVPlayer()) {
         self.player = player
+        observations = ListenEngineObservers(player: player)
         self.audioSession = ListenAudioSessionQueue()
         startObserving()
     }
@@ -273,13 +296,13 @@ final class AVListenEngine: ListenEngine {
 
     private func startObserving() {
         player.automaticallyWaitsToMinimizeStalling = true
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
+        observations.timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
                                                       queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent?(.tick) }
         }
         #if os(iOS)
         let center = NotificationCenter.default
-        sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
+        observations.sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                                    queue: .main) { [weak self] note in
             let info = note.userInfo ?? [:]
             let type = (info[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
@@ -293,7 +316,7 @@ final class AVListenEngine: ListenEngine {
                 }
             }
         })
-        sessionObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil,
+        observations.sessionObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil,
                                                    queue: .main) { [weak self] note in
             let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                 .flatMap(AVAudioSession.RouteChangeReason.init)
@@ -303,13 +326,6 @@ final class AVListenEngine: ListenEngine {
             }
         })
         #endif
-    }
-
-    isolated deinit {
-        bufferCallbacks?.invalidate()
-        if let timeObserver { player.removeTimeObserver(timeObserver) }
-        itemObservers.forEach(NotificationCenter.default.removeObserver)
-        sessionObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     var currentTime: TimeInterval {
@@ -432,16 +448,16 @@ final class AVListenEngine: ListenEngine {
             guard let self, let item, self.player.currentItem === item else { return }
             self.onEvent?(.buffer)
         }
-        bufferCallbacks = callbacks
+        observations.bufferCallbacks = callbacks
         let center = NotificationCenter.default
-        itemObservers.append(center.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item,
+        observations.itemObservers.append(center.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item,
                                                 queue: .main) { [weak self, weak item] _ in
             MainActor.assumeIsolated {
                 guard let self, let item, self.player.currentItem === item else { return }
                 self.onEvent?(.ended)
             }
         })
-        itemObservers.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item,
+        observations.itemObservers.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item,
                                                 queue: .main) { [weak self, weak item] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             MainActor.assumeIsolated {
@@ -449,7 +465,7 @@ final class AVListenEngine: ListenEngine {
                 self.onEvent?(.failed(error?.localizedDescription ?? "playback stopped unexpectedly"))
             }
         })
-        itemObservers.append(center.addObserver(forName: AVPlayerItem.playbackStalledNotification, object: item,
+        observations.itemObservers.append(center.addObserver(forName: AVPlayerItem.playbackStalledNotification, object: item,
                                                 queue: .main) { [weak self, weak item] _ in
             MainActor.assumeIsolated {
                 guard let self, let item, self.player.currentItem === item else { return }
@@ -458,20 +474,18 @@ final class AVListenEngine: ListenEngine {
         })
         // Both KVO sources share one slot and capture only the thread-safe
         // helper. No actor task (or main-queue block) is created per KVO event.
-        itemKeyValueObservers = [
+        observations.itemKeyValueObservers = [
             item.observe(\.loadedTimeRanges) { _, _ in callbacks.request() },
             player.observe(\.timeControlStatus) { _, _ in callbacks.request() }
         ]
     }
 
-    private var itemKeyValueObservers: [NSKeyValueObservation] = []
-
     private func removeItemObservers() {
-        bufferCallbacks?.invalidate()
-        bufferCallbacks = nil
-        itemObservers.forEach(NotificationCenter.default.removeObserver)
-        itemObservers = []
-        itemKeyValueObservers = []
+        observations.bufferCallbacks?.invalidate()
+        observations.bufferCallbacks = nil
+        observations.itemObservers.forEach(NotificationCenter.default.removeObserver)
+        observations.itemObservers = []
+        observations.itemKeyValueObservers = []
     }
 }
 
@@ -485,21 +499,21 @@ protocol ListenNowPlaying: AnyObject {
     func clear()
 }
 
-struct ListenRemoteCommands {
-    var play: @MainActor () -> Void
-    var pause: @MainActor () -> Void
-    var toggle: @MainActor () -> Void
-    var skip: @MainActor (_ seconds: TimeInterval) -> Void
-    var seek: @MainActor (_ position: TimeInterval) -> Void
-    var next: @MainActor () -> Void
-    var previous: @MainActor () -> Void
-    var rate: @MainActor (_ rate: Float) -> Void
+struct ListenRemoteCommands: Sendable {
+    var play: @MainActor @Sendable () -> Void
+    var pause: @MainActor @Sendable () -> Void
+    var toggle: @MainActor @Sendable () -> Void
+    var skip: @MainActor @Sendable (_ seconds: TimeInterval) -> Void
+    var seek: @MainActor @Sendable (_ position: TimeInterval) -> Void
+    var next: @MainActor @Sendable () -> Void
+    var previous: @MainActor @Sendable () -> Void
+    var rate: @MainActor @Sendable (_ rate: Float) -> Void
 }
 
 @MainActor
 final class SystemNowPlaying: ListenNowPlaying {
-    static let skipBack: TimeInterval = 15
-    static let skipForward: TimeInterval = 30
+    nonisolated static let skipBack: TimeInterval = 15
+    nonisolated static let skipForward: TimeInterval = 30
 
     private var artworkURL: URL?
     private var artworkSourceID: UUID?
@@ -513,29 +527,45 @@ final class SystemNowPlaying: ListenNowPlaying {
 
     func connect(_ commands: ListenRemoteCommands) {
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { _ in MainActor.assumeIsolated { commands.play() }; return .success }
-        center.pauseCommand.addTarget { _ in MainActor.assumeIsolated { commands.pause() }; return .success }
-        center.togglePlayPauseCommand.addTarget { _ in MainActor.assumeIsolated { commands.toggle() }; return .success }
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipBack)]
-        center.skipBackwardCommand.addTarget { _ in
-            MainActor.assumeIsolated { commands.skip(-Self.skipBack) }; return .success
-        }
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipForward)]
+        center.changePlaybackRateCommand.supportedPlaybackRates = ListenPlayer.rates.map { NSNumber(value: $0) }
+        Self.installHandlers(center, commands: commands)
+    }
+
+    /// Form the MediaPlayer closures outside actor isolation: the framework
+    /// may invoke them on any thread. Only Sendable values cross to MainActor.
+    private nonisolated static func installHandlers(_ center: MPRemoteCommandCenter, commands: ListenRemoteCommands) {
+        center.playCommand.addTarget { _ in deliver(commands.play); return .success }
+        center.pauseCommand.addTarget { _ in deliver(commands.pause); return .success }
+        center.togglePlayPauseCommand.addTarget { _ in deliver(commands.toggle); return .success }
+        center.skipBackwardCommand.addTarget { _ in
+            deliver { commands.skip(-skipBack) }; return .success
+        }
         center.skipForwardCommand.addTarget { _ in
-            MainActor.assumeIsolated { commands.skip(Self.skipForward) }; return .success
+            deliver { commands.skip(skipForward) }; return .success
         }
         center.changePlaybackPositionCommand.addTarget { event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            MainActor.assumeIsolated { commands.seek(event.positionTime) }
+            let position = event.positionTime
+            deliver { commands.seek(position) }
             return .success
         }
-        center.nextTrackCommand.addTarget { _ in MainActor.assumeIsolated { commands.next() }; return .success }
-        center.previousTrackCommand.addTarget { _ in MainActor.assumeIsolated { commands.previous() }; return .success }
-        center.changePlaybackRateCommand.supportedPlaybackRates = ListenPlayer.rates.map { NSNumber(value: $0) }
+        center.nextTrackCommand.addTarget { _ in deliver(commands.next); return .success }
+        center.previousTrackCommand.addTarget { _ in deliver(commands.previous); return .success }
         center.changePlaybackRateCommand.addTarget { event in
             guard let event = event as? MPChangePlaybackRateCommandEvent else { return .commandFailed }
-            MainActor.assumeIsolated { commands.rate(event.playbackRate) }
+            let rate = event.playbackRate
+            deliver { commands.rate(rate) }
             return .success
+        }
+    }
+
+    nonisolated static func deliver(_ action: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { action() }
+        } else {
+            Task { @MainActor in action() }
         }
     }
 

@@ -43,11 +43,17 @@ struct MusicView: View {
             .animation(.snappy(duration: 0.25), value: player.nowPlaying)
             .musicNotices(player)
             .onAppear {
-                if isActive { library.refreshAccess() }
+                if isActive {
+                    library.refreshAccess()
+                    player.connect()
+                }
                 library.store.reloadIfReadOnly()
             }
             .onChange(of: isActive) { _, active in
-                if active { library.refreshAccess() }
+                if active {
+                    library.refreshAccess()
+                    player.connect()
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 if isActive && phase == .active { library.refreshAccess() }

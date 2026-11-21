@@ -99,6 +99,9 @@ final class ListenPlayer {
 
     /// Plays `id` from `start` (default: where it was left).
     func play(_ id: UUID, from start: TimeInterval? = nil) async throws {
+        if let start, !ListenMediaTime.validPosition(start) {
+            throw DeviceToolError(message: "start_at must be between 0 and \(Int(ListenMediaTime.maximum)) seconds.")
+        }
         guard store.item(id) != nil else { throw ListenError.notFound(id.uuidString) }
         if loadedID == id, currentID == id, status == .playing || status == .paused {
             // Already loaded: keep the buffer instead of fetching it again.
@@ -227,6 +230,7 @@ final class ListenPlayer {
     }
 
     func seek(to seconds: TimeInterval) async {
+        guard seconds.isFinite, abs(seconds) <= ListenMediaTime.maximum else { return }
         let target = max(0, duration.map { min(seconds, $0) } ?? seconds)
         position = target
         if loadedID != nil && loadedID == currentID {
@@ -274,11 +278,14 @@ final class ListenPlayer {
         showNowPlaying()
     }
 
-    /// Pauses after `minutes`; nil or 0 cancels.
+    static let maximumSleepMinutes = 24 * 60
+
+    /// Pauses after `minutes`; nil or 0 cancels. Native callers are clamped;
+    /// tools reject out-of-range values with an actionable error.
     func sleep(minutes: Int?) {
         sleepAtEnd = false
         if let minutes, minutes > 0 {
-            sleepAt = now().addingTimeInterval(TimeInterval(minutes * 60))
+            sleepAt = now().addingTimeInterval(TimeInterval(min(minutes, Self.maximumSleepMinutes)) * 60)
         } else {
             sleepAt = nil
         }

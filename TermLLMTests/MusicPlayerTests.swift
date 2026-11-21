@@ -137,6 +137,36 @@ final class MusicPlayerTests: XCTestCase {
         }
     }
 
+    /// A watchdog killed build 66 during podcast playback while MusicKit's
+    /// system player, created at launch, made synchronous XPC on the main
+    /// thread. Launch and podcast wiring must not create it.
+    func testDoesNotAttachToThePlayerUntilMusicIsUsed() async throws {
+        let engine = FakeEngine()
+        let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+        // What starting a podcast does to music (Listen.connectToMusic).
+        if player.isPlaying { player.pause() }
+        XCTAssertEqual(engine.activations, 0)
+
+        player.connect()
+        player.connect()
+        XCTAssertEqual(engine.activations, 1)
+    }
+
+    func testPlaybackAndTransportAttachToThePlayer() async throws {
+        for action in ["play", "resume", "next", "previous"] {
+            let engine = FakeEngine()
+            engine.snapshot = PlaybackSnapshot(state: .paused, current: track("1"))
+            let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
+            switch action {
+            case "play": try await player.play([track("1")])
+            case "resume": try await player.resume()
+            case "next": try await player.next()
+            default: try await player.previous()
+            }
+            XCTAssertEqual(engine.activations, 1, action)
+        }
+    }
+
     func testFollowsTheSystemPlayer() async throws {
         let engine = FakeEngine()
         let player = MusicPlayer(engine: engine, defaults: isolatedDefaults())
