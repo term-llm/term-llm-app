@@ -93,6 +93,42 @@ final class BrowserLifecycleTests: XCTestCase {
                                     frameURL: frame.flatMap(URL.init(string:)), isMainFrame: mainFrame, type: type)
     }
 
+    func testLinkedGeolocationPromptsOnlyForVerifiedTopLevelChat() {
+        var parent = linkedMediaBrowser()
+        let origin = "http://localhost:43212"
+        func decision(_ frame: String?, main: Bool = true, scheme: String = "http",
+                      host: String = "localhost", port: Int = 43212) -> WKPermissionDecision {
+            parent.geolocationDecision(originScheme: scheme, originHost: host, originPort: port,
+                                       frameURL: frame.flatMap(URL.init(string:)), isMainFrame: main)
+        }
+        let chat = origin + "/ui/chat/7"
+        XCTAssertEqual(decision(origin + "/ui/?new=1"), .prompt)
+        XCTAssertEqual(decision(chat), .prompt)
+        XCTAssertEqual(decision(chat, main: false), .deny)
+        XCTAssertEqual(decision(nil), .deny)
+        XCTAssertEqual(decision(chat, scheme: "https"), .deny)
+        XCTAssertEqual(decision(chat, host: "127.0.0.1"), .deny)
+        XCTAssertEqual(decision(chat, port: 43213), .deny)
+        XCTAssertEqual(decision("http://localhost:43213/ui/chat/7"), .deny)
+        for path in ["/", "/other/chat/7", "/ui/api/location", "/ui/files/photo", "/ui/%2e%2e/chat/7"] {
+            XCTAssertEqual(decision(origin + path), .deny, path)
+        }
+        parent.connectionMount = URL(string: origin + "/other/")!
+        XCTAssertEqual(decision(origin + "/other/chat/7"), .deny)
+        parent.connectionMount = URL(string: origin + "/ui/?scope=1")!
+        XCTAssertEqual(decision(chat), .deny)
+        parent.connectionMount = nil
+        XCTAssertEqual(decision(chat), .deny)
+    }
+
+    func testOrdinaryGeolocationPolicyRemainsUnchanged() {
+        let parent = browser(State())
+        XCTAssertEqual(parent.geolocationDecision(originScheme: "https", originHost: "example.com", originPort: 0,
+                                                  frameURL: nil, isMainFrame: false), .grant)
+        XCTAssertEqual(parent.geolocationDecision(originScheme: "https", originHost: "other.example", originPort: 0,
+                                                  frameURL: nil, isMainFrame: false), .prompt)
+    }
+
     func testLinkedMicrophonePromptsOnlyForMainFrameWithinConfiguredMount() {
         let parent = linkedMediaBrowser()
         for path in ["/ui", "/ui/", "/ui/chat/7?new=1"] {
