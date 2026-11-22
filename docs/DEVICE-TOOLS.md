@@ -40,9 +40,12 @@ The app keeps the last definitive answer in memory for that source's pinned
 host key and endpoint. A same-host reconnect checks again without clearing the
 answer first, so it doesn't reload Chat if support hasn't changed. A definitive
 no (including an older host's 404 or route denial) disables the tools immediately.
-Revocation, a changed host identity or endpoint, and source removal also discard
-the answer. Replies from retired connections are ignored. Without a previous
-answer, a failed check never enables tools.
+A peer HTTP 401 immediately discards the answer and retires the connection.
+After reconnect, tools stay disabled until the host advertises them again; the
+401 alone does not mark the saved grant revoked. Confirmed revocation, a changed
+host identity or endpoint, and source removal also discard the answer. Replies
+from retired connections are ignored. Without a previous answer, a failed check
+never enables tools.
 
 A linked page receives only its own source's registry, never the shared one,
 and no credential for another connection. The bridge requires the page to be

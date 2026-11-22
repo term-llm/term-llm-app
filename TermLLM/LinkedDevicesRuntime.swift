@@ -60,39 +60,20 @@ final class LinkedDevicesSourceTransport: HubTransport, @unchecked Sendable {
     }
 
     func execute(_ request: URLRequest,
-                 onUnauthorized: (@Sendable () async -> Void)?) async throws -> (Data, HTTPURLResponse) {
+                 onUnauthorized _: (@Sendable () async -> Void)?) async throws -> (Data, HTTPURLResponse) {
         let snapshot: (WebRTCHubTransport, UInt64)? = lock.withLock {
             current.map { ($0, generation) }
         }
         guard let (transport, expectedGeneration) = snapshot else {
             throw LinkedDevicesUnavailable(message: "This linked host is offline. The request was not retried.")
         }
-        let guardedUnauthorized: (@Sendable () async -> Void)?
-        if let callback = onUnauthorized {
-            let guarded: @Sendable () async -> Void = { [weak self, transport, expectedGeneration] in
-                guard let self, self.lock.withLock({
-                    self.current === transport && self.generation == expectedGeneration
-                }) else { return }
-                await callback()
-            }
-            guardedUnauthorized = guarded
-        } else {
-            guardedUnauthorized = nil
+        let result = try await transport.execute(request, onUnauthorized: nil)
+        // No result from a retired connection may publish into the
+        // replacement generation, and no request is replayed there.
+        guard lock.withLock({ generation == expectedGeneration && current === transport }) else {
+            throw LinkedDevicesUnavailable(message: "The linked host reconnected while the request was running. It was not retried.")
         }
-        do {
-            let result = try await transport.execute(request, onUnauthorized: guardedUnauthorized)
-            guard lock.withLock({ generation == expectedGeneration && current === transport }) else {
-                // No result from a retired connection may publish into the
-                // replacement generation. In particular, a completed old GET
-                // is not proof that its state still belongs to the live host.
-                if result.1.statusCode == 401 { throw CancellationError() }
-                throw LinkedDevicesUnavailable(message: "The linked host reconnected while the request was running. It was not retried.")
-            }
-            return result
-        } catch {
-            // Never pick up a newer transport and replay this request.
-            throw error
-        }
+        return result
     }
 }
 
@@ -170,6 +151,7 @@ struct LinkedDevicesHostCapabilities: Equatable, Sendable {
             do { return try await fetch(over: transport, mount: mount) }
             catch is PeerScopeDenied { return Self.unsupported }  // old hosts may omit the route from scope
             catch PeerWireError.responseBufferOverflow { return Self.unsupported }
+            catch PeerWireError.unauthorized(_) { return nil }  // the session is retired, not a capability answer
             catch {
                 guard !Task.isCancelled, !(error is CancellationError), let delay = delays.popFirst() else { return nil }
                 do { try await Task.sleep(for: delay) } catch { return nil }
@@ -220,7 +202,7 @@ final class LinkedDevicesRuntime: ObservableObject {
 
     @Published private(set) var statuses: [UUID: Status] = [:]
     /// The last definitive answer from each source's pinned host and endpoint.
-    /// A transport reconnect or a failed probe does not erase it. Never persisted.
+    /// An ordinary reconnect or a failed probe does not erase it. Never persisted.
     @Published private(set) var capabilities: [UUID: LinkedDevicesHostCapabilities] = [:]
     @Published private var probingCapabilities: Set<UUID> = []
     private final class Entry {
@@ -402,7 +384,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                 // The close never ran because the app was suspended past the
                 // grace, so the host has most likely dropped this connection.
                 // Replace it now rather than wait for WebRTC to notice.
-                if overdue, entry.live != nil, !entry.terminal, !entry.enrolling, !retireIfRevoked(entry) {
+                if overdue, entry.live != nil, !entry.terminal, !entry.enrolling, !retireIfUnauthorized(entry) {
                     tearDownConnection(entry)
                 }
             }
@@ -442,7 +424,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             try? await Task.sleep(for: grace)
             guard !Task.isCancelled, let self, let entry, self.entries[sourceID] === entry, !self.foreground,
                   entry.live != nil, entry.activeToken == token, !self.capturing.contains(sourceID) else { return }
-            guard !self.retireIfRevoked(entry) else { return }
+            guard !self.retireIfUnauthorized(entry) else { return }
             self.tearDownConnection(entry)
             self.statuses[sourceID] = .suspended
         }
@@ -455,7 +437,7 @@ final class LinkedDevicesRuntime: ObservableObject {
     }
 
     func reconnectNow(_ sourceID: UUID) {
-        guard let entry = entries[sourceID], !entry.terminal, !retireIfRevoked(entry) else { return }
+        guard let entry = entries[sourceID], !entry.terminal, !retireIfUnauthorized(entry) else { return }
         tearDownConnection(entry)
         startIfEligible(entry, immediate: true)
     }
@@ -698,11 +680,6 @@ final class LinkedDevicesRuntime: ObservableObject {
         }
     }
 
-    func markRevoked(_ sourceID: UUID) {
-        guard let entry = entries[sourceID] else { return }
-        markTerminal(entry, .revoked)
-    }
-
     func markIdentityChanged(_ sourceID: UUID) {
         guard let entry = entries[sourceID] else { return }
         markTerminal(entry, .identityChanged)
@@ -870,6 +847,11 @@ final class LinkedDevicesRuntime: ObservableObject {
             entry.attempt = 0
             installTransport(live, for: entry, token: token)
         } catch {
+            // The bridge can see its first request as soon as it activates,
+            // even before the runtime publishes the live transport.
+            if owns(entry, sourceID: sourceID, token: token), live.authorization.current == nil {
+                capabilities[sourceID] = nil
+            }
             bridge.revoke()
             live.close()
             throw error
@@ -881,13 +863,13 @@ final class LinkedDevicesRuntime: ObservableObject {
         let transport = WebRTCHubTransport(forwarder: live.forwarder, authorization: live.authorization,
                                             hubBaseURL: entry.connection.url)
         entry.transport.install(transport)
-        // Explicit authorization loss (including a peer HTTP 401) is not an
-        // offline reconnect. Normal teardown removes this observer before close.
+        // Local authorization loss retires this transport, not the saved
+        // grant. Normal teardown removes the observer before closing.
         entry.authorizationObserver = live.authorization.onRevoke { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, let entry = self.entries[sourceID],
                       self.owns(entry, sourceID: sourceID, token: token) else { return }
-                self.markTerminal(entry, .revoked)
+                self.retireIfUnauthorized(entry)
             }
         }
         refreshCapabilities(entry, over: transport, token: token)
@@ -925,7 +907,8 @@ final class LinkedDevicesRuntime: ObservableObject {
         Task { @MainActor [weak self, weak entry] in
             let stats = await live.stats()
             guard let self, let entry, self.entries[entry.connection.id] === entry,
-                  let current = entry.live, current.authorization === live.authorization else { return }
+                  let current = entry.live, current.authorization === live.authorization,
+                  current.authorization.check() else { return }
             if let diagnostic = live.diagnostics {
                 diagnostic.emit(.candidate(
                     local: .init(stats.localCandidateType), remote: .init(stats.remoteCandidateType)))
@@ -958,18 +941,25 @@ final class LinkedDevicesRuntime: ObservableObject {
             entry.enrollmentTransportLost = true
             return
         }
-        guard entry.activeToken == token, !retireIfRevoked(entry) else { return }
+        guard entry.activeToken == token, !retireIfUnauthorized(entry) else { return }
         tearDownConnection(entry)
         guard !entry.terminal else { return }
         statuses[entry.connection.id] = foreground ? .offline : .suspended
         startIfEligible(entry, immediate: false)
     }
 
-    // The authorization observer and the socket-close callback can arrive in
-    // either order. Never turn an already-revoked live peer into ordinary offline state.
-    private func retireIfRevoked(_ entry: Entry) -> Bool {
+    // The authorization observer and socket-close callback can arrive in
+    // either order. Retire this generation and its cached advertisement once.
+    // Only the authenticated reconnect path can make revocation terminal.
+    @discardableResult
+    private func retireIfUnauthorized(_ entry: Entry) -> Bool {
         guard let live = entry.live, live.authorization.current == nil else { return false }
-        markTerminal(entry, .revoked)
+        let sourceID = entry.connection.id
+        capabilities[sourceID] = nil
+        tearDownConnection(entry)
+        statuses[sourceID] = foreground ? .offline : .suspended
+        // Back off if a repeatedly accepted peer keeps returning HTTP 401.
+        startIfEligible(entry, immediate: false)
         return true
     }
 

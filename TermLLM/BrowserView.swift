@@ -116,9 +116,8 @@ struct BrowserView {
 
     nonisolated static func shouldRevokeAuthorization(for response: HTTPURLResponse,
                                                       isLinkedDevices: Bool) -> Bool {
-        guard isLinkedDevices else { return response.statusCode == 401 || response.statusCode == 403 }
-        return response.statusCode == 401 &&
-            response.value(forHTTPHeaderField: PeerAuthorizationLoss.headerName) == PeerAuthorizationLoss.headerValue
+        // Linked grants are verified on reconnect, never by a page response.
+        !isLinkedDevices && (response.statusCode == 401 || response.statusCode == 403)
     }
 
     let url: URL

@@ -729,7 +729,6 @@ struct ContentView: View {
                         onAuthorizationRevoked: {
                             guard !HubFixture.isEnabled, let source, source.isActive,
                                   source.browserIdentity == browserIdentity else { return }
-                            if source.connection.isLinkedDevices { LinkedDevicesRuntime.shared.markRevoked(source.id) }
                             source.revokeAuthorization()
                         }, onDocumentCommitted: { destination in
                             guard !HubFixture.isEnabled, let source, let browserIdentity else { return }

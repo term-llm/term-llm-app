@@ -395,6 +395,40 @@ final class PeerTransportTests: XCTestCase {
         XCTAssertTrue(stream.closed)
     }
 
+    func testLoopbackSubresource401ClosesBridgeAndOtherStreamsAtHeaders() async throws {
+        let channel = ControlledRuntimeTestChannel()
+        let authorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "session", expiresAt: .distantFuture, scopePrefix: "/chat"))
+        let multiplexer = PeerHTTPMultiplexer(channel: channel, authorization: authorization)
+        let listener = ReceivingLoopbackListener()
+        let bridge = PeerLoopbackBridge(forwarder: multiplexer, authorization: authorization, listener: listener)
+        defer { bridge.revoke(); multiplexer.close() }
+        let endpoint = try await bridge.start()
+        let sse = Task {
+            try await multiplexer.forward(PeerHTTPRequest(method: "GET", path: "/chat/v1/stream"))
+        }
+        await channel.waitForSentFrames(1)
+        let streamID = try XCTUnwrap(channel.sentFrames.first?.id)
+        try channel.deliver(PeerFrame(type: .responseStart, id: streamID, status: 200))
+        let streamResponse = try await sse.value
+
+        let stream = MemoryPeerByteStream(input: Data((
+            "GET /chat/assets/app.js HTTP/1.1\r\nHost: localhost:\(endpoint.port)\r\n" +
+            "Cookie: \(endpoint.cookieName)=\(endpoint.capability)\r\n\r\n"
+        ).utf8))
+        listener.receive(stream)
+        await channel.waitForSentFrames(2)
+        let browserRequest = try XCTUnwrap(channel.sentFrames.last)
+        XCTAssertEqual(browserRequest.path, "/chat/assets/app.js")
+        try channel.deliver(PeerFrame(type: .responseStart, id: browserRequest.id, status: 401))
+
+        XCTAssertFalse(authorization.check())
+        XCTAssertNil(bridge.currentEndpoint, "authorization loss stops the listener without WebKit navigation")
+        XCTAssertFalse(channel.isOpen)
+        XCTAssertEqual(multiplexer.openStreamCount, 0)
+        await XCTAssertThrowsErrorAsync(try await streamResponse.collect(limit: 16))
+    }
+
     func testLoopbackAbortsFiniteAndSSEWithoutSuccessTerminatorAfterBodyFailure() async throws {
         let cases = [
             ("application/json", Data("{\"partial\":".utf8)),
@@ -431,16 +465,17 @@ final class PeerTransportTests: XCTestCase {
         }
     }
 
-    func testPeerBrowserRevokesOnlyTaggedRemoteAuthorizationLoss() throws {
+    func testLinkedBrowserNeverTreatsHTTPStatusAsRevocation() throws {
         let url = try XCTUnwrap(URL(string: "http://localhost:43212/chat/"))
         func response(_ status: Int, _ fields: [String: String] = [:]) throws -> HTTPURLResponse {
             try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: fields))
         }
         XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(403), isLinkedDevices: true))
         XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(401), isLinkedDevices: true))
-        XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(401, [
-            PeerAuthorizationLoss.headerName: PeerAuthorizationLoss.headerValue,
+        XCTAssertFalse(BrowserView.shouldRevokeAuthorization(for: try response(401, [
+            "X-Term-LLM-Peer-Error": "authorization_revoked",
         ]), isLinkedDevices: true))
+        XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(401), isLinkedDevices: false))
         XCTAssertTrue(BrowserView.shouldRevokeAuthorization(for: try response(403), isLinkedDevices: false))
     }
 
@@ -583,6 +618,7 @@ final class PeerTransportTests: XCTestCase {
 
         await XCTAssertThrowsErrorAsync(try await task.value)
         XCTAssertFalse(callback.value, "an old generation must not purge the replacement workspace")
+        XCTAssertFalse(oldAuthorization.check(), "the stale 401 affects only the transport that received it")
         XCTAssertTrue(replacementAuthorization.check())
     }
 

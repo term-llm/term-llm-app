@@ -145,7 +145,7 @@ final class LinkedDevicesConnector: LinkedDevicesSessionConnecting, Sendable {
             try await webRTC.acceptVerifiedAnswer(verifiedSDP, authorization: authorization)
             let channel = try await withTimeout(20) { try await webRTC.openChannel() }
             diagnostic?.emit(.dataChannelOpen)
-            let multiplexer = PeerHTTPMultiplexer(channel: channel, diagnostics: diagnostic)
+            let multiplexer = PeerHTTPMultiplexer(channel: channel, diagnostics: diagnostic, authorization: authorization)
             socket.close()
             diagnostic?.emit(.brokerDisconnected(.completed))
             return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,

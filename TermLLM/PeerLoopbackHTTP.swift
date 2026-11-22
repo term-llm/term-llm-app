@@ -499,14 +499,14 @@ final class PeerLoopbackConnection: @unchecked Sendable {
             default: status = 502
             }
             try? await writeSimple(status: status, message: "Peer unavailable", keepAlive: keepAlive, head: isHead)
-            return keepAlive && status != 401
+            return keepAlive
         }
         let accepted = lock.withLock {
             guard !closed else { return false }
             activeCancel = response.cancel
             return true
         }
-        guard accepted else { response.cancel(); return false }
+        guard accepted, isAuthorized() else { response.cancel(); return false }
         input.onEOF { response.cancel() }
         defer {
             input.clearEOFHandlers()
@@ -516,11 +516,6 @@ final class PeerLoopbackConnection: @unchecked Sendable {
         let noBody = isHead || response.status == 204 || response.status == 304 || (100..<200).contains(response.status)
         let chunked = !noBody && request.version == "HTTP/1.1"
         var header = PeerHeaderFilter.inbound(response.header, policy: configuration.cookiePolicy)
-        if response.status == 401 {
-            // This status crossed the authenticated peer channel, unlike local
-            // bridge failures. BrowserView may safely classify it as grant loss.
-            header.set(PeerAuthorizationLoss.headerName, PeerAuthorizationLoss.headerValue)
-        }
         if chunked { header.set("Transfer-Encoding", "chunked") }
         let persistent = keepAlive && (chunked || noBody)
         header.set("Connection", persistent ? "keep-alive" : "close")
