@@ -113,6 +113,70 @@ private final class LinkedDevicesOfflineForwarder: PeerHTTPForwarding, Sendable 
     }
 }
 
+/// What a verified linked host advertises at `GET /v1/capabilities` (relative
+/// to its advertised mount). Parsing is fail-closed: only the literal JSON
+/// boolean `true` at `linked_devices.device_tools` enables device tools; a
+/// missing, malformed, oversized, numeric/string or non-object answer is "no".
+struct LinkedDevicesHostCapabilities: Equatable, Sendable {
+    static let unsupported = LinkedDevicesHostCapabilities(deviceTools: false)
+    static let path = "/v1/capabilities"
+    static let maximumResponseBytes = 64 * 1024
+
+    var deviceTools: Bool
+
+    static func parse(_ data: Data) -> LinkedDevicesHostCapabilities {
+        guard data.count <= maximumResponseBytes,
+              let root = try? JSONValue.decode(data),
+              case .bool(true)? = root["linked_devices"]?["device_tools"] else { return .unsupported }
+        return LinkedDevicesHostCapabilities(deviceTools: true)
+    }
+
+    /// The origin-relative request for `mount` (the source's loopback URL). It
+    /// carries no cookie or credential; the peer transport filters headers.
+    static func request(mount: URL) -> URLRequest? {
+        guard var components = URLComponents(url: mount, resolvingAgainstBaseURL: false) else { return nil }
+        var prefix = components.percentEncodedPath
+        while prefix.hasSuffix("/") { prefix.removeLast() }
+        components.percentEncodedPath = prefix + path
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    /// One attempt. A definitive answer (200, or a 4xx such as 404 from an older
+    /// host) is returned; transport failures and 5xx throw so they may be retried.
+    static func fetch(over transport: any HubTransport, mount: URL) async throws -> LinkedDevicesHostCapabilities {
+        guard let urlRequest = Self.request(mount: mount) else { return .unsupported }
+        let (data, response) = try await transport.execute(urlRequest, onUnauthorized: nil)
+        if response.statusCode >= 500 {
+            throw LinkedDevicesUnavailable(message: "The linked host could not report its capabilities.")
+        }
+        guard response.statusCode == 200 else { return .unsupported }
+        return parse(data)
+    }
+
+    /// Bounded retry for transport failures only; never replays after an answer.
+    /// Returns nil when no answer could be obtained; callers treat that as no tools.
+    static func resolve(
+        over transport: any HubTransport, mount: URL,
+        retryDelays: [Duration] = [.seconds(1), .seconds(3)]
+    ) async -> LinkedDevicesHostCapabilities? {
+        var delays = retryDelays[...]
+        while true {
+            do { return try await fetch(over: transport, mount: mount) }
+            catch is PeerScopeDenied { return Self.unsupported }  // the host's route scope omits it: a definitive "no"
+            catch {
+                guard !Task.isCancelled, !(error is CancellationError), let delay = delays.popFirst() else { return nil }
+                do { try await Task.sleep(for: delay) } catch { return nil }
+            }
+        }
+    }
+}
+
 @MainActor
 final class LinkedDevicesRuntime: ObservableObject {
     static let shared = LinkedDevicesRuntime()
@@ -154,6 +218,13 @@ final class LinkedDevicesRuntime: ObservableObject {
     static let backgroundGrace: Duration = .seconds(20)
 
     @Published private(set) var statuses: [UUID: Status] = [:]
+    /// What each source's verified host advertised on its current connection.
+    /// Kept while the same pinned host is offline or suspended, but cleared the
+    /// moment a fresh connection goes live and set again only by that
+    /// connection's own answer, so a downgraded host, a failed check or no
+    /// answer never inherits an earlier "true". Also dropped when access is
+    /// revoked, the identity changes or the source is removed. Never persisted.
+    @Published private(set) var capabilities: [UUID: LinkedDevicesHostCapabilities] = [:]
     private final class Entry {
         var connection: HubConnection
         let transport = LinkedDevicesSourceTransport()
@@ -161,6 +232,7 @@ final class LinkedDevicesRuntime: ObservableObject {
         var live: LinkedDevicesLiveConnection?
         var bridge: PeerLoopbackBridge?
         var activeToken: UUID?
+        var capabilityTask: Task<Void, Never>?
         var enrollmentToken: UUID?
         var enrollmentExistingSource = false
         var enrollmentTransportLost = false
@@ -185,6 +257,7 @@ final class LinkedDevicesRuntime: ObservableObject {
     private var capturing: Set<UUID> = []
     private let grace: Duration
     private let now: () -> ContinuousClock.Instant
+    private let capabilityResolver: @Sendable (any HubTransport, URL) async -> LinkedDevicesHostCapabilities?
 
     #if canImport(Security)
     convenience init() {
@@ -200,7 +273,11 @@ final class LinkedDevicesRuntime: ObservableObject {
          pathMonitor: NWPathMonitor = NWPathMonitor(),
          makeListener: @escaping () -> any PeerLoopbackListening = { PeerNWLoopbackListener() },
          backgroundGrace: Duration = LinkedDevicesRuntime.backgroundGrace,
-         now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
+         now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now },
+         capabilityResolver: @escaping @Sendable (any HubTransport, URL) async -> LinkedDevicesHostCapabilities? = {
+             await LinkedDevicesHostCapabilities.resolve(over: $0, mount: $1)
+         }) {
+        self.capabilityResolver = capabilityResolver
         self.identities = identities
         self.connector = connector
         self.pathMonitor = pathMonitor
@@ -226,6 +303,12 @@ final class LinkedDevicesRuntime: ObservableObject {
     }
 
     func status(for sourceID: UUID) -> Status { statuses[sourceID] ?? .offline }
+
+    /// True only while the source is not revoked/replaced and its verified host
+    /// answered `linked_devices.device_tools === true` on its latest connection.
+    func advertisesDeviceTools(for sourceID: UUID) -> Bool {
+        capabilities[sourceID]?.deviceTools == true
+    }
 
     private func installCapability(_ endpoint: PeerLoopbackEndpoint, for sourceID: UUID) async {
         let dataStore = WKWebsiteDataStore(forIdentifier: sourceID)
@@ -257,6 +340,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             if entry.enrolling && !entry.enrollmentExistingSource { continue }
             entries[id] = nil
             statuses[id] = nil
+            capabilities[id] = nil
             capturing.remove(id)
             tearDown(entry)
             if let key = hostKey(entry.connection) { identities.removeInBackground(hostKey: key) }
@@ -276,7 +360,9 @@ final class LinkedDevicesRuntime: ObservableObject {
                 continue
             }
             if entry.connection.url != connection.url || entry.connection.kind != connection.kind {
-                // A changed endpoint cannot inherit an in-flight start/bridge.
+                // A changed endpoint cannot inherit an in-flight start/bridge
+                // or the previous endpoint's advertisement.
+                capabilities[connection.id] = nil
                 tearDownConnection(entry)
             }
             entry.connection = connection
@@ -536,11 +622,13 @@ final class LinkedDevicesRuntime: ObservableObject {
                 reservedEntry.attempt = 0
                 pendingBridge = nil
                 if let live = enrollmentLive {
+                    invalidateCapabilities(sourceID)
                     reservedEntry.transport.install(WebRTCHubTransport(forwarder: live.forwarder,
                                                                        authorization: live.authorization,
                                                                        hubBaseURL: connection.url))
                     statuses[sourceID] = .connected(relayed: nil)
                     updateSelectedPair(for: reservedEntry, live: live)
+                    refreshCapabilities(reservedEntry, token: token)
                     // Enrollment may finish after the app went to the background.
                     scheduleBackgroundClose(reservedEntry)
                 } else {
@@ -579,6 +667,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             }
             entries[sourceID] = nil
             statuses[sourceID] = nil
+            capabilities[sourceID] = nil
             if existing == nil, !catalog.connections.contains(where: { $0.id == sourceID }) {
                 try? await identities.removeAsync(hostKey: paired.credential.hostKey)
                 // Preserve the safe underlying cause: the generic rollback
@@ -756,6 +845,9 @@ final class LinkedDevicesRuntime: ObservableObject {
             guard owns(entry, sourceID: sourceID, token: token), live.authorization.check() else {
                 throw CancellationError()
             }
+            // No suspension point from here: the fresh connection starts with no
+            // advertisement and earns one with its own reply.
+            invalidateCapabilities(sourceID)
             entry.live = live
             entry.bridge = bridge
             entry.task = nil
@@ -764,10 +856,34 @@ final class LinkedDevicesRuntime: ObservableObject {
                                                         hubBaseURL: entry.connection.url))
             statuses[sourceID] = .connected(relayed: nil)
             updateSelectedPair(for: entry, live: live)
+            refreshCapabilities(entry, token: token)
         } catch {
             bridge.revoke()
             live.close()
             throw error
+        }
+    }
+
+    private func invalidateCapabilities(_ sourceID: UUID) {
+        if capabilities[sourceID] != nil { capabilities[sourceID] = nil }
+    }
+
+    /// Asks the just-verified host what it supports. The request travels only
+    /// over this entry's pinned, authenticated transport; a result is applied
+    /// only if that same connection attempt is still current. Failing to get an
+    /// answer leaves the connection without an advertisement (no tools).
+    private func refreshCapabilities(_ entry: Entry, token: UUID) {
+        entry.capabilityTask?.cancel()
+        let sourceID = entry.connection.id
+        let transport = entry.transport
+        let mount = entry.connection.url
+        let resolver = capabilityResolver
+        entry.capabilityTask = Task { @MainActor [weak self, weak entry] in
+            let result = await resolver(transport, mount)
+            guard !Task.isCancelled, let result, let self, let entry, self.entries[sourceID] === entry,
+                  entry.activeToken == token, entry.live != nil, !entry.terminal,
+                  entry.connection.url == mount else { return }
+            if self.capabilities[sourceID] != result { self.capabilities[sourceID] = result }
         }
     }
 
@@ -826,6 +942,7 @@ final class LinkedDevicesRuntime: ObservableObject {
         entry.terminal = true
         invalidateEnrollment(entry)
         tearDownConnection(entry)
+        capabilities[entry.connection.id] = nil
         statuses[entry.connection.id] = status
     }
 
@@ -834,6 +951,7 @@ final class LinkedDevicesRuntime: ObservableObject {
         invalidateEnrollment(entry)
         entry.task?.cancel()
         entry.task = nil
+        capabilities[entry.connection.id] = nil
         tearDownConnection(entry)
     }
 
@@ -841,6 +959,8 @@ final class LinkedDevicesRuntime: ObservableObject {
         entry.task?.cancel()
         entry.task = nil
         cancelBackgroundClose(entry)
+        entry.capabilityTask?.cancel()
+        entry.capabilityTask = nil
         entry.activeToken = nil
         let live = entry.live
         entry.live = nil

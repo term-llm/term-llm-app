@@ -702,7 +702,9 @@ struct ContentView: View {
                         scenePhase: chatIsVisible ? effectiveScenePhase : .inactive,
                         textScale: AppPlatform.isMac ? DesktopChatAppearance.clamped(macChatZoom) : 1,
                         isSigningIn: isSigningIn,
-                        deviceTools: !isFixture && !isLinkedDevices && deviceTools.isEnabled ? (source.map { deviceTools.registry(for: $0.connection) } ?? deviceTools.registry) : nil,
+                        deviceTools: isFixture ? nil : deviceTools.browserRegistry(
+                            for: source?.connection,
+                            hostAdvertisesDeviceTools: source.map { linkedDevices.advertisesDeviceTools(for: $0.id) } ?? false),
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             if let source, source.connection.isLinkedDevices {
@@ -1113,7 +1115,7 @@ struct ContentView: View {
     /// One agent across all connections. Choosing it never switches the chat;
     /// only running the shortcut does.
     private var voiceShortcutSection: some View {
-        let nodes = aggregate.nodes.filter { !$0.source.isLinkedDevices }
+        let nodes = aggregate.nodes.filter { VoiceShortcutTarget.supports($0.source) }
         let savedIsListed = voiceTarget.map { target in nodes.contains { $0.source.id == target.sourceID && $0.node.id == target.nodeID } } ?? true
         return Section {
             Picker("Agent", selection: Binding(
@@ -1207,6 +1209,11 @@ struct ContentView: View {
             voiceLaunchError = voiceTarget == nil
                 ? "Choose an agent for the voice shortcut in Settings."
                 : "The voice shortcut’s agent isn’t available. Sign in to its connection or choose another agent in Settings."
+            voiceLaunches.finish()
+            return
+        }
+        if let reason = VoiceShortcutTarget.unsupportedReason(for: source.connection) {
+            voiceLaunchError = reason
             voiceLaunches.finish()
             return
         }

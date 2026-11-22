@@ -19,6 +19,7 @@
     {
       "selectedTests" : [
         "BrowserLifecycleTests",
+        "DeviceToolsTests",
         "DirectNodeClientTests",
         "HubConnectionStoreTests",
         "LinkedDevicesDiagnosticsTests",
@@ -26,9 +27,13 @@
         "LinkedDevicesLiveWebKitTests",
         "LinkedDevicesProtocolTests",
         "LinkedDevicesRuntimeTests",
+        "ListenStoreTests",
+        "ListenToolsTests",
         "PeerNWLoopbackListenerTests",
         "PeerTransportTests",
-        "ServerAddressTests"
+        "ServerAddressTests",
+        "VoiceShortcutTests",
+        "WebMCPBridgeTests"
       ],
       "target" : {
         "containerPath" : "container:TermLLM.xcodeproj",

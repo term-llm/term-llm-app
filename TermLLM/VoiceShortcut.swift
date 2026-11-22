@@ -14,6 +14,21 @@ struct VoiceShortcutTarget: Codable, Equatable {
 
     var key: String { "\(sourceID.uuidString)|\(nodeID)" }
 
+    /// Linked devices are never shortcut targets. This is independent of device
+    /// tools: the shortcut drives the page's Live control unattended, which a
+    /// linked device cannot support. Its bridge exists only while the peer
+    /// connection is up (and closes shortly after the app backgrounds), the
+    /// launch would not wait for or restore it, WebKit always prompts for a
+    /// linked page's microphone, and BrowserView is never handed the request so
+    /// it could not finish it. Live from the linked chat page is the supported path.
+    static func supports(_ connection: HubConnection) -> Bool { !connection.isLinkedDevices }
+
+    static func unsupportedReason(for connection: HubConnection) -> String? {
+        supports(connection)
+            ? nil
+            : "Linked devices can’t be voice shortcut targets. Start Live from the linked chat, or choose another agent in Settings."
+    }
+
     static func load(from defaults: UserDefaults) -> VoiceShortcutTarget? {
         defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode(Self.self, from: $0) }
     }

@@ -451,7 +451,8 @@ private final class RuntimeTestClock {
 /// background, where an open connection keeps the radio awake.
 extension LinkedDevicesRuntimeTests {
     private func connectedRuntime(seed: UInt8, grace: Duration,
-                                  clock: RuntimeTestClock? = nil) async throws
+                                  clock: RuntimeTestClock? = nil,
+                                  capabilityResolver: (@Sendable (any HubTransport, URL) async -> LinkedDevicesHostCapabilities?)? = nil) async throws
         -> (LinkedDevicesRuntime, CountingRuntimeTestConnector, HubConnection) {
         let identities = LinkedDevicesIdentityStore(storage: LinkedDevicesMemoryStorage())
         let host = Data(repeating: seed, count: 32)
@@ -468,7 +469,8 @@ extension LinkedDevicesRuntimeTests {
         let connector = CountingRuntimeTestConnector()
         let runtime = LinkedDevicesRuntime(identities: identities, connector: connector,
                                            makeListener: { ImmediateLoopbackListener() }, backgroundGrace: grace,
-                                           now: { clock?.now ?? ContinuousClock.now })
+                                           now: { clock?.now ?? ContinuousClock.now },
+                                           capabilityResolver: capabilityResolver ?? { _, _ in nil })
         runtime.synchronize([source])
         try await waitUntil { runtime.status(for: source.id).isConnected }
         return (runtime, connector, source)
@@ -774,5 +776,231 @@ extension LinkedDevicesRuntimeTests {
             try await waitUntil { runtime.status(for: source.id).isConnected }
             XCTAssertEqual(connector.connectCount, 1)
         }
+    }
+}
+
+/// Linked device tools: the host's `GET /v1/capabilities` answer is the only
+/// thing that can enable the WebMCP bridge for a linked source.
+extension LinkedDevicesRuntimeTests {
+    private func capabilities(_ json: String) -> LinkedDevicesHostCapabilities {
+        LinkedDevicesHostCapabilities.parse(Data(json.utf8))
+    }
+
+    func testCapabilityParsingRequiresTheLiteralTrueAtTheDocumentedPath() {
+        XCTAssertTrue(capabilities(#"{"linked_devices":{"active":true,"device_tools":true}}"#).deviceTools)
+        XCTAssertTrue(capabilities(#"{"other":1,"linked_devices":{"device_tools":true,"future":{"x":[1]}}}"#).deviceTools,
+                      "unknown fields are ignored")
+        for body in [
+            #"{"linked_devices":{"active":true,"device_tools":false}}"#,
+            #"{"linked_devices":{"active":true}}"#,
+            #"{"linked_devices":{"device_tools":1}}"#,
+            #"{"linked_devices":{"device_tools":"true"}}"#,
+            #"{"linked_devices":{"device_tools":null}}"#,
+            #"{"linked_devices":{"device_tools":[true]}}"#,
+            #"{"linked_devices":true}"#,
+            #"{"linked_devices":[{"device_tools":true}]}"#,
+            #"{"device_tools":true}"#,
+            #"{"device_tools":true,"linked_devices":{}}"#,
+            #"{"capabilities":{"linked_devices":{"device_tools":true}}}"#,
+            #"[{"linked_devices":{"device_tools":true}}]"#,
+            #"true"#, #"null"#, #"{"#, "",
+        ] {
+            XCTAssertFalse(capabilities(body).deviceTools, body)
+        }
+        let padding = String(repeating: " ", count: LinkedDevicesHostCapabilities.maximumResponseBytes)
+        XCTAssertFalse(capabilities(#"{"linked_devices":{"device_tools":true}}"# + padding).deviceTools,
+                       "an oversized answer is not trusted")
+    }
+
+    func testCapabilityRequestIsOriginRelativeToTheAdvertisedMountWithoutCredentials() throws {
+        for (mount, path) in [("http://localhost:43300/chat/", "/chat/v1/capabilities"),
+                              ("http://localhost:43300/", "/v1/capabilities"),
+                              ("http://localhost:43300/a/b/?x=1#y", "/a/b/v1/capabilities")] {
+            let request = try XCTUnwrap(LinkedDevicesHostCapabilities.request(mount: XCTUnwrap(URL(string: mount))))
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.absoluteString, "http://localhost:43300" + path, mount)
+            XCTAssertEqual(request.allHTTPHeaderFields, ["Accept": "application/json"])
+            XCTAssertNil(request.httpBody)
+        }
+    }
+
+    private func transport(_ forwarder: CapabilityStubForwarder, mount: URL) -> WebRTCHubTransport {
+        let authorization = PeerAuthorizationState(PeerAuthorization(
+            peerID: "host", sessionID: "session", expiresAt: .distantFuture, scopePrefix: "/chat"))
+        return WebRTCHubTransport(forwarder: forwarder, authorization: authorization, hubBaseURL: mount)
+    }
+
+    func testCapabilityProbeUsesOnlyThePinnedTransportAndTheMountedPath() async throws {
+        let mount = try XCTUnwrap(URL(string: "http://localhost:43300/chat/"))
+        let forwarder = CapabilityStubForwarder { _ in
+            (200, Data(#"{"linked_devices":{"active":true,"device_tools":true}}"#.utf8))
+        }
+        let result = await LinkedDevicesHostCapabilities.resolve(over: transport(forwarder, mount: mount), mount: mount,
+                                                                 retryDelays: [])
+        XCTAssertEqual(result, LinkedDevicesHostCapabilities(deviceTools: true))
+        let request = try XCTUnwrap(forwarder.requests.first)
+        XCTAssertEqual(forwarder.requests.count, 1)
+        XCTAssertEqual(request.method, "GET")
+        XCTAssertEqual(request.path, "/chat/v1/capabilities")
+        XCTAssertTrue(request.body.isEmpty)
+        for name in ["Cookie", "Authorization", "Origin"] {
+            XCTAssertTrue(request.header.values(name).isEmpty, name)
+        }
+    }
+
+    func testCapabilityProbeTreatsAnswersAsDefinitiveAndOnlyRetriesTransportFailures() async throws {
+        let mount = try XCTUnwrap(URL(string: "http://localhost:43300/chat/"))
+        let yes = Data(#"{"linked_devices":{"device_tools":true}}"#.utf8)
+        func run(_ respond: @escaping @Sendable (Int) throws -> (Int, Data)) async
+            -> (LinkedDevicesHostCapabilities?, Int) {
+            let forwarder = CapabilityStubForwarder(respond)
+            let result = await LinkedDevicesHostCapabilities.resolve(
+                over: transport(forwarder, mount: mount), mount: mount, retryDelays: [.milliseconds(1)])
+            return (result, forwarder.requests.count)
+        }
+        // An older host (404), a scope denial (403) and a non-true answer end the probe at once.
+        let notFound = await run { _ in (404, Data("not found".utf8)) }
+        XCTAssertEqual(notFound.0, .unsupported)
+        XCTAssertEqual(notFound.1, 1)
+        let denied = await run { _ in (403, Data()) }
+        XCTAssertEqual(denied.0, .unsupported)
+        XCTAssertEqual(denied.1, 1)
+        let notTrue = await run { _ in (200, Data(#"{"linked_devices":{"device_tools":"true"}}"#.utf8)) }
+        XCTAssertEqual(notTrue.0, .unsupported)
+        XCTAssertEqual(notTrue.1, 1)
+        let garbage = await run { _ in (200, Data("<html>".utf8)) }
+        XCTAssertEqual(garbage.0, .unsupported)
+        // A server error is retried once and the later answer wins.
+        let recovered = await run { attempt in attempt == 1 ? (503, Data()) : (200, yes) }
+        XCTAssertEqual(recovered.0, LinkedDevicesHostCapabilities(deviceTools: true))
+        XCTAssertEqual(recovered.1, 2)
+        // No answer at all is "unknown", never a grant.
+        let unreachable = await run { _ in throw LinkedDevicesUnavailable(message: "offline") }
+        XCTAssertNil(unreachable.0)
+        XCTAssertEqual(unreachable.1, 2)
+    }
+
+    func testRuntimeDoesNotAdvertiseDeviceToolsUntilTheHostSaysSo() async throws {
+        let (runtime, _, source) = try await connectedRuntime(seed: 0x90, grace: .seconds(60))
+        defer { runtime.synchronize([]) }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "connected alone enables nothing")
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: UUID()))
+    }
+
+    func testAdvertisementFollowsEachVerifiedConnectionAndIsDroppedOnRevocation() async throws {
+        let resolver = ScriptedCapabilityResolver(answers: [
+            LinkedDevicesHostCapabilities(deviceTools: true), nil, .unsupported, LinkedDevicesHostCapabilities(deviceTools: true),
+        ])
+        let (runtime, _, source) = try await connectedRuntime(
+            seed: 0x91, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+        defer { runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        XCTAssertEqual(resolver.mounts, [source.url], "asked over the source's own mount")
+
+        // A connection that gets no answer (the host may have been downgraded) has no tools.
+        runtime.reconnectNow(source.id)
+        try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "no answer must not inherit the earlier true")
+
+        // A definitive "no" stays no.
+        runtime.reconnectNow(source.id)
+        try await waitUntil { resolver.callCount == 3 && runtime.status(for: source.id).isConnected }
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id))
+
+        runtime.reconnectNow(source.id)
+        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        runtime.markRevoked(source.id)
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "revoked access never keeps tools")
+        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+    }
+
+    func testSameHostFlagSurvivesOfflineButAFreshAttachMustEarnItAgain() async throws {
+        let resolver = ScriptedCapabilityResolver(
+            answers: [LinkedDevicesHostCapabilities(deviceTools: true), LinkedDevicesHostCapabilities(deviceTools: true)],
+            holdIndex: 2)
+        let (runtime, _, source) = try await connectedRuntime(
+            seed: 0x94, grace: .milliseconds(30), capabilityResolver: { await resolver.resolve($0, $1) })
+        defer { runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+
+        // Backgrounding closes the connection; the pinned host's flag is kept while offline.
+        runtime.setForeground(false)
+        try await waitUntil { runtime.status(for: source.id) == .suspended }
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source.id))
+
+        // The new connection goes live without it until the host answers again.
+        runtime.setForeground(true)
+        try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "unverified while the reply is pending")
+        resolver.release()
+        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+    }
+
+    func testStaleCapabilityAnswerCannotApplyToAReplacementConnection() async throws {
+        let resolver = ScriptedCapabilityResolver(
+            answers: [LinkedDevicesHostCapabilities(deviceTools: true), .unsupported], holdIndex: 1)
+        let (runtime, _, source) = try await connectedRuntime(
+            seed: 0x92, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+        defer { runtime.synchronize([]) }
+        try await waitUntil { resolver.callCount == 1 }
+        runtime.reconnectNow(source.id)
+        try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
+        resolver.release()
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id),
+                       "the retired connection's late true must not enable tools")
+    }
+
+    func testRemovingTheSourceDropsItsAdvertisement() async throws {
+        let resolver = ScriptedCapabilityResolver(answers: [LinkedDevicesHostCapabilities(deviceTools: true)])
+        let (runtime, _, source) = try await connectedRuntime(
+            seed: 0x93, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        runtime.synchronize([])
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id))
+        XCTAssertNil(runtime.capabilities[source.id])
+    }
+}
+
+private final class ScriptedCapabilityResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private let answers: [LinkedDevicesHostCapabilities?]
+    private let holdIndex: Int?
+    private var calls: [URL] = []
+    private var released = false
+
+    init(answers: [LinkedDevicesHostCapabilities?], holdIndex: Int? = nil) {
+        self.answers = answers
+        self.holdIndex = holdIndex
+    }
+
+    var callCount: Int { lock.withLock { calls.count } }
+    var mounts: [URL] { lock.withLock { calls } }
+    func release() { lock.withLock { released = true } }
+
+    func resolve(_ transport: any HubTransport, _ mount: URL) async -> LinkedDevicesHostCapabilities? {
+        let index = lock.withLock { calls.append(mount); return calls.count }
+        if index == holdIndex {
+            while !lock.withLock({ released }) { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        return answers[min(index, answers.count) - 1]
+    }
+}
+
+private final class CapabilityStubForwarder: PeerHTTPForwarding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [PeerHTTPRequest] = []
+    private let respond: @Sendable (Int) throws -> (Int, Data)
+
+    init(_ respond: @escaping @Sendable (Int) throws -> (Int, Data)) { self.respond = respond }
+
+    var requests: [PeerHTTPRequest] { lock.withLock { seen } }
+
+    func forward(_ request: PeerHTTPRequest, headTimeout: TimeInterval?) async throws -> PeerHTTPResponse {
+        let attempt = lock.withLock { seen.append(request); return seen.count }
+        let (status, body) = try respond(attempt)
+        return PeerHTTPResponse(status: status, header: PeerHeader(), body: .fixed([body]), cancel: {})
     }
 }

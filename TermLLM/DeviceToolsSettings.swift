@@ -50,10 +50,23 @@ final class DeviceToolsSettings: ObservableObject {
             ? platform == .mac : defaults.bool(forKey: Self.enabledKey)
     }
 
+    /// The registry a chat page may be given, or nil for no WebMCP bridge.
+    /// The app-wide switch always applies (the per-conversation MCP entry is the
+    /// page's own second consent). A linked device additionally needs its
+    /// verified host to advertise `linked_devices.device_tools`, and only ever
+    /// receives its own source-scoped registry, never the shared fallback.
+    func browserRegistry(for source: HubConnection?, hostAdvertisesDeviceTools: Bool) -> DeviceToolRegistry? {
+        guard isEnabled else { return nil }
+        guard let source else { return registry }
+        if source.isLinkedDevices && !hostAdvertisesDeviceTools { return nil }
+        return registry(for: source)
+    }
+
     func registry(for source: HubConnection) -> DeviceToolRegistry {
         if let cached = sourceRegistries[source.id] { return cached.registry }
         // Tool closures weakly capture the provider; retain it for the cached registry lifetime.
-        let provider = ListenTools(listen: listen ?? .shared, source: ListenServer(base: source.url, sourceID: source.id))
+        let provider = ListenTools(listen: listen ?? .shared, source: ListenServer(base: source.url, sourceID: source.id,
+                                                                                         scopedToMount: source.isLinkedDevices))
         let scoped = DeviceToolRegistry(tools: registry.tools.filter { !$0.name.hasPrefix("media_") } + provider.tools)
         sourceRegistries[source.id] = (scoped, provider)
         return scoped
