@@ -136,6 +136,8 @@ struct BrowserView {
     /// Device tools to expose to this server's page via WebMCP, or nil when
     /// the user has not opted this server in.
     var deviceTools: DeviceToolRegistry? = nil
+    /// Only a new linked page may briefly wait for its first capability probe.
+    var awaitsInitialDeviceTools = false
     let onLoginRequired: () -> Void
     let onRevealControls: () -> Void
     var voiceLaunch: VoiceBrowserLaunch? = nil
@@ -292,11 +294,10 @@ struct BrowserView {
         pull.maximumNumberOfTouches = 1
         view.scrollView.addGestureRecognizer(pull)
         #endif
-        coordinator.loadedURL = url
         coordinator.pushChangeCount = pushChangeCount
         // Ownership is resolved from the attached scene in updateWebView.
         // Do not let a newly created sibling consume the app-global tap here.
-        view.load(URLRequest(url: url))
+        coordinator.loadInitialPageIfReady(view)
         return view
     }
 
@@ -368,6 +369,8 @@ struct BrowserView {
         }
 
         func tearDown() {
+            initialLoadTimeout?.cancel()
+            initialLoadTimeout = nil
             MainActor.assumeIsolated { pushBridge?.documentCommitted() }
             #if os(iOS)
             controlsPull.reset()
@@ -527,6 +530,42 @@ struct BrowserView {
         }
 
         private var nativeDestinationID: UUID?
+        private var initialLoadTimeout: Task<Void, Never>?
+        private var initialLoadWaitExpired = false
+        var initialDeviceToolsWait: Duration = .seconds(1)
+
+        /// Install document-start scripts first, then go straight to the linked
+        /// chat destination. The wait only applies before the first navigation.
+        func loadInitialPageIfReady(_ view: WKWebView) {
+            guard loadedURL == nil else { return }
+            if parent.isLinkedDevices && parent.awaitsInitialDeviceTools && !initialLoadWaitExpired {
+                if initialLoadTimeout == nil {
+                    let wait = initialDeviceToolsWait
+                    initialLoadTimeout = Task { @MainActor [weak self, weak view] in
+                        do { try await Task.sleep(for: wait) } catch { return }
+                        guard let self, let view, !Task.isCancelled else { return }
+                        self.initialLoadWaitExpired = true
+                        self.loadInitialPageIfReady(view)
+                    }
+                }
+                return
+            }
+            initialLoadTimeout?.cancel()
+            initialLoadTimeout = nil
+            loadedURL = parent.url
+            if parent.isLinkedDevices, let destination = linkedDestination {
+                nativeDestinationID = destination.id
+                view.load(URLRequest(url: destination.url))
+            } else {
+                view.load(URLRequest(url: parent.url))
+            }
+        }
+
+        private var linkedDestination: HubBrowserDestination? {
+            guard let destination = parent.nativeDestination,
+                  HubNavigation.isWithinMount(destination.url, server: parent.connectionMount ?? parent.url) else { return nil }
+            return destination
+        }
 
         func update(_ view: WKWebView, parent: BrowserView) {
             if self.parent.isContentVisible && !parent.isContentVisible {
@@ -544,6 +583,17 @@ struct BrowserView {
             let hidden = !parent.isContentVisible
             if view.isHidden != hidden { view.isHidden = hidden }
             self.parent = parent
+            if loadedURL == nil {
+                syncPushBridge(url: parent.url, center: parent.push,
+                               controller: view.configuration.userContentController)
+                syncDeviceTools(url: parent.url, registry: parent.effectiveDeviceTools,
+                                controller: view.configuration.userContentController)
+                reloadCount = parent.reloadCount
+                backCount = parent.backCount
+                authenticatedCount = parent.authenticatedCount
+                loadInitialPageIfReady(view)
+                return
+            }
             let destination = parent.nativeDestination
             let nativeNavigation = destination != nil && destination?.id != nativeDestinationID
             nativeDestinationID = destination?.id
@@ -569,8 +619,8 @@ struct BrowserView {
             backCount = parent.backCount
             let pushBridgeChanged = syncPushBridge(url: parent.url, center: parent.push,
                                                    controller: view.configuration.userContentController)
-            let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.effectiveDeviceTools,
-                                               controller: view.configuration.userContentController) || pushBridgeChanged
+            let toolsAdded = syncDeviceTools(url: parent.url, registry: parent.effectiveDeviceTools,
+                                             controller: view.configuration.userContentController)
             syncHealth(view)
 
             // Coalesce native changes into one navigation. Server changes and
@@ -595,9 +645,16 @@ struct BrowserView {
             } else if backRequested, view.canGoBack {
                 resetRecovery()
                 view.goBack()
-            } else if toolsChanged, voiceTask == nil, view.url != nil, !rejectedHTTPResponse, !parent.isSigningIn,
-                      !parent.loginRequired, parent.loadError == nil, !recoveryPending {
-                view.reload() // user scripts only apply to new documents
+            } else if (toolsAdded || pushBridgeChanged), voiceTask == nil, !rejectedHTTPResponse, !parent.isSigningIn,
+                      !parent.loginRequired, parent.loadError == nil, !recoveryPending,
+                      view.url != nil || (toolsAdded && parent.isLinkedDevices) {
+                // Document-start scripts need a new navigation. A slow cold
+                // probe can finish before WebKit even reports an initial URL.
+                if view.url == nil {
+                    view.load(URLRequest(url: linkedDestination?.url ?? parent.url))
+                } else {
+                    view.reload()
+                }
             } else if recoveryPending {
                 // A deferred termination can be handled by a scenePhase update.
                 // Leave SwiftUI's update pass before changing recovery bindings.
@@ -873,8 +930,9 @@ struct BrowserView {
             view.evaluateJavaScript(script, completionHandler: nil)
         }
 
-        /// Installs, replaces, or removes the WebMCP bridge. Returns true when
-        /// the injected script changed, so the current page must reload.
+        /// Installs, replaces, or removes the WebMCP bridge. A new script needs
+        /// a document load. Removing the handler immediately disables calls;
+        /// do not navigate just to remove the old document's JS registrations.
         @discardableResult
         func syncDeviceTools(url: URL, registry: DeviceToolRegistry?, controller: WKUserContentController) -> Bool {
             if let bridge, let registry, bridge.serverURL == url, bridge.registry === registry { return false }
@@ -893,8 +951,9 @@ struct BrowserView {
                 }
                 bridge.install(into: controller)
                 self.bridge = bridge
+                return true
             }
-            return true
+            return false
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

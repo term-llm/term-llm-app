@@ -31,26 +31,28 @@ A linked device's page gets the tools only when all of these hold:
    requires `{"linked_devices":{"device_tools":true,…}}`. Only the literal JSON
    `true` counts; a missing, older-host (404), malformed, oversized or
    non-boolean answer means no tools. Other fields, including `active`, are not
-   consulted. The request carries no cookie or credential. A failed attempt
-   (offline, timeout, 5xx) is retried a few times; if no answer arrives, that
-   connection has no tools.
+   consulted. The request carries no cookie or credential. Transient failures
+   (offline, timeout, 5xx) are retried a few times; they are not a new answer.
 3. The conversation's **MCP servers** dialog has **WebMCP from this page** on.
    That entry is the page's own consent; the app cannot set it.
 
-Each connection starts with no advertisement: the app keeps the pinned host's
-last answer only while that host is offline or suspended, clears it the moment a
-fresh connection goes live, and sets it again only from that connection's own
-`true` reply. A downgraded host, a failed check or no reply therefore never
-inherits an earlier answer. It is also dropped when access is revoked or the host
-identity changes, when the source is removed, and if its endpoint changes, and
-is never saved. The flag is per source: another host's answer never enables this
-one.
+The app keeps the last definitive answer in memory for that source's pinned
+host key and endpoint. A same-host reconnect checks again without clearing the
+answer first, so it doesn't reload Chat if support hasn't changed. A definitive
+no (including an older host's 404 or route denial) disables the tools immediately.
+Revocation, a changed host identity or endpoint, and source removal also discard
+the answer. Replies from retired connections are ignored. Without a previous
+answer, a failed check never enables tools.
 
-A linked page receives only its own source's registry, never the shared one, and
-no credential for another connection. The bridge also requires the page to be
-inside that source's validated `http://localhost:<port>` bridge mount and then
-answers only the exact main-frame origin. The bridge appears when the page next
-loads, so a reconnect may reload the page once or twice as the answer is cleared and re-earned.
+A linked page receives only its own source's registry, never the shared one,
+and no credential for another connection. The bridge requires the page to be
+inside the source's validated `http://localhost:<port>` mount and answers only
+the exact main-frame origin. When sharing is enabled, a new linked Chat can wait
+up to one second for its first pending capability check, so a quick answer can
+install tools before the page loads. A later positive answer can still reload
+Chat to register the tools. When tools are disabled, the app removes the native
+handler without reloading; any tool entries left in the open page cannot make
+calls and disappear on the next navigation.
 
 Live calls on a linked host run in the page like any other chat. Whether the
 host delegates a Live call's tools to this app is the host's and the page's
