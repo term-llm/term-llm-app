@@ -104,6 +104,7 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     let limits: PeerWireLimits
     private let channel: PeerFrameChannel
     private let diagnostics: LinkedDevicesDiagnosticConnection?
+    private let authorization: PeerAuthorizationState?
     private let lock = NSLock()
     private var streams: [String: StreamState] = [:]
     private var nextID: UInt64 = 1
@@ -202,10 +203,11 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
     }
 
     init(channel: PeerFrameChannel, limits: PeerWireLimits = .default,
-         diagnostics: LinkedDevicesDiagnosticConnection? = nil) {
+         diagnostics: LinkedDevicesDiagnosticConnection? = nil, authorization: PeerAuthorizationState? = nil) {
         self.channel = channel
         self.limits = limits
         self.diagnostics = diagnostics
+        self.authorization = authorization
         channel.setHandlers(
             onMessage: { [weak self] data in self?.receive(data) },
             onClose: { [weak self] in self?.close(.channelClosed, closeChannel: false) },
@@ -309,6 +311,9 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             return (v, w, closeCallback)
         }
         guard let (victims, waiters, callback) = teardown else { return }
+        // Block new sends before revoking local authorization, and revoke it
+        // before a stream completion or socket-close callback can see the loss.
+        if case .unauthorized = error { authorization?.revoke() }
         for s in victims {
             s.sendTask?.cancel()
             emitTerminal(Self.terminalEvent(for: s, error: error), for: s)
@@ -377,7 +382,16 @@ final class PeerHTTPMultiplexer: PeerHTTPForwarding, @unchecked Sendable {
             break
         case .some(.some(let (cont, response, event))):
             if let event { diagnostics?.emit(event) }
-            cont.resume(returning: response)
+            if response.status == 401 {
+                // Native requests, capability probes and all WebKit requests
+                // share this channel. Retire it at headers, without waiting on
+                // a body or navigation delegate, but don't infer grant loss.
+                let error = PeerWireError.unauthorized("linked peer rejected the HTTP request")
+                close(error)
+                cont.resume(throwing: error)
+            } else {
+                cont.resume(returning: response)
+            }
         }
     }
 

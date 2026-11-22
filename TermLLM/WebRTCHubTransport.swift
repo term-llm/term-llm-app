@@ -3,9 +3,8 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// A peer route-scope denial. Core's peer bridge reserves 401 for the live
-/// session gate (expired/revoked grant) and 403 for per-route authorization,
-/// so a 403 must never purge the paired identity.
+/// A per-route scope denial, distinct from a 401 that retires the live peer.
+/// Neither is proof that the saved grant was revoked.
 struct PeerScopeDenied: LocalizedError, Equatable, Sendable {
     static let headerName = "X-Term-LLM-Peer-Error"
     static let headerValue = "scope_denied"
@@ -14,11 +13,6 @@ struct PeerScopeDenied: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         "This action is not available for a linked device. Manage it from the host's own browser."
     }
-}
-
-struct PeerAuthorizationLoss: Sendable {
-    static let headerName = "X-Term-LLM-Peer-Error"
-    static let headerValue = "authorization_revoked"
 }
 
 /// Carries native API requests over an authenticated `term-llm-http-v1`
@@ -40,7 +34,7 @@ final class WebRTCHubTransport: HubTransport, Sendable {
 
     func execute(
         _ request: URLRequest,
-        onUnauthorized: (@Sendable () async -> Void)?
+        onUnauthorized _: (@Sendable () async -> Void)?
     ) async throws -> (Data, HTTPURLResponse) {
         guard authorization.check() else { throw PeerWireError.unauthorized("peer session revoked") }
         guard let url = request.url, Self.sameOrigin(url, hubBaseURL) else {
@@ -53,25 +47,21 @@ final class WebRTCHubTransport: HubTransport, Sendable {
 
         return try await Self.withTimeout(timeout) { [forwarder, authorization] in
             let response = try await forwarder.forward(peerRequest, headTimeout: timeout)
-            let http = try Self.httpResponse(url: url, response: response)
-            // Core's peer bridge reserves 401 for SessionGate (grant gone)
-            // and 403 for Authorize (route outside web-v1). A denied route is
-            // not identity loss and must not trigger HubStore's auth purge.
+            // A route denial must not trigger HubStore's auth purge.
             if response.status == 403 {
                 response.cancel()
                 throw PeerScopeDenied(path: peerRequest.path)
             }
+            // The DataChannel normally handles this before delivering headers.
+            // Never expose a peer 401 as workspace-level authorization loss.
             if response.status == 401 {
-                await onUnauthorized?()
+                authorization.revoke()
+                response.cancel()
+                throw PeerWireError.unauthorized("linked peer rejected the HTTP request")
             }
-            guard response.status == 401 else {
-                return (try await response.collect(limit: maxBytes), http)
-            }
-            // The peer ingress answers 401 only for an expired/revoked grant:
-            // after handing HubClient the small error body, tear down the
-            // whole link (bridges, streams).  Revoke even if the body fails.
-            defer { authorization.revoke() }
-            let data = (try? await response.collect(limit: 64 * 1024)) ?? Data()
+            let http = try Self.httpResponse(url: url, response: response)
+            let data = try await response.collect(limit: maxBytes)
+            guard authorization.check() else { throw PeerWireError.unauthorized("peer session revoked") }
             return (data, http)
         }
     }

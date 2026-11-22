@@ -234,13 +234,12 @@ final class HubSourceWorkspace: ObservableObject, Identifiable {
                 try await self.saveTransportCookies(cookies, epoch: expected, securityEpoch: securityEpoch, isCurrent: isCurrent)
             }
         }
-        let linkedDevicesSource = connection.isLinkedDevices
-        let sourceID = id
-        directClient?.onUnauthorized = { [weak self] in
-            if linkedDevicesSource {
-                await MainActor.run { LinkedDevicesRuntime.shared.markRevoked(sourceID) }
+        // Linked authorization loss is published by the runtime only once
+        // the reconnect handshake rejects the saved grant or pinned identity.
+        if !connection.isLinkedDevices {
+            directClient?.onUnauthorized = { [weak self] in
+                await self?.revokeAuthorization(expected: expected)
             }
-            await self?.revokeAuthorization(expected: expected)
         }
     }
 

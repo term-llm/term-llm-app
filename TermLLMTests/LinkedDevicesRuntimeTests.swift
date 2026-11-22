@@ -313,7 +313,7 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         catch { XCTAssertEqual(error as? LinkedDevicesStorageError, .missing) }
     }
 
-    func testLateAttachmentCannotResurrectRevokedSource() async throws {
+    func testLateAttachmentCannotResurrectSourceAfterIdentityChange() async throws {
         let suite = "LinkedDevicesRace.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -337,17 +337,17 @@ final class LinkedDevicesRuntimeTests: XCTestCase {
         for _ in 0..<100 where !listener.started { try await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertTrue(listener.started)
 
-        runtime.markRevoked(source.id)
+        runtime.markIdentityChanged(source.id)
         listener.resume(port: 43219) // deliberately complete the stale await late
         for _ in 0..<100 where !connector.closed.value { try await Task.sleep(nanoseconds: 2_000_000) }
 
-        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+        XCTAssertEqual(runtime.status(for: source.id), .identityChanged)
         XCTAssertTrue(connector.closed.value)
         let transport = try XCTUnwrap(runtime.transport(for: source))
         do {
             _ = try await transport.execute(
                 URLRequest(url: source.url.appendingPathComponent("v1/sessions")), onUnauthorized: nil)
-            XCTFail("A revoked source must reject transport requests")
+            XCTFail("A source with a changed identity must reject transport requests")
         } catch {}
     }
 
@@ -423,20 +423,32 @@ private final class CountingRuntimeTestConnector: LinkedDevicesSessionConnecting
     private var connects = 0
     private var closes = 0
     private var connectedHostKeys: [Data] = []
-    private var latestAuthorization: PeerAuthorizationState?
-    var authorization: PeerAuthorizationState? { lock.withLock { latestAuthorization } }
+    private var latestChannel: ControlledRuntimeTestChannel?
+    private var nextError: LinkedDevicesProtocolError?
+    var channel: ControlledRuntimeTestChannel? { lock.withLock { latestChannel } }
+
+    func rejectNextHandshake(with error: LinkedDevicesProtocolError) {
+        lock.withLock { nextError = error }
+    }
     var hostKeys: [Data] { lock.withLock { connectedHostKeys } }
     var connectCount: Int { lock.withLock { connects } }
     var closeCount: Int { lock.withLock { closes } }
 
     func reconnect(credential: LinkedDevicesCredential,
                    closed callback: @escaping @Sendable () -> Void) async throws -> LinkedDevicesLiveConnection {
-        lock.withLock { connects += 1; connectedHostKeys.append(credential.hostKey) }
+        let error = lock.withLock {
+            connects += 1
+            connectedHostKeys.append(credential.hostKey)
+            defer { nextError = nil }
+            return nextError
+        }
+        if let error { throw error }
         let authorization = PeerAuthorizationState(PeerAuthorization(
             peerID: LinkedDevicesBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
             expiresAt: .distantFuture, scopePrefix: credential.basePath ?? "/"))
-        lock.withLock { latestAuthorization = authorization }
-        let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
+        let channel = ControlledRuntimeTestChannel()
+        lock.withLock { latestChannel = channel }
+        let multiplexer = PeerHTTPMultiplexer(channel: channel, authorization: authorization)
         return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
                                            stats: { PeerSessionStats() }, close: { [self] in
             lock.withLock { closes += 1 }
@@ -542,14 +554,58 @@ extension LinkedDevicesRuntimeTests {
         XCTAssertEqual(connector.connectCount, 2)
     }
 
-    func testBackgroundKeepsARevokedStatus() async throws {
-        let (runtime, _, source) = try await connectedRuntime(seed: 0x85, grace: .milliseconds(50))
+    func testHTTP401BecomesTerminalOnlyAfterReconnectRejectsGrant() async throws {
+        let yes = LinkedDevicesHostCapabilities(deviceTools: true)
+        let (runtime, connector, source) = try await connectedRuntime(
+            seed: 0x85, grace: .milliseconds(50), capabilityResolver: { _, _ in yes })
         defer { runtime.synchronize([]) }
-        runtime.markRevoked(source.id)
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
         runtime.setForeground(false)
-        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+        runtime.setMediaCaptureActive(true, for: source.id)
+
+        try await deliverUnauthorizedMutation(to: runtime, connector: connector, source: source)
+        try await waitUntil { runtime.status(for: source.id) == .suspended }
+        XCTAssertEqual(connector.connectCount, 1, "HTTP 401 alone must not declare revocation")
+        XCTAssertEqual(connector.closeCount, 1)
+        XCTAssertNil(runtime.capabilities[source.id])
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
+
+        connector.rejectNextHandshake(with: .revoked)
+        runtime.setForeground(true)
+        try await waitUntil { runtime.status(for: source.id) == .revoked }
+        XCTAssertEqual(connector.connectCount, 2)
+        runtime.reconnectNow(source.id)
+        runtime.setForeground(false)
         runtime.setForeground(true)
         XCTAssertEqual(runtime.status(for: source.id), .revoked)
+        XCTAssertEqual(connector.connectCount, 2)
+    }
+
+    private func deliverUnauthorizedMutation(to runtime: LinkedDevicesRuntime,
+                                             connector: CountingRuntimeTestConnector,
+                                             source: HubConnection) async throws {
+        let channel = try XCTUnwrap(connector.channel)
+        let transport = try XCTUnwrap(runtime.transport(for: source))
+        var request = URLRequest(url: source.url.appendingPathComponent("v1/responses"))
+        request.httpMethod = "POST"
+        let callback = RuntimeLockedFlag()
+        let pending = Task { [request] in try await transport.execute(request, onUnauthorized: { callback.set() }) }
+        defer { pending.cancel() }
+        try await waitUntil { channel.sentFrames.first != nil }
+        let id = try XCTUnwrap(channel.sentFrames.first?.id)
+        try channel.deliver(PeerFrame(type: .responseStart, id: id, status: 401))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "local authorization fails at headers")
+        XCTAssertFalse(channel.isOpen, "do not wait for a response body")
+        do {
+            _ = try await pending.value
+            XCTFail("A rejected mutation must not return a successful response")
+        } catch {
+            guard case .unauthorized? = error as? PeerWireError else {
+                XCTFail("Expected a peer session authorization error, got \(error)")
+                return
+            }
+        }
+        XCTAssertFalse(callback.value, "a peer HTTP 401 must not purge workspace authorization")
     }
 }
 
@@ -902,10 +958,10 @@ extension LinkedDevicesRuntimeTests {
         XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
     }
 
-    func testNoAnswerKeepsLastAdvertisementButDefinitiveNoAndRevocationRemoveIt() async throws {
+    func testNoAnswerKeepsLastAdvertisementButDefinitiveNoRemovesIt() async throws {
         let yes = LinkedDevicesHostCapabilities(deviceTools: true)
-        let resolver = ScriptedCapabilityResolver(answers: [yes, nil, .unsupported, yes], holdIndex: 3)
-        let (runtime, connector, source) = try await connectedRuntime(
+        let resolver = ScriptedCapabilityResolver(answers: [yes, nil, .unsupported], holdIndex: 3)
+        let (runtime, _, source) = try await connectedRuntime(
             seed: 0x91, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
         defer { resolver.release(); runtime.synchronize([]) }
         try await waitUntil { runtime.advertisesDeviceTools(for: source) }
@@ -922,14 +978,47 @@ extension LinkedDevicesRuntimeTests {
         resolver.release()
         try await waitUntil { runtime.capabilities[source.id] == .unsupported }
         XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "a definitive no disables tools")
+    }
+
+    func testCapability401ReconnectsAndRequiresFreshAdvertisement() async throws {
+        let yes = LinkedDevicesHostCapabilities(deviceTools: true)
+        let firstProbe = RuntimeLockedFlag()
+        let (runtime, connector, source) = try await connectedRuntime(
+            seed: 0x98, grace: .seconds(60), capabilityResolver: { transport, mount in
+                if !firstProbe.value { firstProbe.set(); return yes }
+                return await LinkedDevicesHostCapabilities.resolve(over: transport, mount: mount, retryDelays: [])
+            })
+        defer { runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
 
         runtime.reconnectNow(source.id)
-        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
-        let authorization = try XCTUnwrap(connector.authorization)
-        authorization.revoke()
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "authorization loss immediately hides the cached grant")
-        try await waitUntil { runtime.status(for: source.id) == .revoked }
+        try await waitUntil { connector.connectCount == 2 && connector.channel?.sentFrames.count == 1 }
+        let rejectedChannel = try XCTUnwrap(connector.channel)
+        let rejectedProbe = try XCTUnwrap(rejectedChannel.sentFrames.first)
+        XCTAssertEqual(rejectedProbe.path, "/chat/v1/capabilities")
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source), "an ordinary reconnect keeps the last answer")
+        connector.rejectNextHandshake(with: .expired)
+        try rejectedChannel.deliver(PeerFrame(type: .responseStart, id: rejectedProbe.id, status: 401))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
+        XCTAssertFalse(rejectedChannel.isOpen)
+
+        // The runtime automatically retries; a transient handshake failure is not revocation.
+        try await waitUntil { connector.connectCount == 3 && runtime.pendingStartToken(for: source.id) != nil }
         XCTAssertNil(runtime.capabilities[source.id])
+        XCTAssertNotEqual(runtime.status(for: source.id), .revoked)
+        runtime.reconnectNow(source.id)
+        try await waitUntil { connector.connectCount == 4 && connector.channel?.isOpen == true &&
+            connector.channel?.sentFrames.count == 1 }
+        let replacement = try XCTUnwrap(connector.channel)
+        let freshProbe = try XCTUnwrap(replacement.sentFrames.first)
+        XCTAssertEqual(freshProbe.path, "/chat/v1/capabilities")
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "a verified reconnect alone cannot restore tools")
+        try replacement.deliver(PeerFrame(type: .responseStart, id: freshProbe.id, status: 200))
+        try replacement.deliver(PeerFrame(type: .responseBody, id: freshProbe.id,
+                                          body: Data(#"{"linked_devices":{"device_tools":true}}"#.utf8)))
+        try replacement.deliver(PeerFrame(type: .responseEnd, id: freshProbe.id))
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
+        XCTAssertEqual(rejectedChannel.sentFrames.filter { $0.type == .request }.count, 1)
     }
 
     func testSameHostFlagSurvivesOfflineAndTheNextProbe() async throws {

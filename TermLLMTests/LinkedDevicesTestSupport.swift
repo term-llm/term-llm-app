@@ -79,6 +79,19 @@ final class FailingEnrollmentListener: PeerLoopbackListening, @unchecked Sendabl
     func stop() {}
 }
 
+final class ReceivingLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
+    private let lock = NSLock()
+    private var handleConnection: (@Sendable (PeerByteStream) -> Void)?
+
+    func start(port: UInt16?, onConnection: @escaping @Sendable (PeerByteStream) -> Void) async throws -> UInt16 {
+        lock.withLock { handleConnection = onConnection }
+        return port ?? 43_300
+    }
+
+    func receive(_ stream: PeerByteStream) { lock.withLock { handleConnection }?(stream) }
+    func stop() { lock.withLock { handleConnection = nil } }
+}
+
 final class ControlledLoopbackListener: PeerLoopbackListening, @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<UInt16, Error>?
