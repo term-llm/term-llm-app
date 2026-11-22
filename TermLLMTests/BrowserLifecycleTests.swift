@@ -119,6 +119,80 @@ final class BrowserLifecycleTests: XCTestCase {
         XCTAssertTrue(ordinary.effectiveDeviceTools === registry)
     }
 
+    func testLinkedDeviceToolsRemovalUninstallsWithoutReloadingChat() throws {
+        var parent = linkedMediaBrowser()
+        let registry = DeviceToolRegistry(tools: [BuiltInDeviceTools.ping()])
+        parent.deviceTools = registry
+        let coordinator = coordinator(parent)
+        defer { coordinator.tearDown() }
+        let view = webView(parent.url)
+        let controller = view.configuration.userContentController
+        let unrelated = WKUserScript(source: "void 0", injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        controller.addUserScript(unrelated)
+        coordinator.syncDeviceTools(url: parent.url, registry: registry, controller: controller)
+        let original = try XCTUnwrap(coordinator.bridge)
+
+        coordinator.update(view, parent: parent)
+        XCTAssertTrue(coordinator.bridge === original, "an unchanged advertisement keeps the same bridge")
+        XCTAssertEqual(view.reloads, 0)
+
+        parent.deviceTools = nil
+        coordinator.update(view, parent: parent)
+        XCTAssertNil(coordinator.bridge)
+        XCTAssertEqual(controller.userScripts.count, 1)
+        XCTAssertEqual(controller.userScripts.first?.source, unrelated.source, "uninstall only this bridge's script")
+        XCTAssertTrue(view.requests.isEmpty)
+        XCTAssertEqual(view.reloads, 0, "turn tools off without reloading the chat")
+
+        parent.deviceTools = registry
+        coordinator.update(view, parent: parent)
+        XCTAssertNotNil(coordinator.bridge)
+        XCTAssertEqual(view.reloads, 1, "adding document-start registration still requires a reload")
+    }
+
+    func testColdLinkedChatLoadsDestinationOnceWhenCapabilityArrivesDuringWait() {
+        var parent = linkedMediaBrowser()
+        let destination = parent.url.appendingPathComponent("chat/session")
+        parent.nativeDestination = HubBrowserDestination(url: destination)
+        parent.awaitsInitialDeviceTools = true
+        let coordinator = parent.makeCoordinator()
+        defer { coordinator.tearDown() }
+        let view = webView()
+
+        coordinator.loadInitialPageIfReady(view)
+        coordinator.update(view, parent: parent)
+        XCTAssertTrue(view.requests.isEmpty, "do not load a root or chat document before the first answer")
+
+        parent.awaitsInitialDeviceTools = false
+        let registry = DeviceToolRegistry(tools: [BuiltInDeviceTools.ping()])
+        parent.deviceTools = registry
+        coordinator.update(view, parent: parent)
+        XCTAssertTrue(coordinator.bridge?.registry === registry)
+        coordinator.update(view, parent: parent)
+        XCTAssertEqual(view.requests.compactMap(\.url), [destination])
+        XCTAssertEqual(view.reloads, 0)
+    }
+
+    func testColdLinkedChatIsNotBlockedByASlowCapabilityProbe() async throws {
+        var parent = linkedMediaBrowser()
+        parent.awaitsInitialDeviceTools = true
+        let coordinator = parent.makeCoordinator()
+        coordinator.initialDeviceToolsWait = .milliseconds(5)
+        defer { coordinator.tearDown() }
+        let view = webView()
+        coordinator.loadInitialPageIfReady(view)
+        for _ in 0..<100 where view.requests.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(view.requests.compactMap(\.url), [parent.url])
+        XCTAssertNil(coordinator.bridge)
+
+        view.currentURL = parent.url
+        parent.awaitsInitialDeviceTools = false
+        parent.deviceTools = DeviceToolRegistry(tools: [BuiltInDeviceTools.ping()])
+        coordinator.update(view, parent: parent)
+        XCTAssertNotNil(coordinator.bridge)
+        XCTAssertEqual(view.reloads, 1, "a late positive answer can still install tools on an already-loaded page")
+    }
+
     func testLinkedGeolocationPromptsOnlyForVerifiedTopLevelChat() {
         var parent = linkedMediaBrowser()
         let origin = "http://localhost:43212"

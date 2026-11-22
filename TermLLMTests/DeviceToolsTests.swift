@@ -311,6 +311,19 @@ final class DeviceToolsTests: XCTestCase {
                      "another source's advertisement does not carry over")
     }
 
+    func testLinkedRegistryIsRebuiltWhenTheMountOrPinnedHostChanges() {
+        let settings = makeSettings(enabled: true)
+        let source = linkedSource()
+        let original = settings.registry(for: source)
+        XCTAssertTrue(settings.registry(for: source) === original)
+        var moved = source
+        moved.url = source.url.appendingPathComponent("new-mount", isDirectory: true)
+        let updated = settings.registry(for: moved)
+        XCTAssertFalse(updated === original)
+        moved.linkedDevicesHostKey = linkedSource(2).linkedDevicesHostKey
+        XCTAssertFalse(settings.registry(for: moved) === updated)
+    }
+
     func testJSONValueRoundTripKeepsIntegers() throws {
         let value = try JSONValue.decode(Data(#"{"a":1,"b":1.5,"c":[true,null,"x"],"d":{}}"#.utf8))
         XCTAssertEqual(value, ["a": 1, "b": .double(1.5), "c": [true, nil, "x"], "d": [:]])

@@ -423,6 +423,8 @@ private final class CountingRuntimeTestConnector: LinkedDevicesSessionConnecting
     private var connects = 0
     private var closes = 0
     private var connectedHostKeys: [Data] = []
+    private var latestAuthorization: PeerAuthorizationState?
+    var authorization: PeerAuthorizationState? { lock.withLock { latestAuthorization } }
     var hostKeys: [Data] { lock.withLock { connectedHostKeys } }
     var connectCount: Int { lock.withLock { connects } }
     var closeCount: Int { lock.withLock { closes } }
@@ -433,6 +435,7 @@ private final class CountingRuntimeTestConnector: LinkedDevicesSessionConnecting
         let authorization = PeerAuthorizationState(PeerAuthorization(
             peerID: LinkedDevicesBase64URL.encode(credential.hostKey), sessionID: UUID().uuidString,
             expiresAt: .distantFuture, scopePrefix: credential.basePath ?? "/"))
+        lock.withLock { latestAuthorization = authorization }
         let multiplexer = PeerHTTPMultiplexer(channel: RuntimeTestChannel())
         return LinkedDevicesLiveConnection(forwarder: multiplexer, authorization: authorization,
                                            stats: { PeerSessionStats() }, close: { [self] in
@@ -870,6 +873,12 @@ extension LinkedDevicesRuntimeTests {
         XCTAssertEqual(notTrue.1, 1)
         let garbage = await run { _ in (200, Data("<html>".utf8)) }
         XCTAssertEqual(garbage.0, .unsupported)
+        let oversized = await run { _ in (200, Data(repeating: 0, count: 65 * 1024)) }
+        XCTAssertEqual(oversized.0, .unsupported)
+        XCTAssertEqual(oversized.1, 1)
+        let overflow = await run { _ in throw PeerWireError.responseBufferOverflow }
+        XCTAssertEqual(overflow.0, .unsupported)
+        XCTAssertEqual(overflow.1, 1)
         // A server error is retried once and the later answer wins.
         let recovered = await run { attempt in attempt == 1 ? (503, Data()) : (200, yes) }
         XCTAssertEqual(recovered.0, LinkedDevicesHostCapabilities(deviceTools: true))
@@ -880,86 +889,121 @@ extension LinkedDevicesRuntimeTests {
         XCTAssertEqual(unreachable.1, 2)
     }
 
-    func testRuntimeDoesNotAdvertiseDeviceToolsUntilTheHostSaysSo() async throws {
-        let (runtime, _, source) = try await connectedRuntime(seed: 0x90, grace: .seconds(60))
-        defer { runtime.synchronize([]) }
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "connected alone enables nothing")
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: UUID()))
+    func testColdHostDoesNotAdvertiseWhileItsFirstAnswerIsPending() async throws {
+        let resolver = ScriptedCapabilityResolver(answers: [nil], holdIndex: 1)
+        let (runtime, _, source) = try await connectedRuntime(
+            seed: 0x90, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+        defer { resolver.release(); runtime.synchronize([]) }
+        try await waitUntil { resolver.callCount == 1 }
+        XCTAssertTrue(runtime.mayResolveInitialDeviceTools(for: source))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "connected alone enables nothing")
+        resolver.release()
+        try await waitUntil { !runtime.mayResolveInitialDeviceTools(for: source) }
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
     }
 
-    func testAdvertisementFollowsEachVerifiedConnectionAndIsDroppedOnRevocation() async throws {
-        let resolver = ScriptedCapabilityResolver(answers: [
-            LinkedDevicesHostCapabilities(deviceTools: true), nil, .unsupported, LinkedDevicesHostCapabilities(deviceTools: true),
-        ])
-        let (runtime, _, source) = try await connectedRuntime(
+    func testNoAnswerKeepsLastAdvertisementButDefinitiveNoAndRevocationRemoveIt() async throws {
+        let yes = LinkedDevicesHostCapabilities(deviceTools: true)
+        let resolver = ScriptedCapabilityResolver(answers: [yes, nil, .unsupported, yes], holdIndex: 3)
+        let (runtime, connector, source) = try await connectedRuntime(
             seed: 0x91, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
-        defer { runtime.synchronize([]) }
-        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        defer { resolver.release(); runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
         XCTAssertEqual(resolver.mounts, [source.url], "asked over the source's own mount")
 
-        // A connection that gets no answer (the host may have been downgraded) has no tools.
         runtime.reconnectNow(source.id)
         try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
         try await Task.sleep(for: .milliseconds(30))
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "no answer must not inherit the earlier true")
-
-        // A definitive "no" stays no.
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source), "no answer leaves the pinned host's last answer alone")
         runtime.reconnectNow(source.id)
         try await waitUntil { resolver.callCount == 3 && runtime.status(for: source.id).isConnected }
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id))
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source), "keep that answer while the next probe is pending")
+        XCTAssertFalse(runtime.mayResolveInitialDeviceTools(for: source), "a known host must not gate a new page on probing")
+        resolver.release()
+        try await waitUntil { runtime.capabilities[source.id] == .unsupported }
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "a definitive no disables tools")
 
         runtime.reconnectNow(source.id)
-        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
-        runtime.markRevoked(source.id)
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "revoked access never keeps tools")
-        XCTAssertEqual(runtime.status(for: source.id), .revoked)
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
+        let authorization = try XCTUnwrap(connector.authorization)
+        authorization.revoke()
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source), "authorization loss immediately hides the cached grant")
+        try await waitUntil { runtime.status(for: source.id) == .revoked }
+        XCTAssertNil(runtime.capabilities[source.id])
     }
 
-    func testSameHostFlagSurvivesOfflineButAFreshAttachMustEarnItAgain() async throws {
-        let resolver = ScriptedCapabilityResolver(
-            answers: [LinkedDevicesHostCapabilities(deviceTools: true), LinkedDevicesHostCapabilities(deviceTools: true)],
-            holdIndex: 2)
+    func testSameHostFlagSurvivesOfflineAndTheNextProbe() async throws {
+        let yes = LinkedDevicesHostCapabilities(deviceTools: true)
+        let resolver = ScriptedCapabilityResolver(answers: [yes, yes], holdIndex: 2)
         let (runtime, _, source) = try await connectedRuntime(
             seed: 0x94, grace: .milliseconds(30), capabilityResolver: { await resolver.resolve($0, $1) })
-        defer { runtime.synchronize([]) }
-        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        defer { resolver.release(); runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
 
-        // Backgrounding closes the connection; the pinned host's flag is kept while offline.
         runtime.setForeground(false)
         try await waitUntil { runtime.status(for: source.id) == .suspended }
-        XCTAssertTrue(runtime.advertisesDeviceTools(for: source.id))
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source))
 
-        // The new connection goes live without it until the host answers again.
         runtime.setForeground(true)
         try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id), "unverified while the reply is pending")
+        XCTAssertTrue(runtime.advertisesDeviceTools(for: source), "keep the answer during a same-scope probe")
         resolver.release()
-        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
     }
 
-    func testStaleCapabilityAnswerCannotApplyToAReplacementConnection() async throws {
-        let resolver = ScriptedCapabilityResolver(
-            answers: [LinkedDevicesHostCapabilities(deviceTools: true), .unsupported], holdIndex: 1)
+    func testStaleCapabilityAnswerCannotOverrideAReplacementConnection() async throws {
+        let yes = LinkedDevicesHostCapabilities(deviceTools: true)
+        let cases: [(UInt8, LinkedDevicesHostCapabilities, LinkedDevicesHostCapabilities)] = [
+            (0x92, yes, .unsupported), (0x95, .unsupported, yes),
+        ]
+        for (seed, stale, current) in cases {
+            let resolver = ScriptedCapabilityResolver(answers: [stale, current], holdIndex: 1)
+            let (runtime, _, source) = try await connectedRuntime(
+                seed: seed, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+            defer { resolver.release(); runtime.synchronize([]) }
+            try await waitUntil { resolver.callCount == 1 }
+            runtime.reconnectNow(source.id)
+            try await waitUntil { runtime.capabilities[source.id] == current }
+            resolver.release()
+            try await Task.sleep(for: .milliseconds(60))
+            XCTAssertEqual(runtime.capabilities[source.id], current, "the retired connection cannot override the new answer")
+        }
+    }
+
+    func testEndpointAndIdentityChangesClearTheAdvertisement() async throws {
+        let resolver = ScriptedCapabilityResolver(answers: [LinkedDevicesHostCapabilities(deviceTools: true)], holdIndex: 2)
         let (runtime, _, source) = try await connectedRuntime(
-            seed: 0x92, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
-        defer { runtime.synchronize([]) }
-        try await waitUntil { resolver.callCount == 1 }
-        runtime.reconnectNow(source.id)
-        try await waitUntil { resolver.callCount == 2 && runtime.status(for: source.id).isConnected }
+            seed: 0x96, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
+        defer { resolver.release(); runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
+
+        var moved = source
+        moved.url = source.url.appendingPathComponent("new-mount", isDirectory: true)
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: moved), "a new browser snapshot cannot borrow the old mount's answer")
+        runtime.synchronize([moved])
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
+        XCTAssertNil(runtime.capabilities[source.id])
+        try await waitUntil { resolver.callCount == 2 }
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: moved))
         resolver.release()
-        try await Task.sleep(for: .milliseconds(60))
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id),
-                       "the retired connection's late true must not enable tools")
+        try await waitUntil { runtime.advertisesDeviceTools(for: moved) }
+
+        var replaced = moved
+        replaced.linkedDevicesHostKey = LinkedDevicesBase64URL.encode(Data(repeating: 0x97, count: 32))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: replaced), "a new key cannot borrow the old key's answer")
+        runtime.synchronize([replaced])
+        XCTAssertEqual(runtime.status(for: source.id), .identityChanged)
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: moved))
+        XCTAssertNil(runtime.capabilities[source.id])
     }
 
     func testRemovingTheSourceDropsItsAdvertisement() async throws {
         let resolver = ScriptedCapabilityResolver(answers: [LinkedDevicesHostCapabilities(deviceTools: true)])
         let (runtime, _, source) = try await connectedRuntime(
             seed: 0x93, grace: .seconds(60), capabilityResolver: { await resolver.resolve($0, $1) })
-        try await waitUntil { runtime.advertisesDeviceTools(for: source.id) }
+        defer { runtime.synchronize([]) }
+        try await waitUntil { runtime.advertisesDeviceTools(for: source) }
         runtime.synchronize([])
-        XCTAssertFalse(runtime.advertisesDeviceTools(for: source.id))
+        XCTAssertFalse(runtime.advertisesDeviceTools(for: source))
         XCTAssertNil(runtime.capabilities[source.id])
     }
 }
@@ -970,6 +1014,7 @@ private final class ScriptedCapabilityResolver: @unchecked Sendable {
     private let holdIndex: Int?
     private var calls: [URL] = []
     private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
 
     init(answers: [LinkedDevicesHostCapabilities?], holdIndex: Int? = nil) {
         self.answers = answers
@@ -978,12 +1023,27 @@ private final class ScriptedCapabilityResolver: @unchecked Sendable {
 
     var callCount: Int { lock.withLock { calls.count } }
     var mounts: [URL] { lock.withLock { calls } }
-    func release() { lock.withLock { released = true } }
+    func release() {
+        let pending = lock.withLock {
+            released = true
+            defer { waiter = nil }
+            return waiter
+        }
+        pending?.resume()
+    }
 
     func resolve(_ transport: any HubTransport, _ mount: URL) async -> LinkedDevicesHostCapabilities? {
         let index = lock.withLock { calls.append(mount); return calls.count }
         if index == holdIndex {
-            while !lock.withLock({ released }) { try? await Task.sleep(for: .milliseconds(5)) }
+            // Ignore cancellation to exercise the runtime's generation checks.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock {
+                    if released { return true }
+                    waiter = continuation
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
         }
         return answers[min(index, answers.count) - 1]
     }

@@ -704,7 +704,9 @@ struct ContentView: View {
                         isSigningIn: isSigningIn,
                         deviceTools: isFixture ? nil : deviceTools.browserRegistry(
                             for: source?.connection,
-                            hostAdvertisesDeviceTools: source.map { linkedDevices.advertisesDeviceTools(for: $0.id) } ?? false),
+                            hostAdvertisesDeviceTools: source.map { linkedDevices.advertisesDeviceTools(for: $0.connection) } ?? false),
+                        awaitsInitialDeviceTools: !isFixture && deviceTools.isEnabled &&
+                            (source.map { linkedDevices.mayResolveInitialDeviceTools(for: $0.connection) } ?? false),
                         onLoginRequired: {
                             guard HubFixture.isEnabled || (source?.isActive == true && source?.browserIdentity == browserIdentity && connections.selectedID == source?.id) else { return }
                             if let source, source.connection.isLinkedDevices {

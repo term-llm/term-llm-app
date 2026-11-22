@@ -160,7 +160,7 @@ struct LinkedDevicesHostCapabilities: Equatable, Sendable {
     }
 
     /// Bounded retry for transport failures only; never replays after an answer.
-    /// Returns nil when no answer could be obtained; callers treat that as no tools.
+    /// Returns nil when no answer could be obtained, distinct from a definitive no.
     static func resolve(
         over transport: any HubTransport, mount: URL,
         retryDelays: [Duration] = [.seconds(1), .seconds(3)]
@@ -168,7 +168,8 @@ struct LinkedDevicesHostCapabilities: Equatable, Sendable {
         var delays = retryDelays[...]
         while true {
             do { return try await fetch(over: transport, mount: mount) }
-            catch is PeerScopeDenied { return Self.unsupported }  // the host's route scope omits it: a definitive "no"
+            catch is PeerScopeDenied { return Self.unsupported }  // old hosts may omit the route from scope
+            catch PeerWireError.responseBufferOverflow { return Self.unsupported }
             catch {
                 guard !Task.isCancelled, !(error is CancellationError), let delay = delays.popFirst() else { return nil }
                 do { try await Task.sleep(for: delay) } catch { return nil }
@@ -218,13 +219,10 @@ final class LinkedDevicesRuntime: ObservableObject {
     static let backgroundGrace: Duration = .seconds(20)
 
     @Published private(set) var statuses: [UUID: Status] = [:]
-    /// What each source's verified host advertised on its current connection.
-    /// Kept while the same pinned host is offline or suspended, but cleared the
-    /// moment a fresh connection goes live and set again only by that
-    /// connection's own answer, so a downgraded host, a failed check or no
-    /// answer never inherits an earlier "true". Also dropped when access is
-    /// revoked, the identity changes or the source is removed. Never persisted.
+    /// The last definitive answer from each source's pinned host and endpoint.
+    /// A transport reconnect or a failed probe does not erase it. Never persisted.
     @Published private(set) var capabilities: [UUID: LinkedDevicesHostCapabilities] = [:]
+    @Published private var probingCapabilities: Set<UUID> = []
     private final class Entry {
         var connection: HubConnection
         let transport = LinkedDevicesSourceTransport()
@@ -233,6 +231,7 @@ final class LinkedDevicesRuntime: ObservableObject {
         var bridge: PeerLoopbackBridge?
         var activeToken: UUID?
         var capabilityTask: Task<Void, Never>?
+        var authorizationObserver: UUID?
         var enrollmentToken: UUID?
         var enrollmentExistingSource = false
         var enrollmentTransportLost = false
@@ -304,10 +303,32 @@ final class LinkedDevicesRuntime: ObservableObject {
 
     func status(for sourceID: UUID) -> Status { statuses[sourceID] ?? .offline }
 
-    /// True only while the source is not revoked/replaced and its verified host
-    /// answered `linked_devices.device_tools === true` on its latest connection.
-    func advertisesDeviceTools(for sourceID: UUID) -> Bool {
-        capabilities[sourceID]?.deviceTools == true
+    /// Match the browser's exact source snapshot, even before SwiftUI has
+    /// synchronized a catalog change into the runtime (or vice versa).
+    func advertisesDeviceTools(for connection: HubConnection) -> Bool {
+        guard let entry = entries[connection.id], !entry.terminal,
+              Self.sameCapabilityScope(entry.connection, connection) else { return false }
+        if let live = entry.live, live.authorization.current == nil { return false }
+        return capabilities[connection.id]?.deviceTools == true
+    }
+
+    /// Lets a new chat briefly wait for a cold result without holding up
+    /// native navigation or an already-loaded chat.
+    func mayResolveInitialDeviceTools(for connection: HubConnection) -> Bool {
+        guard let entry = entries[connection.id], !entry.terminal,
+              Self.sameCapabilityScope(entry.connection, connection),
+              capabilities[connection.id] == nil else { return false }
+        return statuses[connection.id] == .connecting || probingCapabilities.contains(connection.id)
+    }
+
+    private static func sameCapabilityScope(_ lhs: HubConnection, _ rhs: HubConnection) -> Bool {
+        lhs.id == rhs.id && lhs.linkedDevicesHostKey == rhs.linkedDevicesHostKey &&
+            lhs.url == rhs.url && lhs.kind == rhs.kind
+    }
+
+    private func updateConnection(_ entry: Entry, to connection: HubConnection) {
+        if !Self.sameCapabilityScope(entry.connection, connection) { capabilities[connection.id] = nil }
+        entry.connection = connection
     }
 
     private func installCapability(_ endpoint: PeerLoopbackEndpoint, for sourceID: UUID) async {
@@ -381,7 +402,9 @@ final class LinkedDevicesRuntime: ObservableObject {
                 // The close never ran because the app was suspended past the
                 // grace, so the host has most likely dropped this connection.
                 // Replace it now rather than wait for WebRTC to notice.
-                if overdue, entry.live != nil, !entry.terminal, !entry.enrolling { tearDownConnection(entry) }
+                if overdue, entry.live != nil, !entry.terminal, !entry.enrolling, !retireIfRevoked(entry) {
+                    tearDownConnection(entry)
+                }
             }
             reconnectEligibleSources(immediate: true)
         } else {
@@ -419,6 +442,7 @@ final class LinkedDevicesRuntime: ObservableObject {
             try? await Task.sleep(for: grace)
             guard !Task.isCancelled, let self, let entry, self.entries[sourceID] === entry, !self.foreground,
                   entry.live != nil, entry.activeToken == token, !self.capturing.contains(sourceID) else { return }
+            guard !self.retireIfRevoked(entry) else { return }
             self.tearDownConnection(entry)
             self.statuses[sourceID] = .suspended
         }
@@ -431,7 +455,7 @@ final class LinkedDevicesRuntime: ObservableObject {
     }
 
     func reconnectNow(_ sourceID: UUID) {
-        guard let entry = entries[sourceID], !entry.terminal else { return }
+        guard let entry = entries[sourceID], !entry.terminal, !retireIfRevoked(entry) else { return }
         tearDownConnection(entry)
         startIfEligible(entry, immediate: true)
     }
@@ -497,7 +521,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                                         needsKindReview: nil, linkedDevicesHostKey: encodedKey)
         let reservedEntry = entry(for: provisional)
         tearDownConnection(reservedEntry)
-        reservedEntry.connection = provisional
+        updateConnection(reservedEntry, to: provisional)
         reservedEntry.enrolling = true
         reservedEntry.enrollmentToken = token
         reservedEntry.enrollmentExistingSource = existing != nil
@@ -573,8 +597,6 @@ final class LinkedDevicesRuntime: ObservableObject {
                     continue
                 }
 
-                reservedEntry.connection = HubConnection(id: sourceID, name: name, kind: .directNode, url: url,
-                                                          needsKindReview: nil, linkedDevicesHostKey: encodedKey)
                 reservedEntry.live = enrollmentLive
                 reservedEntry.bridge = bridge
                 reservedEntry.task = nil
@@ -595,6 +617,9 @@ final class LinkedDevicesRuntime: ObservableObject {
                     continue
                 }
                 stage = .activatingLocalBridge
+                updateConnection(reservedEntry, to: HubConnection(
+                    id: sourceID, name: name, kind: .directNode, url: url,
+                    needsKindReview: nil, linkedDevicesHostKey: encodedKey))
                 try bridge.activate()
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
                     throw CancellationError()
@@ -614,7 +639,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                 guard ownsEnrollment(reservedEntry, sourceID: sourceID, token: token) else {
                     throw CancellationError()
                 }
-                reservedEntry.connection = connection
+                updateConnection(reservedEntry, to: connection)
                 reservedEntry.enrolling = false
                 reservedEntry.enrollmentToken = nil
                 reservedEntry.enrollmentExistingSource = false
@@ -622,13 +647,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                 reservedEntry.attempt = 0
                 pendingBridge = nil
                 if let live = enrollmentLive {
-                    invalidateCapabilities(sourceID)
-                    reservedEntry.transport.install(WebRTCHubTransport(forwarder: live.forwarder,
-                                                                       authorization: live.authorization,
-                                                                       hubBaseURL: connection.url))
-                    statuses[sourceID] = .connected(relayed: nil)
-                    updateSelectedPair(for: reservedEntry, live: live)
-                    refreshCapabilities(reservedEntry, token: token)
+                    installTransport(live, for: reservedEntry, token: token)
                     // Enrollment may finish after the app went to the background.
                     scheduleBackgroundClose(reservedEntry)
                 } else {
@@ -658,7 +677,7 @@ final class LinkedDevicesRuntime: ObservableObject {
                 let connection = try catalog.saveLinkedDevices(id: existing.id, name: name,
                                                                  hostKey: paired.credential.hostKey,
                                                                  bridgePort: port, basePath: basePath)
-                entry.connection = connection
+                updateConnection(entry, to: connection)
                 entry.terminal = false
                 entry.activeToken = token
                 statuses[sourceID] = .offline
@@ -845,18 +864,11 @@ final class LinkedDevicesRuntime: ObservableObject {
             guard owns(entry, sourceID: sourceID, token: token), live.authorization.check() else {
                 throw CancellationError()
             }
-            // No suspension point from here: the fresh connection starts with no
-            // advertisement and earns one with its own reply.
-            invalidateCapabilities(sourceID)
             entry.live = live
             entry.bridge = bridge
             entry.task = nil
             entry.attempt = 0
-            entry.transport.install(WebRTCHubTransport(forwarder: live.forwarder, authorization: live.authorization,
-                                                        hubBaseURL: entry.connection.url))
-            statuses[sourceID] = .connected(relayed: nil)
-            updateSelectedPair(for: entry, live: live)
-            refreshCapabilities(entry, token: token)
+            installTransport(live, for: entry, token: token)
         } catch {
             bridge.revoke()
             live.close()
@@ -864,27 +876,49 @@ final class LinkedDevicesRuntime: ObservableObject {
         }
     }
 
-    private func invalidateCapabilities(_ sourceID: UUID) {
-        if capabilities[sourceID] != nil { capabilities[sourceID] = nil }
+    private func installTransport(_ live: LinkedDevicesLiveConnection, for entry: Entry, token: UUID) {
+        let sourceID = entry.connection.id
+        let transport = WebRTCHubTransport(forwarder: live.forwarder, authorization: live.authorization,
+                                            hubBaseURL: entry.connection.url)
+        entry.transport.install(transport)
+        // Explicit authorization loss (including a peer HTTP 401) is not an
+        // offline reconnect. Normal teardown removes this observer before close.
+        entry.authorizationObserver = live.authorization.onRevoke { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, let entry = self.entries[sourceID],
+                      self.owns(entry, sourceID: sourceID, token: token) else { return }
+                self.markTerminal(entry, .revoked)
+            }
+        }
+        refreshCapabilities(entry, over: transport, token: token)
+        statuses[sourceID] = .connected(relayed: nil)
+        updateSelectedPair(for: entry, live: live)
     }
 
-    /// Asks the just-verified host what it supports. The request travels only
-    /// over this entry's pinned, authenticated transport; a result is applied
-    /// only if that same connection attempt is still current. Failing to get an
-    /// answer leaves the connection without an advertisement (no tools).
-    private func refreshCapabilities(_ entry: Entry, token: UUID) {
-        entry.capabilityTask?.cancel()
-        let sourceID = entry.connection.id
-        let transport = entry.transport
-        let mount = entry.connection.url
+    /// Each probe is bound to the verified transport that launched it, not the
+    /// stable source proxy that can pick up a replacement transport. Only the
+    /// current attempt can publish; nil leaves the last definitive answer alone.
+    private func refreshCapabilities(_ entry: Entry, over transport: WebRTCHubTransport, token: UUID) {
+        let connection = entry.connection
+        let sourceID = connection.id
         let resolver = capabilityResolver
+        if capabilities[sourceID] == nil { probingCapabilities.insert(sourceID) }
         entry.capabilityTask = Task { @MainActor [weak self, weak entry] in
-            let result = await resolver(transport, mount)
-            guard !Task.isCancelled, let result, let self, let entry, self.entries[sourceID] === entry,
-                  entry.activeToken == token, entry.live != nil, !entry.terminal,
-                  entry.connection.url == mount else { return }
-            if self.capabilities[sourceID] != result { self.capabilities[sourceID] = result }
+            guard !Task.isCancelled else { return }
+            let result = await resolver(transport, connection.url)
+            guard !Task.isCancelled, let self, let entry,
+                  self.owns(entry, sourceID: sourceID, token: token),
+                  Self.sameCapabilityScope(entry.connection, connection) else { return }
+            if let result, entry.live?.authorization.check() == true, self.capabilities[sourceID] != result {
+                self.capabilities[sourceID] = result
+            }
+            self.finishCapabilityProbe(sourceID)
+            entry.capabilityTask = nil
         }
+    }
+
+    private func finishCapabilityProbe(_ sourceID: UUID) {
+        if probingCapabilities.contains(sourceID) { probingCapabilities.remove(sourceID) }
     }
 
     private func updateSelectedPair(for entry: Entry, live: LinkedDevicesLiveConnection) {
@@ -924,11 +958,19 @@ final class LinkedDevicesRuntime: ObservableObject {
             entry.enrollmentTransportLost = true
             return
         }
-        guard entry.activeToken == token else { return }
+        guard entry.activeToken == token, !retireIfRevoked(entry) else { return }
         tearDownConnection(entry)
         guard !entry.terminal else { return }
         statuses[entry.connection.id] = foreground ? .offline : .suspended
         startIfEligible(entry, immediate: false)
+    }
+
+    // The authorization observer and the socket-close callback can arrive in
+    // either order. Never turn an already-revoked live peer into ordinary offline state.
+    private func retireIfRevoked(_ entry: Entry) -> Bool {
+        guard let live = entry.live, live.authorization.current == nil else { return false }
+        markTerminal(entry, .revoked)
+        return true
     }
 
     private func invalidateEnrollment(_ entry: Entry) {
@@ -961,8 +1003,11 @@ final class LinkedDevicesRuntime: ObservableObject {
         cancelBackgroundClose(entry)
         entry.capabilityTask?.cancel()
         entry.capabilityTask = nil
+        finishCapabilityProbe(entry.connection.id)
         entry.activeToken = nil
         let live = entry.live
+        if let observer = entry.authorizationObserver { live?.authorization.removeHandler(observer) }
+        entry.authorizationObserver = nil
         entry.live = nil
         entry.transport.disconnect()
         live?.diagnostics?.emit(.retired)
