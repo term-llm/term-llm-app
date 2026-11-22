@@ -268,7 +268,7 @@ struct WebKitHealthView: View {
         } header: {
             Text("Monitoring")
         } footer: {
-            Text("Stop runaway pages closes a page that hangs or stays busy off screen, never during a call or tool reply; Chat reopens it where you left off. Turning on watching takes effect at the next page load.")
+            Text("Stop runaway pages can close a busy off-screen page, but not during a call or tool reply. Chat reopens it where you left off. Missing health reports never close Chat. Turning on watching takes effect at the next page load.")
         }
     }
 
@@ -382,7 +382,6 @@ struct WebKitHealthView: View {
         if let stopped = status.parked ?? parked {
             switch stopped.reason {
             case .manual: return "Paused"
-            case .unresponsive: return "Stopped · not responding"
             case .hiddenActivity: return "Stopped · busy off screen"
             case .thermal: return "Stopped · phone was hot"
             }
@@ -392,7 +391,7 @@ struct WebKitHealthView: View {
         case .loading: return "Loading"
         case .waiting: return monitor.probeEnabled ? "On screen · no report yet" : "On screen · not watched"
         case .active: return "On screen"
-        case .stalled(let seconds): return "Not responding · \(Int(seconds)) s"
+        case .stalled(let seconds): return "No health report · \(Int(seconds)) s"
         case .offScreenAwake: return "Off screen · awake"
         case .offScreenQuiet: return "Off screen · quiet"
         }

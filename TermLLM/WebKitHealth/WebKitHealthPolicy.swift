@@ -11,11 +11,6 @@ struct WebKitHealthPolicy: Sendable {
     var activityShare = 0.8
     var minimumReports = 6
     var stallAfter: TimeInterval = 15
-    var unresponsiveAfter: TimeInterval = 45
-    /// A silent page is only stopped while something outside the app burns
-    /// at least this many cores: a page paused in Web Inspector or deadlocked
-    /// costs no power, an endless loop does.
-    var stuckCores = 0.5
     var thermalGrace: TimeInterval = 30
 
     enum Verdict: Equatable {
@@ -33,9 +28,6 @@ struct WebKitHealthPolicy: Sendable {
         var armed: Bool
         var samples: [TimedPageSample]
         var thermal: ProcessInfo.ThermalState
-        /// Recent average cores busy outside this app (WebKit's processes,
-        /// iOS); nil when the device counters are unavailable.
-        var outsideAppCPU: Double? = nil
     }
 
     struct Activity: Equatable, Sendable {
@@ -74,15 +66,12 @@ struct WebKitHealthPolicy: Sendable {
 
     func verdict(_ input: Input) -> Verdict {
         let context = input.context
-        // A hung page is checked only while the user is looking at it: hidden
-        // and suspended pages legitimately stop reporting.
+        // Only watch for missed reports on screen. Probe silence does not prove
+        // a hang, and system CPU cannot attribute work to this page, so never
+        // tear down a page on this evidence.
         if context.userCanSee, !context.appBackground, !context.loading, input.armed, let last = input.lastSampleAt,
            let visibleSince = input.visibleSince {
             let silent = input.now - max(last, visibleSince)
-            if silent >= unresponsiveAfter, !context.signingIn, let busy = input.outsideAppCPU, busy >= stuckCores {
-                return .teardown(.unresponsive, "No response from the page for \(Int(silent)) s while on screen, "
-                                 + String(format: "with %.1f cores busy outside the app.", busy))
-            }
             if silent >= stallAfter { return .stalled(silent) }
         }
         guard let hiddenSince = input.hiddenSince, !context.userCanSee, !context.protectsPage else { return .healthy }
@@ -164,8 +153,8 @@ enum WebKitHealthFindings {
         guard let page else { return findings.sorted { $0.severity > $1.severity } }
         switch page.verdict {
         case .stalled(let seconds):
-            findings.append(.init(id: "stalled", severity: .critical, title: "Page not responding (\(Int(seconds)) s)",
-                                  detail: "The page's main thread is blocked."))
+            findings.append(.init(id: "stalled", severity: .warning, title: "No page health report (\(Int(seconds)) s)",
+                                  detail: "Monitoring data is missing. The chat page may still be working."))
         case .teardown(let reason, let detail):
             findings.append(.init(id: "stop-" + reason.rawValue, severity: .critical, title: reason.title, detail: detail))
         case .healthy:

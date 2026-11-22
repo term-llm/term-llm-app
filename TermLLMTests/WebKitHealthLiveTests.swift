@@ -267,30 +267,6 @@ final class WebKitHealthLiveTests: XCTestCase {
         monitor.tick(now: 10)
         XCTAssertEqual(monitor.status.webViewsAlive, 0)
     }
-
-    /// A hung page cannot run unload handlers: close it at once.
-    func testHungPageClosesAtOnce() async throws {
-        let controller = try host()
-        let closes = Closes()
-        let coordinator = chatCoordinator(closes)
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let web = WKWebView(frame: controller.view.bounds, configuration: configuration)
-        controller.view.addSubview(web)
-        coordinator.webView = web
-        web.navigationDelegate = coordinator
-        addTeardownBlock { @MainActor in
-            web.navigationDelegate = nil
-            web.removeFromSuperview()
-        }
-        web.loadHTMLString("<p>chat</p>", baseURL: Self.chat)
-        try await until("the chat page") { web.url == Self.chat && !web.isLoading }
-        coordinator.closePage(reason: .unresponsive, detail: "test")
-        XCTAssertEqual(closes.calls.count, 1)
-        XCTAssertEqual(closes.calls.first?.1, Self.chat)
-        XCTAssertFalse(coordinator.closingPage)
-        XCTAssertEqual(web.url, Self.chat, "no unload navigation into a hung page")
-    }
 }
 #endif
 

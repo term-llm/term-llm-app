@@ -359,7 +359,7 @@ final class WebKitHealthMonitor: ObservableObject {
         session.lastSampleAt = now
         if session.stalled {
             session.stalled = false
-            record("recovered", "Page responding again.")
+            record("recovered", "Page health reports resumed.")
         }
         accumulator.add(sample)
         if sample.isVisible, !session.context.appBackground, sample.maxLateMilliseconds >= 2000, now - session.lastLongBlock >= 60 {
@@ -510,13 +510,13 @@ final class WebKitHealthMonitor: ObservableObject {
         switch policy.verdict(.init(now: now, context: session.context, hiddenSince: session.hiddenSince,
                                     visibleSince: session.visibleSince, lastSampleAt: session.lastSampleAt,
                                     armed: isArmed(session), samples: session.samples,
-                                    thermal: thermal, outsideAppCPU: outsideAppCPU(now: now))) {
+                                    thermal: thermal)) {
         case .healthy:
             break
         case .stalled(let seconds):
             if !session.stalled {
                 session.stalled = true
-                record("stalled", "Page stopped answering for \(Int(seconds)) s while on screen. \(snapshot(session))")
+                record("stalled", "No page health report for \(Int(seconds)) s while on screen. \(snapshot(session))")
             }
         case .teardown(let reason, let detail):
             if autoStopEnabled {
@@ -571,15 +571,9 @@ final class WebKitHealthMonitor: ObservableObject {
         tick()
     }
 
-    /// Silence is only evidence of a hang while the page could be running.
+    /// Only expect reports after the current document has started sending them.
     private func isArmed(_ session: WebKitPageSession) -> Bool {
         session.documentID != nil && probeEnabled && displayPausedBy.isEmpty
-    }
-
-    /// Average cores busy outside this app over the last 30 s.
-    private func outsideAppCPU(now: TimeInterval) -> Double? {
-        let values = natives.filter { now - $0.uptime <= 30 }.compactMap(\.otherCPU)
-        return values.count >= 3 ? optionalAverage(values) : nil
     }
 
     private func primarySession() -> WebKitPageSession? {
@@ -604,7 +598,7 @@ final class WebKitHealthMonitor: ObservableObject {
             let verdict = policy.verdict(.init(now: now, context: primary.context, hiddenSince: primary.hiddenSince,
                                                visibleSince: primary.visibleSince, lastSampleAt: primary.lastSampleAt,
                                                armed: isArmed(primary), samples: primary.samples,
-                                               thermal: native.thermal, outsideAppCPU: outsideAppCPU(now: now)))
+                                               thermal: native.thermal))
             next.context = primary.context
             next.latest = primary.latest
             next.lastReportAge = primary.lastSampleAt.map { now - $0 }

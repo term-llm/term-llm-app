@@ -129,8 +129,9 @@ exports retained samples and events. Reports contain measurements and code
 names, not chat text, form values, credentials or request addresses. Podcast
 download counters cover managed media traffic, not all device data use.
 
-**Stop runaway pages** is on by default. It can close a stalled or excessively
-active page, but not during calls, voice startup, device-tool replies, sign-in
-or page media playback. A stopped page can be reopened or reloaded. For hot
-native playback paths, see [Listen performance](LISTEN-PERFORMANCE.md); function
+**Stop runaway pages** is on by default. It can close a busy off-screen page,
+but not during calls, voice startup, device-tool replies, sign-in or page media
+playback. Chat reopens it when you return. Missing health reports are logged
+for diagnosis; they don't close or reload the page. For hot native playback
+paths, see [Listen performance](LISTEN-PERFORMANCE.md); function
 stacks and interruption/background behavior need physical-device profiling.

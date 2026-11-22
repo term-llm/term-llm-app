@@ -210,7 +210,7 @@ enum WebKitHealthReport {
         case .loading: "loading"
         case .waiting: "waiting for first report"
         case .active: "reporting"
-        case .stalled(let seconds): "not responding for \(Int(seconds)) s"
+        case .stalled(let seconds): "no health report for \(Int(seconds)) s"
         case .offScreenAwake: "still running"
         case .offScreenQuiet: "quiet (throttled or suspended)"
         }

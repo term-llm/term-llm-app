@@ -1,22 +1,20 @@
 import Foundation
 
 enum WebKitTeardownReason: String, Codable, Sendable, Equatable {
-    case unresponsive
     case hiddenActivity = "hidden_activity"
     case thermal
     case manual
 
     var title: String {
         switch self {
-        case .unresponsive: "The chat page stopped responding"
         case .hiddenActivity: "The chat page kept working off screen"
         case .thermal: "The phone was hot"
         case .manual: "Chat page paused"
         }
     }
 
-    /// Off-screen stops reopen by themselves when Chat is shown again; a hung
-    /// or manually paused page waits for an explicit reload (no reload loops).
+    /// Off-screen stops reopen by themselves when Chat is shown again. A
+    /// manually paused page waits for an explicit reload.
     var resumesAutomatically: Bool { self == .hiddenActivity || self == .thermal }
 }
 

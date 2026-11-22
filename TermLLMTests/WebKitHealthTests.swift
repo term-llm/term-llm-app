@@ -30,11 +30,10 @@ final class WebKitHealthPolicyTests: XCTestCase {
 
     private func verdict(now: TimeInterval, context: WebKitPageContext? = nil, hiddenSince: TimeInterval? = 0,
                          visibleSince: TimeInterval? = nil, lastSampleAt: TimeInterval? = nil, armed: Bool = true,
-                         samples: [TimedPageSample] = [], thermal: ProcessInfo.ThermalState = .nominal,
-                         outside: Double? = nil) -> WebKitHealthPolicy.Verdict {
+                         samples: [TimedPageSample] = [], thermal: ProcessInfo.ThermalState = .nominal) -> WebKitHealthPolicy.Verdict {
         policy.verdict(.init(now: now, context: context ?? offScreen, hiddenSince: hiddenSince, visibleSince: visibleSince,
                              lastSampleAt: lastSampleAt ?? samples.last?.uptime, armed: armed, samples: samples,
-                             thermal: thermal, outsideAppCPU: outside))
+                             thermal: thermal))
     }
 
     private func stopReason(_ verdict: WebKitHealthPolicy.Verdict) -> WebKitTeardownReason? {
@@ -104,26 +103,22 @@ final class WebKitHealthPolicyTests: XCTestCase {
         XCTAssertEqual(verdict(now: 40, hiddenSince: 0, samples: [], thermal: .serious), .healthy)
     }
 
-    func testSilentOnScreenPageIsStoppedOnlyWhileThePhoneStaysBusy() {
+    func testOnScreenReportSilenceIsDiagnosticOnly() {
         let onScreen = WebKitPageContext(userCanSee: true)
-        func silent(_ now: TimeInterval, context: WebKitPageContext = onScreen, armed: Bool = true,
-                    outside: Double?) -> WebKitHealthPolicy.Verdict {
-            verdict(now: now, context: context, hiddenSince: nil, visibleSince: 0, lastSampleAt: 0, armed: armed,
-                    outside: outside)
+        func silent(_ now: TimeInterval, context: WebKitPageContext = onScreen,
+                    armed: Bool = true) -> WebKitHealthPolicy.Verdict {
+            verdict(now: now, context: context, hiddenSince: nil, visibleSince: 0, lastSampleAt: 0, armed: armed)
         }
-        XCTAssertEqual(silent(10, outside: 2), .healthy)
-        XCTAssertEqual(silent(20, outside: 2), .stalled(20))
-        XCTAssertEqual(stopReason(silent(50, outside: 1.2)), .unresponsive, "an endless loop burns a core")
-        XCTAssertEqual(silent(50, outside: 0.1), .stalled(50), "paused in Web Inspector or deadlocked: costs nothing")
-        XCTAssertEqual(silent(50, outside: nil), .stalled(50), "no evidence without device counters")
-        XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, loading: true), outside: 2), .healthy)
-        XCTAssertEqual(silent(50, context: WebKitPageContext(userCanSee: true, signingIn: true), outside: 2), .stalled(50))
-        XCTAssertEqual(silent(50, armed: false, outside: 2), .healthy, "no probe, no heartbeat to miss")
-        XCTAssertEqual(silent(1_100, context: WebKitPageContext(userCanSee: true, appBackground: true), outside: 2),
+        XCTAssertEqual(silent(14), .healthy)
+        XCTAssertEqual(silent(15), .stalled(15))
+        XCTAssertEqual(silent(60), .stalled(60))
+        XCTAssertEqual(silent(60, context: WebKitPageContext(userCanSee: true, loading: true)), .healthy)
+        XCTAssertEqual(silent(60, context: WebKitPageContext(userCanSee: true, signingIn: true)), .stalled(60))
+        XCTAssertEqual(silent(60, armed: false), .healthy, "no probe, no heartbeat to miss")
+        XCTAssertEqual(silent(1_100, context: WebKitPageContext(userCanSee: true, appBackground: true)),
                        .healthy, "a stale visibility context must not turn background suspension into a stall")
         // Silence is counted from when the page came on screen, not its last hidden report.
-        XCTAssertEqual(verdict(now: 100, context: onScreen, hiddenSince: nil, visibleSince: 90, lastSampleAt: 0,
-                               outside: 2), .healthy)
+        XCTAssertEqual(verdict(now: 100, context: onScreen, hiddenSince: nil, visibleSince: 90, lastSampleAt: 0), .healthy)
     }
 }
 
@@ -538,7 +533,7 @@ final class WebKitHealthMonitorTests: XCTestCase {
             }
             XCTAssertTrue(stops.isEmpty)
             XCTAssertFalse(monitor.events.contains { ["blocked", "stalled", "stop", "would-stop"].contains($0.kind) })
-            XCTAssertFalse(monitor.status.findings.contains { ["busy", "stalled", "stop-unresponsive"].contains($0.id) })
+            XCTAssertFalse(monitor.status.findings.contains { $0.id == "busy" || $0.id == "stalled" || $0.id.hasPrefix("stop-") })
             XCTAssertEqual(monitor.status.pageState, .waiting)
             XCTAssertTrue(session.webView === web, "suspension must preserve the retained Chat document")
             withExtendedLifetime(web) {}
@@ -612,8 +607,9 @@ final class WebKitHealthMonitorTests: XCTestCase {
         withExtendedLifetime(web) {}
     }
 
-    func testFreshPostResumeHeartbeatArmsAGenuineSubsequentForegroundStall() throws {
+    func testFreshPostResumeHeartbeatArmsDiagnosticStallWithoutStoppingThePage() throws {
         let monitor = monitor()
+        monitor.autoStopEnabled = true
         let web = WKWebView(frame: .zero)
         let session = monitor.makeSession(for: web, now: 0)
         session.contextProvider = { WebKitPageContext(userCanSee: true) }
@@ -623,19 +619,32 @@ final class WebKitHealthMonitorTests: XCTestCase {
         monitor.applicationWillEnterForeground(now: 1_075)
         let window = try XCTUnwrap(session.activityWindowID)
         monitor.record(report(["window": window, "vis": "visible"]), from: session, now: 1_080)
-        for time in stride(from: 1_080.0, through: 1_130, by: 5) {
-            monitor.tick(now: time, native: native(time, device: 2))
+        // One core busy outside the app used to cause a stop after 45 s of silence.
+        for time in stride(from: 1_080.0, through: 1_140, by: 5) {
+            monitor.tick(now: time, native: native(time, app: 0.25, device: 1.25))
+            if time == 1_090 { XCTAssertEqual(monitor.status.pageState, .active) }
+            if time == 1_095 { XCTAssertEqual(monitor.status.pageState, .stalled(15)) }
         }
-        XCTAssertEqual(stops, [.unresponsive])
-        XCTAssertTrue(monitor.events.contains { $0.kind == "stalled" && $0.message.contains("15 s") })
-        XCTAssertEqual(monitor.events.filter { $0.kind == "stop" }.count, 1)
+        XCTAssertEqual(monitor.status.pageState, .stalled(60))
+        XCTAssertTrue(monitor.status.findings.contains { $0.id == "stalled" })
+        XCTAssertFalse(monitor.events.contains { ["stop", "would-stop", "recovered"].contains($0.kind) })
+        let stalled = monitor.events.filter { $0.kind == "stalled" }
+        XCTAssertEqual(stalled.count, 1)
+        XCTAssertTrue(stalled.first?.message.hasPrefix("No page health report for 15 s while on screen.") == true)
+
+        monitor.record(report(["window": window, "vis": "visible", "seq": 1]), from: session, now: 1_145)
+        monitor.tick(now: 1_145, native: native(1_145, app: 0.25, device: 1.25))
+        XCTAssertTrue(stops.isEmpty)
+        XCTAssertEqual(monitor.status.pageState, .active)
+        XCTAssertEqual(monitor.status.lastReportAge, 0)
+        XCTAssertFalse(monitor.status.findings.contains { $0.id == "stalled" })
+        XCTAssertEqual(monitor.events.filter { $0.kind == "recovered" }.map(\.message), ["Page health reports resumed."])
         withExtendedLifetime(web) {}
     }
 
-    /// A Mac's display sleeping or the Mac sleeping keeps native ticks going
-    /// (or pauses uptime) while WebKit stops the page: neither the silence
-    /// during the pause nor a slow resume afterwards may stop the page.
-    func testDisplayPauseAndWakeDoNotStopTheVisiblePage() throws {
+    /// A sleeping display or Mac can interrupt page reports. Neither the pause
+    /// nor a slow wake should count as silence until the page reports again.
+    func testDisplayPauseAndWakeDoNotCountAsReportSilence() throws {
         let monitor = monitor()
         let web = WKWebView(frame: .zero)
         let session = monitor.makeSession(for: web, now: 0)
@@ -665,12 +674,14 @@ final class WebKitHealthMonitorTests: XCTestCase {
         }
         XCTAssertTrue(stops.isEmpty, "silence after waking is not a hang until the page reports again")
         XCTAssertFalse(monitor.events.contains { ["stalled", "stop", "would-stop"].contains($0.kind) })
-        // A fresh report re-arms the watchdog for a genuine hang.
+        // A fresh report allows subsequent silence to count as a stall.
         monitor.record(report(["window": after, "vis": "visible"]), from: session, now: 405)
         for time in stride(from: 405.0, through: 455, by: 5) {
             monitor.tick(now: time, native: native(time, device: 2))
         }
-        XCTAssertEqual(stops, [.unresponsive])
+        XCTAssertTrue(stops.isEmpty)
+        XCTAssertEqual(monitor.status.pageState, .stalled(50))
+        XCTAssertEqual(monitor.events.filter { $0.kind == "stalled" }.count, 1)
         withExtendedLifetime(web) {}
     }
 
@@ -690,7 +701,8 @@ final class WebKitHealthMonitorTests: XCTestCase {
                                "late": 85_000, "maxLate": 85_000]), from: session, now: 1_095)
         XCTAssertEqual(session.activityWindowID, window)
         XCTAssertTrue(monitor.events.contains { $0.kind == "blocked" && $0.message.contains("85.0 s") })
-        XCTAssertTrue(monitor.events.contains { $0.kind == "would-stop" })
+        XCTAssertTrue(monitor.events.contains { $0.kind == "stalled" })
+        XCTAssertFalse(monitor.events.contains { ["stop", "would-stop"].contains($0.kind) })
         XCTAssertEqual(try XCTUnwrap(session.latest).busyFraction, 85.0 / 90.0, accuracy: 0.0001)
         for time in stride(from: 1_100.0, through: 1_125, by: 5) {
             monitor.record(report(["window": window, "vis": "visible", "late": 4_000, "maxLate": 4_000]),

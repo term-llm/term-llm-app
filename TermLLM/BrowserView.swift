@@ -447,8 +447,8 @@ struct BrowserView {
 
         /// Hands the web view to the parent to close. A page that still runs
         /// first unloads, so its own handlers save the unsent draft (the
-        /// frontend persists it on beforeunload, not per keystroke). A hung
-        /// page cannot run any handler and closes at once.
+        /// frontend persists it on beforeunload, not per keystroke). If the
+        /// page can't unload, close it after a short grace period.
         @MainActor
         func closePage(reason: WebKitTeardownReason, detail: String, grace: Duration = .seconds(2)) {
             guard !closingPage else { return }
@@ -459,7 +459,7 @@ struct BrowserView {
                 self.closingTimeout = nil
                 self.parent.onHealthTeardown(reason, detail, restore)
             }
-            guard reason != .unresponsive, let view = webView, view.url != nil, view.url != Self.blankPage else {
+            guard let view = webView, view.url != nil, view.url != Self.blankPage else {
                 finish()
                 return
             }
