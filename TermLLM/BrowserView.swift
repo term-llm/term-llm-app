@@ -175,6 +175,17 @@ struct BrowserView {
     /// with the page's current same-mount URL to reopen later.
     var onHealthTeardown: (WebKitTeardownReason, String, URL?) -> Void = { _, _, _ in }
 
+    /// WebMCP is bound to this page's own origin. A linked device's page must
+    /// also be inside its validated loopback bridge mount, so a bridge URL that
+    /// drifted off the connection's origin can never receive device tools.
+    var effectiveDeviceTools: DeviceToolRegistry? {
+        guard let deviceTools else { return nil }
+        guard isLinkedDevices else { return deviceTools }
+        guard let mount = connectionMount, HubConnectionStore.isLinkedDevicesBridgeURL(mount),
+              HubNavigation.isWithinMount(url, server: mount) else { return nil }
+        return deviceTools
+    }
+
     /// Pure WebKit permission policy; granting here does not bypass iOS's
     /// app-level microphone authorization. No capture API is called natively.
     func mediaCaptureDecision(originScheme: String, originHost: String, originPort: Int,
@@ -239,7 +250,7 @@ struct BrowserView {
         #endif
         configuration.userContentController.addUserScript(WKUserScript(source: LiveHangUp.userScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         coordinator.syncPushBridge(url: url, center: push, controller: configuration.userContentController)
-        coordinator.syncDeviceTools(url: url, registry: deviceTools, controller: configuration.userContentController)
+        coordinator.syncDeviceTools(url: url, registry: effectiveDeviceTools, controller: configuration.userContentController)
         #if os(macOS)
         let view: WKWebView = ChatWebView(frame: .zero, configuration: configuration)
         Self.applyChatZoom(textScale, to: view)
@@ -558,7 +569,7 @@ struct BrowserView {
             backCount = parent.backCount
             let pushBridgeChanged = syncPushBridge(url: parent.url, center: parent.push,
                                                    controller: view.configuration.userContentController)
-            let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.deviceTools,
+            let toolsChanged = syncDeviceTools(url: parent.url, registry: parent.effectiveDeviceTools,
                                                controller: view.configuration.userContentController) || pushBridgeChanged
             syncHealth(view)
 

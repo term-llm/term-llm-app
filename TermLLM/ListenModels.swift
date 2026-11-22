@@ -164,6 +164,11 @@ enum ListenError: LocalizedError, Equatable {
 struct ListenServer: Equatable, Sendable {
     let base: URL
     var sourceID: UUID? = nil
+    /// A linked device is reached only through its mounted loopback bridge, so
+    /// its `/media/…` paths belong under `base`'s mount (already-prefixed paths
+    /// stay as they are) and must stay inside it. Other sources keep resolving
+    /// server paths against their origin.
+    var scopedToMount = false
 
     var origin: String? { Self.origin(of: base) }
 
@@ -194,6 +199,16 @@ struct ListenServer: Equatable, Sendable {
                 + "(a /media/… path on this server) or any direct http(s) audio/video URL.")
         }
         if value.hasPrefix("/") && !value.hasPrefix("//") {
+            if let server, server.scopedToMount {
+                let mount = server.base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let prefix = mount.isEmpty ? "" : "/" + mount
+                let path = value.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                let prefixed = !prefix.isEmpty && (path == prefix || path.hasPrefix(prefix + "/"))
+                guard let url = HubNavigation.destination(prefixed ? value : prefix + value, server: server.base) else {
+                    throw ListenError.invalidURL("\(value) isn't a valid path on this linked server.")
+                }
+                return url
+            }
             guard let server, let url = URL(string: value, relativeTo: server.base)?.absoluteURL else {
                 throw ListenError.invalidURL("\(value) is a server path, but no term-llm server is configured.")
             }

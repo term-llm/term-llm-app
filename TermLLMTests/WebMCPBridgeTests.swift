@@ -40,6 +40,38 @@ final class WebMCPBridgeTests: XCTestCase {
         XCTAssertEqual(subframe, .failure(.init(message: "Device tools are not available to this page")))
     }
 
+    func testLoopbackBridgeOriginIsExactForLinkedDevices() async {
+        let mount = URL(string: "http://localhost:43301/chat/")!
+        let linked = bridge(mount)
+        XCTAssertEqual(linked.expectedOrigin, "http://localhost:43301")
+        let origin = linked.expectedOrigin
+        let body: [String: Any] = ["name": "ping", "arguments": "{}"]
+        let denied = WebMCPBridge.BridgeError(message: "Device tools are not available to this page")
+        for frame in ["http://localhost:43302", "http://localhost", "http://127.0.0.1:43301", "http://[::1]:43301",
+                      "https://localhost:43301", "http://localhost.evil.example:43301", "http://evil.example",
+                      "https://jarvis.example", "null", ""] {
+            let result = await WebMCPBridge.handle(body: body, frameOrigin: frame, isMainFrame: true,
+                                                   expectedOrigin: origin, registry: registry())
+            XCTAssertEqual(result, .failure(denied), frame)
+        }
+        let subframe = await WebMCPBridge.handle(body: body, frameOrigin: origin, isMainFrame: false,
+                                                 expectedOrigin: origin, registry: registry())
+        XCTAssertEqual(subframe, .failure(denied))
+        let sameOrigin = await WebMCPBridge.handle(body: body, frameOrigin: origin, isMainFrame: true,
+                                                   expectedOrigin: origin, registry: registry())
+        guard case .success = sameOrigin else { return XCTFail("the exact loopback origin may call tools") }
+    }
+
+    func testBridgeIsNotInjectedIntoAnotherLoopbackPortOrAdjacentHost() async throws {
+        let linked = bridge(URL(string: "http://localhost:43301/chat/")!)
+        for page in ["http://localhost:43302/", "http://127.0.0.1:43301/"] {
+            let webView = makeWebView(bridge: linked)
+            try await load(webView, baseURL: URL(string: page)!)
+            let present = try await js(webView, "return typeof document.modelContext") as? String
+            XCTAssertEqual(present, "undefined", page)
+        }
+    }
+
     func testHandlerRunsToolsAndMapsErrors() async {
         let origin = "https://jarvis.example"
         func call(_ body: Any) async -> Result<String, WebMCPBridge.BridgeError> {

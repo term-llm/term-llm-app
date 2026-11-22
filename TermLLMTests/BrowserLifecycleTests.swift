@@ -93,6 +93,32 @@ final class BrowserLifecycleTests: XCTestCase {
                                     frameURL: frame.flatMap(URL.init(string:)), isMainFrame: mainFrame, type: type)
     }
 
+    func testLinkedDeviceToolsRequireThePageInsideTheValidatedBridgeMount() {
+        let registry = DeviceToolRegistry(tools: [BuiltInDeviceTools.ping()])
+        var parent = linkedMediaBrowser()
+        XCTAssertNil(parent.effectiveDeviceTools, "no registry given, none exposed")
+        parent.deviceTools = registry
+        XCTAssertTrue(parent.effectiveDeviceTools === registry)
+        parent.connectionMount = nil
+        XCTAssertNil(parent.effectiveDeviceTools)
+        for mount in ["https://localhost:43212/ui/", "http://127.0.0.1:43212/ui/", "http://other.example:43212/ui/",
+                      "http://localhost:43213/ui/", "http://localhost:43212/other/", "http://localhost:43212/ui/?scope=1"] {
+            parent.connectionMount = URL(string: mount)!
+            XCTAssertNil(parent.effectiveDeviceTools, mount)
+        }
+        // A valid mount alone cannot authorize a differently configured page.
+        parent = browser(State(), url: URL(string: "http://localhost:43213/ui/")!)
+        parent.isLinkedDevices = true
+        parent.deviceTools = registry
+        parent.connectionMount = URL(string: "http://localhost:43212/ui/")!
+        XCTAssertNil(parent.effectiveDeviceTools)
+        // Ordinary sources keep their existing behavior.
+        var ordinary = browser(State())
+        XCTAssertNil(ordinary.effectiveDeviceTools)
+        ordinary.deviceTools = registry
+        XCTAssertTrue(ordinary.effectiveDeviceTools === registry)
+    }
+
     func testLinkedGeolocationPromptsOnlyForVerifiedTopLevelChat() {
         var parent = linkedMediaBrowser()
         let origin = "http://localhost:43212"

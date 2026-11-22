@@ -22,6 +22,22 @@ final class VoiceShortcutTests: XCTestCase {
         XCTAssertNil(VoiceShortcutTarget.load(from: defaults))
     }
 
+    func testLinkedDevicesAreNeverShortcutTargetsEvenWhenTheyAdvertiseDeviceTools() {
+        let linked = HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                                   url: URL(string: "http://localhost:43301/chat/")!, needsKindReview: nil,
+                                   linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: 1, count: 32)))
+        let direct = HubConnection(id: UUID(), name: "Node", kind: .directNode,
+                                   url: URL(string: "https://node.example/")!)
+        let hub = HubConnection(id: UUID(), name: "Hub", kind: .hub, url: URL(string: "https://hub.example/")!)
+        XCTAssertFalse(VoiceShortcutTarget.supports(linked))
+        XCTAssertEqual(VoiceShortcutTarget.unsupportedReason(for: linked),
+                       "Linked devices can’t be voice shortcut targets. Start Live from the linked chat, or choose another agent in Settings.")
+        for connection in [direct, hub] {
+            XCTAssertTrue(VoiceShortcutTarget.supports(connection))
+            XCTAssertNil(VoiceShortcutTarget.unsupportedReason(for: connection))
+        }
+    }
+
     func testLaunchRequestsCoalesceUntilFinished() {
         let center = VoiceLaunchCenter()
         XCTAssertNil(center.request)

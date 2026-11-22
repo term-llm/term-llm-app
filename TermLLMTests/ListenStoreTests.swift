@@ -185,6 +185,35 @@ final class ListenStoreTests: XCTestCase {
         XCTAssertEqual(ListenStore(fileURL: file).item(item.id)?.position, 0, "an older delta cannot resurrect a played position")
     }
 
+    func testLinkedMountScopesServerPathsWithoutChangingDirectOwnerResolution() throws {
+        let id = UUID()
+        let mount = URL(string: "http://localhost:43301/chat/")!
+        let linked = ListenServer(base: mount, sourceID: id, scopedToMount: true)
+        func resolved(_ path: String, _ server: ListenServer = linked) throws -> String {
+            try ListenServer.resolve(path, server: server).absoluteString
+        }
+        XCTAssertEqual(try resolved("/media/a.mp3"), "http://localhost:43301/chat/media/a.mp3")
+        XCTAssertEqual(try resolved("/media/a.mp3?sig=1"), "http://localhost:43301/chat/media/a.mp3?sig=1")
+        XCTAssertEqual(try resolved("/hub/node/n1/media/a.mp3"), "http://localhost:43301/chat/hub/node/n1/media/a.mp3")
+        // Already-prefixed paths are not prefixed twice; a longer sibling name is not a prefix match.
+        XCTAssertEqual(try resolved("/chat/media/a.mp3"), "http://localhost:43301/chat/media/a.mp3")
+        XCTAssertEqual(try resolved("/chat"), "http://localhost:43301/chat")
+        XCTAssertEqual(try resolved("/chatty/a.mp3"), "http://localhost:43301/chat/chatty/a.mp3")
+        for escape in ["/media/../../x", "/chat/../x", "/%2e%2e/x", "/media/a%2fb", "/media\\a", "//evil.example/a.mp3"] {
+            XCTAssertThrowsError(try resolved(escape), escape)
+        }
+        XCTAssertEqual(try resolved("/media/a.mp3", ListenServer(base: URL(string: "http://localhost:43302/")!,
+                                                                  sourceID: id, scopedToMount: true)),
+                       "http://localhost:43302/media/a.mp3", "a root mount is unchanged")
+        XCTAssertEqual(try resolved("http://feeds.example/ep.mp3"), "http://feeds.example/ep.mp3",
+                       "direct URLs never gain a mount or a source")
+        // The direct owner (and the saved-server fallback) keep origin-relative resolution.
+        let direct = ListenServer(base: mount, sourceID: id)
+        XCTAssertEqual(try resolved("/media/a.mp3", direct), "http://localhost:43301/media/a.mp3")
+        XCTAssertEqual(try resolved("/chat/media/a.mp3", direct), "http://localhost:43301/chat/media/a.mp3")
+        XCTAssertEqual(try resolved("/media/a.mp3", testServer), "https://hub.example/media/a.mp3")
+    }
+
     func testURLPolicy() throws {
         XCTAssertEqual(try ListenServer.resolve("/media/abc.mp3", server: testServer).absoluteString,
                        "https://hub.example/media/abc.mp3")

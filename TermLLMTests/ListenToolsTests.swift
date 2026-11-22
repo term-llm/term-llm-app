@@ -46,6 +46,36 @@ final class ListenToolsTests: XCTestCase {
         XCTAssertEqual(try JSONValue.decode(Data(populated.text.utf8))["total"], 1)
     }
 
+    func testLinkedSourceMediaPathsStayInsideItsMountAndItsOwnSourceScope() async throws {
+        let listen = makeListen()
+        let settings = DeviceToolsSettings(defaults: isolatedDefaults(),
+                                           registry: DeviceToolRegistry(tools: []), listen: listen)
+        let linked = HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                                   url: URL(string: "http://localhost:43301/chat/")!, needsKindReview: nil,
+                                   linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: 7, count: 32)))
+        let other = HubConnection(id: UUID(), name: "Other", kind: .directNode,
+                                  url: URL(string: "https://other.example/node/")!)
+        let add = try XCTUnwrap(settings.registry(for: linked).tool(named: "media_add"))
+        _ = try await add.call(["url": "/media/a.mp3", "download": "never"])
+        _ = try await add.call(["url": "/chat/media/b.mp3", "download": "never"])
+        _ = try await add.call(["url": "https://feeds.example/c.mp3", "download": "never"])
+        let items = listen.store.items
+        let owners = Dictionary(uniqueKeysWithValues: items.map { ($0.url.absoluteString, $0.sourceID) })
+        XCTAssertEqual(items.count, 3)
+        XCTAssertEqual(owners, ["http://localhost:43301/chat/media/a.mp3": linked.id,
+                                "http://localhost:43301/chat/media/b.mp3": linked.id,
+                                "https://feeds.example/c.mp3": nil],
+                       "only the linked source's own mount carries its source ID; direct URLs carry none")
+        XCTAssertFalse(items.contains { $0.sourceID == other.id })
+        // A path that escapes the mount is rejected rather than reaching the bridge origin's other routes.
+        do {
+            _ = try await add.call(["url": "/media/../../etc/x.mp3"])
+            XCTFail("expected a rejection")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("isn't a valid path on this linked server"))
+        }
+    }
+
     func testToolNamesAndSchemas() {
         let listen = makeListen()
         XCTAssertEqual(listen.tools.map(\.name),

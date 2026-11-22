@@ -60,6 +60,7 @@ class WorkflowBudgetTests(unittest.TestCase):
         "TermLLM-LinkedDevices": {
             "LinkedDevicesProtocolTests", "LinkedDevicesIdentityTests", "LinkedDevicesRuntimeTests",
             "LinkedDevicesDiagnosticsTests", "PeerTransportTests", "PeerNWLoopbackListenerTests", "LinkedDevicesLiveWebKitTests", "ServerAddressTests", "DirectNodeClientTests", "HubConnectionStoreTests", "BrowserLifecycleTests",
+            "DeviceToolsTests", "VoiceShortcutTests", "WebMCPBridgeTests", "ListenStoreTests", "ListenToolsTests",
         },
     }
     LIGHTWEIGHT_PATHS = {

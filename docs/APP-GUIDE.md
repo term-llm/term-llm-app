@@ -33,7 +33,8 @@ In **Settings → Voice shortcut**, choose an agent and use **Start live
 conversation**. The same action is available in Shortcuts and Siri. On an iPhone
 with an Action button, assign **term-llm → Start Live Conversation** in
 **iOS Settings → Action Button → Shortcut**. Linked devices cannot be shortcut
-targets. The shortcut opens the app and starts voice in a fresh conversation;
+targets (their connection may be down, and the launch can't answer the
+microphone prompt): start Live from the linked chat instead. The shortcut opens the app and starts voice in a fresh conversation;
 it leaves an existing active call alone. First-use permissions or a locked
 phone may still require unlocking or tapping Live.
 
@@ -103,7 +104,8 @@ and their saved changes are not cleared by resetting the demo.
 
 To try tools without Apple Music access:
 
-1. Enable **Settings → Device tools → Share device tools**.
+1. Enable **Settings → Device tools → Share device tools**. A linked device also
+   needs a host that advertises device tools ([details](DEVICE-TOOLS.md#linked-devices)).
 2. In Chat, choose **+ → MCP servers** and enable the device entry labelled
    **WebMCP from this page**.
 3. Send **create playlist**. The demo creates a local playlist of fictional,

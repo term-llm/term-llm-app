@@ -255,6 +255,62 @@ final class DeviceToolsTests: XCTestCase {
         XCTAssertNil(WebMCPBridge.currentInvocation)
     }
 
+    // MARK: Which chat pages receive a WebMCP bridge
+
+    private func linkedSource(_ seed: UInt8 = 1) -> HubConnection {
+        HubConnection(id: UUID(), name: "Desk", kind: .directNode,
+                      url: URL(string: "http://localhost:43\(300 + Int(seed))/chat/")!, needsKindReview: nil,
+                      linkedDevicesHostKey: LinkedDevicesBase64URL.encode(Data(repeating: seed, count: 32)))
+    }
+
+    private func makeSettings(enabled: Bool?) -> DeviceToolsSettings {
+        let defaults = isolatedDefaults()
+        if let enabled { defaults.set(enabled, forKey: DeviceToolsSettings.enabledKey) }
+        return DeviceToolsSettings(defaults: defaults, registry: DeviceToolRegistry(tools: [BuiltInDeviceTools.ping()]),
+                                   listen: makeListen(), platform: .iPhone)
+    }
+
+    func testLinkedSourceGetsABridgeOnlyWhenItsVerifiedHostAdvertisesDeviceTools() {
+        let settings = makeSettings(enabled: true)
+        let linked = linkedSource()
+        XCTAssertNil(settings.browserRegistry(for: linked, hostAdvertisesDeviceTools: false),
+                     "a host that does not advertise device_tools never gets a bridge")
+        let registry = settings.browserRegistry(for: linked, hostAdvertisesDeviceTools: true)
+        XCTAssertNotNil(registry)
+        XCTAssertTrue(registry === settings.registry(for: linked), "the linked source's own scoped registry")
+        XCTAssertFalse(registry === settings.registry, "never the shared fallback registry")
+    }
+
+    func testAppWideSwitchStillGatesAnAdvertisingLinkedHost() {
+        let linked = linkedSource()
+        for enabled in [false, nil] as [Bool?] {
+            // iPhone defaults to off with no saved choice, and an explicit off stays off.
+            XCTAssertNil(makeSettings(enabled: enabled).browserRegistry(for: linked, hostAdvertisesDeviceTools: true),
+                         "enabled=\(String(describing: enabled))")
+        }
+        XCTAssertNotNil(makeSettings(enabled: true).browserRegistry(for: linked, hostAdvertisesDeviceTools: true))
+        // Mac's default-on applies to a linked host that advertises too, but still needs the advertisement.
+        let defaults = isolatedDefaults()
+        let mac = DeviceToolsSettings(defaults: defaults, registry: DeviceToolRegistry(tools: []),
+                                      listen: makeListen(), platform: .mac)
+        XCTAssertNotNil(mac.browserRegistry(for: linked, hostAdvertisesDeviceTools: true))
+        XCTAssertNil(mac.browserRegistry(for: linked, hostAdvertisesDeviceTools: false))
+    }
+
+    func testAdvertisementDoesNotChangeOrdinaryConnectionsAndEachSourceKeepsItsOwnRegistry() {
+        let settings = makeSettings(enabled: true)
+        let hub = HubConnection(id: UUID(), name: "Owner", kind: .hub, url: URL(string: "https://owner.example/phone/")!)
+        XCTAssertTrue(settings.browserRegistry(for: hub, hostAdvertisesDeviceTools: false) === settings.registry(for: hub),
+                      "the linked-devices flag is irrelevant to Hub and Direct Node sources")
+        XCTAssertTrue(settings.browserRegistry(for: nil, hostAdvertisesDeviceTools: false) === settings.registry)
+        let first = linkedSource(1), second = linkedSource(2)
+        let firstRegistry = settings.browserRegistry(for: first, hostAdvertisesDeviceTools: true)
+        let secondRegistry = settings.browserRegistry(for: second, hostAdvertisesDeviceTools: true)
+        XCTAssertFalse(firstRegistry === secondRegistry, "no registry is shared between connections")
+        XCTAssertNil(settings.browserRegistry(for: second, hostAdvertisesDeviceTools: false),
+                     "another source's advertisement does not carry over")
+    }
+
     func testJSONValueRoundTripKeepsIntegers() throws {
         let value = try JSONValue.decode(Data(#"{"a":1,"b":1.5,"c":[true,null,"x"],"d":{}}"#.utf8))
         XCTAssertEqual(value, ["a": 1, "b": .double(1.5), "c": [true, nil, "x"], "d": [:]])
